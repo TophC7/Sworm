@@ -1,0 +1,38 @@
+[package]
+name = "ade"
+version = "0.1.0"
+edition = "2021"
+description = "ADE - Linux-first desktop app for coding-agent CLIs"
+license = "MIT"
+
+[lib]
+name = "ade_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "ade"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+portable-pty = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+refinery = { version = "0.8", features = ["rusqlite"] }
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+which = "8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+sha2 = "0.10"
