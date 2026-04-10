@@ -1,0 +1,32 @@
+{
+  "enabledPlugins": {
+    "svelte-skills@svelte-skills-kit": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "FILE=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '\\.(ts|svelte|js|css)$'; then bun prettier --write \"$FILE\" 2>/dev/null; fi",
+            "statusMessage": "Formatting...",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/block-npm.sh",
+            "statusMessage": "Checking for npm/node usage...",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "svelte": {
+      "args": ["-y", "@sveltejs/mcp"],
+      "command": "bunx",
+      "env": {},
+      "type": "stdio"
+    },
+    "forgejo": {
+      "command": "forgejo-mcp",
+      "args": ["--transport", "stdio", "--url", "https://git.ryot.foo"],
+      "env": {
+        "FORGEJO_ACCESS_TOKEN": "${FORGEJO_ACCESS_TOKEN}"
+      }
+    }
+  }
+}

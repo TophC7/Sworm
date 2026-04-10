@@ -1,0 +1,716 @@
+{
+  "[css]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[svelte]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "cSpell.words": ["onwarn"],
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit",
+    "source.sortImports": "explicit"
+  },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  // Format on save
+  "editor.formatOnSave": true,
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "*.ts": "$(capture).js, $(capture).d.ts.map, $(capture).*.ts, $(capture)_*.js, $(capture)_*.ts",
+    "*.tsx": "$(capture).ts, $(capture).*.tsx, $(capture)_*.ts, $(capture)_*.tsx, $(capture).less, $(capture).module",
+    "+layout.svelte": "+layout.ts,+layout.ts,+layout.js,+layout.server.ts,+layout.server.js,+layout.gql",
+    "+page.svelte": "+page.server.ts,+page.server.js,+page.ts,+page.js,+page.gql",
+    "flake.nix": "flake.lock, .envrc*, .gitignore, .mcp.json",
+    "README.md": "*.md",
+    "svelte.config.js": "tsconfig.json, vite.config.ts, vitest-setup-client.ts"
+  },
+  "files.exclude": {
+    "**/.direnv": true,
+    "**/.git": true,
+    "**/.svelte-kit": true,
+    "**/build": true,
+    "**/coverage": true,
+    "**/dist": true,
+    "**/node_modules": true
+  },
+  "highlight.regex.regexes": [
+    {
+      "languageIds": [
+        "javascript",
+        "typescript",
+        "json",
+        "jsonc",
+        "svelte",
+        "css",
+        "postcss",
+        "nix",
+        "fish",
+        "shellscript"
+      ],
+      "regexes": [
+        {
+          "decorations": [
+            {
+              "backgroundColor": "oklch(74% 31% 240 / 0.55)",
+              // "fontWeight": "bold",
+              "isWholeLine": true,
+              "overviewRulerColor": "oklch(74% 31% 240 / 0.55)"
+            }
+          ],
+          // <script></script>
+          "regex": "(<|</)(script)(.*)",
+          "regexes": [
+            {
+              "decorations": [
+                {
+                  "color": "oklch(74% 31% 240)"
+                }
+              ],
+              "regex": "[</>]"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "oklch(78% 30% 42)"
+                }
+              ],
+              "regex": "script"
+            }
+          ],
+          "regexFlag": "gm"
+        },
+        {
+          "decorations": [
+            {
+              "backgroundColor": "oklch(78% 30% 42 / 0.55)",
+              // "fontWeight": "bold",
+              "isWholeLine": true,
+              "overviewRulerColor": "oklch(78% 30% 42 / 0.55)"
+            }
+          ],
+          // <style></style>
+          "regex": "(<|</)(style)(.*)",
+          "regexes": [
+            {
+              "decorations": [
+                {
+                  "color": "oklch(78% 30% 42)"
+                }
+              ],
+              "regex": "[</>]"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "oklch(74% 31% 240)"
+                }
+              ],
+              "regex": "style"
+            }
+          ],
+          "regexFlag": "gm"
+        },
+        {
+          /* BLOCK COMMENTS :D */
+          "regex": "(/\\*|<\\!--)(.|[\r\n])*?((\\*/|-->)|-->)",
+          "regexes": [
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              "regex": "\\B:D"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#f00",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              /* Comment !!! */
+              "regex": "\\!\\!\\!"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#D8A657",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              /* Comment ^^ */
+              "regex": "\\^\\^"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#E78A4E",
+                  "fontWeight": "bold",
+                  "index": 1
+                },
+                {
+                  "color": "#D3869B",
+                  "fontWeight": "bold",
+                  "index": 2
+                }
+              ],
+              /* Comment <> */
+              "regex": "(<)(>)"
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#804600",
+                  "color": "#d4be98",
+                  "index": 1,
+                  "overviewRulerColor": "#804600"
+                }
+              ],
+              /* TODO: hello */
+              "regex": "(.*TODO:)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#80460099",
+                      "color": "#d4be98",
+                      "index": 2,
+                      "overviewRulerColor": "#80460099"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#c0c0c0",
+                  "color": "#303030",
+                  "index": 1,
+                  "overviewRulerColor": "#c0c0c0"
+                }
+              ],
+              /* WIP: hello */
+              "regex": "(.*WIP:)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#c0c0c099",
+                      "color": "#303030",
+                      "index": 2,
+                      "overviewRulerColor": "#c0c0c099"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#fffacd",
+                  "color": "#282828",
+                  "index": 1,
+                  "overviewRulerColor": "#fffacd"
+                }
+              ],
+              /* NOTE: hello */
+              "regex": "(.*NOTE:)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#fffacd99",
+                      "color": "#282828",
+                      "index": 2,
+                      "overviewRulerColor": "#fffacd99"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#6495ed",
+                  "color": "#282828",
+                  "index": 1,
+                  "overviewRulerColor": "#6495ed"
+                }
+              ],
+              /* IDEA: hello */
+              "regex": "(.*IDEA:)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#6495ed99",
+                      "color": "#282828",
+                      "index": 2,
+                      "overviewRulerColor": "#6495ed99"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#66cc99",
+                  "color": "#282828",
+                  "index": 1,
+                  "overviewRulerColor": "#66cc99"
+                }
+              ],
+              /* INFO: hello */
+              "regex": "(.*INFO:)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#66cc9999",
+                      "color": "#282828",
+                      "index": 2,
+                      "overviewRulerColor": "#66cc9999"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#591d77",
+                  "color": "#d4be98",
+                  "index": 1,
+                  "overviewRulerColor": "#591d77"
+                }
+              ],
+              /* ABOUT: hello */
+              /* EXP: hello */
+              /* ???: hello */
+              "regex": "(.*(?:ABOUT|EXP|\\?+):)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#591d7799",
+                      "color": "#d4be98",
+                      "index": 2,
+                      "overviewRulerColor": "#591d7799"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#a74165",
+                  "color": "#d4be98",
+                  "index": 1,
+                  "overviewRulerColor": "#a74165"
+                }
+              ],
+              /* FIXME: hello */
+              /* FIX: hello */
+              /* BUG: hello */
+              /* DEBUG: hello */
+              /* HACK: hello */
+              "regex": "(.*(?:FIXME|FIX|BUG|DEBUG|HACK|REMOVE):)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#a7416599",
+                      "color": "#d4be98",
+                      "index": 2,
+                      "overviewRulerColor": "#a7416599"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#c36c5c",
+                  "color": "#d4be98",
+                  "index": 1,
+                  "overviewRulerColor": "#c36c5c"
+                }
+              ],
+              /* COMPONENT: hello */
+              "regex": "(.*(?:COMPONENT):)((.|\\r|\\n)*?(\\*/|-->)$)",
+              "regexes": [
+                {
+                  "decorations": [
+                    {
+                      "index": 0
+                    },
+                    {
+                      "backgroundColor": "#c36c5c99",
+                      "color": "#d4be98",
+                      "index": 2,
+                      "overviewRulerColor": "#c36c5c99"
+                    }
+                  ],
+                  "index": 2,
+                  "regex": "([\\s]+)?( .*)"
+                }
+              ]
+            }
+          ],
+          "regexFlag": "gm",
+          "regexLimit": 25000
+        },
+        {
+          // LINE COMMENTS :D
+          "regex": "(?<=\\s*)(//|#|;)(.|\r\n)*?$",
+          "regexes": [
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              "regex": "\\B:D"
+            },
+            {
+              "decorations": [
+                {
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "color": "#D8A657",
+                  "index": 1
+                },
+                {
+                  "color": "#d4be98",
+                  "index": 2
+                },
+                {
+                  "color": "#d4be98",
+                  "index": 4
+                },
+                {
+                  "color": "#D8A657",
+                  "index": 5
+                }
+              ],
+              // SECTION //
+              "regex": "(^/|#|;)(/|#|;)(.*)(/|#|;)(/|#|;$)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#f00",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              // Comment !!!
+              "regex": "\\!\\!\\!"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#D8A657",
+                  "fontWeight": "bold",
+                  "index": 0
+                }
+              ],
+              // Comment ^^
+              "regex": "\\^\\^"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#E78A4E",
+                  "fontWeight": "bold",
+                  "index": 1
+                },
+                {
+                  "color": "#D3869B",
+                  "fontWeight": "bold",
+                  "index": 2
+                }
+              ],
+              // Comment <>
+              "regex": "(<)(>)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#804600",
+                  "index": 1,
+                  "overviewRulerColor": "#804600"
+                },
+                {
+                  "backgroundColor": "#80460099",
+                  "index": 2,
+                  "overviewRulerColor": "#80460099"
+                }
+              ],
+              // TODO: hello
+              "regex": "(.*TODO:)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#303030",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#c0c0c0",
+                  "index": 1,
+                  "overviewRulerColor": "#c0c0c0"
+                },
+                {
+                  "backgroundColor": "#c0c0c099",
+                  "index": 2,
+                  "overviewRulerColor": "#c0c0c099"
+                }
+              ],
+              // WIP: hello
+              "regex": "(.*WIP:)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#282828",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#fffacd",
+                  "index": 1,
+                  "overviewRulerColor": "#fffacd"
+                },
+                {
+                  "backgroundColor": "#fffacd99",
+                  "index": 2,
+                  "overviewRulerColor": "#fffacd99"
+                }
+              ],
+              // NOTE: hello
+              "regex": "(.*NOTE:)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#282828",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#6495ed",
+                  "index": 1,
+                  "overviewRulerColor": "#6495ed"
+                },
+                {
+                  "backgroundColor": "#6495ed99",
+                  "index": 2,
+                  "overviewRulerColor": "#6495ed99"
+                }
+              ],
+              // IDEA: hello
+              "regex": "(.*IDEA:)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#282828",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#66cc99",
+                  "index": 1,
+                  "overviewRulerColor": "#66cc99"
+                },
+                {
+                  "backgroundColor": "#66cc9999",
+                  "index": 2,
+                  "overviewRulerColor": "#66cc9999"
+                }
+              ],
+              // INFO: hello
+              "regex": "(.*INFO:)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#591d77",
+                  "index": 1,
+                  "overviewRulerColor": "#591d77"
+                },
+                {
+                  "backgroundColor": "#591d7799",
+                  "index": 2,
+                  "overviewRulerColor": "#591d7799"
+                }
+              ],
+              // ABOUT: hello
+              // EXP: hello
+              // ???: hello
+              "regex": "(.*(?:ABOUT|EXP|\\?+):)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#a74165",
+                  "index": 1,
+                  "overviewRulerColor": "#a74165"
+                },
+                {
+                  "backgroundColor": "#a7416599",
+                  "index": 2,
+                  "overviewRulerColor": "#a7416599"
+                }
+              ],
+              // FIXME: hello
+              // FIX: hello
+              // BUG: hello
+              // DEBUG: hello
+              // HACK: hello
+              "regex": "(.*(?:FIXME|FIX|BUG|DEBUG|HACK|REMOVE):)(.*)"
+            },
+            {
+              "decorations": [
+                {
+                  "color": "#d4be98",
+                  "fontWeight": "bold",
+                  "index": 0
+                },
+                {
+                  "backgroundColor": "#c36c5c",
+                  "index": 1,
+                  "overviewRulerColor": "#c36c5c"
+                },
+                {
+                  "backgroundColor": "#c36c5c99",
+                  "index": 2,
+                  "overviewRulerColor": "#c36c5c99"
+                }
+              ],
+              // COMPONENT: hello
+              "regex": "(.*(?:COMPONENT):)(.*)"
+            }
+          ],
+          "regexFlag": "gm",
+          "regexLimit": 25000
+        }
+      ]
+    }
+  ],
+  "svelte.plugin.svelte.compilerWarnings": {
+    "css_unused_selector": "ignore"
+  },
+  "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix"
+}

@@ -1,0 +1,78 @@
+# ADE
+
+ADE is a Linux-first desktop app for running coding-agent CLIs inside a local git repository.
+
+## Stack
+
+- Development environment: Nix-first
+- Desktop runtime: Tauri v2
+- Frontend: SvelteKit
+- Backend/runtime: Rust
+- Database: SQLite
+- Package manager: `bun`
+
+## Source Of Truth
+
+Read these first before making architectural decisions:
+
+- [PHASE_0_1_TECH_SPEC.md](./PHASE_0_1_TECH_SPEC.md)
+- [BOOTSTRAP_CHECKLIST.md](./BOOTSTRAP_CHECKLIST.md)
+
+## Current Scope
+
+Phase 1 is intentionally narrow:
+
+- providers: Claude Code and Codex
+- local repositories only
+- real PTY-backed terminal inside the app
+- persisted projects and sessions
+- local git visibility
+
+Not in scope yet:
+
+- worktrees
+- SSH
+- GitHub/Forgejo integrations
+- Gemini
+- Copilot
+- terminal snapshot persistence
+
+## Working Rules
+
+- Nix is the source of truth for development environment and packaging.
+- Prefer `nix develop` and `nix build` over ad hoc host setup.
+- Use `bun`, not `pnpm` or `npm`.
+- Use Bun through the Nix environment; manage Bun dependency reproducibility with `bun2nix`.
+- Keep privileged operations in Rust, not in the frontend.
+- Do not add `tauri-plugin-shell` for app runtime process spawning.
+- Use the system `git` CLI rather than `git2` for Phase 1.
+- Keep the frontend as a SvelteKit SPA with SSR disabled.
+- Keep sessions project-scoped and be explicit when behavior is non-isolated.
+
+## Svelte Rules
+
+- Treat the frontend as a client-side SvelteKit SPA inside Tauri, not as a server-rendered web app.
+- Use Svelte 5 patterns only. Do not introduce Svelte 4 syntax in new code.
+- Use `$props()` instead of `export let`.
+- Use `$state()` for mutable local state.
+- Use `$derived()` or `$derived.by()` for computed state. Do not store derived values in `$state()`.
+- Use `$effect()` only for real side effects such as DOM work, subscriptions, or browser/Tauri API integration. Do not use it to mirror or derive state.
+- Prefer `{#snippet}` and `{@render}` over slots for component composition.
+- Prefer `{@attach ...}` over legacy `use:` actions when attachments are needed.
+- Keep state close to where it is used. Extract shared state into `.svelte.ts` rune modules before reaching for context.
+- Avoid classic Svelte stores for new shared state unless an external library forces that shape.
+
+## SvelteKit Rules
+
+- Root SSR stays disabled. Do not reintroduce server-rendered assumptions.
+- Do not add `+page.server.ts`, `+layout.server.ts`, `hooks.server.ts`, or remote-function-based app logic for the desktop runtime.
+- Frontend data flow should go through typed Tauri invoke/channel wrappers in `src/lib`, then into component state or shared rune modules.
+- Guard DOM-only or browser-only code with `onMount` or a narrowly scoped `$effect()`.
+- Prefer simple route components and app-shell state over web-centric patterns such as auth redirects, SEO metadata work, or server-first data loading.
+- Check existing ADE patterns before introducing a new component, state, or routing style.
+
+## Important Notes
+
+- Codex exact-thread rebinding is required in Phase 1.
+- Multiple sessions may exist in one project, but they share the same working tree until worktrees arrive in v2.
+- When in doubt, prefer the simpler implementation that preserves the Phase 1 boundaries.

@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    "inlang.vs-code-extension",
+    "dbaeumer.vscode-eslint",
+    "anthropic.claude-code",
+    "streetsidesoftware.code-spell-checker",
+    "mblet.highlight-regex",
+    "pivaszbs.svelte-autoimport",
+    "svelte.svelte-vscode",
+    "ardenivanov.svelte-intellisense",
+    "bradlc.vscode-tailwindcss",
+    "austenc.tailwind-docs"
+  ]
+}
