@@ -18,10 +18,10 @@
 	let activeProject = $derived(getActiveProject());
 </script>
 
-<div class="workspace">
+<div class="flex flex-1 h-screen overflow-hidden">
 	<LeftSidebar />
 
-	<main class="main-content">
+	<main class="flex flex-col flex-1 min-w-0 overflow-hidden">
 		{#if activeProject}
 			<ProjectMainView project={activeProject} />
 		{:else}
@@ -29,20 +29,3 @@
 		{/if}
 	</main>
 </div>
-
-<style>
-	.workspace {
-		display: flex;
-		flex: 1;
-		height: 100vh;
-		overflow: hidden;
-	}
-
-	.main-content {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-		overflow: hidden;
-	}
-</style>

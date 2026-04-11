@@ -15,56 +15,16 @@
 	}
 </script>
 
-<div class="empty-state">
-	<div class="content">
-		<h1>ADE</h1>
-		<p>Linux-first desktop app for coding-agent CLIs</p>
-		<button class="open-btn" onclick={handleOpen}>Open Repository</button>
-		<p class="hint">Select a local git repository to get started</p>
+<div class="flex-1 flex items-center justify-center bg-ground">
+	<div class="text-center">
+		<h1 class="text-4xl text-bright m-0 mb-2">ADE</h1>
+		<p class="text-muted m-0 mb-6">Linux-first desktop app for coding-agent CLIs</p>
+		<button
+			class="px-6 py-2.5 bg-success/20 text-success border-none rounded-md text-[0.95rem] cursor-pointer font-medium hover:bg-success/30 transition-colors"
+			onclick={handleOpen}
+		>
+			Open Repository
+		</button>
+		<p class="text-[0.8rem] text-muted mt-4">Select a local git repository to get started</p>
 	</div>
 </div>
-
-<style>
-	.empty-state {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: #0d1117;
-	}
-
-	.content {
-		text-align: center;
-	}
-
-	h1 {
-		font-size: 2.5rem;
-		color: #f0f6fc;
-		margin: 0 0 0.5rem;
-	}
-
-	p {
-		color: #8b949e;
-		margin: 0 0 1.5rem;
-	}
-
-	.open-btn {
-		padding: 10px 24px;
-		background: #238636;
-		color: #fff;
-		border: none;
-		border-radius: 6px;
-		font-size: 0.95rem;
-		cursor: pointer;
-		font-weight: 500;
-	}
-
-	.open-btn:hover {
-		background: #2ea043;
-	}
-
-	.hint {
-		font-size: 0.8rem;
-		margin-top: 1rem;
-	}
-</style>

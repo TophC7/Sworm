@@ -22,7 +22,7 @@
 
 {#if open}
 	<div
-		class="dialog-backdrop"
+		class="fixed inset-0 bg-ground/70 backdrop-blur-sm flex items-center justify-center p-5 z-50"
 		role="presentation"
 		tabindex="-1"
 		onclick={onCancel}
@@ -33,7 +33,7 @@
 		}}
 	>
 		<div
-			class="dialog-card"
+			class="w-full max-w-[480px] rounded-2xl p-5 bg-surface border border-edge shadow-[0_30px_80px_rgba(0,0,0,0.45)]"
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="dialog-title"
@@ -41,76 +41,25 @@
 			onclick={(event) => event.stopPropagation()}
 			onkeydown={(event) => event.stopPropagation()}
 		>
-			<h2 id="dialog-title">{title}</h2>
-			<p>{message}</p>
+			<h2 id="dialog-title" class="m-0 mb-2.5 text-base text-bright">{title}</h2>
+			<p class="m-0 text-muted leading-relaxed whitespace-pre-line">{message}</p>
 
-			<div class="actions">
+			<div class="flex justify-end gap-2.5 mt-5">
 				{#if showCancel}
-					<button class="secondary" onclick={onCancel}>{cancelLabel}</button>
+					<button
+						class="rounded-[10px] py-2 px-3.5 border border-edge cursor-pointer bg-transparent text-fg hover:border-accent transition-colors"
+						onclick={onCancel}
+					>
+						{cancelLabel}
+					</button>
 				{/if}
-				<button class="primary" onclick={onConfirm}>{confirmLabel}</button>
+				<button
+					class="rounded-[10px] py-2 px-3.5 border border-accent-dim cursor-pointer bg-accent-dim text-ground hover:bg-accent transition-colors"
+					onclick={onConfirm}
+				>
+					{confirmLabel}
+				</button>
 			</div>
 		</div>
 	</div>
 {/if}
-
-<style>
-	.dialog-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(1, 4, 9, 0.72);
-		backdrop-filter: blur(6px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 20px;
-		z-index: 50;
-	}
-
-	.dialog-card {
-		width: min(480px, 100%);
-		border-radius: 18px;
-		padding: 20px;
-		background: #161b22;
-		border: 1px solid #30363d;
-		box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
-	}
-
-	h2 {
-		margin: 0 0 10px;
-		font-size: 1rem;
-		color: #f0f6fc;
-	}
-
-	p {
-		margin: 0;
-		color: #8b949e;
-		line-height: 1.5;
-		white-space: pre-line;
-	}
-
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 10px;
-		margin-top: 20px;
-	}
-
-	button {
-		border-radius: 10px;
-		padding: 9px 14px;
-		border: 1px solid #30363d;
-		cursor: pointer;
-	}
-
-	.secondary {
-		background: transparent;
-		color: #c9d1d9;
-	}
-
-	.primary {
-		background: #1f6feb;
-		color: #f0f6fc;
-		border-color: #1f6feb;
-	}
-</style>

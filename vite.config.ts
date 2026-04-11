@@ -1,11 +1,12 @@
 import { sveltekit } from '@sveltejs/kit/vite';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 // Tauri expects a fixed port during dev
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-	plugins: [sveltekit()],
+	plugins: [tailwindcss(), sveltekit()],
 
 	// Prevent vite from obscuring Rust errors
 	clearScreen: false,

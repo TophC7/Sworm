@@ -9,6 +9,7 @@ ADE is a Linux-first desktop app for running coding-agent CLIs inside a local gi
 - Frontend: SvelteKit
 - Backend/runtime: Rust
 - Database: SQLite
+- CSS framework: Tailwind CSS v4 (via `@tailwindcss/vite`)
 - Package manager: `bun`
 
 ## Source Of Truth
@@ -70,6 +71,16 @@ Not in scope yet:
 - Guard DOM-only or browser-only code with `onMount` or a narrowly scoped `$effect()`.
 - Prefer simple route components and app-shell state over web-centric patterns such as auth redirects, SEO metadata work, or server-first data loading.
 - Check existing ADE patterns before introducing a new component, state, or routing style.
+
+## Styling Rules
+
+- Use Tailwind utility classes for all styling. Do not add scoped `<style>` blocks unless Tailwind cannot express the rule (e.g. pseudo-elements, complex child selectors).
+- When CSS is unavoidable, use `@apply` with design tokens from `src/app.css` instead of raw hex values.
+- Design tokens are defined in `src/app.css` under `@theme`. Use semantic names (`bg-surface`, `text-muted`, `border-edge`) not raw colors.
+- The color palette is a warm base16 scheme. All palette colors are available as Tailwind utilities (e.g. `text-accent`, `bg-danger-bg`, `text-success`).
+- Surface hierarchy: `ground` (darkest) → `surface` → `raised` → `overlay` (lightest).
+- Use `group` + `group-hover:` for parent-hover-reveals (e.g. remove buttons).
+- Use `transition-colors` for hover/focus color transitions.
 
 ## Important Notes
 

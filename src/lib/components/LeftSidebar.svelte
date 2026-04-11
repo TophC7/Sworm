@@ -116,10 +116,10 @@
 		return '◌';
 	}
 
-	function statusColor(status: string): string {
-		if (status === 'running') return '#3fb950';
-		if (status === 'failed') return '#f85149';
-		return '#8b949e';
+	function statusColorClass(status: string): string {
+		if (status === 'running') return 'text-success';
+		if (status === 'failed') return 'text-danger';
+		return 'text-muted';
 	}
 
 	function closeDialog() {
@@ -156,95 +156,109 @@
 	}
 </script>
 
-<aside class="sidebar">
-	<div class="sidebar-header">
-		<span class="logo">ADE</span>
-		<button class="btn-icon" onclick={handleAddProject} title="Add project">+</button>
+<aside class="w-60 min-w-[200px] bg-surface border-r border-edge flex flex-col overflow-y-auto">
+	<div class="flex items-center justify-between px-3.5 py-3 border-b border-edge">
+		<span class="font-bold text-base text-bright">ADE</span>
+		<button
+			class="bg-transparent border border-edge text-muted w-[26px] h-[26px] rounded flex items-center justify-center cursor-pointer text-base leading-none hover:text-bright hover:border-accent transition-colors"
+			onclick={handleAddProject}
+			title="Add project"
+		>+</button>
 	</div>
 
-	<div class="section-label">Projects</div>
-	<nav class="project-list">
+	<div class="section-label">
+		Projects
+	</div>
+
+	<nav class="flex flex-col px-1.5 py-0.5">
 		{#each projects as project (project.id)}
 			<div
-				class="project-item"
-				class:active={activeProjectId === project.id}
+				class="group flex items-center gap-1.5 px-2 py-1.5 cursor-pointer rounded text-[0.82rem] text-left w-full hover:bg-raised {activeProjectId === project.id ? 'bg-accent-bg text-accent' : 'bg-transparent text-fg'}"
 				role="button"
 				tabindex="0"
 				onclick={() => handleSelectProject(project.id)}
 				onkeydown={(e) => e.key === 'Enter' && handleSelectProject(project.id)}
 			>
-				<span class="project-name">{project.name}</span>
-				<span class="project-branch">{project.default_branch ?? ''}</span>
+				<span class="flex-1 min-w-0 truncate">{project.name}</span>
+				<span class="text-[0.7rem] text-muted shrink-0">{project.default_branch ?? ''}</span>
 				<span
-					class="btn-remove"
+					class="border-none cursor-pointer text-[0.9rem] px-0.5 opacity-0 shrink-0 text-muted group-hover:opacity-100 hover:text-danger transition-all"
 					role="button"
 					tabindex="0"
 					onclick={(e) => handleRemoveProject(e, project.id)}
 					onkeydown={(e) => e.key === 'Enter' && handleRemoveProject(e, project.id)}
 					title="Remove project"
-				>×</span>
+				>&times;</span>
 			</div>
 		{/each}
 
 		{#if projects.length === 0}
-			<div class="empty-hint">No projects yet. Click + to add a repo.</div>
+			<div class="px-3.5 py-2 text-[0.75rem] text-subtle">No projects yet. Click + to add a repo.</div>
 		{/if}
 	</nav>
 
 	{#if activeProjectId}
 		<div class="section-label">
 			Sessions
-			<button class="btn-icon btn-small" onclick={() => (showNewSession = !showNewSession)}>+</button>
+			<button
+				class="bg-transparent border border-edge text-muted w-5 h-5 rounded flex items-center justify-center cursor-pointer text-[0.85rem] leading-none hover:text-bright hover:border-accent transition-colors"
+				onclick={() => (showNewSession = !showNewSession)}
+			>+</button>
 		</div>
 
 		{#if showNewSession}
-			<div class="new-session-menu">
+			<div class="px-1.5 py-1">
 				{#each connectedProviders as provider (provider.id)}
-					<button class="provider-option" onclick={() => handleCreateSession(provider)}>
+					<button
+						class="flex items-center gap-1.5 w-full px-2 py-1.5 border border-edge bg-raised text-fg cursor-pointer rounded text-[0.8rem] mb-0.5 hover:border-accent hover:text-bright transition-colors"
+						onclick={() => handleCreateSession(provider)}
+					>
 						{provider.label}
 						{#if provider.version}
-							<span class="version">{provider.version}</span>
+							<span class="text-[0.68rem] text-muted ml-auto">{provider.version}</span>
 						{/if}
 					</button>
 				{/each}
 				{#if connectedProviders.length === 0}
-					<div class="empty-hint">No providers detected.</div>
+					<div class="px-3.5 py-2 text-[0.75rem] text-subtle">No providers detected.</div>
 				{/if}
 			</div>
 		{/if}
 
-		<nav class="session-list">
+		<nav class="flex flex-col px-1.5 py-0.5">
 			{#each sessions as session (session.id)}
 				<div
-					class="session-item"
-					class:active={activeSessionId === session.id}
+					class="group flex items-center gap-1.5 px-2 py-1.5 cursor-pointer rounded text-[0.82rem] text-left w-full hover:bg-raised {activeSessionId === session.id ? 'bg-accent-bg text-accent' : 'bg-transparent text-fg'}"
 					role="button"
 					tabindex="0"
 					onclick={() => selectSession(session.id)}
 					onkeydown={(e) => e.key === 'Enter' && selectSession(session.id)}
 				>
-					<span class="session-status" style="color: {statusColor(session.status)}">
+					<span class="text-[0.6rem] shrink-0 {statusColorClass(session.status)}">
 						{statusIcon(session.status)}
 					</span>
-					<span class="session-info">
-						<span class="session-title">{session.title}</span>
-						<span class="session-provider">{providerLabel(session.provider_id)}</span>
+					<span class="flex-1 min-w-0 flex flex-col">
+						<span class="truncate text-[0.8rem]">{session.title}</span>
+						<span class="text-[0.68rem] text-muted">{providerLabel(session.provider_id)}</span>
 					</span>
 					<span
-						class="btn-remove"
+						class="border-none cursor-pointer text-[0.9rem] px-0.5 opacity-0 shrink-0 text-muted group-hover:opacity-100 hover:text-danger transition-all"
 						role="button"
 						tabindex="0"
 						onclick={(e) => handleRemoveSession(e, session.id)}
 						onkeydown={(e) => e.key === 'Enter' && handleRemoveSession(e, session.id)}
 						title="Delete session"
-					>×</span>
+					>&times;</span>
 				</div>
 			{/each}
 		</nav>
 	{/if}
 
-	<div class="sidebar-footer">
-		<button class="settings-link" onclick={() => goto('/settings')}>Settings</button>
+	<div class="mt-auto p-3 border-t border-edge">
+		<button
+			class="w-full px-2.5 py-2 rounded-lg border border-edge bg-ground text-fg cursor-pointer text-left hover:border-accent hover:text-bright transition-colors"
+			onclick={() => goto('/settings')}
+		>Settings</button>
 	</div>
 </aside>
 
@@ -259,217 +273,3 @@
 		void dialogAction?.();
 	}}
 />
-
-<style>
-	.sidebar {
-		width: 240px;
-		min-width: 200px;
-		background: #161b22;
-		border-right: 1px solid #30363d;
-		display: flex;
-		flex-direction: column;
-		overflow-y: auto;
-	}
-
-	.sidebar-footer {
-		margin-top: auto;
-		padding: 12px;
-		border-top: 1px solid #30363d;
-	}
-
-	.settings-link {
-		width: 100%;
-		padding: 8px 10px;
-		border-radius: 8px;
-		border: 1px solid #30363d;
-		background: #0d1117;
-		color: #c9d1d9;
-		cursor: pointer;
-		text-align: left;
-	}
-
-	.settings-link:hover {
-		border-color: #58a6ff;
-		color: #f0f6fc;
-	}
-
-	.sidebar-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 12px 14px;
-		border-bottom: 1px solid #30363d;
-	}
-
-	.logo {
-		font-weight: 700;
-		font-size: 1rem;
-		color: #f0f6fc;
-	}
-
-	.btn-icon {
-		background: none;
-		border: 1px solid #30363d;
-		color: #8b949e;
-		width: 26px;
-		height: 26px;
-		border-radius: 4px;
-		cursor: pointer;
-		font-size: 1rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		line-height: 1;
-	}
-
-	.btn-icon:hover {
-		color: #f0f6fc;
-		border-color: #58a6ff;
-	}
-
-	.btn-small {
-		width: 20px;
-		height: 20px;
-		font-size: 0.85rem;
-	}
-
-	.section-label {
-		padding: 10px 14px 4px;
-		font-size: 0.7rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		color: #8b949e;
-		letter-spacing: 0.05em;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.project-list,
-	.session-list {
-		display: flex;
-		flex-direction: column;
-		padding: 2px 6px;
-	}
-
-	.project-item,
-	.session-item {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 8px;
-		border: none;
-		background: none;
-		color: #c9d1d9;
-		cursor: pointer;
-		border-radius: 4px;
-		font-size: 0.82rem;
-		text-align: left;
-		width: 100%;
-	}
-
-	.project-item:hover,
-	.session-item:hover {
-		background: #21262d;
-	}
-
-	.project-item.active,
-	.session-item.active {
-		background: #1f6feb22;
-		color: #58a6ff;
-	}
-
-	.project-name {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.project-branch {
-		font-size: 0.7rem;
-		color: #8b949e;
-		flex-shrink: 0;
-	}
-
-	.btn-remove {
-		background: none;
-		border: none;
-		color: #8b949e;
-		cursor: pointer;
-		font-size: 0.9rem;
-		padding: 0 2px;
-		opacity: 0;
-		flex-shrink: 0;
-	}
-
-	.project-item:hover .btn-remove,
-	.session-item:hover .btn-remove {
-		opacity: 1;
-	}
-
-	.btn-remove:hover {
-		color: #f85149;
-	}
-
-	.session-status {
-		font-size: 0.6rem;
-		flex-shrink: 0;
-	}
-
-	.session-info {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.session-title {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: 0.8rem;
-	}
-
-	.session-provider {
-		font-size: 0.68rem;
-		color: #8b949e;
-	}
-
-	.new-session-menu {
-		padding: 4px 6px;
-	}
-
-	.provider-option {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
-		padding: 6px 8px;
-		border: 1px solid #30363d;
-		background: #21262d;
-		color: #c9d1d9;
-		cursor: pointer;
-		border-radius: 4px;
-		font-size: 0.8rem;
-		margin-bottom: 3px;
-	}
-
-	.provider-option:hover {
-		border-color: #58a6ff;
-		color: #f0f6fc;
-	}
-
-	.version {
-		font-size: 0.68rem;
-		color: #8b949e;
-		margin-left: auto;
-	}
-
-	.empty-hint {
-		padding: 8px 14px;
-		font-size: 0.75rem;
-		color: #484f58;
-	}
-</style>

@@ -1,0 +1,143 @@
+@import 'tailwindcss';
+@source "../src";
+
+/*
+ * ADE Design Tokens
+ *
+ * Derived from a warm base16 terminal palette.
+ * Palette reference (ANSI slot → hex):
+ *
+ *   0  #131313   background / black
+ *   1  #ff7672   red (danger)
+ *   2  #98ff7f   green (success)
+ *   3  #ffe572   yellow (warning)
+ *   4  #f29d84   orange (accent-dim)
+ *   5  #763724   dark brown (warm)
+ *   6  #ffb59f   peach (accent / cursor)
+ *   7  #fff3ef   warm white (bright)
+ *   8  #a59c99   gray (muted)
+ *   9  #ffa29f   bright red
+ *  10  #b7ffa5   bright green
+ *  11  #ffeea5   bright yellow
+ *  12  #ffc0ad   bright orange (accent-bright)
+ *  13  #ffcbbb   pink
+ *  14  #ffddd3   peach-light
+ *  15  #fffaf8   near-white (max)
+ */
+
+@theme {
+	/* ── Surface hierarchy ────────────────────── */
+	--color-ground: #131313;
+	--color-surface: #1c1917;
+	--color-raised: #262220;
+	--color-overlay: #302a28;
+
+	/* ── Borders ──────────────────────────────── */
+	--color-edge: #3a322e;
+	--color-edge-strong: #4a403a;
+
+	/* ── Foreground ───────────────────────────── */
+	--color-fg: #e2e2e2;
+	--color-muted: #a59c99;
+	--color-subtle: #6e6864;
+	--color-bright: #fff3ef;
+	--color-max: #fffaf8;
+
+	/* ── Accent (warm peach) ──────────────────── */
+	--color-accent: #ffb59f;
+	--color-accent-dim: #f29d84;
+	--color-accent-bright: #ffc0ad;
+
+	/* ── Semantic ─────────────────────────────── */
+	--color-danger: #ff7672;
+	--color-danger-bright: #ffa29f;
+	--color-success: #98ff7f;
+	--color-success-bright: #b7ffa5;
+	--color-warning: #ffe572;
+	--color-warning-bright: #ffeea5;
+
+	/* ── Extended palette ─────────────────────── */
+	--color-selection: #7c2d15;
+	--color-warm: #763724;
+	--color-pink: #ffcbbb;
+	--color-peach: #ffddd3;
+
+	/* ── Derived functional colors ────────────── */
+	--color-danger-bg: #2d1014;
+	--color-danger-border: #5b1b21;
+	--color-success-bg: rgba(152, 255, 127, 0.08);
+	--color-warning-bg: rgba(255, 229, 114, 0.08);
+	--color-accent-bg: rgba(255, 181, 159, 0.13);
+
+	/* ── Font stacks ─────────────────────────── */
+	--font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-mono: 'Monocraft', monospace;
+}
+
+/* ── Bundled fonts ────────────────────────────── */
+
+@font-face {
+	font-family: 'Lexend';
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url('/fonts/Lexend-Variable.woff2') format('woff2');
+}
+
+@font-face {
+	font-family: 'Monocraft';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('/fonts/Monocraft.otf') format('opentype');
+}
+
+/* ── Component classes ────────────────────────── */
+
+@layer components {
+	.section-label {
+		@apply px-3.5 pt-2.5 pb-1 text-[0.7rem] font-semibold uppercase text-muted tracking-wide flex items-center justify-between;
+	}
+
+	.btn-sm {
+		@apply text-[0.72rem] px-2.5 py-1 border border-edge rounded bg-raised text-fg cursor-pointer hover:border-accent transition-colors disabled:opacity-60 disabled:cursor-default;
+	}
+
+	.field-input {
+		@apply py-1.5 px-2.5 rounded border border-edge bg-ground text-fg text-[0.82rem];
+	}
+
+	.btn-ghost {
+		@apply bg-transparent border-none text-muted cursor-pointer text-[0.9rem] px-1 hover:text-bright transition-colors;
+	}
+}
+
+/* ── Base resets ──────────────────────────────── */
+
+@layer base {
+	body {
+		@apply m-0 p-0 font-sans bg-ground text-fg overflow-hidden;
+	}
+
+	a {
+		@apply text-accent no-underline;
+	}
+
+	a:hover {
+		@apply underline;
+	}
+
+	/* Scrollbar — no Tailwind equivalent */
+	::-webkit-scrollbar {
+		width: 6px;
+	}
+
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	::-webkit-scrollbar-thumb {
+		background: var(--color-edge);
+		border-radius: 3px;
+	}
+}

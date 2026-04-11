@@ -159,27 +159,41 @@
 	}
 </script>
 
-<div class="session-terminal">
-	<div class="terminal-toolbar">
-		<span class="terminal-label">
-			<span class="status-dot" class:running={isRunning}></span>
+<div class="flex-1 flex flex-col bg-ground min-h-0">
+	<div class="flex items-center justify-between px-2.5 py-1 bg-surface border-b border-edge min-h-8">
+		<span class="flex items-center gap-1.5 text-[0.78rem] text-muted">
+			<span
+				class="w-[7px] h-[7px] rounded-full {isRunning ? 'bg-success' : 'bg-subtle'}"
+			></span>
 			{session.title}
 		</span>
 
-		<div class="toolbar-actions">
+		<div class="flex gap-1.5">
 			{#if isRunning}
-				<button class="toolbar-btn stop" onclick={handleStop}>Stop</button>
+				<button
+					class="py-0.5 px-2.5 border border-edge rounded text-[0.72rem] cursor-pointer bg-raised text-danger hover:border-accent transition-colors"
+					onclick={handleStop}
+				>
+					Stop
+				</button>
 			{:else}
-				<button class="toolbar-btn start" onclick={handleRestart}>Restart</button>
+				<button
+					class="py-0.5 px-2.5 border border-edge rounded text-[0.72rem] cursor-pointer bg-raised text-success hover:border-accent transition-colors"
+					onclick={handleRestart}
+				>
+					Restart
+				</button>
 			{/if}
 		</div>
 	</div>
 
 	{#if error}
-		<div class="terminal-error">{error}</div>
+		<div class="px-2.5 py-1.5 bg-danger-bg text-danger text-[0.8rem] border-b border-danger-border">
+			{error}
+		</div>
 	{/if}
 
-	<div class="terminal-container" bind:this={containerEl}></div>
+	<div class="flex-1 min-h-0" bind:this={containerEl}></div>
 </div>
 
 <ConfirmDialog
@@ -200,82 +214,3 @@
 		}
 	}}
 />
-
-<style>
-	.session-terminal {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		background: #0d1117;
-		min-height: 0;
-	}
-
-	.terminal-toolbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 4px 10px;
-		background: #161b22;
-		border-bottom: 1px solid #30363d;
-		min-height: 32px;
-	}
-
-	.terminal-label {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 0.78rem;
-		color: #8b949e;
-	}
-
-	.status-dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: #484f58;
-	}
-
-	.status-dot.running {
-		background: #3fb950;
-	}
-
-	.toolbar-actions {
-		display: flex;
-		gap: 6px;
-	}
-
-	.toolbar-btn {
-		padding: 2px 10px;
-		border: 1px solid #30363d;
-		border-radius: 4px;
-		font-size: 0.72rem;
-		cursor: pointer;
-		background: #21262d;
-		color: #c9d1d9;
-	}
-
-	.toolbar-btn:hover {
-		border-color: #58a6ff;
-	}
-
-	.toolbar-btn.stop {
-		color: #f85149;
-	}
-
-	.toolbar-btn.start {
-		color: #3fb950;
-	}
-
-	.terminal-error {
-		padding: 6px 10px;
-		background: #2d1014;
-		color: #f85149;
-		font-size: 0.8rem;
-		border-bottom: 1px solid #5b1b21;
-	}
-
-	.terminal-container {
-		flex: 1;
-		min-height: 0;
-	}
-</style>

@@ -41,43 +41,53 @@
 	}
 </script>
 
-<div class="project-view">
+<div class="flex-1 flex flex-col overflow-hidden">
 	<!-- Top bar: project info + git status -->
-	<header class="project-header">
-		<div class="project-info">
-			<h2 class="project-name">{project.name}</h2>
+	<header class="flex items-center justify-between px-3.5 py-2 bg-surface border-b border-edge min-h-10 gap-3">
+		<div class="flex items-center gap-2 min-w-0">
+			<h2 class="m-0 text-[0.95rem] font-semibold text-bright whitespace-nowrap">{project.name}</h2>
 			{#if gitSummary?.branch}
-				<span class="badge branch">{gitSummary.branch}</span>
+				<span class="text-[0.7rem] px-1.5 py-px rounded-[10px] whitespace-nowrap bg-accent-bg text-accent">
+					{gitSummary.branch}
+				</span>
 			{/if}
 			{#if gitSummary?.base_ref}
-				<span class="badge base">← {gitSummary.base_ref}</span>
+				<span class="text-[0.7rem] px-1.5 py-px rounded-[10px] whitespace-nowrap bg-edge text-muted">
+					&larr; {gitSummary.base_ref}
+				</span>
 			{/if}
 			{#if gitSummary && (gitSummary.ahead ?? 0) > 0}
-				<span class="badge ahead">↑{gitSummary.ahead}</span>
+				<span class="text-[0.7rem] px-1.5 py-px rounded-[10px] whitespace-nowrap bg-success-bg text-success">
+					&uarr;{gitSummary.ahead}
+				</span>
 			{/if}
 			{#if gitSummary && (gitSummary.behind ?? 0) > 0}
-				<span class="badge behind">↓{gitSummary.behind}</span>
+				<span class="text-[0.7rem] px-1.5 py-px rounded-[10px] whitespace-nowrap bg-danger-bg text-danger">
+					&darr;{gitSummary.behind}
+				</span>
 			{/if}
 		</div>
 
-		<div class="project-stats">
+		<div class="flex items-center gap-2.5 text-[0.72rem] text-muted shrink-0">
 			{#if liveSessions.length > 0}
-				<span class="live-indicator" title="Live sessions in this project">
-					● {liveSessions.length} live
+				<span class="text-success" title="Live sessions in this project">
+					&#9679; {liveSessions.length} live
 				</span>
 			{/if}
 			{#if liveSessions.length > 1}
-				<span class="shared-warning" title="Sessions share the same working tree">
-					⚠ shared workspace
+				<span class="text-warning" title="Sessions share the same working tree">
+					&#9888; shared workspace
 				</span>
 			{/if}
-			<span class="path" title={project.path}>{project.path}</span>
+			<span class="max-w-[200px] overflow-hidden text-ellipsis whitespace-nowrap" title={project.path}>
+				{project.path}
+			</span>
 		</div>
 	</header>
 
 	<!-- Main area: terminal + git panel -->
-	<div class="main-area">
-		<div class="terminal-area">
+	<div class="flex-1 flex overflow-hidden min-h-0">
+		<div class="flex-1 flex flex-col min-w-0">
 			{#if activeSession}
 				<SessionTerminal
 					session={activeSession}
@@ -89,132 +99,16 @@
 					}}
 				/>
 			{:else}
-				<div class="no-session">
+				<div class="flex-1 flex items-center justify-center text-subtle text-[0.9rem]">
 					<p>Select or create a session from the sidebar</p>
 				</div>
 			{/if}
 		</div>
 
-		<div class="git-panel">
+		<div class="w-[280px] min-w-[200px] border-l border-edge overflow-y-auto">
 			{#if gitSummary}
 				<GitChangesPanel summary={gitSummary} projectPath={project.path} onRefresh={refreshGit} />
 			{/if}
 		</div>
 	</div>
 </div>
-
-<style>
-	.project-view {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-	}
-
-	.project-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 8px 14px;
-		background: #161b22;
-		border-bottom: 1px solid #30363d;
-		min-height: 40px;
-		gap: 12px;
-	}
-
-	.project-info {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		min-width: 0;
-	}
-
-	.project-name {
-		margin: 0;
-		font-size: 0.95rem;
-		font-weight: 600;
-		color: #f0f6fc;
-		white-space: nowrap;
-	}
-
-	.badge {
-		font-size: 0.7rem;
-		padding: 1px 6px;
-		border-radius: 10px;
-		white-space: nowrap;
-	}
-
-	.branch {
-		background: #1f6feb33;
-		color: #58a6ff;
-	}
-
-	.base {
-		background: #30363d;
-		color: #8b949e;
-	}
-
-	.ahead {
-		background: #23863633;
-		color: #3fb950;
-	}
-
-	.behind {
-		background: #da363333;
-		color: #f85149;
-	}
-
-	.project-stats {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 0.72rem;
-		color: #8b949e;
-		flex-shrink: 0;
-	}
-
-	.live-indicator {
-		color: #3fb950;
-	}
-
-	.shared-warning {
-		color: #d29922;
-	}
-
-	.path {
-		max-width: 200px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.main-area {
-		flex: 1;
-		display: flex;
-		overflow: hidden;
-		min-height: 0;
-	}
-
-	.terminal-area {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	.git-panel {
-		width: 280px;
-		min-width: 200px;
-		border-left: 1px solid #30363d;
-		overflow-y: auto;
-	}
-
-	.no-session {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #484f58;
-		font-size: 0.9rem;
-	}
-</style>

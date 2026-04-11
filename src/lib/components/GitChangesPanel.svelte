@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import type { GitChange, GitCommit, GitSummary } from '$lib/types/backend';
 	import { backend } from '$lib/api/backend';
 
@@ -18,11 +17,8 @@
 	let showDiff = $state(false);
 	let commits = $state<GitCommit[]>([]);
 
-	onMount(() => {
-		void loadCommits();
-	});
-
 	$effect(() => {
+		projectPath;
 		void loadCommits();
 	});
 
@@ -68,20 +64,19 @@
 		}
 	}
 
-	function statusColor(status: string): string {
-		if (status.startsWith('M')) return '#d29922';
-		if (status.startsWith('A')) return '#3fb950';
-		if (status.startsWith('D')) return '#f85149';
-		if (status === '?') return '#8b949e';
-		return '#8b949e';
+	function statusColorClass(status: string): string {
+		if (status.startsWith('M')) return 'text-warning';
+		if (status.startsWith('A')) return 'text-success';
+		if (status.startsWith('D')) return 'text-danger';
+		return 'text-muted';
 	}
 
-	function diffLineClass(line: string): string {
-		if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-		if (line.startsWith('@@')) return 'hunk';
-		if (line.startsWith('+')) return 'added';
-		if (line.startsWith('-')) return 'removed';
-		return 'context';
+	function diffLineColorClass(line: string): string {
+		if (line.startsWith('+++') || line.startsWith('---')) return 'text-muted';
+		if (line.startsWith('@@')) return 'text-accent';
+		if (line.startsWith('+')) return 'text-success';
+		if (line.startsWith('-')) return 'text-danger';
+		return 'text-fg';
 	}
 
 	let stagedFiles = $derived(summary.changes.filter((change) => change.staged));
@@ -90,324 +85,93 @@
 	let diffLines = $derived((diffContent ?? '').split('\n'));
 </script>
 
-<div class="git-panel">
-	<div class="panel-header">
+<div class="h-full bg-ground text-[0.78rem] flex flex-col">
+	<div class="flex items-start justify-between p-2.5 border-b border-edge bg-surface">
 		<div>
-			<span class="panel-title">Git</span>
-			<p class="panel-subtitle">
+			<span class="font-semibold text-[0.75rem] uppercase tracking-wide text-muted">Git</span>
+			<p class="mt-1 mb-0 text-subtle text-[0.72rem]">
 				{summary.branch ?? 'Detached HEAD'}
 				{#if summary.base_ref}
-					· base {summary.base_ref}
+					&middot; base {summary.base_ref}
 				{/if}
 			</p>
 		</div>
 		<button
-			class="refresh-btn"
+			class="btn-ghost"
 			onclick={() => {
 				onRefresh?.();
 				void loadCommits();
 			}}
 			title="Refresh"
 		>
-			↻
+			&#8635;
 		</button>
 	</div>
 
 	{#if summary.changes.length === 0}
-		<div class="empty-state">No changes.</div>
+		<div class="py-3.5 px-2.5 text-subtle">No changes.</div>
 	{/if}
 
-	{#if stagedFiles.length > 0}
-		<div class="file-group">
-			<div class="group-label">Staged ({stagedFiles.length})</div>
-			{#each stagedFiles as change (change.path + '-staged')}
-				<button
-					class="file-item"
-					class:selected={selectedFile === change.path}
-					onclick={() => handleFileClick(change)}
-				>
-					<span class="file-status" style="color: {statusColor(change.status)}">{statusLabel(change.status)}</span>
-					<span class="file-name">{change.path}</span>
-					{#if change.additions != null || change.deletions != null}
-						<span class="file-stats">
-							{#if change.additions}<span class="adds">+{change.additions}</span>{/if}
-							{#if change.deletions}<span class="dels">-{change.deletions}</span>{/if}
-						</span>
-					{/if}
-				</button>
-			{/each}
-		</div>
-	{/if}
+	{#snippet fileGroup(label: string, files: GitChange[], keySuffix: string)}
+		{#if files.length > 0}
+			<div class="py-1">
+				<div class="px-2.5 py-1 text-[0.68rem] text-muted font-medium uppercase tracking-wide">
+					{label} ({files.length})
+				</div>
+				{#each files as change (change.path + '-' + keySuffix)}
+					<button
+						class="flex items-center gap-1.5 w-full px-2.5 py-0.5 border-none bg-transparent text-fg cursor-pointer text-left text-[0.75rem] font-mono hover:bg-surface {selectedFile === change.path ? 'bg-accent-bg' : ''}"
+						onclick={() => handleFileClick(change)}
+					>
+						<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(change.status)}">{statusLabel(change.status)}</span>
+						<span class="flex-1 min-w-0 truncate">{change.path}</span>
+						{#if change.additions != null || change.deletions != null}
+							<span class="shrink-0 flex gap-1">
+								{#if change.additions}<span class="text-success">+{change.additions}</span>{/if}
+								{#if change.deletions}<span class="text-danger">-{change.deletions}</span>{/if}
+							</span>
+						{/if}
+					</button>
+				{/each}
+			</div>
+		{/if}
+	{/snippet}
 
-	{#if unstagedFiles.length > 0}
-		<div class="file-group">
-			<div class="group-label">Modified ({unstagedFiles.length})</div>
-			{#each unstagedFiles as change (change.path + '-unstaged')}
-				<button
-					class="file-item"
-					class:selected={selectedFile === change.path}
-					onclick={() => handleFileClick(change)}
-				>
-					<span class="file-status" style="color: {statusColor(change.status)}">{statusLabel(change.status)}</span>
-					<span class="file-name">{change.path}</span>
-					{#if change.additions != null || change.deletions != null}
-						<span class="file-stats">
-							{#if change.additions}<span class="adds">+{change.additions}</span>{/if}
-							{#if change.deletions}<span class="dels">-{change.deletions}</span>{/if}
-						</span>
-					{/if}
-				</button>
-			{/each}
-		</div>
-	{/if}
-
-	{#if untrackedFiles.length > 0}
-		<div class="file-group">
-			<div class="group-label">Untracked ({untrackedFiles.length})</div>
-			{#each untrackedFiles as change (change.path + '-untracked')}
-				<button class="file-item" onclick={() => handleFileClick(change)}>
-					<span class="file-status" style="color: {statusColor(change.status)}">?</span>
-					<span class="file-name">{change.path}</span>
-				</button>
-			{/each}
-		</div>
-	{/if}
+	{@render fileGroup('Staged', stagedFiles, 'staged')}
+	{@render fileGroup('Modified', unstagedFiles, 'unstaged')}
+	{@render fileGroup('Untracked', untrackedFiles, 'untracked')}
 
 	{#if showDiff && diffContent}
-		<div class="diff-view">
-			<div class="diff-header">
+		<div class="border-t border-edge">
+			<div class="flex items-center justify-between px-2.5 py-1 bg-surface text-[0.72rem] text-muted">
 				<span>{selectedFile}</span>
-				<button class="close-diff" onclick={() => (showDiff = false)}>×</button>
+				<button
+					class="btn-ghost"
+					onclick={() => (showDiff = false)}
+				>&times;</button>
 			</div>
-			<pre class="diff-content">{#each diffLines as line}<span class={diffLineClass(line)}>{line}</span>
+			<pre class="px-2.5 py-1.5 text-[0.7rem] font-mono overflow-auto max-h-[260px] whitespace-pre m-0 flex flex-col">{#each diffLines as line}<span class="block {diffLineColorClass(line)}">{line}</span>
 {/each}</pre>
 		</div>
 	{/if}
 
-	<div class="commits-section">
-		<div class="group-label">Commits</div>
+	<div class="mt-auto border-t border-edge py-1">
+		<div class="px-2.5 py-1 text-[0.68rem] text-muted font-medium uppercase tracking-wide">
+			Commits
+		</div>
 		{#if commits.length === 0}
-			<div class="empty-state compact">No recent commits.</div>
+			<div class="pt-1.5 px-2.5 text-subtle">No recent commits.</div>
 		{:else}
 			{#each commits as commit (commit.hash)}
-				<div class="commit-item">
-					<div class="commit-topline">
-						<span class="commit-hash">{commit.short_hash}</span>
-						<span class="commit-date">{commit.date}</span>
+				<div class="px-2.5 py-2 border-t border-edge/45">
+					<div class="flex items-center justify-between gap-2.5 mb-1">
+						<span class="font-mono text-accent text-[0.72rem]">{commit.short_hash}</span>
+						<span class="text-muted text-[0.68rem]">{commit.date}</span>
 					</div>
-					<div class="commit-message">{commit.message}</div>
-					<div class="commit-author">{commit.author}</div>
+					<div class="text-fg text-[0.76rem]">{commit.message}</div>
+					<div class="text-muted text-[0.68rem]">{commit.author}</div>
 				</div>
 			{/each}
 		{/if}
 	</div>
 </div>
-
-<style>
-	.git-panel {
-		height: 100%;
-		background: #0d1117;
-		font-size: 0.78rem;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.panel-header {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		padding: 10px;
-		border-bottom: 1px solid #30363d;
-		background: #161b22;
-	}
-
-	.panel-title {
-		font-weight: 600;
-		font-size: 0.75rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: #8b949e;
-	}
-
-	.panel-subtitle {
-		margin: 4px 0 0;
-		color: #6e7681;
-		font-size: 0.72rem;
-	}
-
-	.refresh-btn,
-	.close-diff {
-		background: none;
-		border: none;
-		color: #8b949e;
-		cursor: pointer;
-		font-size: 0.9rem;
-		padding: 0 4px;
-	}
-
-	.refresh-btn:hover,
-	.close-diff:hover {
-		color: #f0f6fc;
-	}
-
-	.empty-state {
-		padding: 14px 10px;
-		color: #6e7681;
-	}
-
-	.empty-state.compact {
-		padding-top: 6px;
-	}
-
-	.file-group,
-	.commits-section {
-		padding: 4px 0;
-	}
-
-	.group-label {
-		padding: 4px 10px;
-		font-size: 0.68rem;
-		color: #8b949e;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.file-item {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
-		padding: 3px 10px;
-		border: none;
-		background: none;
-		color: #c9d1d9;
-		cursor: pointer;
-		text-align: left;
-		font-size: 0.75rem;
-		font-family: 'JetBrains Mono', 'Fira Code', monospace;
-	}
-
-	.file-item:hover {
-		background: #161b22;
-	}
-
-	.file-item.selected {
-		background: #1f6feb22;
-	}
-
-	.file-status {
-		font-weight: 700;
-		width: 14px;
-		text-align: center;
-		flex-shrink: 0;
-	}
-
-	.file-name {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.file-stats {
-		flex-shrink: 0;
-		display: flex;
-		gap: 4px;
-	}
-
-	.adds {
-		color: #3fb950;
-	}
-
-	.dels {
-		color: #f85149;
-	}
-
-	.diff-view {
-		border-top: 1px solid #30363d;
-	}
-
-	.diff-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 4px 10px;
-		background: #161b22;
-		font-size: 0.72rem;
-		color: #8b949e;
-	}
-
-	.diff-content {
-		padding: 6px 10px;
-		font-size: 0.7rem;
-		font-family: 'JetBrains Mono', 'Fira Code', monospace;
-		overflow: auto;
-		max-height: 260px;
-		white-space: pre;
-		margin: 0;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.diff-content span {
-		display: block;
-	}
-
-	.diff-content .meta,
-	.commit-author,
-	.commit-date {
-		color: #8b949e;
-	}
-
-	.diff-content .hunk {
-		color: #58a6ff;
-	}
-
-	.diff-content .added {
-		color: #3fb950;
-	}
-
-	.diff-content .removed {
-		color: #f85149;
-	}
-
-	.diff-content .context,
-	.commit-message {
-		color: #c9d1d9;
-	}
-
-	.commits-section {
-		margin-top: auto;
-		border-top: 1px solid #30363d;
-	}
-
-	.commit-item {
-		padding: 8px 10px;
-		border-top: 1px solid rgba(48, 54, 61, 0.45);
-	}
-
-	.commit-topline {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-		margin-bottom: 4px;
-	}
-
-	.commit-hash {
-		font-family: 'JetBrains Mono', 'Fira Code', monospace;
-		color: #58a6ff;
-		font-size: 0.72rem;
-	}
-
-	.commit-message {
-		font-size: 0.76rem;
-	}
-
-	.commit-author,
-	.commit-date {
-		font-size: 0.68rem;
-	}
-</style>

@@ -8,24 +8,36 @@ import type { PtyEvent, Session } from '$lib/types/backend';
 const TERMINAL_OPTIONS: ITerminalOptions = {
 	cursorBlink: true,
 	fontSize: 13,
-	fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+	fontFamily: "'Monocraft', monospace",
 	scrollback: 10000,
 	convertEol: true,
 	theme: {
-		background: '#0d1117',
-		foreground: '#c9d1d9',
-		cursor: '#c9d1d9',
-		selectionBackground: '#264f78',
-		black: '#0d1117',
-		red: '#f85149',
-		green: '#3fb950',
-		yellow: '#d29922',
-		blue: '#58a6ff',
-		magenta: '#bc8cff',
-		cyan: '#39d353',
-		white: '#c9d1d9'
+		background: '#131313',
+		foreground: '#e2e2e2',
+		cursor: '#ffb59f',
+		cursorAccent: '#131313',
+		selectionBackground: '#7c2d15',
+		selectionForeground: '#e2e2e2',
+		black: '#131313',
+		red: '#ff7672',
+		green: '#98ff7f',
+		yellow: '#ffe572',
+		blue: '#f29d84',
+		magenta: '#763724',
+		cyan: '#ffb59f',
+		white: '#fff3ef',
+		brightBlack: '#a59c99',
+		brightRed: '#ffa29f',
+		brightGreen: '#b7ffa5',
+		brightYellow: '#ffeea5',
+		brightBlue: '#ffc0ad',
+		brightMagenta: '#ffcbbb',
+		brightCyan: '#ffddd3',
+		brightWhite: '#fffaf8'
 	}
 };
+
+const textEncoder = new TextEncoder();
 
 type EventListener = (event: PtyEvent) => void;
 type ErrorListener = (message: string) => void;
@@ -258,7 +270,7 @@ export class TerminalSessionManager {
 				return;
 			}
 
-			const encoded = new TextEncoder().encode(data);
+			const encoded = textEncoder.encode(data);
 			backend.sessions.write(this.sessionId, encoded).catch((error) => {
 				console.error('Session write error:', error);
 			});
