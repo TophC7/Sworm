@@ -35,7 +35,6 @@ Ignore generated and vendor output such as `node_modules/`, `build/`, `dist/`, a
 Load these references before reviewing. **Do not propose or apply any fixes until this step is complete.**
 
 - **CLAUDE.md** (project root)
-- **PHASE_0_1_TECH_SPEC.md**
 - The staged file contents themselves (read every staged file completely)
 
 After reading, write a brief summary of what the staged changes do (2-3 sentences). This confirms you understand the code before touching it. If you cannot summarize the changes, re-read until you can.
@@ -131,12 +130,6 @@ Output a summary with three sections:
 These are category D items that need human decision.
 
 **Check results** -- confirm what you ran and whether it passed.
-
-**Commit message** -- draft a conventional commit message covering all changes. End with:
-
-```
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
-```
 
 ## Rules
 

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/main/nicegui/templates/tauri/src-tauri/tauri.conf.schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "ADE",
   "version": "0.1.0",
   "identifier": "dev.ade",
@@ -7,11 +7,12 @@
     "beforeDevCommand": "bun run dev",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../build",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://127.0.0.1:1420"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "ADE",
         "width": 1200,
         "height": 800,
