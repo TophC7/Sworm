@@ -141,3 +141,65 @@
 		border-radius: 3px;
 	}
 }
+
+/*
+ * Theme overrides for @git-diff-view/svelte.
+ * Kept global because Tailwind v4's Vite pipeline mis-parses the same
+ * custom-property block when it lives in a component-local <style>.
+ */
+.diff-viewer-root .diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
+	--diff-border--: #3a322e;
+
+	/* Added lines */
+	--diff-add-content--: rgba(152, 255, 127, 0.08);
+	--diff-add-lineNumber--: rgba(152, 255, 127, 0.12);
+	--diff-add-content-highlight--: rgba(152, 255, 127, 0.2);
+
+	/* Deleted lines */
+	--diff-del-content--: #2d1014;
+	--diff-del-lineNumber--: rgba(255, 118, 114, 0.12);
+	--diff-del-content-highlight--: rgba(255, 118, 114, 0.22);
+
+	/* Plain / context lines */
+	--diff-plain-content--: #131313;
+	--diff-plain-lineNumber--: #1c1917;
+	--diff-plain-lineNumber-color--: #6e6864;
+
+	/* Expand / collapsed regions */
+	--diff-expand-content--: #1c1917;
+	--diff-expand-lineNumber--: #1c1917;
+	--diff-expand-lineNumber-color--: #6e6864;
+
+	/* Hunk headers */
+	--diff-hunk-content--: rgba(255, 181, 159, 0.06);
+	--diff-hunk-lineNumber--: rgba(255, 181, 159, 0.1);
+	--diff-hunk-lineNumber-hover--: #ffb59f;
+	--diff-hunk-content-color--: #a59c99;
+
+	/* Widget */
+	--diff-add-widget--: #ffb59f;
+	--diff-add-widget-color--: #131313;
+
+	/* Empty cells (split view) */
+	--diff-empty-content--: #1c1917;
+
+	color: #e2e2e2;
+}
+
+.diff-viewer-root .diff-tailwindcss-wrapper {
+	font-family: 'Monocraft', monospace;
+}
+
+.diff-viewer-root ::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+.diff-viewer-root ::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.diff-viewer-root ::-webkit-scrollbar-thumb {
+	background: #3a322e;
+	border-radius: 3px;
+}

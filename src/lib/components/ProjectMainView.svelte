@@ -1,13 +1,15 @@
 <script lang="ts">
-	import type { Project, GitSummary } from '$lib/types/backend';
+	import type { Project, GitSummary, DiffContext } from '$lib/types/backend';
 	import { backend } from '$lib/api/backend';
 	import {
 		getActiveSession,
 		getSessions,
-		updateSessionInList,
+		updateSessionInList
 	} from '$lib/stores/sessions.svelte';
 	import SessionTerminal from '$lib/components/SessionTerminal.svelte';
 	import GitChangesPanel from '$lib/components/GitChangesPanel.svelte';
+	import DiffViewer from '$lib/components/DiffViewer.svelte';
+	import { createPanelResize } from '$lib/attachments/resizeHandle.svelte';
 
 	let { project }: { project: Project } = $props();
 
@@ -15,6 +17,37 @@
 	let activeSession = $derived(getActiveSession());
 	let sessions = $derived(getSessions());
 	let liveSessions = $derived(sessions.filter((s) => s.status === 'running'));
+
+	// Diff state — when set, the main area can show the diff viewer
+	let activeDiff = $state<{ filePath: string; context: DiffContext } | null>(null);
+	let diffError = $state<string | null>(null);
+	let mainView = $state<'terminal' | 'diff'>('terminal');
+	const gitResize = createPanelResize(280, 220, 520);
+	let mainLayoutEl = $state<HTMLDivElement | null>(null);
+
+	function handleViewDiff(filePath: string, context: DiffContext | null) {
+		diffError = null;
+		if (!context?.raw_diff) {
+			activeDiff = null;
+			mainView = 'terminal';
+			return;
+		}
+		activeDiff = { filePath, context };
+		mainView = 'diff';
+	}
+
+	function closeDiff() {
+		activeDiff = null;
+		mainView = 'terminal';
+	}
+
+	function handleDiffError(message: string | null) {
+		diffError = message;
+		if (message) {
+			activeDiff = null;
+			mainView = 'terminal';
+		}
+	}
 
 	$effect(() => {
 		if (!project?.path) {
@@ -30,6 +63,13 @@
 		}, 10_000);
 
 		return () => clearInterval(interval);
+	});
+
+	$effect(() => {
+		project.id;
+		activeDiff = null;
+		diffError = null;
+		mainView = 'terminal';
 	});
 
 	function refreshGit() {
@@ -85,29 +125,87 @@
 		</div>
 	</header>
 
-	<!-- Main area: terminal + git panel -->
-	<div class="flex-1 flex overflow-hidden min-h-0">
-		<div class="flex-1 flex flex-col min-w-0">
-			{#if activeSession}
-				<SessionTerminal
-					session={activeSession}
-					onStatusChange={(status) => {
-						updateSessionInList(activeSession.id, { status });
-						if (status === 'exited' || status === 'stopped') {
-							refreshGit();
-						}
-					}}
-				/>
-			{:else}
-				<div class="flex-1 flex items-center justify-center text-subtle text-[0.9rem]">
-					<p>Select or create a session from the sidebar</p>
+	<!-- Main area: terminal/diff + git sidebar -->
+	<div class="flex-1 flex overflow-hidden min-h-0" bind:this={mainLayoutEl}>
+		<!-- Main content area -->
+		<div class="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+			{#if diffError}
+				<div class="border-b border-danger-border bg-danger-bg px-3 py-2 text-[0.76rem] text-danger-bright">
+					{diffError}
 				</div>
+			{/if}
+
+			<!-- Tab bar — only visible when a diff is open -->
+			{#if activeDiff}
+				<div class="flex items-center bg-ground border-b border-edge px-1">
+					<button
+						class="px-3 py-1.5 text-[0.72rem] border-b-2 transition-colors {mainView === 'terminal' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-fg'}"
+						onclick={() => (mainView = 'terminal')}
+					>
+						Terminal
+					</button>
+					<button
+						class="px-3 py-1.5 text-[0.72rem] border-b-2 transition-colors flex items-center gap-1.5 {mainView === 'diff' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-fg'}"
+						onclick={() => (mainView = 'diff')}
+					>
+						<span>Diff</span>
+						<span class="text-[0.65rem] text-muted font-mono truncate max-w-[180px]">{activeDiff.filePath}</span>
+					</button>
+				</div>
+			{/if}
+
+			<!-- Terminal view (hidden when viewing diff) -->
+			<div class="flex-1 flex flex-col min-w-0 {mainView === 'diff' && activeDiff ? 'hidden' : ''}">
+				{#if activeSession}
+					<SessionTerminal
+						session={activeSession}
+						onStatusChange={(status) => {
+							updateSessionInList(activeSession.id, { status });
+							if (status === 'exited' || status === 'stopped') {
+								refreshGit();
+							}
+						}}
+					/>
+				{:else}
+					<div class="flex-1 flex items-center justify-center text-subtle text-[0.9rem]">
+						<p>Select or create a session from the sidebar</p>
+					</div>
+				{/if}
+			</div>
+
+			<!-- Diff view -->
+			{#if activeDiff && mainView === 'diff'}
+				<DiffViewer
+					rawDiff={activeDiff.context.raw_diff}
+					filePath={activeDiff.filePath}
+					oldContent={activeDiff.context.old_content}
+					newContent={activeDiff.context.new_content}
+					onClose={closeDiff}
+				/>
 			{/if}
 		</div>
 
-		<div class="w-[280px] min-w-[200px] border-l border-edge overflow-y-auto">
+		<div
+			class="w-1 shrink-0 cursor-col-resize bg-ground transition-colors hover:bg-accent/40"
+			{@attach gitResize.handle((e) => mainLayoutEl!.getBoundingClientRect().right - e.clientX)}
+			role="separator"
+			aria-label="Resize git sidebar"
+		></div>
+
+		<!-- Git sidebar -->
+		<div
+			class="min-w-[220px] max-w-[520px] shrink-0 border-l border-edge overflow-y-auto"
+			style={`width: ${gitResize.width}px;`}
+		>
 			{#if gitSummary}
-				<GitChangesPanel summary={gitSummary} projectPath={project.path} onRefresh={refreshGit} />
+				<GitChangesPanel
+					summary={gitSummary}
+					projectPath={project.path}
+					onRefresh={refreshGit}
+					onViewDiff={handleViewDiff}
+					activeDiffFile={activeDiff?.filePath}
+					onDiffError={handleDiffError}
+				/>
 			{/if}
 		</div>
 	</div>

@@ -14,6 +14,7 @@ const ENV_ALLOWLIST: &[&str] = &[
     "TERM",
     "COLORTERM",
     "SSH_AUTH_SOCK",
+    "GDK_BACKEND",
     "XDG_RUNTIME_DIR",
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -56,6 +57,9 @@ pub struct EnvProbeResult {
     pub shell_path: Option<String>,
     pub merged_path: String,
     pub probe_succeeded: bool,
+    pub gdk_backend: Option<String>,
+    pub webkit_disable_dmabuf_renderer: Option<String>,
+    pub webkit_disable_compositing_mode: Option<String>,
 }
 
 impl EnvironmentService {
@@ -119,6 +123,9 @@ impl EnvironmentService {
             shell_path: self.shell_path.clone(),
             merged_path: self.merged_path.clone(),
             probe_succeeded: self.probe_succeeded,
+            gdk_backend: std::env::var("GDK_BACKEND").ok(),
+            webkit_disable_dmabuf_renderer: std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").ok(),
+            webkit_disable_compositing_mode: std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").ok(),
         }
     }
 }

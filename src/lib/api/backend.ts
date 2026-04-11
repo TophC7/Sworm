@@ -6,6 +6,7 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type {
 	AppInfo,
+	DiffContext,
 	EnvProbeResult,
 	GitCommit,
 	GitSummary,
@@ -127,6 +128,9 @@ export const backend = {
 		},
 		getFileDiff(projectPath: string, filePath: string, staged: boolean): Promise<string | null> {
 			return invoke<string | null>('git_get_file_diff', { projectPath, filePath, staged });
+		},
+		getDiffContext(projectPath: string, filePath: string, staged: boolean): Promise<DiffContext | null> {
+			return invoke<DiffContext | null>('git_get_diff_context', { projectPath, filePath, staged });
 		},
 		getLog(path: string, limit = 20): Promise<GitCommit[]> {
 			return invoke<GitCommit[]>('git_get_log', { path, limit });

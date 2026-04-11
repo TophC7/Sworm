@@ -12,6 +12,9 @@ export interface EnvProbeResult {
 	shell_path: string | null;
 	merged_path: string;
 	probe_succeeded: boolean;
+	gdk_backend: string | null;
+	webkit_disable_dmabuf_renderer: string | null;
+	webkit_disable_compositing_mode: string | null;
 }
 
 export interface PtyEvent {
@@ -112,4 +115,10 @@ export interface GitCommit {
 	author: string;
 	date: string;
 	message: string;
+}
+
+export interface DiffContext {
+	raw_diff: string;
+	old_content: string | null;
+	new_content: string | null;
 }

@@ -21,6 +21,8 @@
 	import { getProviders, getConnectedProviders } from '$lib/stores/providers.svelte';
 	import type { ProviderStatus } from '$lib/types/backend';
 
+	let { width = 240 }: { width?: number } = $props();
+
 	let projects = $derived(getProjects());
 	let activeProjectId = $derived(getActiveProjectId());
 	let sessions = $derived(getSessions());
@@ -156,7 +158,10 @@
 	}
 </script>
 
-<aside class="w-60 min-w-[200px] bg-surface border-r border-edge flex flex-col overflow-y-auto">
+<aside
+	class="min-w-[200px] max-w-[420px] shrink-0 bg-surface border-r border-edge flex flex-col overflow-y-auto"
+	style={`width: ${width}px;`}
+>
 	<div class="flex items-center justify-between px-3.5 py-3 border-b border-edge">
 		<span class="font-bold text-base text-bright">ADE</span>
 		<button

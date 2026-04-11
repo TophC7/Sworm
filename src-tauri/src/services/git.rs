@@ -34,6 +34,17 @@ pub struct GitCommit {
     pub message: String,
 }
 
+/// Structured diff data including file content for diff viewer rendering.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffContext {
+    pub raw_diff: String,
+    pub old_content: Option<String>,
+    pub new_content: Option<String>,
+}
+
+/// Hard limit on file content sent over IPC to prevent OOM on large files.
+const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
+
 /// Git service using the system git CLI.
 ///
 pub struct GitService;
@@ -277,6 +288,87 @@ impl GitService {
         }
     }
 
+    /// Get structured diff context with file content for the diff viewer.
+    pub fn get_diff_context(
+        &self,
+        path: &Path,
+        file_path: &str,
+        staged: bool,
+    ) -> Option<DiffContext> {
+        let raw_diff = self.get_file_diff(path, file_path, staged);
+        let old_content = self.get_old_content(path, file_path);
+        let new_content = self.get_new_content(path, file_path, staged);
+
+        // For untracked files, git diff returns nothing but we still have content.
+        // `git diff --no-index` exits with code 1 when differences exist (always
+        // true for new-file vs /dev/null), so we check stdout length rather than
+        // exit status — this is intentional, not an oversight.
+        if raw_diff.is_none() && new_content.is_some() && old_content.is_none() {
+            let output = std::process::Command::new("git")
+                .args(["diff", "--no-index", "--", "/dev/null", file_path])
+                .current_dir(path)
+                .output()
+                .ok();
+
+            let synthetic_diff = output
+                .filter(|o| !o.stdout.is_empty())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+
+            return Some(DiffContext {
+                raw_diff: synthetic_diff.unwrap_or_default(),
+                old_content: None,
+                new_content,
+            });
+        }
+
+        raw_diff.map(|diff| DiffContext {
+            raw_diff: diff,
+            old_content,
+            new_content,
+        })
+    }
+
+    /// Get file content at HEAD, returning `None` for binary or oversized files.
+    fn get_old_content(&self, path: &Path, file_path: &str) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .args(["--no-optional-locks", "show", &format!("HEAD:{}", file_path)])
+            .current_dir(path)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        guard_content(output.stdout)
+    }
+
+    /// Get new file content (working tree or staged index).
+    /// Returns `None` for binary or oversized files.
+    fn get_new_content(&self, path: &Path, file_path: &str, staged: bool) -> Option<String> {
+        if staged {
+            let output = std::process::Command::new("git")
+                .args(["--no-optional-locks", "show", &format!(":{}", file_path)])
+                .current_dir(path)
+                .output()
+                .ok()?;
+
+            if !output.status.success() {
+                return None;
+            }
+
+            guard_content(output.stdout)
+        } else {
+            let full_path = path.join(file_path);
+            let meta = std::fs::metadata(&full_path).ok()?;
+            if meta.len() > MAX_CONTENT_BYTES as u64 {
+                return None;
+            }
+            let bytes = std::fs::read(&full_path).ok()?;
+            guard_content(bytes)
+        }
+    }
+
     pub fn get_log(&self, path: &Path, limit: usize) -> Vec<GitCommit> {
         let output = std::process::Command::new("git")
             .args([
@@ -318,6 +410,20 @@ impl GitService {
             })
             .collect()
     }
+}
+
+/// Return content as a String if it's within the size limit and looks
+/// like text (no null bytes in the first 8 KiB). Returns `None` for
+/// binary or oversized content so the frontend falls back gracefully.
+fn guard_content(bytes: Vec<u8>) -> Option<String> {
+    if bytes.len() > MAX_CONTENT_BYTES {
+        return None;
+    }
+    let probe_len = bytes.len().min(8192);
+    if bytes[..probe_len].contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) {

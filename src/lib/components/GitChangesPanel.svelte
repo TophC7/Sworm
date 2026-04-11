@@ -1,25 +1,37 @@
 <script lang="ts">
-	import type { GitChange, GitCommit, GitSummary } from '$lib/types/backend';
+	import { SvelteSet } from 'svelte/reactivity';
+	import type { GitChange, GitCommit, GitSummary, DiffContext } from '$lib/types/backend';
 	import { backend } from '$lib/api/backend';
+	import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree';
 
 	let {
 		summary,
 		projectPath,
-		onRefresh
+		onRefresh,
+		onViewDiff,
+		activeDiffFile,
+		onDiffError
 	}: {
 		summary: GitSummary;
 		projectPath: string;
 		onRefresh?: () => void;
+		onViewDiff?: (filePath: string, context: DiffContext | null) => void;
+		activeDiffFile?: string | null;
+		onDiffError?: (message: string | null) => void;
 	} = $props();
 
-	let selectedFile = $state<string | null>(null);
-	let diffContent = $state<string | null>(null);
-	let showDiff = $state(false);
 	let commits = $state<GitCommit[]>([]);
+	// Track manually collapsed dirs — all dirs are expanded by default
+	let collapsedDirs = new SvelteSet<string>();
 
 	$effect(() => {
 		projectPath;
 		void loadCommits();
+	});
+
+	$effect(() => {
+		projectPath;
+		collapsedDirs.clear();
 	});
 
 	async function loadCommits() {
@@ -31,36 +43,48 @@
 	}
 
 	async function handleFileClick(change: GitChange) {
-		if (selectedFile === change.path && showDiff) {
-			showDiff = false;
-			selectedFile = null;
+		// Toggle off if clicking same file
+		if (activeDiffFile === change.path) {
+			onDiffError?.(null);
+			onViewDiff?.(change.path, null);
 			return;
 		}
 
-		selectedFile = change.path;
 		try {
-			diffContent = await backend.git.getFileDiff(projectPath, change.path, change.staged);
-			showDiff = true;
+			const ctx = await backend.git.getDiffContext(projectPath, change.path, change.staged);
+			if (ctx?.raw_diff) {
+				onDiffError?.(null);
+				onViewDiff?.(change.path, ctx);
+				return;
+			}
+
+			onDiffError?.(`No textual diff is available for ${change.path}.`);
 		} catch {
-			diffContent = null;
-			showDiff = false;
+			onDiffError?.(`Failed to load the diff for ${change.path}.`);
+		}
+	}
+
+	function getDirKey(section: string, path: string): string {
+		return `${section}:${path}`;
+	}
+
+	function toggleDir(section: string, path: string) {
+		const key = getDirKey(section, path);
+		if (collapsedDirs.has(key)) {
+			collapsedDirs.delete(key);
+		} else {
+			collapsedDirs.add(key);
 		}
 	}
 
 	function statusLabel(status: string): string {
 		switch (status) {
-			case 'M':
-				return 'M';
-			case 'A':
-				return 'A';
-			case 'D':
-				return 'D';
-			case 'R':
-				return 'R';
-			case '?':
-				return '?';
-			default:
-				return status.charAt(0);
+			case 'M': return 'M';
+			case 'A': return 'A';
+			case 'D': return 'D';
+			case 'R': return 'R';
+			case '?': return '?';
+			default: return status.charAt(0);
 		}
 	}
 
@@ -71,18 +95,13 @@
 		return 'text-muted';
 	}
 
-	function diffLineColorClass(line: string): string {
-		if (line.startsWith('+++') || line.startsWith('---')) return 'text-muted';
-		if (line.startsWith('@@')) return 'text-accent';
-		if (line.startsWith('+')) return 'text-success';
-		if (line.startsWith('-')) return 'text-danger';
-		return 'text-fg';
-	}
-
 	let stagedFiles = $derived(summary.changes.filter((change) => change.staged));
 	let unstagedFiles = $derived(summary.changes.filter((change) => !change.staged && change.status !== '?'));
 	let untrackedFiles = $derived(summary.changes.filter((change) => change.status === '?'));
-	let diffLines = $derived((diffContent ?? '').split('\n'));
+
+	let stagedTree = $derived(buildFileTree(stagedFiles));
+	let unstagedTree = $derived(buildFileTree(unstagedFiles));
+	let untrackedTree = $derived(buildFileTree(untrackedFiles));
 </script>
 
 <div class="h-full bg-ground text-[0.78rem] flex flex-col">
@@ -112,48 +131,59 @@
 		<div class="py-3.5 px-2.5 text-subtle">No changes.</div>
 	{/if}
 
-	{#snippet fileGroup(label: string, files: GitChange[], keySuffix: string)}
-		{#if files.length > 0}
+	<!-- Recursive tree node renderer -->
+	{#snippet treeNode(section: string, node: FileTreeNode, depth: number)}
+		{#if node.type === 'directory'}
+			<button
+				class="flex items-center gap-1 w-full py-0.5 border-none bg-transparent text-muted cursor-pointer text-left text-[0.72rem] font-mono hover:bg-surface"
+				style="padding-left: {depth * 12 + 10}px"
+				onclick={() => toggleDir(section, node.path)}
+			>
+				<span class="w-3 text-center shrink-0 text-[0.6rem]">
+					{!collapsedDirs.has(getDirKey(section, node.path)) ? '\u25BE' : '\u25B8'}
+				</span>
+				<span class="truncate">{node.name}</span>
+			</button>
+			{#if !collapsedDirs.has(getDirKey(section, node.path))}
+				{#each node.children as child (child.path)}
+					{@render treeNode(section, child, depth + 1)}
+				{/each}
+			{/if}
+		{:else if node.change}
+			<button
+				class="flex items-center gap-1.5 w-full py-0.5 border-none bg-transparent text-fg cursor-pointer text-left text-[0.75rem] font-mono hover:bg-surface {activeDiffFile === node.change.path ? 'bg-accent-bg' : ''}"
+				style="padding-left: {depth * 12 + 10}px"
+				onclick={() => handleFileClick(node.change!)}
+			>
+				<span class="flex-1 min-w-0 truncate">{node.name}</span>
+				<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(node.change.status)}">{statusLabel(node.change.status)}</span>
+				{#if node.change.additions != null || node.change.deletions != null}
+					<span class="shrink-0 flex gap-1 pr-2">
+						{#if node.change.additions}<span class="text-success">+{node.change.additions}</span>{/if}
+						{#if node.change.deletions}<span class="text-danger">-{node.change.deletions}</span>{/if}
+					</span>
+				{/if}
+			</button>
+		{/if}
+	{/snippet}
+
+	<!-- File group with tree rendering -->
+	{#snippet fileGroup(label: string, tree: FileTreeNode[], keySuffix: string)}
+		{#if tree.length > 0}
 			<div class="py-1">
 				<div class="px-2.5 py-1 text-[0.68rem] text-muted font-medium uppercase tracking-wide">
-					{label} ({files.length})
+					{label} ({countFiles(tree)})
 				</div>
-				{#each files as change (change.path + '-' + keySuffix)}
-					<button
-						class="flex items-center gap-1.5 w-full px-2.5 py-0.5 border-none bg-transparent text-fg cursor-pointer text-left text-[0.75rem] font-mono hover:bg-surface {selectedFile === change.path ? 'bg-accent-bg' : ''}"
-						onclick={() => handleFileClick(change)}
-					>
-						<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(change.status)}">{statusLabel(change.status)}</span>
-						<span class="flex-1 min-w-0 truncate">{change.path}</span>
-						{#if change.additions != null || change.deletions != null}
-							<span class="shrink-0 flex gap-1">
-								{#if change.additions}<span class="text-success">+{change.additions}</span>{/if}
-								{#if change.deletions}<span class="text-danger">-{change.deletions}</span>{/if}
-							</span>
-						{/if}
-					</button>
+				{#each tree as node (node.path + '-' + keySuffix)}
+					{@render treeNode(keySuffix, node, 0)}
 				{/each}
 			</div>
 		{/if}
 	{/snippet}
 
-	{@render fileGroup('Staged', stagedFiles, 'staged')}
-	{@render fileGroup('Modified', unstagedFiles, 'unstaged')}
-	{@render fileGroup('Untracked', untrackedFiles, 'untracked')}
-
-	{#if showDiff && diffContent}
-		<div class="border-t border-edge">
-			<div class="flex items-center justify-between px-2.5 py-1 bg-surface text-[0.72rem] text-muted">
-				<span>{selectedFile}</span>
-				<button
-					class="btn-ghost"
-					onclick={() => (showDiff = false)}
-				>&times;</button>
-			</div>
-			<pre class="px-2.5 py-1.5 text-[0.7rem] font-mono overflow-auto max-h-[260px] whitespace-pre m-0 flex flex-col">{#each diffLines as line}<span class="block {diffLineColorClass(line)}">{line}</span>
-{/each}</pre>
-		</div>
-	{/if}
+	{@render fileGroup('Staged', stagedTree, 'staged')}
+	{@render fileGroup('Modified', unstagedTree, 'unstaged')}
+	{@render fileGroup('Untracked', untrackedTree, 'untracked')}
 
 	<div class="mt-auto border-t border-edge py-1">
 		<div class="px-2.5 py-1 text-[0.68rem] text-muted font-medium uppercase tracking-wide">

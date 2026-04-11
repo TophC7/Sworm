@@ -2,6 +2,7 @@
 
 ADE is a Linux-first desktop app for running coding-agent CLIs inside a local git repository.
 
+
 ## Stack
 
 - Development environment: Nix-first
@@ -12,31 +13,6 @@ ADE is a Linux-first desktop app for running coding-agent CLIs inside a local gi
 - CSS framework: Tailwind CSS v4 (via `@tailwindcss/vite`)
 - Package manager: `bun`
 
-## Source Of Truth
-
-Read these first before making architectural decisions:
-
-- [PHASE_0_1_TECH_SPEC.md](./PHASE_0_1_TECH_SPEC.md)
-- [BOOTSTRAP_CHECKLIST.md](./BOOTSTRAP_CHECKLIST.md)
-
-## Current Scope
-
-Phase 1 is intentionally narrow:
-
-- providers: Claude Code and Codex
-- local repositories only
-- real PTY-backed terminal inside the app
-- persisted projects and sessions
-- local git visibility
-
-Not in scope yet:
-
-- worktrees
-- SSH
-- GitHub/Forgejo integrations
-- Gemini
-- Copilot
-- terminal snapshot persistence
 
 ## Working Rules
 
@@ -46,9 +22,26 @@ Not in scope yet:
 - Use Bun through the Nix environment; manage Bun dependency reproducibility with `bun2nix`.
 - Keep privileged operations in Rust, not in the frontend.
 - Do not add `tauri-plugin-shell` for app runtime process spawning.
-- Use the system `git` CLI rather than `git2` for Phase 1.
+- Use the system `git` CLI rather than `git2` unless the repo explicitly changes direction.
 - Keep the frontend as a SvelteKit SPA with SSR disabled.
+- Match the existing module split:
+  - Svelte routes/components/stores in `src/`
+  - Tauri commands in `src-tauri/src/commands/`
+  - business logic in `src-tauri/src/services/`
+  - serialized models in `src-tauri/src/models/`
 - Keep sessions project-scoped and be explicit when behavior is non-isolated.
+
+## Validation
+
+Use the narrowest relevant checks that exist today:
+
+- `bun run check`
+- `bun run build`
+- `cargo check`
+- `cargo test`
+- `bun tauri build --debug`
+
+Do not claim lint/format/test commands exist if they are not defined in the current repo.
 
 ## Svelte Rules
 
@@ -84,6 +77,5 @@ Not in scope yet:
 
 ## Important Notes
 
-- Codex exact-thread rebinding is required in Phase 1.
-- Multiple sessions may exist in one project, but they share the same working tree until worktrees arrive in v2.
-- When in doubt, prefer the simpler implementation that preserves the Phase 1 boundaries.
+- Terminal/session lifecycle correctness matters more than adding surface features quickly.
+- Multiple sessions may exist in one project, but they still share the same working tree unless and until worktrees land.
