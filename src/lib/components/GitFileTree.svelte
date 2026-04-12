@@ -4,8 +4,8 @@
 	import { backend } from '$lib/api/backend';
 	import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree';
 	import { TreeNode } from '$lib/components/ui/file-tree';
-	import ChevronDown from '@lucide/svelte/icons/chevron-down';
-	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
+	import Folder from '@lucide/svelte/icons/folder';
 
 	let {
 		summary,
@@ -24,7 +24,6 @@
 	} = $props();
 
 	let collapsedDirs = new SvelteSet<string>();
-	// Track which file we're currently loading/viewing to debounce rapid clicks
 	let pendingPath = $state<string | null>(null);
 
 	$effect(() => {
@@ -34,7 +33,6 @@
 	});
 
 	async function handleFileClick(change: GitChange) {
-		// Already viewing or loading this file — no-op
 		if (activeDiffFile === change.path || pendingPath === change.path) return;
 
 		pendingPath = change.path;
@@ -66,37 +64,31 @@
 		}
 	}
 
-	function statusLabel(status: string): string {
-		switch (status) {
-			case 'M': return 'M';
-			case 'A': return 'A';
-			case 'D': return 'D';
-			case 'R': return 'R';
-			case '?': return '?';
-			default: return status.charAt(0);
-		}
-	}
-
 	function statusColorClass(status: string): string {
-		if (status.startsWith('M')) return 'text-warning';
-		if (status.startsWith('A')) return 'text-success';
-		if (status.startsWith('D')) return 'text-danger';
-		return 'text-muted';
+		switch (status) {
+			case 'M': return 'text-warning';
+			case 'A': return 'text-success';
+			case 'D': return 'text-danger';
+			case 'R': return 'text-accent';
+			default: return 'text-muted';
+		}
 	}
 
 	let stagedFiles = $derived(summary.changes.filter((c) => c.staged));
 	let unstagedFiles = $derived(summary.changes.filter((c) => !c.staged && c.status !== '?'));
-	let untrackedFiles = $derived(summary.changes.filter((c) => c.status === '?'));
 
 	let stagedTree = $derived(buildFileTree(stagedFiles));
 	let unstagedTree = $derived(buildFileTree(unstagedFiles));
-	let untrackedTree = $derived(buildFileTree(untrackedFiles));
 </script>
 
 <div class="text-[0.78rem]">
-	{#if summary.changes.length === 0}
+	{#if stagedTree.length === 0 && unstagedTree.length === 0}
 		<div class="py-2 px-2.5 text-subtle text-[0.75rem]">No changes.</div>
 	{/if}
+
+	{#snippet statusBadge(change: GitChange)}
+		<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(change.status)}">{change.status}</span>
+	{/snippet}
 
 	{#snippet treeNode(section: string, node: FileTreeNode, depth: number)}
 		{#if node.type === 'directory'}
@@ -109,9 +101,9 @@
 					>
 						<span class="w-3 flex items-center justify-center shrink-0">
 							{#if !collapsedDirs.has(getDirKey(section, node.path))}
-								<ChevronDown size={10} />
+								<FolderOpen size={12} />
 							{:else}
-								<ChevronRight size={10} />
+								<Folder size={12} />
 							{/if}
 						</span>
 						<span class="truncate">{node.name}</span>
@@ -129,12 +121,17 @@
 				ondblclick={() => onPersistDiff?.()}
 			>
 				<span class="flex-1 min-w-0 truncate">{node.name}</span>
-				<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(node.change.status)}">{statusLabel(node.change.status)}</span>
-				{#if node.change.additions != null || node.change.deletions != null}
-					<span class="shrink-0 flex gap-1 pr-2">
-						{#if node.change.additions}<span class="text-success">+{node.change.additions}</span>{/if}
-						{#if node.change.deletions}<span class="text-danger">-{node.change.deletions}</span>{/if}
-					</span>
+				{#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
+					{@const net = (node.change.additions ?? 0) - (node.change.deletions ?? 0)}
+					{#if net !== 0}
+						<span class="shrink-0 {net > 0 ? 'text-success' : 'text-danger'}">
+							{net > 0 ? '+' : ''}{net}
+						</span>
+					{:else}
+						{@render statusBadge(node.change)}
+					{/if}
+				{:else}
+					{@render statusBadge(node.change)}
 				{/if}
 			</button>
 		{/if}
@@ -155,5 +152,4 @@
 
 	{@render fileGroup('Staged', stagedTree, 'staged')}
 	{@render fileGroup('Modified', unstagedTree, 'unstaged')}
-	{@render fileGroup('Untracked', untrackedTree, 'untracked')}
 </div>

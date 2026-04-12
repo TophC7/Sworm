@@ -431,7 +431,7 @@ fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) 
     let index = statuses.next().unwrap_or(' ');
     let worktree = statuses.next().unwrap_or(' ');
 
-    if index != ' ' && index != '?' {
+    if index != ' ' && index != '.' && index != '?' {
         changes.push(GitChange {
             path: file_path.to_string(),
             status: index.to_string(),
@@ -441,10 +441,10 @@ fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) 
         });
     }
 
-    if worktree != ' ' && worktree != '?' {
+    if worktree != ' ' && worktree != '.' && worktree != '?' {
         changes.push(GitChange {
             path: file_path.to_string(),
-            status: format!("{}(unstaged)", worktree),
+            status: worktree.to_string(),
             staged: false,
             additions: None,
             deletions: None,
