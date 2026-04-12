@@ -16,11 +16,11 @@
 </script>
 
 <header
-	class="flex items-center bg-surface border-b border-edge shrink-0 min-h-9"
+	class="flex items-center gap-1 bg-surface border-b border-edge shrink-0 min-h-9 pl-1"
 	data-tauri-drag-region
 >
 	<!-- Logo (static branding) -->
-	<div class="shrink-0 flex items-center justify-center w-8 h-8 mx-1 text-accent">
+	<div class="shrink-0 flex items-center justify-center w-8 h-8 text-accent">
 		<Worm size={18} />
 	</div>
 
@@ -29,8 +29,9 @@
 		<AppMenuBar {onNewProject} {onSettings} {onAbout} />
 	</div>
 
-	<!-- Project tabs -->
-	<ProjectTabBar onAddProject={onNewProject} />
+	<div class="min-w-0 flex-1">
+		<ProjectTabBar onAddProject={onNewProject} />
+	</div>
 
 	<WindowControls />
 </header>

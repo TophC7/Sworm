@@ -17,8 +17,10 @@
 
     crane.url = "github:ipetkov/crane";
 
-    bun2nix.url = "github:nix-community/bun2nix";
-    bun2nix.inputs.nixpkgs.follows = "nixpkgs";
+    bun2nix = {
+      url = "github:nix-community/bun2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -30,6 +32,7 @@
     }:
     let
       lib = nixpkgs.lib;
+      version = "0.1.0";
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -53,7 +56,6 @@
           openssl
           pango
           webkitgtk_4_1
-          xdotool
         ];
     in
     {
@@ -66,37 +68,23 @@
           fs = pkgs.lib.fileset;
           runtimeLibraries = runtimeLibsFor pkgs;
 
-          hasScaffold =
-            builtins.pathExists ./package.json
-            && builtins.pathExists ./bun.lock
-            && builtins.pathExists ./bun.nix
-            && builtins.pathExists ./src
-            && builtins.pathExists ./src-tauri
-            && builtins.pathExists ./src-tauri/tauri.conf.json;
-
-          docsPackage = pkgs.writeTextDir "share/doc/sworm/README.txt" ''
-            Sworm bootstrap flake — scaffold not yet present.
-          '';
-
           # Frontend-only build (SvelteKit via bun).
           frontend = pkgs.stdenv.mkDerivation {
             pname = "sworm-frontend";
-            version = "0.1.0";
+            inherit version;
 
             src = fs.toSource {
               root = ./.;
-              fileset = fs.unions (
-                [
-                  ./package.json
-                  ./bun.lock
-                  ./bun.nix
-                  ./svelte.config.js
-                  ./vite.config.ts
-                ]
-                ++ lib.optional (builtins.pathExists ./tsconfig.json) ./tsconfig.json
-                ++ lib.optional (builtins.pathExists ./src) ./src
-                ++ lib.optional (builtins.pathExists ./static) ./static
-              );
+              fileset = fs.unions [
+                ./package.json
+                ./bun.lock
+                ./bun.nix
+                ./svelte.config.js
+                ./vite.config.ts
+                ./tsconfig.json
+                ./src
+                ./static
+              ];
             };
 
             nativeBuildInputs = [
@@ -125,16 +113,34 @@
               cp -r build/* $out/
               runHook postInstall
             '';
+
+            meta = {
+              description = "Sworm frontend (SvelteKit SPA)";
+              license = lib.licenses.agpl3Plus;
+              platforms = lib.platforms.linux;
+            };
           };
 
           # Shared args for crane's dep and source builds.
           # src-tauri IS the Cargo root, so use it directly as the source.
-          # cleanCargoSource strips non-Cargo files so buildDepsOnly doesn't
-          # invalidate when only .rs or config files change.
+          # cleanCargoSource strips non-Cargo files; we extend the filter
+          # to keep Tauri assets (config, capabilities, icons, migrations)
+          # that build.rs and the runtime need.
+          tauriSourceFilter =
+            path: type:
+            (craneLib.filterCargoSources path type)
+            || (lib.hasSuffix "tauri.conf.json" path)
+            || (lib.hasInfix "/capabilities/" path)
+            || (lib.hasInfix "/icons/" path)
+            || (lib.hasInfix "/migrations/" path);
+
           commonArgs = {
             pname = "sworm";
-            version = "0.1.0";
-            src = craneLib.cleanCargoSource ./src-tauri;
+            inherit version;
+            src = lib.cleanSourceWith {
+              src = ./src-tauri;
+              filter = tauriSourceFilter;
+            };
 
             strictDeps = true;
 
@@ -145,6 +151,10 @@
             ];
 
             buildInputs = runtimeLibraries;
+
+            # The tauri CLI injects this feature automatically; raw cargo does not.
+            # Without it, cfg(dev) stays active and assets are not embedded.
+            cargoExtraArgs = "--features tauri/custom-protocol";
 
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           };
@@ -162,34 +172,6 @@
             }
           );
 
-          # Phase 2: build the app against pre-built deps (only recompiles sworm crate)
-          appPackage = craneLib.buildPackage (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-
-              # Place the real frontend where Tauri expects it (frontendDist = "../build")
-              preBuild = ''
-                mkdir -p $NIX_BUILD_TOP/build
-                cp -r ${frontend}/* $NIX_BUILD_TOP/build/
-              '';
-
-              TAURI_SKIP_DEVSERVER_CHECK = "true";
-
-              postInstall = ''
-                install -Dm644 icons/128x128.png $out/share/icons/hicolor/128x128/apps/sworm.png
-                install -Dm644 ${desktopFile} $out/share/applications/sworm.desktop
-              '';
-
-              meta = {
-                description = "Sworm - Linux-first desktop app for coding-agent CLIs";
-                license = lib.licenses.mit;
-                platforms = lib.platforms.linux;
-                mainProgram = "sworm";
-              };
-            }
-          );
-
           desktopFile = pkgs.writeText "sworm.desktop" ''
             [Desktop Entry]
             Name=Sworm
@@ -200,11 +182,36 @@
             Type=Application
             Categories=Development;IDE;
           '';
+
+          # Phase 2: build the app against pre-built deps (only recompiles sworm crate)
+          appPackage = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+
+              # Place the real frontend where Tauri expects it (frontendDist = "../build").
+              preBuild = ''
+                mkdir -p $NIX_BUILD_TOP/build
+                cp -r ${frontend}/* $NIX_BUILD_TOP/build/
+              '';
+
+              postInstall = ''
+                install -Dm644 icons/128x128.png $out/share/icons/hicolor/128x128/apps/sworm.png
+                install -Dm644 ${desktopFile} $out/share/applications/sworm.desktop
+              '';
+
+              meta = {
+                description = "Sworm - Linux-first desktop app for coding-agent CLIs";
+                license = lib.licenses.agpl3Plus;
+                platforms = lib.platforms.linux;
+                mainProgram = "sworm";
+              };
+            }
+          );
         in
         {
-          docs = docsPackage;
           inherit frontend;
-          default = if hasScaffold then appPackage else docsPackage;
+          default = appPackage;
         }
       );
 

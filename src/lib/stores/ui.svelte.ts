@@ -3,8 +3,11 @@
 // Stores visual preferences that are NOT per-project:
 // sidebar dimensions, collapse state, zoom level, window controls.
 
+export type SidebarView = 'git' | 'sessions';
+
 let gitSidebarWidth = $state(280);
 let gitSidebarCollapsed = $state(false);
+let sidebarView = $state<SidebarView>('git');
 let zoomLevel = $state(1.0);
 
 // ---------------------------------------------------------------------------
@@ -73,6 +76,18 @@ export function setGitSidebarCollapsed(collapsed: boolean) {
 
 export function toggleGitSidebar() {
 	gitSidebarCollapsed = !gitSidebarCollapsed;
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar view
+// ---------------------------------------------------------------------------
+
+export function getSidebarView(): SidebarView {
+	return sidebarView;
+}
+
+export function setSidebarView(view: SidebarView) {
+	sidebarView = view;
 }
 
 // Zoom — uses native webview zoom so px-based icons scale correctly //

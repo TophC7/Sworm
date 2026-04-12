@@ -17,7 +17,7 @@
 {#if sidebar.open}
 	<div
 		class={cn(
-			'flex items-center justify-between px-2.5 py-1.5 border-b border-edge bg-surface shrink-0',
+			'flex h-8 min-h-8 items-center justify-between px-2.5 border-b border-edge bg-surface shrink-0',
 			className
 		)}
 		data-sidebar="header"

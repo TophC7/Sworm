@@ -8,7 +8,10 @@ use crate::services::pty::PtyEvent;
 use crate::services::settings::SettingsService;
 use crate::services::sessions::SessionService;
 use chrono::{Duration, Utc};
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tracing::warn;
@@ -17,10 +20,21 @@ const CODEX_BIND_LOOKBACK_SECS: i64 = 15;
 const CODEX_BIND_TIMEOUT_SECS: u64 = 20;
 const CODEX_BIND_POLL_MS: u64 = 250;
 
-fn spawn_codex_bind_thread(session_id: String, cwd: String, db_path: PathBuf, started_at: chrono::DateTime<Utc>) {
+fn spawn_codex_bind_thread(
+    session_id: String,
+    cwd: String,
+    db_path: PathBuf,
+    started_at: chrono::DateTime<Utc>,
+    bind_lock: Arc<Mutex<()>>,
+    all_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+) {
     thread::Builder::new()
         .name(format!("codex-bind-{}", &session_id))
         .spawn(move || {
+            // Serialize binding per cwd — prevents two sessions from racing
+            // to discover the same Codex thread. Released when this thread exits.
+            let _guard = bind_lock.lock();
+
             let lookback = started_at - Duration::seconds(CODEX_BIND_LOOKBACK_SECS);
             let since = lookback.to_rfc3339();
             let deadline = Instant::now() + StdDuration::from_secs(CODEX_BIND_TIMEOUT_SECS);
@@ -79,6 +93,17 @@ fn spawn_codex_bind_thread(session_id: String, cwd: String, db_path: PathBuf, st
                     );
                 }
             }
+
+            // Release the per-cwd lock, then evict the map entry if no other
+            // bind thread is waiting on it. This prevents unbounded growth.
+            drop(_guard);
+            let mut locks = all_locks.lock();
+            if let Some(arc) = locks.get(&cwd) {
+                // strong_count == 1 means only the map holds it — safe to remove.
+                if Arc::strong_count(arc) == 1 {
+                    locks.remove(&cwd);
+                }
+            }
         })
         .map_err(|error| tracing::error!("Failed to spawn Codex bind thread: {}", error))
         .ok();
@@ -122,16 +147,29 @@ pub fn session_create(
 }
 
 /// List sessions for a project.
+///
+/// Reconciles stale statuses on the way out: any session that claims to be
+/// running/starting but has no live PTY is marked as exited. This handles
+/// app crashes, force-quits, and tabs closed without a clean status flush.
 #[tauri::command]
 pub fn session_list(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, ApiError> {
     let db = state.db.lock();
-    state
+    let mut sessions = state
         .sessions
         .list_for_project(db.conn(), &project_id)
-        .map_err(ApiError::Database)
+        .map_err(ApiError::Database)?;
+
+    for s in &mut sessions {
+        if (s.status == "running" || s.status == "starting") && !state.pty.is_alive(&s.id) {
+            let _ = state.sessions.update_status(db.conn(), &s.id, "exited");
+            s.status = "exited".to_string();
+        }
+    }
+
+    Ok(sessions)
 }
 
 /// Get a single session.
@@ -170,25 +208,35 @@ pub fn session_start(
             crate::services::settings::ProviderConfigRecord::default_for(&session.provider_id)
         });
 
-    if session.provider_id == "codex" && session.provider_resume_token.is_none() {
-        let live_unbound = state
-            .sessions
-            .count_unbound_codex_for_project(db.conn(), &session.project_id)
-            .map_err(ApiError::Database)?;
-        if live_unbound > 0 {
-            return Err(ApiError::InvalidArgument(
-                "Another Codex session is still binding to a thread. Wait for it to complete or stop it first.".to_string(),
-            ));
-        }
-    }
+    // Track whether this is the very first start (no token yet) so we can
+    // choose --session-id (new) vs --resume (existing) when building args.
+    let first_start = session.provider_resume_token.is_none();
 
-    if session.provider_id == "claude_code" && session.provider_resume_token.is_none() {
-        let token = SessionService::deterministic_claude_session_id(&session_id);
-        state
-            .sessions
-            .set_resume_token(db.conn(), &session_id, &token)
-            .map_err(ApiError::Database)?;
-        session.provider_resume_token = Some(token);
+    // On first start, generate and persist a resume token for providers that
+    // support session resumption. Codex handles its own binding separately.
+    if first_start {
+        let token = match session.provider_id.as_str() {
+            "claude_code" => Some(SessionService::deterministic_session_uuid("claude", &session_id)),
+            "copilot" => Some(SessionService::deterministic_session_uuid("copilot", &session_id)),
+            "codex" | "terminal" | "fresh" => None,
+            // GenericFlag providers (Gemini, etc.): marker so restarts add resume flags
+            _ => Some("started".to_string()),
+        };
+        if let Some(ref t) = token {
+            state
+                .sessions
+                .set_resume_token(db.conn(), &session_id, t)
+                .map_err(ApiError::Database)?;
+        }
+        // Only update in-memory token for providers with deterministic UUIDs.
+        // GenericFlag providers keep provider_resume_token as None on first
+        // start so the match block below produces (None, None) → fresh start.
+        match session.provider_id.as_str() {
+            "claude_code" | "copilot" => {
+                session.provider_resume_token = token;
+            }
+            _ => {}
+        }
     }
 
     if session.provider_id == "codex" {
@@ -247,17 +295,35 @@ pub fn session_start(
     };
     let (resume_token, session_app_id) = match session.provider_id.as_str() {
         "claude_code" => {
-            // Claude Code uses --session-id <uuid> for both new and existing
-            // sessions. Always pass as session_app_id (never resume_token)
-            // so build_start_args emits `--session-id <uuid>` without --resume.
             let token = session
                 .provider_resume_token
                 .clone()
-                .unwrap_or_else(|| SessionService::deterministic_claude_session_id(&session_id));
-            (None, Some(token))
+                .unwrap_or_else(|| SessionService::deterministic_session_uuid("claude", &session_id));
+            if first_start {
+                // First start: `claude --session-id <uuid>`
+                (None, Some(token))
+            } else {
+                // Restart: `claude --resume <uuid>`
+                (Some(token), None)
+            }
+        }
+        "copilot" => {
+            // Copilot uses --resume for both new and existing sessions
+            let token = session
+                .provider_resume_token
+                .clone()
+                .unwrap_or_else(|| SessionService::deterministic_session_uuid("copilot", &session_id));
+            (Some(token), None)
         }
         "codex" => (session.provider_resume_token.clone(), None),
-        _ => (None, None),
+        _ => {
+            // GenericFlag providers (Gemini, etc.): resume_token signals restart
+            if first_start {
+                (None, None)
+            } else {
+                (session.provider_resume_token.clone(), None)
+            }
+        }
     };
 
     let mut args = ProviderService::build_start_args(
@@ -320,11 +386,19 @@ pub fn session_start(
                 .map_err(ApiError::Database)?;
 
             if session.provider_id == "codex" && session.provider_resume_token.is_none() {
+                let bind_lock = {
+                    let mut locks = state.codex_bind_locks.lock();
+                    locks.entry(session.cwd.clone())
+                        .or_insert_with(|| Arc::new(Mutex::new(())))
+                        .clone()
+                };
                 spawn_codex_bind_thread(
                     session_id.clone(),
                     session.cwd.clone(),
                     db.db_path().clone(),
                     started_at,
+                    bind_lock,
+                    Arc::clone(&state.codex_bind_locks),
                 );
             }
         }
@@ -396,11 +470,11 @@ pub fn session_reset(
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", session_id)))?;
 
-    // Generate a fresh deterministic token for Claude Code
-    let new_token = if session.provider_id == "claude_code" {
-        Some(SessionService::deterministic_claude_session_id(&session_id))
-    } else {
-        None
+    // Generate a fresh deterministic token for providers that use session IDs
+    let new_token = match session.provider_id.as_str() {
+        "claude_code" => Some(SessionService::deterministic_session_uuid("claude", &session_id)),
+        "copilot" => Some(SessionService::deterministic_session_uuid("copilot", &session_id)),
+        _ => None,
     };
 
     state

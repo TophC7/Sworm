@@ -86,8 +86,17 @@
 		<div class="py-2 px-2.5 text-subtle text-[0.75rem]">No changes.</div>
 	{/if}
 
+	{#snippet indentGuides(depth: number)}
+		{#each Array(depth) as _, i}
+			<span
+				class="absolute top-0 bottom-0 w-px bg-subtle/25 pointer-events-none"
+				style="left: {i * 12 + 16}px"
+			></span>
+		{/each}
+	{/snippet}
+
 	{#snippet statusBadge(change: GitChange)}
-		<span class="font-bold w-3.5 text-center shrink-0 {statusColorClass(change.status)}">{change.status}</span>
+		<span class="font-mono font-bold w-3.5 text-center shrink-0 {statusColorClass(change.status)}">{change.status}</span>
 	{/snippet}
 
 	{#snippet treeNode(section: string, node: FileTreeNode, depth: number)}
@@ -95,10 +104,11 @@
 			<TreeNode expanded={!collapsedDirs.has(getDirKey(section, node.path))} {depth}>
 				{#snippet label()}
 					<button
-						class="flex items-center gap-1 w-full py-0.5 border-none bg-transparent text-muted cursor-pointer text-left text-[0.72rem] font-mono hover:bg-surface"
+						class="relative flex items-center gap-1 w-full py-0.5 border-none bg-transparent text-muted cursor-pointer text-left text-[0.72rem] hover:bg-surface"
 						style="padding-left: {depth * 12 + 10}px"
 						onclick={() => toggleDir(section, node.path)}
 					>
+						{@render indentGuides(depth)}
 						<span class="w-3 flex items-center justify-center shrink-0">
 							{#if !collapsedDirs.has(getDirKey(section, node.path))}
 								<FolderOpen size={12} />
@@ -115,16 +125,17 @@
 			</TreeNode>
 		{:else if node.change}
 			<button
-				class="flex items-center gap-1.5 w-full py-0.5 border-none bg-transparent text-fg cursor-pointer text-left text-[0.75rem] font-mono hover:bg-surface {activeDiffFile === node.change.path ? 'bg-accent-bg' : ''}"
+				class="relative flex items-center gap-1.5 w-full py-0.5 border-none bg-transparent text-fg cursor-pointer text-left text-[0.75rem] hover:bg-surface {activeDiffFile === node.change.path ? 'bg-accent-bg' : ''}"
 				style="padding-left: {depth * 12 + 10}px"
 				onclick={() => handleFileClick(node.change!)}
 				ondblclick={() => onPersistDiff?.()}
 			>
+				{@render indentGuides(depth)}
 				<span class="flex-1 min-w-0 truncate">{node.name}</span>
 				{#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
 					{@const net = (node.change.additions ?? 0) - (node.change.deletions ?? 0)}
 					{#if net !== 0}
-						<span class="shrink-0 {net > 0 ? 'text-success' : 'text-danger'}">
+						<span class="font-mono shrink-0 {net > 0 ? 'text-success' : 'text-danger'}">
 							{net > 0 ? '+' : ''}{net}
 						</span>
 					{:else}

@@ -1,6 +1,5 @@
 import { backend } from '$lib/api/backend';
 import type { PtyEvent, Session } from '$lib/types/backend';
-import { providerLabel } from '$lib/utils/session';
 import type { Channel } from '@tauri-apps/api/core';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -56,6 +55,7 @@ export class TerminalSessionManager {
 	private outputChannel: Channel<number[]> | null = null;
 	private eventsChannel: Channel<PtyEvent> | null = null;
 	private ptyActive = false;
+	private inputEnabled = true;
 	private disposed = false;
 	private viewportPosition = 0;
 	private lastError: string | null = null;
@@ -76,6 +76,13 @@ export class TerminalSessionManager {
 
 	getLastError(): string | null {
 		return this.lastError;
+	}
+
+	setInputEnabled(enabled: boolean): void {
+		this.inputEnabled = enabled;
+		if (!enabled) {
+			this.terminal?.blur();
+		}
 	}
 
 	registerEventListener(listener: EventListener): () => void {
@@ -157,9 +164,6 @@ export class TerminalSessionManager {
 		}
 
 		this.lastError = null;
-		terminal.write(
-			`\x1b[34m[Sworm] Starting ${providerLabel(session.provider_id)} in ${session.cwd}\x1b[0m\r\n`
-		);
 
 		const output = backend.sessions.createOutputChannel((data) => {
 			this.terminal?.write(new Uint8Array(data));
@@ -272,7 +276,7 @@ export class TerminalSessionManager {
 		this.terminal.open(this.hostEl);
 
 		this.inputDisposable = this.terminal.onData((data) => {
-			if (!this.ptyActive) {
+			if (!this.ptyActive || !this.inputEnabled) {
 				return;
 			}
 

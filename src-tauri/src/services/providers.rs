@@ -67,8 +67,13 @@ const PROVIDERS: &[ProviderDef] = &[
         docs_url: "https://docs.github.com/en/copilot",
         auto_approve_flag: Some("--allow-all-tools"),
         prompt_mode: PromptMode::FlagThenValue { flag: "-i" },
-        resume_mode: ResumeMode::None,
-        session_id_mode: SessionIdMode::None,
+        resume_mode: ResumeMode::SessionId {
+            session_flag: "--resume",
+            continue_flags: &["--resume"],
+        },
+        session_id_mode: SessionIdMode::Deterministic {
+            flag: "--resume",
+        },
         default_args: &[],
     },
     ProviderDef {
@@ -95,7 +100,9 @@ const PROVIDERS: &[ProviderDef] = &[
         docs_url: "https://github.com/google-gemini/gemini-cli",
         auto_approve_flag: Some("--yolo"),
         prompt_mode: PromptMode::FlagThenValue { flag: "-i" },
-        resume_mode: ResumeMode::None,
+        resume_mode: ResumeMode::GenericFlag {
+            flags: &["--resume", "latest"],
+        },
         session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
@@ -257,6 +264,14 @@ impl ProviderService {
                 if let Some(thread_id) = resume_token {
                     args.push((*resume_command).to_string());
                     args.push(thread_id.to_string());
+                }
+            }
+            ResumeMode::GenericFlag { flags } => {
+                // resume_token being Some signals "this is a restart, use resume flags"
+                if resume_token.is_some() {
+                    for flag in *flags {
+                        args.push((*flag).to_string());
+                    }
                 }
             }
         }

@@ -24,10 +24,10 @@ impl SessionService {
     ) -> Result<Session, String> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let provider_resume_token = if provider_id == "claude_code" {
-            Some(Self::deterministic_claude_session_id(&id))
-        } else {
-            None
+        let provider_resume_token = match provider_id {
+            "claude_code" => Some(Self::deterministic_session_uuid("claude", &id)),
+            "copilot" => Some(Self::deterministic_session_uuid("copilot", &id)),
+            _ => None,
         };
 
         conn.execute(
@@ -67,15 +67,14 @@ impl SessionService {
         })
     }
 
-    /// Derive a deterministic UUID from the Sworm session ID.
-    /// Claude Code CLI requires `--session-id` to be a valid UUID,
-    /// so we hash the Sworm ID and format the first 16 bytes as UUID v4.
-    pub fn deterministic_claude_session_id(app_session_id: &str) -> String {
+    /// Derive a deterministic UUID from a provider prefix and session ID.
+    /// Providers that use session-id flags (Claude Code, Copilot) need valid
+    /// UUIDs. We hash `<prefix>:<session_id>` and format as UUID v4.
+    pub fn deterministic_session_uuid(prefix: &str, app_session_id: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("claude:{}", app_session_id));
+        hasher.update(format!("{}:{}", prefix, app_session_id));
         let hash = hasher.finalize();
 
-        // Take first 16 bytes and format as UUID v4 (set version + variant bits)
         let mut bytes = [0u8; 16];
         bytes.copy_from_slice(&hash[..16]);
         bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
@@ -233,23 +232,6 @@ impl SessionService {
             |row| row.get(0),
         )
         .map_err(|e| format!("Failed to count live sessions: {}", e))
-    }
-
-    pub fn count_unbound_codex_for_project(
-        &self,
-        conn: &Connection,
-        project_id: &str,
-    ) -> Result<i64, String> {
-        conn.query_row(
-            "SELECT COUNT(*) FROM sessions
-             WHERE project_id = ?1
-               AND provider_id = 'codex'
-               AND status = 'running'
-               AND provider_resume_token IS NULL",
-            rusqlite::params![project_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to count unbound Codex sessions: {}", e))
     }
 
     /// Reset a session to fresh state: clear timestamps, set status to idle,

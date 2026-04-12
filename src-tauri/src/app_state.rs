@@ -9,7 +9,8 @@ use crate::services::{
     sessions::SessionService,
 };
 use parking_lot::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Central application state managed by Tauri.
 ///
@@ -27,6 +28,9 @@ pub struct AppState {
     pub env: EnvironmentService,
     /// Tracks project IDs with Nix evaluations in progress to prevent concurrent runs.
     pub nix_eval_locks: Mutex<HashSet<String>>,
+    /// Per-cwd locks serializing Codex thread binding to avoid cross-binding races.
+    /// Wrapped in Arc so bind threads can evict their entry after completing.
+    pub codex_bind_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl AppState {
@@ -51,6 +55,7 @@ impl AppState {
             credentials: CredentialService::new(),
             env: EnvironmentService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),
+            codex_bind_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }

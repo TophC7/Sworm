@@ -13,9 +13,9 @@
 	  SidebarContent,
 	  SidebarHeader,
 	  SidebarProvider,
-	  SidebarRail,
 	  SidebarTrigger
 	} from '$lib/components/ui/sidebar'
+	import { InfoTooltip } from '$lib/components/ui/tooltip'
 	import {
 	  isGitSidebarCollapsed,
 	  setGitSidebarCollapsed
@@ -50,10 +50,6 @@
 
 <SidebarProvider open={!collapsed} onOpenChange={(open) => setGitSidebarCollapsed(!open)}>
 	<Sidebar>
-		<SidebarRail>
-			<GitBranchIcon size={16} class="text-muted" />
-		</SidebarRail>
-
 		<SidebarHeader>
 			<div class="flex items-center gap-1.5">
 				<span class="font-semibold text-[0.7rem] uppercase tracking-wide text-muted">Git</span>
@@ -64,6 +60,28 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-1">
+				<InfoTooltip ariaLabel="Explain git status badges" contentClass="w-72">
+						<div class="space-y-2">
+							<p class="font-medium text-bright">Git badges in this panel</p>
+							<div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+								<span class="font-mono font-bold text-warning">M</span>
+								<span>Modified content</span>
+								<span class="font-mono font-bold text-danger">D</span>
+								<span>File deleted</span>
+								<span class="font-mono font-bold text-accent">R</span>
+								<span>File renamed according to git</span>
+								<span class="font-mono font-bold">
+									<span class="text-success">+12</span>
+									<span class="text-muted"> / </span>
+									<span class="text-danger">-4</span>
+								</span>
+								<span>Net line change. <code>+</code> means more lines added than removed, <code>-</code> means more lines removed than added.</span>
+							</div>
+							<p class="text-muted">
+								The same file can appear in both sections if it has staged changes and newer unstaged edits.
+							</p>
+						</div>
+					</InfoTooltip>
 				<SidebarTrigger>
 					<PanelLeftClose size={12} />
 				</SidebarTrigger>

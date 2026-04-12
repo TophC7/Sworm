@@ -9,6 +9,11 @@ import type { DiffContext, Session } from '$lib/types/backend';
 import * as sessionRegistry from '$lib/terminal/sessionRegistry';
 import { clearGitState } from '$lib/stores/git.svelte';
 
+// Statuses that warrant auto-creating a tab when syncing sessions.
+// Historical sessions (stopped/exited/failed) stay in the DB for the
+// session history view but don't reappear as tabs automatically.
+const ACTIVE_STATUSES = new Set(['idle', 'starting', 'running']);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -30,6 +35,7 @@ export interface SessionTab {
 	sessionId: string;
 	title: string;
 	providerId: string;
+	locked: boolean;
 }
 
 export interface DiffTab {
@@ -38,6 +44,7 @@ export interface DiffTab {
 	filePath: string;
 	context: DiffContext;
 	temporary: boolean;
+	locked: boolean;
 }
 
 export type Tab = SessionTab | DiffTab;
@@ -164,6 +171,10 @@ function findTab(ws: ProjectWorkspace, tabId: TabId): Tab | undefined {
 	return ws.tabs.find((t) => t.id === tabId);
 }
 
+function isLockedTab(ws: ProjectWorkspace, tabId: TabId): boolean {
+	return findTab(ws, tabId)?.locked ?? false;
+}
+
 function resetToSinglePane(ws: ProjectWorkspace) {
 	const allTabIds = ws.tabs.map((tab) => tab.id);
 	ws.panes = [createPane('sole')];
@@ -283,7 +294,8 @@ export function addSessionTab(projectId: string, sessionId: string, title: strin
 		id: generateTabId(),
 		sessionId,
 		title,
-		providerId
+		providerId,
+		locked: false
 	};
 
 	ws.tabs = [...ws.tabs, tab];
@@ -316,7 +328,14 @@ export function addDiffTab(
 			// Update the existing temporary tab in place
 			ws.tabs = ws.tabs.map((t) =>
 				t.id === existingTempId
-					? { kind: 'diff' as const, id: existingTempId, filePath, context, temporary: true }
+					? {
+							kind: 'diff' as const,
+							id: existingTempId,
+							filePath,
+							context,
+							temporary: true,
+							locked: t.kind === 'diff' ? t.locked : false
+						}
 					: t
 			);
 			pane.activeTabId = existingTempId;
@@ -342,7 +361,8 @@ export function addDiffTab(
 		id: generateTabId(),
 		filePath,
 		context,
-		temporary
+		temporary,
+		locked: false
 	};
 
 	ws.tabs = [...ws.tabs, tab];
@@ -370,8 +390,11 @@ export function closeTab(projectId: string, tabId: TabId) {
 
 	const tab = findTab(ws, tabId);
 	if (!tab) return;
+	if (tab.locked) return;
 
-	// Kill PTY if session tab
+	// Dispose the frontend terminal manager. The PTY should already be
+	// stopped by the caller (PaneTabBar.handleTabClose), but dispose
+	// ensures the xterm instance and channels are cleaned up.
 	if (tab.kind === 'session') {
 		sessionRegistry.dispose(tab.sessionId);
 	}
@@ -627,6 +650,7 @@ export function splitPaneAt(
 export function moveTabToPane(projectId: string, tabId: TabId, targetSlot: PaneSlot) {
 	const ws = getWorkspace(projectId);
 	if (!ws) return;
+	if (isLockedTab(ws, tabId)) return;
 
 	const sourcePane = findPaneForTab(ws, tabId);
 	if (sourcePane?.slot === targetSlot) {
@@ -763,13 +787,15 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
 
 	for (const session of sessions) {
 		if (existingSessionIds.has(session.id)) continue;
+		if (!ACTIVE_STATUSES.has(session.status)) continue;
 
 		const tab: SessionTab = {
 			kind: 'session',
 			id: generateTabId(),
 			sessionId: session.id,
 			title: session.title,
-			providerId: session.provider_id
+			providerId: session.provider_id,
+			locked: false
 		};
 
 		ws.tabs = [...ws.tabs, tab];
@@ -794,6 +820,8 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
 }
 
 export function startTabDrag(projectId: string, tabId: TabId) {
+	const ws = getWorkspace(projectId);
+	if (!ws || isLockedTab(ws, tabId)) return;
 	draggedTab = { projectId, tabId };
 }
 
@@ -803,6 +831,14 @@ export function getDraggedTab(): DraggedTab | null {
 
 export function endTabDrag() {
 	draggedTab = null;
+}
+
+export function toggleTabLocked(projectId: string, tabId: TabId) {
+	const ws = getWorkspace(projectId);
+	if (!ws) return;
+
+	ws.tabs = ws.tabs.map((tab) => (tab.id === tabId ? { ...tab, locked: !tab.locked } : tab));
+	commitWorkspace(ws);
 }
 
 // ---------------------------------------------------------------------------

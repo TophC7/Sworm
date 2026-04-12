@@ -47,6 +47,7 @@
 	);
 
 	let showNewSession = $state(false);
+	let showLockedOverlay = $derived(!showNewSession && activeTab !== null && activeTab.locked);
 	let dropIntent = $state<DropIntent>(null);
 	let dropActive = $state(false);
 
@@ -148,13 +149,14 @@
 		onTabSelected={() => (showNewSession = false)}
 	/>
 
-	<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+	<div class="relative flex-1 flex flex-col min-h-0 overflow-hidden">
 		{#if showNewSession || !activeTab}
 			<NewSessionView onCreated={() => (showNewSession = false)} />
 		{:else}
 			{#if activeTab.kind === 'session' && paneSession}
 				<SessionTerminal
 					session={paneSession}
+					locked={activeTab.locked}
 					onStatusChange={(status) => {
 						updateSessionInList(paneSession.id, { status });
 						if (status === 'exited' || status === 'stopped') {
@@ -170,6 +172,15 @@
 					newContent={activeTab.context.new_content}
 				/>
 			{/if}
+		{/if}
+
+		{#if showLockedOverlay}
+			<div class="absolute inset-0 z-10 flex items-center justify-center bg-ground/72 backdrop-blur-[1px]">
+				<div class="rounded-lg border border-edge bg-surface/95 px-3 py-2 text-center text-[0.78rem] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)]">
+					<div class="font-medium text-fg">Tab locked</div>
+					<div>Unlock it from the tab menu to interact.</div>
+				</div>
+			</div>
 		{/if}
 	</div>
 

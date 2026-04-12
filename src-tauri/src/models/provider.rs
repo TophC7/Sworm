@@ -67,6 +67,11 @@ pub enum ResumeMode {
     ThreadId {
         resume_command: &'static str,
     },
+    /// Simple flag-based resume (e.g. `--resume latest` for Gemini).
+    /// Flags are appended verbatim on restart; ignored on first start.
+    GenericFlag {
+        flags: &'static [&'static str],
+    },
 }
 
 #[allow(dead_code)]

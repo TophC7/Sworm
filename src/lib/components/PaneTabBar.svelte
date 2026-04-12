@@ -1,19 +1,22 @@
 <script lang="ts">
+	import { tick } from 'svelte'
+	import { backend } from '$lib/api/backend'
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
 	import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
-	import { getSessions, removeSession } from '$lib/stores/sessions.svelte'
+	import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
 	import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
 	import {
-	  canSplitPane,
 	  closeTab,
 	  collapsePaneIfEmpty,
 	  endTabDrag,
-	  moveTabToPane,
 	  promoteTemporaryTab,
 	  setActiveTab,
-	  splitPaneAt,
-	  startTabDrag
+	  startTabDrag,
+	  toggleTabLocked
 	} from '$lib/stores/workspace.svelte'
+	import * as sessionRegistry from '$lib/terminal/sessionRegistry'
 	import { statusColorClass, statusIcon } from '$lib/utils/session'
+	import Lock from '@lucide/svelte/icons/lock'
 	import Plus from '@lucide/svelte/icons/plus'
 
 	let {
@@ -37,9 +40,9 @@
 	let contextMenuOpen = $state(false);
 	let contextMenuTabId = $state<TabId | null>(null);
 	let contextMenuPos = $state({ x: 0, y: 0 });
-	let canSplitRight = $derived(canSplitPane(projectId, paneSlot, 'right'));
-	let canSplitDown = $derived(canSplitPane(projectId, paneSlot, 'down'));
 	let sessions = $derived(getSessions());
+	let warningOpen = $state(false);
+	let pendingSessionAction: (() => Promise<void>) | null = null;
 
 	function handleTabClick(tabId: TabId) {
 		setActiveTab(projectId, paneSlot, tabId);
@@ -53,8 +56,17 @@
 		if (!tab) return;
 
 		if (tab.kind === 'session') {
-			await removeSession(tab.sessionId, projectId);
-			return;
+			// Stop the PTY if actively running, but keep the session record in DB
+			// so it appears in the session history view
+			const session = sessions.find((s) => s.id === tab.sessionId);
+			if (session && (session.status === 'running' || session.status === 'starting')) {
+				try {
+					await backend.sessions.stop(tab.sessionId);
+					updateSessionInList(tab.sessionId, { status: 'stopped' });
+				} catch (err) {
+					console.error('Failed to stop session on tab close:', err);
+				}
+			}
 		}
 
 		closeTab(projectId, tabId);
@@ -73,17 +85,6 @@
 		contextMenuTabId = null;
 	}
 
-	function handleSplit(direction: 'right' | 'down') {
-		if (!contextMenuTabId) return;
-
-		const newSlot = splitPaneAt(projectId, paneSlot, direction);
-		if (newSlot) {
-			moveTabToPane(projectId, contextMenuTabId, newSlot);
-		}
-
-		closeContextMenu();
-	}
-
 	function tabLabel(tab: Tab): string {
 		if (tab.kind === 'session') return tab.title;
 		return tab.filePath.split('/').pop() ?? tab.filePath;
@@ -95,6 +96,12 @@
 	}
 
 	function handleDragStart(e: DragEvent, tabId: TabId) {
+		const tab = tabs.find((candidate) => candidate.id === tabId);
+		if (!tab || tab.locked) {
+			e.preventDefault();
+			return;
+		}
+
 		startTabDrag(projectId, tabId);
 		e.dataTransfer?.setData('text/plain', tabId);
 		if (e.dataTransfer) {
@@ -109,6 +116,81 @@
 	function handleAuxClick(e: MouseEvent, tabId: TabId) {
 		if (e.button !== 1) return;
 		void handleTabClose(e, tabId);
+	}
+
+	function getTabById(tabId: TabId | null): Tab | null {
+		if (!tabId) return null;
+		return tabs.find((candidate) => candidate.id === tabId) ?? null;
+	}
+
+	function contextSession(tabId: TabId | null) {
+		const tab = getTabById(tabId);
+		if (!tab || tab.kind !== 'session') return null;
+		return sessions.find((session) => session.id === tab.sessionId) ?? null;
+	}
+
+	async function stopSessionFromMenu(tabId: TabId) {
+		const tab = getTabById(tabId);
+		if (!tab || tab.kind !== 'session') return;
+
+		try {
+			const manager = sessionRegistry.get(tab.sessionId);
+			if (manager) {
+				await manager.stopPty();
+			} else {
+				await backend.sessions.stop(tab.sessionId);
+			}
+			updateSessionInList(tab.sessionId, { status: 'stopped' });
+		} catch (error) {
+			console.error('Failed to stop session:', error);
+		} finally {
+			closeContextMenu();
+		}
+	}
+
+	async function restartSessionNow(tabId: TabId) {
+		const tab = getTabById(tabId);
+		const session = contextSession(tabId);
+		if (!tab || tab.kind !== 'session' || !session) return;
+
+		setActiveTab(projectId, paneSlot, tab.id);
+		onTabSelected?.();
+		await tick();
+
+		try {
+			const manager = sessionRegistry.getOrCreate(session.id);
+			if (manager.isPtyActive()) {
+				await manager.stopPty();
+				updateSessionInList(session.id, { status: 'stopped' });
+			}
+			await manager.startPty(session);
+			updateSessionInList(session.id, { status: 'running' });
+		} catch (error) {
+			console.error('Failed to restart session:', error);
+			updateSessionInList(session.id, { status: 'failed' });
+		} finally {
+			closeContextMenu();
+		}
+	}
+
+	function handleRestartFromMenu(tabId: TabId) {
+		const session = contextSession(tabId);
+		if (!session) return;
+
+		const restart = () => restartSessionNow(tabId);
+		if (sessions.some((candidate) => candidate.id !== session.id && candidate.status === 'running')) {
+			pendingSessionAction = restart;
+			warningOpen = true;
+			closeContextMenu();
+			return;
+		}
+
+		void restart();
+	}
+
+	function handleToggleLock(tabId: TabId) {
+		toggleTabLocked(projectId, tabId);
+		closeContextMenu();
 	}
 
 	$effect(() => {
@@ -135,7 +217,7 @@
 		<TabButton
 			variant="pane"
 			active={activeTabId === tab.id}
-			draggable={true}
+			draggable={!tab.locked}
 			onclick={() => handleTabClick(tab.id)}
 			ondblclick={() => {
 				if (tab.kind === 'diff' && tab.temporary) {
@@ -146,7 +228,7 @@
 			onauxclick={(e) => handleAuxClick(e, tab.id)}
 			ondragstart={(e) => handleDragStart(e, tab.id)}
 			ondragend={handleDragEnd}
-			onClose={(e) => handleTabClose(e, tab.id)}
+			onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
 		>
 			{#if tab.kind === 'session'}
 				{#snippet leading()}
@@ -154,6 +236,13 @@
 					<span class="text-[0.55rem] shrink-0 {status ? statusColorClass(status) : 'text-muted'}">
 						{status ? statusIcon(status) : '◌'}
 					</span>
+					{#if tab.locked}
+						<Lock size={11} class="shrink-0 text-muted" />
+					{/if}
+				{/snippet}
+			{:else if tab.locked}
+				{#snippet leading()}
+					<Lock size={11} class="shrink-0 text-muted" />
 				{/snippet}
 			{/if}
 			<span class="truncate max-w-[120px] {tab.kind === 'diff' && tab.temporary ? 'italic' : ''}">
@@ -174,30 +263,39 @@
 </TabStrip>
 
 {#if contextMenuOpen}
+	{@const contextTab = getTabById(contextMenuTabId)}
+	{@const contextSessionValue = contextSession(contextMenuTabId)}
 	<div class="fixed inset-0 z-40" onclick={closeContextMenu} role="none"></div>
 	<div
 		class="fixed z-50 min-w-[140px] bg-raised border border-edge rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.4)] py-1 text-[0.78rem]"
 		style="left: {contextMenuPos.x}px; top: {contextMenuPos.y}px;"
 	>
+		{#if contextTab?.kind === 'session' && contextSessionValue}
+			<button
+				class="w-full px-3 py-1.5 text-left bg-transparent border-none text-fg cursor-pointer hover:bg-surface transition-colors rounded-sm"
+				onclick={() =>
+					contextSessionValue.status === 'running' || contextSessionValue.status === 'starting'
+						? void stopSessionFromMenu(contextTab.id)
+						: handleRestartFromMenu(contextTab.id)}
+			>
+				{contextSessionValue.status === 'running' || contextSessionValue.status === 'starting' ? 'Stop' : 'Restart'}
+			</button>
+		{/if}
+		{#if contextTab}
+			<button
+				class="w-full px-3 py-1.5 text-left bg-transparent border-none text-fg cursor-pointer hover:bg-surface transition-colors rounded-sm"
+				onclick={() => handleToggleLock(contextTab.id)}
+			>
+				{contextTab.locked ? 'Unlock Tab' : 'Lock Tab'}
+			</button>
+			<div class="h-px bg-edge mx-2 my-1"></div>
+		{/if}
 		<button
 			class="w-full px-3 py-1.5 text-left bg-transparent border-none transition-colors rounded-sm
-				{canSplitRight
-					? 'text-fg cursor-pointer hover:bg-surface'
-					: 'text-muted/50 cursor-default'}"
-			disabled={!canSplitRight}
-			onclick={() => handleSplit('right')}
-		>Split Right</button>
-		<button
-			class="w-full px-3 py-1.5 text-left bg-transparent border-none transition-colors rounded-sm
-				{canSplitDown
-					? 'text-fg cursor-pointer hover:bg-surface'
-					: 'text-muted/50 cursor-default'}"
-			disabled={!canSplitDown}
-			onclick={() => handleSplit('down')}
-		>Split Down</button>
-		<div class="h-px bg-edge mx-2 my-1"></div>
-		<button
-			class="w-full px-3 py-1.5 text-left bg-transparent border-none text-danger cursor-pointer hover:bg-danger-bg transition-colors rounded-sm"
+				{contextTab?.locked
+					? 'text-muted/50 cursor-default'
+					: 'text-danger cursor-pointer hover:bg-danger-bg'}"
+			disabled={contextTab?.locked}
 			onclick={(e) => {
 				if (contextMenuTabId) {
 					void handleTabClose(e, contextMenuTabId);
@@ -207,3 +305,22 @@
 		>Close</button>
 	</div>
 {/if}
+
+<ConfirmDialog
+	open={warningOpen}
+	title="Shared Workspace Warning"
+	message="Another session is already running in this project.\n\nSessions in the same project share the same working tree and branch.\nChanges made by one session may conflict with another."
+	confirmLabel="Start Anyway"
+	onCancel={() => {
+		warningOpen = false;
+		pendingSessionAction = null;
+	}}
+	onConfirm={() => {
+		const action = pendingSessionAction;
+		warningOpen = false;
+		pendingSessionAction = null;
+		if (action) {
+			void action();
+		}
+	}}
+/>

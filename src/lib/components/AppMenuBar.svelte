@@ -43,7 +43,7 @@
 </script>
 
 <MenubarRoot
-	class="flex items-center gap-0.5  rounded px-0.5 py-0.5 mr-1"
+	class="flex items-center gap-0.5 rounded px-0.5 py-0.5"
 >
 	<!-- File menu -->
 	<MenubarMenu>
