@@ -1,1 +1,1 @@
-export { default as BlurFade } from './blur-fade.svelte';
+export { default as BlurFade } from './blur-fade.svelte'

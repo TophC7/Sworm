@@ -3,47 +3,43 @@
 // Manages the session list for the active project (CRUD against the backend).
 // Active-session identity is derived from the workspace tab model.
 
-import { backend } from '$lib/api/backend';
-import { syncSessionTabs } from '$lib/stores/workspace.svelte';
-import type { Session } from '$lib/types/backend';
+import { backend } from '$lib/api/backend'
+import { syncSessionTabs } from '$lib/stores/workspace.svelte'
+import type { Session } from '$lib/types/backend'
 
-let sessions = $state<Session[]>([]);
+let sessions = $state<Session[]>([])
 
 export function getSessions() {
-	return sessions;
+  return sessions
 }
 
 export function hasRunningSessions(): boolean {
-	return sessions.some((s) => s.status === 'running');
+  return sessions.some((s) => s.status === 'running')
 }
 
 // --- Backend CRUD ---
 
 export async function loadSessions(projectId: string) {
-	try {
-		sessions = await backend.sessions.list(projectId);
-		syncSessionTabs(projectId, sessions);
-	} catch (e) {
-		console.error('Failed to load sessions:', e);
-		sessions = [];
-	}
+  try {
+    sessions = await backend.sessions.list(projectId)
+    syncSessionTabs(projectId, sessions)
+  } catch (e) {
+    console.error('Failed to load sessions:', e)
+    sessions = []
+  }
 }
 
-export async function createSession(
-	projectId: string,
-	providerId: string,
-	title: string
-): Promise<Session> {
-	const session = await backend.sessions.create(projectId, providerId, title);
-	await loadSessions(projectId);
-	return session;
+export async function createSession(projectId: string, providerId: string, title: string): Promise<Session> {
+  const session = await backend.sessions.create(projectId, providerId, title)
+  await loadSessions(projectId)
+  return session
 }
 
 export async function removeSession(sessionId: string, projectId: string) {
-	await backend.sessions.remove(sessionId);
-	await loadSessions(projectId);
+  await backend.sessions.remove(sessionId)
+  await loadSessions(projectId)
 }
 
 export function updateSessionInList(sessionId: string, updates: Partial<Session>) {
-	sessions = sessions.map((s) => (s.id === sessionId ? { ...s, ...updates } : s));
+  sessions = sessions.map((s) => (s.id === sessionId ? { ...s, ...updates } : s))
 }

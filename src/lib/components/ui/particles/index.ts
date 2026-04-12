@@ -1,1 +1,1 @@
-export { default as Particles } from './particles.svelte';
+export { default as Particles } from './particles.svelte'

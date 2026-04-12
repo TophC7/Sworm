@@ -53,15 +53,15 @@
   {@const connected = status !== undefined}
   <BlurFade {delay} duration={0.4} direction="up" offset={8}>
     <MagicCard
-      class="w-full border border-edge rounded-xl"
+      class="w-full rounded-xl border border-edge"
       gradientFrom={provider.gradientFrom}
       gradientTo={provider.gradientTo}
       disabled={!connected}
       onclick={() => handleSelect(provider)}
     >
       <div class="relative flex items-center gap-4 px-5 py-5">
-        <img src={provider.icon} alt="" class="w-12 h-12 shrink-0 {connected ? '' : 'grayscale opacity-50'}" />
-        <div class="flex flex-col gap-1 min-w-0">
+        <img src={provider.icon} alt="" class="h-12 w-12 shrink-0 {connected ? '' : 'opacity-50 grayscale'}" />
+        <div class="flex min-w-0 flex-col gap-1">
           {#if provider.textIcon && provider.textAspect}
             <span
               class="h-5 shrink-0 self-start {connected ? 'bg-fg' : 'bg-muted'}"
@@ -75,7 +75,7 @@
             ></span>
           {:else}
             <span
-              class="text-[1.1rem] font-semibold leading-tight shrink-0 {connected ? 'text-fg' : 'text-muted'}"
+              class="shrink-0 text-[1.1rem] leading-tight font-semibold {connected ? 'text-fg' : 'text-muted'}"
               style:font-family={provider.textFont ?? 'inherit'}>{provider.textLabel ?? provider.label}</span
             >
           {/if}
@@ -108,8 +108,8 @@
 
 <StageView>
   <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
-    <h2 class="text-xl text-bright mb-1 text-center">New Session</h2>
-    <p class="text-[0.82rem] text-muted mb-8 text-center">Choose a coding agent to start</p>
+    <h2 class="mb-1 text-center text-xl text-bright">New Session</h2>
+    <p class="mb-8 text-center text-[0.82rem] text-muted">Choose a coding agent to start</p>
   </BlurFade>
 
   <!-- Agent CLIs -->
@@ -121,7 +121,7 @@
 
   <!-- Divider -->
   <BlurFade delay={0.1 + allProviders.length * 0.08} duration={0.4} direction="up" offset={8}>
-    <div class="flex items-center gap-4 my-4">
+    <div class="my-4 flex items-center gap-4">
       <div class="flex-1 border-t border-edge"></div>
       <span class="text-[0.75rem] text-muted">or</span>
       <div class="flex-1 border-t border-edge"></div>

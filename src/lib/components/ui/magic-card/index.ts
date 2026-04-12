@@ -1,1 +1,1 @@
-export { default as MagicCard } from './magic-card.svelte';
+export { default as MagicCard } from './magic-card.svelte'

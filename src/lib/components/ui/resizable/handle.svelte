@@ -1,21 +1,21 @@
 <script lang="ts">
-	import { PaneResizer } from 'paneforge';
-	import { cn } from '$lib/utils/cn';
+  import { PaneResizer } from 'paneforge'
+  import { cn } from '$lib/utils/cn'
 
-	let {
-		class: className,
-		...rest
-	}: {
-		class?: string;
-	} = $props();
+  let {
+    class: className,
+    ...rest
+  }: {
+    class?: string
+  } = $props()
 </script>
 
 <PaneResizer
-	class={cn(
-		'shrink-0 transition-colors bg-edge/50 hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none',
-		'data-[direction=horizontal]:w-1 data-[direction=horizontal]:cursor-col-resize',
-		'data-[direction=vertical]:h-1 data-[direction=vertical]:cursor-row-resize',
-		className
-	)}
-	{...rest}
+  class={cn(
+    'shrink-0 bg-edge/50 transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none',
+    'data-[direction=horizontal]:w-1 data-[direction=horizontal]:cursor-col-resize',
+    'data-[direction=vertical]:h-1 data-[direction=vertical]:cursor-row-resize',
+    className
+  )}
+  {...rest}
 />

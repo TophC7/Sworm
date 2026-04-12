@@ -36,43 +36,43 @@
 </script>
 
 <StageView>
-  <div class="w-full max-w-md mx-auto">
+  <div class="mx-auto w-full max-w-md">
     <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
-      <div class="flex items-center gap-3 mb-1">
-        <Worm size={30} strokeWidth={2} class="text-accent shrink-0 -mr-1.5" />
-        <h1 class="text-2xl text-bright font-medium m-0">Sworm</h1>
+      <div class="mb-1 flex items-center gap-3">
+        <Worm size={30} strokeWidth={2} class="-mr-1.5 shrink-0 text-accent" />
+        <h1 class="m-0 text-2xl font-medium text-bright">Sworm</h1>
       </div>
-      <p class="text-[0.8rem] text-muted mb-8">Agentic Development Environment</p>
+      <p class="mb-8 text-[0.8rem] text-muted">Agentic Development Environment</p>
     </BlurFade>
 
     <BlurFade delay={0.15} duration={0.4} direction="up" offset={8}>
-      <h2 class="text-[0.7rem] uppercase tracking-widest text-muted mb-3">Start</h2>
+      <h2 class="mb-3 text-[0.7rem] tracking-widest text-muted uppercase">Start</h2>
       <button
-        class="flex items-center gap-2.5 w-full text-left text-[0.85rem] text-fg hover:text-bright bg-transparent border-none cursor-pointer py-1.5 px-0 transition-colors group"
+        class="group flex w-full cursor-pointer items-center gap-2.5 border-none bg-transparent px-0 py-1.5 text-left text-[0.85rem] text-fg transition-colors hover:text-bright"
         onclick={handleOpen}
       >
-        <FolderOpen size={15} class="text-muted group-hover:text-accent transition-colors" />
+        <FolderOpen size={15} class="text-muted transition-colors group-hover:text-accent" />
         Open Repository
       </button>
     </BlurFade>
 
     {#if projects.length > 0}
       <BlurFade delay={0.25} duration={0.4} direction="up" offset={8}>
-        <h2 class="text-[0.7rem] uppercase tracking-widest text-muted mb-3 mt-8 flex items-center gap-1.5">
+        <h2 class="mt-8 mb-3 flex items-center gap-1.5 text-[0.7rem] tracking-widest text-muted uppercase">
           <Clock size={11} />
           Recent
         </h2>
-        <ul class="list-none m-0 p-0 flex flex-col gap-0.5">
+        <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
           {#each projects.slice(0, 8) as project (project.id)}
             <li>
               <button
-                class="flex items-baseline gap-2 w-full text-left bg-transparent border-none cursor-pointer py-1.5 px-0 transition-colors group"
+                class="group flex w-full cursor-pointer items-baseline gap-2 border-none bg-transparent px-0 py-1.5 text-left transition-colors"
                 onclick={() => openProject(project.id)}
               >
-                <span class="text-[0.85rem] text-accent group-hover:text-bright transition-colors truncate">
+                <span class="truncate text-[0.85rem] text-accent transition-colors group-hover:text-bright">
                   {dirName(project.path)}
                 </span>
-                <span class="text-[0.7rem] text-subtle group-hover:text-muted transition-colors truncate">
+                <span class="truncate text-[0.7rem] text-subtle transition-colors group-hover:text-muted">
                   {parentPath(project.path)}
                 </span>
               </button>

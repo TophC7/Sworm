@@ -1,1 +1,1 @@
-export { default as TreeNode } from './tree-node.svelte';
+export { default as TreeNode } from './tree-node.svelte'

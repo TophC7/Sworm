@@ -1,5 +1,5 @@
 @import 'tailwindcss';
-@source "../src";
+@source '../src';
 
 /*
  * Sworm Design Tokens
@@ -26,144 +26,144 @@
  */
 
 @theme {
-	/* ── Surface hierarchy ────────────────────── */
-	--color-ground: #131313;
-	--color-surface: #1c1917;
-	--color-raised: #262220;
-	--color-overlay: #302a28;
+  /* ── Surface hierarchy ────────────────────── */
+  --color-ground: #131313;
+  --color-surface: #1c1917;
+  --color-raised: #262220;
+  --color-overlay: #302a28;
 
-	/* ── Borders ──────────────────────────────── */
-	--color-edge: #3a322e;
-	--color-edge-strong: #4a403a;
+  /* ── Borders ──────────────────────────────── */
+  --color-edge: #3a322e;
+  --color-edge-strong: #4a403a;
 
-	/* ── Foreground ───────────────────────────── */
-	--color-fg: #e2e2e2;
-	--color-muted: #a59c99;
-	--color-subtle: #6e6864;
-	--color-bright: #fff3ef;
-	--color-max: #fffaf8;
+  /* ── Foreground ───────────────────────────── */
+  --color-fg: #e2e2e2;
+  --color-muted: #a59c99;
+  --color-subtle: #6e6864;
+  --color-bright: #fff3ef;
+  --color-max: #fffaf8;
 
-	/* ── Accent (warm peach) ──────────────────── */
-	--color-accent: #ffb59f;
-	--color-accent-dim: #f29d84;
-	--color-accent-bright: #ffc0ad;
+  /* ── Accent (warm peach) ──────────────────── */
+  --color-accent: #ffb59f;
+  --color-accent-dim: #f29d84;
+  --color-accent-bright: #ffc0ad;
 
-	/* ── Semantic ─────────────────────────────── */
-	--color-danger: #ff7672;
-	--color-danger-bright: #ffa29f;
-	--color-success: #98ff7f;
-	--color-success-bright: #b7ffa5;
-	--color-warning: #ffe572;
-	--color-warning-bright: #ffeea5;
+  /* ── Semantic ─────────────────────────────── */
+  --color-danger: #ff7672;
+  --color-danger-bright: #ffa29f;
+  --color-success: #98ff7f;
+  --color-success-bright: #b7ffa5;
+  --color-warning: #ffe572;
+  --color-warning-bright: #ffeea5;
 
-	/* ── Extended palette ─────────────────────── */
-	--color-selection: #7c2d15;
-	--color-warm: #763724;
-	--color-pink: #ffcbbb;
-	--color-peach: #ffddd3;
+  /* ── Extended palette ─────────────────────── */
+  --color-selection: #7c2d15;
+  --color-warm: #763724;
+  --color-pink: #ffcbbb;
+  --color-peach: #ffddd3;
 
-	/* ── Derived functional colors ────────────── */
-	--color-danger-bg: #2d1014;
-	--color-danger-border: #5b1b21;
-	--color-success-bg: rgba(152, 255, 127, 0.08);
-	--color-warning-bg: rgba(255, 229, 114, 0.08);
-	--color-accent-bg: rgba(255, 181, 159, 0.13);
+  /* ── Derived functional colors ────────────── */
+  --color-danger-bg: #2d1014;
+  --color-danger-border: #5b1b21;
+  --color-success-bg: rgba(152, 255, 127, 0.08);
+  --color-warning-bg: rgba(255, 229, 114, 0.08);
+  --color-accent-bg: rgba(255, 181, 159, 0.13);
 
-	/* ── Font stacks ─────────────────────────── */
-	--font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
-	--font-mono: 'Monocraft Nerd Font', monospace;
+  /* ── Font stacks ─────────────────────────── */
+  --font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Monocraft Nerd Font', monospace;
 }
 
 /* ── Bundled fonts ────────────────────────────── */
 
 @font-face {
-	font-family: 'Lexend';
-	font-style: normal;
-	font-weight: 100 900;
-	font-display: swap;
-	src: url('/fonts/Lexend-Variable.woff2') format('woff2');
+  font-family: 'Lexend';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/Lexend-Variable.woff2') format('woff2');
 }
 
 @font-face {
-	font-family: 'Monocraft Nerd Font';
-	font-style: normal;
-	font-weight: 100 900;
-	font-display: swap;
-	src: url('/fonts/Monocraft-nerd-fonts-patched.ttc') format('collection');
+  font-family: 'Monocraft Nerd Font';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/Monocraft-nerd-fonts-patched.ttc') format('collection');
 }
 
 @font-face {
-	font-family: 'SF Mono';
-	font-style: normal;
-	font-weight: 400;
-	font-display: swap;
-	src: url('/fonts/SFMono-Regular.otf') format('opentype');
+  font-family: 'SF Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/SFMono-Regular.otf') format('opentype');
 }
 
 @font-face {
-	font-family: 'SF Mono';
-	font-style: normal;
-	font-weight: 700;
-	font-display: swap;
-	src: url('/fonts/SFMono-Bold.otf') format('opentype');
+  font-family: 'SF Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/SFMono-Bold.otf') format('opentype');
 }
 
 /* ── Component classes ────────────────────────── */
 
 @layer components {
-	.section-label {
-		@apply px-3.5 pt-2.5 pb-1 text-[0.7rem] font-semibold uppercase text-muted tracking-wide flex items-center justify-between;
-	}
+  .section-label {
+    @apply flex items-center justify-between px-3.5 pt-2.5 pb-1 text-[0.7rem] font-semibold tracking-wide text-muted uppercase;
+  }
 
-	.btn-sm {
-		@apply text-[0.72rem] px-2.5 py-1 border border-edge rounded bg-raised text-fg cursor-pointer hover:border-accent transition-colors disabled:opacity-60 disabled:cursor-default;
-	}
+  .btn-sm {
+    @apply cursor-pointer rounded border border-edge bg-raised px-2.5 py-1 text-[0.72rem] text-fg transition-colors hover:border-accent disabled:cursor-default disabled:opacity-60;
+  }
 
-	.field-input {
-		@apply py-1.5 px-2.5 rounded border border-edge bg-ground text-fg text-[0.82rem];
-	}
+  .field-input {
+    @apply rounded border border-edge bg-ground px-2.5 py-1.5 text-[0.82rem] text-fg;
+  }
 
-	.btn-ghost {
-		@apply bg-transparent border-none text-muted cursor-pointer text-[0.9rem] px-1 hover:text-bright transition-colors;
-	}
+  .btn-ghost {
+    @apply cursor-pointer border-none bg-transparent px-1 text-[0.9rem] text-muted transition-colors hover:text-bright;
+  }
 }
 
 /* ── Base resets ──────────────────────────────── */
 
 @layer base {
-	body {
-		@apply m-0 p-0 font-sans bg-ground text-fg overflow-hidden;
-	}
+  body {
+    @apply m-0 overflow-hidden bg-ground p-0 font-sans text-fg;
+  }
 
-	a {
-		@apply text-accent no-underline;
-	}
+  a {
+    @apply text-accent no-underline;
+  }
 
-	a:hover {
-		@apply underline;
-	}
+  a:hover {
+    @apply underline;
+  }
 
-	/* Hide scrollbar for tab bars */
-	.scrollbar-none {
-		scrollbar-width: none;
-		&::-webkit-scrollbar {
-			display: none;
-		}
-	}
+  /* Hide scrollbar for tab bars */
+  .scrollbar-none {
+    scrollbar-width: none;
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
 
-	/* Scrollbar — no Tailwind equivalent */
-	::-webkit-scrollbar {
-		width: 6px;
-	}
+  /* Scrollbar — no Tailwind equivalent */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
 
-	::-webkit-scrollbar-track {
-		background: transparent;
-	}
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-	::-webkit-scrollbar-thumb {
-		background: var(--color-edge);
-		border-radius: 3px;
-	}
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-edge);
+    border-radius: 3px;
+  }
 }
 
 /*
@@ -172,46 +172,46 @@
  * custom-property block when it lives in a component-local <style>.
  */
 .diff-viewer-root .diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
-	--diff-border--: #3a322e;
+  --diff-border--: #3a322e;
 
-	/* Added lines */
-	--diff-add-content--: rgba(152, 255, 127, 0.08);
-	--diff-add-lineNumber--: rgba(152, 255, 127, 0.12);
-	--diff-add-content-highlight--: rgba(152, 255, 127, 0.2);
+  /* Added lines */
+  --diff-add-content--: rgba(152, 255, 127, 0.08);
+  --diff-add-lineNumber--: rgba(152, 255, 127, 0.12);
+  --diff-add-content-highlight--: rgba(152, 255, 127, 0.2);
 
-	/* Deleted lines */
-	--diff-del-content--: #2d1014;
-	--diff-del-lineNumber--: rgba(255, 118, 114, 0.12);
-	--diff-del-content-highlight--: rgba(255, 118, 114, 0.22);
+  /* Deleted lines */
+  --diff-del-content--: #2d1014;
+  --diff-del-lineNumber--: rgba(255, 118, 114, 0.12);
+  --diff-del-content-highlight--: rgba(255, 118, 114, 0.22);
 
-	/* Plain / context lines */
-	--diff-plain-content--: #131313;
-	--diff-plain-lineNumber--: #1c1917;
-	--diff-plain-lineNumber-color--: #6e6864;
+  /* Plain / context lines */
+  --diff-plain-content--: #131313;
+  --diff-plain-lineNumber--: #1c1917;
+  --diff-plain-lineNumber-color--: #6e6864;
 
-	/* Expand / collapsed regions */
-	--diff-expand-content--: #1c1917;
-	--diff-expand-lineNumber--: #1c1917;
-	--diff-expand-lineNumber-color--: #6e6864;
+  /* Expand / collapsed regions */
+  --diff-expand-content--: #1c1917;
+  --diff-expand-lineNumber--: #1c1917;
+  --diff-expand-lineNumber-color--: #6e6864;
 
-	/* Hunk headers */
-	--diff-hunk-content--: rgba(255, 181, 159, 0.06);
-	--diff-hunk-lineNumber--: rgba(255, 181, 159, 0.1);
-	--diff-hunk-lineNumber-hover--: #ffb59f;
-	--diff-hunk-content-color--: #a59c99;
+  /* Hunk headers */
+  --diff-hunk-content--: rgba(255, 181, 159, 0.06);
+  --diff-hunk-lineNumber--: rgba(255, 181, 159, 0.1);
+  --diff-hunk-lineNumber-hover--: #ffb59f;
+  --diff-hunk-content-color--: #a59c99;
 
-	/* Widget */
-	--diff-add-widget--: #ffb59f;
-	--diff-add-widget-color--: #131313;
+  /* Widget */
+  --diff-add-widget--: #ffb59f;
+  --diff-add-widget-color--: #131313;
 
-	/* Empty cells (split view) */
-	--diff-empty-content--: #1c1917;
+  /* Empty cells (split view) */
+  --diff-empty-content--: #1c1917;
 
-	color: #e2e2e2;
+  color: #e2e2e2;
 }
 
 .diff-viewer-root .diff-tailwindcss-wrapper {
-	font-family: 'Monocraft Nerd Font', monospace;
+  font-family: 'Monocraft Nerd Font', monospace;
 }
 
 .diff-viewer-root .diff-tailwindcss-wrapper,
@@ -222,8 +222,8 @@
 .diff-viewer-root .old-diff-table-wrapper,
 .diff-viewer-root .new-diff-table-wrapper,
 .diff-viewer-root .unified-diff-table-wrapper {
-	min-height: 0;
-	height: 100%;
+  min-height: 0;
+  height: 100%;
 }
 
 .diff-viewer-root .diff-tailwindcss-wrapper,
@@ -231,39 +231,39 @@
 .diff-viewer-root .diff-view-wrapper,
 .diff-viewer-root .split-diff-view,
 .diff-viewer-root .unified-diff-view {
-	display: flex;
-	flex: 1 1 auto;
+  display: flex;
+  flex: 1 1 auto;
 }
 
 .diff-viewer-root .diff-tailwindcss-wrapper,
 .diff-viewer-root .diff-style-root,
 .diff-viewer-root .diff-view-wrapper,
 .diff-viewer-root .unified-diff-view {
-	flex-direction: column;
+  flex-direction: column;
 }
 
 .diff-viewer-root .split-diff-view {
-	flex-direction: row;
-	flex-basis: auto;
+  flex-direction: row;
+  flex-basis: auto;
 }
 
 .diff-viewer-root .old-diff-table-wrapper,
 .diff-viewer-root .new-diff-table-wrapper,
 .diff-viewer-root .unified-diff-table-wrapper {
-	flex: 1 1 auto;
-	overflow-y: auto;
+  flex: 1 1 auto;
+  overflow-y: auto;
 }
 
 .diff-viewer-root ::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
+  width: 6px;
+  height: 6px;
 }
 
 .diff-viewer-root ::-webkit-scrollbar-track {
-	background: transparent;
+  background: transparent;
 }
 
 .diff-viewer-root ::-webkit-scrollbar-thumb {
-	background: #3a322e;
-	border-radius: 3px;
+  background: #3a322e;
+  border-radius: 3px;
 }

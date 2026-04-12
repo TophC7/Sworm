@@ -1,10 +1,10 @@
-export { default as SidebarProvider } from './sidebar-provider.svelte';
-export { default as Sidebar } from './sidebar.svelte';
-export { default as SidebarHeader } from './sidebar-header.svelte';
-export { default as SidebarContent } from './sidebar-content.svelte';
-export { default as SidebarFooter } from './sidebar-footer.svelte';
-export { default as SidebarRail } from './sidebar-rail.svelte';
-export { default as SidebarTrigger } from './sidebar-trigger.svelte';
-export { default as SidebarGroup } from './sidebar-group.svelte';
-export { default as SidebarGroupLabel } from './sidebar-group-label.svelte';
-export { useSidebar, type SidebarState, type SidebarSide, type CollapsibleMode } from './sidebar-state.svelte';
+export { default as SidebarProvider } from './sidebar-provider.svelte'
+export { default as Sidebar } from './sidebar.svelte'
+export { default as SidebarHeader } from './sidebar-header.svelte'
+export { default as SidebarContent } from './sidebar-content.svelte'
+export { default as SidebarFooter } from './sidebar-footer.svelte'
+export { default as SidebarRail } from './sidebar-rail.svelte'
+export { default as SidebarTrigger } from './sidebar-trigger.svelte'
+export { default as SidebarGroup } from './sidebar-group.svelte'
+export { default as SidebarGroupLabel } from './sidebar-group-label.svelte'
+export { useSidebar, type SidebarState, type SidebarSide, type CollapsibleMode } from './sidebar-state.svelte'
