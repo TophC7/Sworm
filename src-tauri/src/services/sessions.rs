@@ -67,9 +67,9 @@ impl SessionService {
         })
     }
 
-    /// Derive a deterministic UUID from the ADE session ID.
+    /// Derive a deterministic UUID from the Sworm session ID.
     /// Claude Code CLI requires `--session-id` to be a valid UUID,
-    /// so we hash the ADE ID and format the first 16 bytes as UUID v4.
+    /// so we hash the Sworm ID and format the first 16 bytes as UUID v4.
     pub fn deterministic_claude_session_id(app_session_id: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(format!("claude:{}", app_session_id));

@@ -19,7 +19,7 @@ pub fn health_ping() -> String {
 #[tauri::command]
 pub fn app_get_info() -> AppInfo {
     AppInfo {
-        name: "ADE".to_string(),
+        name: "Sworm".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }

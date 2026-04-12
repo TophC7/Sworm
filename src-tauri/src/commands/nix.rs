@@ -123,28 +123,22 @@ pub async fn nix_evaluate(
     .await
     .map_err(|e| ApiError::Internal(format!("Evaluation task panicked: {}", e)))?;
 
-    // Save result to DB
-    {
-        let db = state.db.lock();
-        match &eval_result {
-            Ok(env_vars) => {
-                NixService::save_success(db.conn(), &project_id, env_vars)
-                    .map_err(ApiError::Database)?;
-            }
-            Err(eval_error) => {
-                NixService::save_error(db.conn(), &project_id, eval_error)
-                    .map_err(ApiError::Database)?;
-            }
+    // Save result to DB and return the updated record in one lock
+    let db = state.db.lock();
+    match eval_result {
+        Ok(env_vars) => {
+            NixService::save_success(db.conn(), &project_id, &env_vars)
+                .map_err(ApiError::Database)?;
+        }
+        Err(eval_error) => {
+            NixService::save_error(db.conn(), &project_id, &eval_error)
+                .map_err(ApiError::Database)?;
+            return Err(ApiError::Internal(eval_error.to_string()));
         }
     }
 
-    // _guard drops here, releasing the lock
+    // _guard drops here, releasing the eval lock
 
-    if let Err(eval_error) = eval_result {
-        return Err(ApiError::Internal(eval_error.to_string()));
-    }
-
-    let db = state.db.lock();
     NixService::get(db.conn(), &project_id)
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::Internal("Nix env record disappeared after save".to_string()))

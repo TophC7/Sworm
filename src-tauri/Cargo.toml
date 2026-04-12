@@ -1,16 +1,16 @@
 [package]
-name = "ade"
+name = "sworm"
 version = "0.1.0"
 edition = "2021"
-description = "ADE - Linux-first desktop app for coding-agent CLIs"
+description = "Sworm - Linux-first desktop app for coding-agent CLIs"
 license = "MIT"
 
 [lib]
-name = "ade_lib"
+name = "sworm_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [[bin]]
-name = "ade"
+name = "sworm"
 path = "src/main.rs"
 
 [build-dependencies]

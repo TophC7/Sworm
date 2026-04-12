@@ -14,11 +14,11 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ade_lib=info".into()),
+                .unwrap_or_else(|_| "sworm_lib=info".into()),
         )
         .init();
 
-    tracing::info!("ADE starting up");
+    tracing::info!("Sworm starting up");
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -79,7 +79,7 @@ pub fn run() {
             commands::pty::pty_demo_kill,
         ])
         .build(tauri::generate_context!())
-        .expect("error building ADE");
+        .expect("error building Sworm");
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
@@ -119,7 +119,7 @@ fn preferred_gdk_backend(current: Option<std::ffi::OsString>) -> Option<&'static
 #[cfg(target_os = "linux")]
 fn should_apply_webkit_workarounds() -> bool {
     should_apply_webkit_workarounds_for_env(
-        std::env::var("ADE_WEBKIT_WORKAROUNDS").ok().as_deref(),
+        std::env::var("SWORM_WEBKIT_WORKAROUNDS").ok().as_deref(),
         std::env::var_os("WAYLAND_DISPLAY").is_some(),
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
         std::env::var("GDK_BACKEND").ok().as_deref(),

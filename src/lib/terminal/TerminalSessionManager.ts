@@ -158,7 +158,7 @@ export class TerminalSessionManager {
 
 		this.lastError = null;
 		terminal.write(
-			`\x1b[34m[ADE] Starting ${providerLabel(session.provider_id)} in ${session.cwd}\x1b[0m\r\n`
+			`\x1b[34m[Sworm] Starting ${providerLabel(session.provider_id)} in ${session.cwd}\x1b[0m\r\n`
 		);
 
 		const output = backend.sessions.createOutputChannel((data) => {

@@ -1,5 +1,5 @@
 {
-  description = "ADE - Linux-first desktop app for coding-agent CLIs";
+  description = "Sworm - Linux-first Agentic Development Environment";
 
   nixConfig = {
     extra-substituters = [
@@ -65,8 +65,8 @@
             xdotool
           ];
 
-          docsPackage = pkgs.writeTextDir "share/doc/ade/README.txt" ''
-            ADE bootstrap flake
+          docsPackage = pkgs.writeTextDir "share/doc/sworm/README.txt" ''
+            Sworm bootstrap flake
 
             This package exists so `nix build` works before the Tauri app scaffold is present.
 
@@ -93,7 +93,7 @@
               );
             in
             pkgs.stdenv.mkDerivation {
-              pname = "ade";
+              pname = "sworm";
               version = "0.1.0";
 
               src = fs.toSource {
@@ -136,15 +136,15 @@
               installPhase = ''
                 runHook preInstall
 
-                mkdir -p $out/share/ade
-                cp -r build $out/share/ade/frontend
-                cp -r src-tauri $out/share/ade/src-tauri
+                mkdir -p $out/share/sworm
+                cp -r build $out/share/sworm/frontend
+                cp -r src-tauri $out/share/sworm/src-tauri
 
                 runHook postInstall
               '';
 
               meta = {
-                description = "ADE - Linux-first desktop app for coding-agent CLIs";
+                description = "Sworm - Linux-first desktop app for coding-agent CLIs";
                 license = pkgs.lib.licenses.mit;
                 platforms = pkgs.lib.platforms.linux;
               };
@@ -184,7 +184,7 @@
         in
         {
           default = pkgs.mkShell {
-            name = "ade-dev-shell";
+            name = "sworm-dev-shell";
 
             nativeBuildInputs = [
               pkgs.clang

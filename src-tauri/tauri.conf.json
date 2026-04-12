@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ADE",
+  "productName": "Sworm",
   "version": "0.1.0",
-  "identifier": "dev.ade",
+  "identifier": "dev.sworm",
   "build": {
     "beforeDevCommand": "bun run dev",
     "beforeBuildCommand": "bun run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ADE",
+        "title": "Sworm",
         "width": 1200,
         "height": 800,
         "resizable": true,

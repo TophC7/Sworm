@@ -1,6 +1,6 @@
-# ADE
+# Sworm
 
-ADE is a Linux-first desktop app for running coding-agent CLIs inside a local git repository.
+Sworm is a Linux-first desktop app for running coding-agent CLIs inside a local git repository.
 
 
 ## Stack

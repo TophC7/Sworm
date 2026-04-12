@@ -51,6 +51,8 @@ pub enum NixEvalError {
     ParseError(String),
 }
 
+impl std::error::Error for NixEvalError {}
+
 impl std::fmt::Display for NixEvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -209,12 +211,11 @@ impl NixService {
         nix_file: &str,
         timeout_secs: u64,
     ) -> Result<HashMap<String, String>, NixEvalError> {
-        // Check nix is available
-        if which::which("nix").is_err() && which::which("nix-shell").is_err() {
+        let is_flake = nix_file == "flake.nix";
+        let required_bin = if is_flake { "nix" } else { "nix-shell" };
+        if which::which(required_bin).is_err() {
             return Err(NixEvalError::NixNotFound);
         }
-
-        let is_flake = nix_file == "flake.nix";
         let timeout = std::time::Duration::from_secs(timeout_secs);
 
         info!(

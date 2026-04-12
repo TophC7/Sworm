@@ -3,32 +3,6 @@
 version = 4
 
 [[package]]
-name = "ade"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "keyring",
- "parking_lot",
- "portable-pty",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "which",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3995,6 +3969,32 @@ dependencies = [
  "base64 0.21.7",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "sworm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "keyring",
+ "parking_lot",
+ "portable-pty",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "which",
 ]
 
 [[package]]
