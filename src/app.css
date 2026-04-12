@@ -127,6 +127,14 @@
 		@apply underline;
 	}
 
+	/* Hide scrollbar for tab bars */
+	.scrollbar-none {
+		scrollbar-width: none;
+		&::-webkit-scrollbar {
+			display: none;
+		}
+	}
+
 	/* Scrollbar — no Tailwind equivalent */
 	::-webkit-scrollbar {
 		width: 6px;

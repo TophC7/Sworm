@@ -24,9 +24,16 @@
   },
   "dependencies": {
     "@git-diff-view/svelte": "~0.1.3",
+    "@lucide/svelte": "^1.8.0",
     "@tauri-apps/api": "^2.10.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0"
+    "@xterm/xterm": "^6.0.0",
+    "bits-ui": "^2.17.3",
+    "clsx": "^2.1.1",
+    "motion-sv": "^0.1.12",
+    "paneforge": "^1.0.2",
+    "tailwind-merge": "^3.5.0",
+    "tailwind-variants": "^3.2.2"
   }
 }

@@ -2,6 +2,9 @@
 	import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
 	import '@git-diff-view/svelte/styles/diff-view-pure.css';
 	import { parseDiffMeta, extToHighlightLang, isBinaryDiff } from '$lib/utils/diffParser';
+	import { Button } from '$lib/components/ui/button';
+	import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
+	import X from '@lucide/svelte/icons/x';
 
 	let {
 		rawDiff,
@@ -54,24 +57,16 @@
 
 		<div class="flex items-center gap-2 shrink-0">
 			<!-- Split / Unified toggle -->
-			<div class="flex items-center bg-ground rounded overflow-hidden border border-edge">
-				<button
-					class="px-2 py-0.5 text-[0.68rem] transition-colors {mode === DiffModeEnum.Split ? 'bg-accent-bg text-accent' : 'text-muted hover:text-fg'}"
-					onclick={() => (mode = DiffModeEnum.Split)}
-				>
-					Split
-				</button>
-				<button
-					class="px-2 py-0.5 text-[0.68rem] transition-colors {mode === DiffModeEnum.Unified ? 'bg-accent-bg text-accent' : 'text-muted hover:text-fg'}"
-					onclick={() => (mode = DiffModeEnum.Unified)}
-				>
-					Unified
-				</button>
-			</div>
+			<TabsRoot value={mode === DiffModeEnum.Split ? 'split' : 'unified'} onValueChange={(v) => { mode = v === 'split' ? DiffModeEnum.Split : DiffModeEnum.Unified; }}>
+				<TabsList>
+					<TabsTrigger value="split">Split</TabsTrigger>
+					<TabsTrigger value="unified">Unified</TabsTrigger>
+				</TabsList>
+			</TabsRoot>
 
-			<button class="btn-ghost text-[0.8rem]" onclick={onClose} title="Close diff"
-				>&times;</button
-			>
+			<Button variant="ghost" size="icon-sm" onclick={onClose} title="Close diff">
+				<X size={14} />
+			</Button>
 		</div>
 	</div>
 

@@ -4,6 +4,15 @@ import { defineConfig } from 'vite';
 
 // Tauri expects a fixed port during dev
 const host = process.env.TAURI_DEV_HOST;
+const ignoredWatchPaths = [
+	'**/src-tauri/**',
+	'**/.direnv/**',
+	'**/.git/**',
+	'**/.bun/**',
+	'**/target/**',
+	'**/result/**',
+	'**/result-*/**'
+];
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
@@ -23,8 +32,8 @@ export default defineConfig({
 				}
 			: undefined,
 		watch: {
-			// Tell vite to ignore watching src-tauri
-			ignored: ['**/src-tauri/**']
+			// Avoid reload storms from local tooling and Nix metadata trees.
+			ignored: ignoredWatchPaths
 		}
 	}
 });

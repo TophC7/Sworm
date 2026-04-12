@@ -202,14 +202,15 @@
               pkgs.file
               pkgs.forgejo-mcp
               pkgs.git
+              pkgs.gsettings-desktop-schemas
               pkgs.jq
               pkgs.nixfmt-classic
               pkgs.openssl
+              pkgs.ripgrep
               pkgs.rust-analyzer
               pkgs.rustc
               pkgs.rustfmt
               pkgs.shared-mime-info
-              pkgs.gsettings-desktop-schemas
               pkgs.wget
             ];
 

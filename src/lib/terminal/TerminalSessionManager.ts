@@ -4,6 +4,7 @@ import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 import type { Channel } from '@tauri-apps/api/core';
 import { backend } from '$lib/api/backend';
 import type { PtyEvent, Session } from '$lib/types/backend';
+import { providerLabel } from '$lib/utils/session';
 
 const TERMINAL_OPTIONS: ITerminalOptions = {
 	cursorBlink: true,
@@ -41,12 +42,6 @@ const textEncoder = new TextEncoder();
 
 type EventListener = (event: PtyEvent) => void;
 type ErrorListener = (message: string) => void;
-
-function providerLabel(providerId: string): string {
-	if (providerId === 'claude_code') return 'Claude Code';
-	if (providerId === 'codex') return 'Codex';
-	return providerId;
-}
 
 export class TerminalSessionManager {
 	readonly sessionId: string;

@@ -1,0 +1,56 @@
+// Global UI state module using Svelte 5 runes.
+//
+// Stores visual preferences that are NOT per-project:
+// sidebar dimensions, collapse state, zoom level.
+
+let gitSidebarWidth = $state(280);
+let gitSidebarCollapsed = $state(false);
+let zoomLevel = $state(1.0);
+
+// ---------------------------------------------------------------------------
+// Git sidebar
+// ---------------------------------------------------------------------------
+
+export function getGitSidebarWidth(): number {
+	return gitSidebarWidth;
+}
+
+export function setGitSidebarWidth(width: number) {
+	gitSidebarWidth = Math.max(220, Math.min(520, width));
+}
+
+export function isGitSidebarCollapsed(): boolean {
+	return gitSidebarCollapsed;
+}
+
+export function setGitSidebarCollapsed(collapsed: boolean) {
+	gitSidebarCollapsed = collapsed;
+}
+
+export function toggleGitSidebar() {
+	gitSidebarCollapsed = !gitSidebarCollapsed;
+}
+
+// ---------------------------------------------------------------------------
+// Zoom
+// ---------------------------------------------------------------------------
+
+export function getZoomLevel(): number {
+	return zoomLevel;
+}
+
+export function setZoomLevel(level: number) {
+	zoomLevel = Math.max(0.5, Math.min(2.0, level));
+}
+
+export function zoomIn() {
+	setZoomLevel(zoomLevel + 0.1);
+}
+
+export function zoomOut() {
+	setZoomLevel(zoomLevel - 0.1);
+}
+
+export function zoomReset() {
+	zoomLevel = 1.0;
+}

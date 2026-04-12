@@ -1,6 +1,8 @@
 // Session state module using Svelte 5 runes.
 //
-// Tracks sessions for the active project and active session selection.
+// Manages the session list for the active project (CRUD against the backend).
+// During Phase 0, activeSessionId still lives here for backward compatibility.
+// Phase 1 will remove it and switch to workspace.svelte.ts tab model.
 
 import { backend } from '$lib/api/backend';
 import type { Session } from '$lib/types/backend';
@@ -22,6 +24,16 @@ export function getActiveSessionId() {
 	return activeSessionId;
 }
 
+export function hasRunningSessions(): boolean {
+	return sessions.some((s) => s.status === 'running');
+}
+
+export function selectSession(id: string | null) {
+	activeSessionId = id;
+}
+
+// --- Backend CRUD ---
+
 export async function loadSessions(projectId: string) {
 	try {
 		sessions = await backend.sessions.list(projectId);
@@ -34,10 +46,6 @@ export async function loadSessions(projectId: string) {
 export function clearSessions() {
 	sessions = [];
 	activeSessionId = null;
-}
-
-export function selectSession(id: string | null) {
-	activeSessionId = id;
 }
 
 export async function createSession(
