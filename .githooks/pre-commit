@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Pre-commit hook: auto-format staged files before committing.
+# Frontend (prettier) + Rust (cargo fmt) + Nix (nixfmt).
+
+set -euo pipefail
+
+# -- Collect staged files (Added, Copied, Modified, Renamed) --
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+# -- Frontend: prettier --
+FRONTEND_FILES=$(echo "$STAGED" | grep -E '\.(ts|js|svelte|css|json|html)$' || true)
+
+if [ -n "$FRONTEND_FILES" ]; then
+  echo "[pre-commit] formatting frontend files with prettier..."
+  echo "$FRONTEND_FILES" | xargs bun prettier --write --ignore-unknown 2>/dev/null || true
+  echo "$FRONTEND_FILES" | xargs git add
+fi
+
+# -- Rust: cargo fmt --
+RUST_FILES=$(echo "$STAGED" | grep -E '\.rs$' || true)
+
+if [ -n "$RUST_FILES" ]; then
+  echo "[pre-commit] formatting rust files with cargo fmt..."
+  (cd src-tauri && cargo fmt) 2>/dev/null || true
+  echo "$RUST_FILES" | xargs git add
+fi
+
+# -- Nix: nixfmt --
+NIX_FILES=$(echo "$STAGED" | grep -E '\.nix$' || true)
+
+if [ -n "$NIX_FILES" ]; then
+  echo "[pre-commit] formatting nix files with nixfmt..."
+  echo "$NIX_FILES" | xargs nixfmt 2>/dev/null || true
+  echo "$NIX_FILES" | xargs git add
+fi
+
+exit 0

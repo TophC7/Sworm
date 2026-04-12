@@ -1,32 +1,38 @@
 {
-  "enabledPlugins": {
-    "svelte-skills@svelte-skills-kit": true
-  },
   "hooks": {
     "PostToolUse": [
       {
+        "matcher": "Edit|Write",
         "hooks": [
           {
-            "async": true,
+            "type": "command",
             "command": "FILE=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '\\.(ts|svelte|js|css)$'; then bun prettier --write \"$FILE\" 2>/dev/null; fi",
             "statusMessage": "Formatting...",
-            "type": "command"
+            "async": true
           }
-        ],
-        "matcher": "Edit|Write"
+        ]
       }
     ],
     "PreToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
+            "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/block-npm.sh",
-            "statusMessage": "Checking for npm/node usage...",
-            "type": "command"
+            "statusMessage": "Checking for npm/node usage..."
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit-check.sh",
+            "statusMessage": "Checking formatting on staged files..."
           }
-        ],
-        "matcher": "Bash"
+        ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "svelte-skills@svelte-skills-kit": true,
+    "frontend-design@claude-plugins-official": true
   }
 }

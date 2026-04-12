@@ -261,6 +261,7 @@
               export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules"
               export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:${pkgs.shared-mime-info}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
               export BUN_INSTALL="$PWD/.bun"
+              git config --local core.hooksPath .githooks
             '';
           };
         }

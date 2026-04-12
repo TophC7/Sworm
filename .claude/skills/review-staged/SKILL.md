@@ -1,6 +1,6 @@
 ---
 name: review-staged
-description: Review staged git changes against ADE conventions. Invoke with /review-staged before committing. Focus on correctness, scope control, and alignment with the current ADE specs.
+description: Review staged git changes against current ADE conventions. Invoke with /review-staged before committing. Focus on correctness, scope control, and alignment with the live codebase.
 ---
 
 # Review Staged Changes
@@ -36,6 +36,7 @@ Load these references before reviewing. **Do not propose or apply any fixes unti
 
 - **CLAUDE.md** (project root)
 - The staged file contents themselves (read every staged file completely)
+- `package.json` and/or `src-tauri/Cargo.toml` if the staged changes touch frontend scripts, dependencies, Rust code, or build behavior
 
 After reading, write a brief summary of what the staged changes do (2-3 sentences). This confirms you understand the code before touching it. If you cannot summarize the changes, re-read until you can.
 
@@ -57,7 +58,7 @@ Use judgment -- if narrowing a type requires refactoring the call sites, note it
 
 #### C. Svelte/SvelteKit compliance (FIX DIRECTLY)
 
-Check against **CLAUDE.md**, the current ADE specs, and the **svelte** MCP server to verify framework-specific correctness. Look for:
+Check against **CLAUDE.md**, the live ADE code patterns, and the **svelte** MCP server to verify framework-specific correctness. Look for:
 
 - Template issues (missing keys, wrong directive usage, deprecated APIs)
 - Invalid component structure or misuse of runes
@@ -71,7 +72,7 @@ Look for structural problems that cross module boundaries or affect the app's de
 
 - Wrong boundary crossings (server/client imports, env var misuse)
 - Duplicated definitions that should be shared
-- Incomplete implementations or abstractions that drift from the ADE specs
+- Incomplete implementations or abstractions that drift from the current ADE architecture
 
 These are presented in the results table for the user to decide on. Never fix these autonomously -- they often involve design decisions that need context beyond the diff.
 
@@ -97,7 +98,9 @@ For categories A, B, and C: edit the files directly. Keep changes minimal and fo
 Run the narrowest relevant checks that actually exist in the repo. Prefer:
 
 - `bun run check` for Svelte/TypeScript frontend checks
-- `bun eslint src/` if ESLint is configured
+- `bun run build` when frontend integration or routing changed
+- `cargo check` for Rust changes
+- `cargo test` when Rust logic changed
 - targeted formatter commands for touched files
 
 If a referenced command does not exist yet, say so instead of inventing one.
