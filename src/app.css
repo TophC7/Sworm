@@ -71,7 +71,7 @@
 
 	/* ── Font stacks ─────────────────────────── */
 	--font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
-	--font-mono: 'Monocraft', monospace;
+	--font-mono: 'Monocraft Nerd Font', monospace;
 }
 
 /* ── Bundled fonts ────────────────────────────── */
@@ -85,11 +85,27 @@
 }
 
 @font-face {
-	font-family: 'Monocraft';
+	font-family: 'Monocraft Nerd Font';
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url('/fonts/Monocraft-nerd-fonts-patched.ttc') format('collection');
+}
+
+@font-face {
+	font-family: 'SF Mono';
 	font-style: normal;
 	font-weight: 400;
 	font-display: swap;
-	src: url('/fonts/Monocraft.otf') format('opentype');
+	src: url('/fonts/SFMono-Regular.otf') format('opentype');
+}
+
+@font-face {
+	font-family: 'SF Mono';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url('/fonts/SFMono-Bold.otf') format('opentype');
 }
 
 /* ── Component classes ────────────────────────── */
@@ -195,7 +211,7 @@
 }
 
 .diff-viewer-root .diff-tailwindcss-wrapper {
-	font-family: 'Monocraft', monospace;
+	font-family: 'Monocraft Nerd Font', monospace;
 }
 
 .diff-viewer-root ::-webkit-scrollbar {

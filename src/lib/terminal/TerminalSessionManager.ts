@@ -1,15 +1,15 @@
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
-import type { Channel } from '@tauri-apps/api/core';
 import { backend } from '$lib/api/backend';
 import type { PtyEvent, Session } from '$lib/types/backend';
 import { providerLabel } from '$lib/utils/session';
+import type { Channel } from '@tauri-apps/api/core';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm';
 
 const TERMINAL_OPTIONS: ITerminalOptions = {
 	cursorBlink: true,
 	fontSize: 13,
-	fontFamily: "'Monocraft', monospace",
+	fontFamily: "'Monocraft Nerd Font', monospace",
 	scrollback: 10000,
 	convertEol: true,
 	theme: {
@@ -92,12 +92,12 @@ export class TerminalSessionManager {
 		};
 	}
 
-	attach(container: HTMLElement): void {
+	async attach(container: HTMLElement): Promise<void> {
 		if (this.disposed) {
 			throw new Error(`Terminal session ${this.sessionId} has been disposed`);
 		}
 
-		this.ensureTerminal();
+		await this.ensureTerminal();
 
 		if (this.container && this.container !== container) {
 			this.detach();
@@ -148,7 +148,7 @@ export class TerminalSessionManager {
 			return;
 		}
 
-		this.ensureTerminal();
+		await this.ensureTerminal();
 		this.releaseChannels();
 
 		const terminal = this.terminal;
@@ -241,9 +241,20 @@ export class TerminalSessionManager {
 		this.errorListeners.clear();
 	}
 
-	private ensureTerminal(): void {
+	private async ensureTerminal(): Promise<void> {
 		if (this.terminal) {
 			return;
+		}
+
+		// Wait for the terminal font to load before creating the terminal.
+		// xterm.js measures character widths on a canvas at creation time —
+		// if the font isn't ready, it measures with the fallback and the
+		// custom font never renders correctly.
+		const fontSpec = `${TERMINAL_OPTIONS.fontSize ?? 13}px ${TERMINAL_OPTIONS.fontFamily ?? 'monospace'}`;
+		try {
+			await document.fonts.load(fontSpec);
+		} catch {
+			// Font load can fail if the font name is invalid; proceed with fallback
 		}
 
 		this.hostEl = document.createElement('div');

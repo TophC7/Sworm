@@ -3,7 +3,7 @@
 	import StageView from '$lib/components/StageView.svelte'
 	import { BlurFade } from '$lib/components/ui/blur-fade'
 	import { MagicCard } from '$lib/components/ui/magic-card'
-	import { allProviders } from '$lib/data/providers'
+	import { allProviders, directOptions, type ProviderMeta } from '$lib/data/providers'
 	import { getActiveProjectId } from '$lib/stores/projects.svelte'
 	import { getConnectedProviders } from '$lib/stores/providers.svelte'
 	import { createSession, hasRunningSessions, selectSession } from '$lib/stores/sessions.svelte'
@@ -47,50 +47,78 @@
 	}
 </script>
 
+{#snippet providerCard(provider: ProviderMeta, delay: number)}
+	{@const status = providerMap.get(provider.id)}
+	{@const connected = status !== undefined}
+	<BlurFade {delay} duration={0.4} direction="up" offset={8}>
+		<MagicCard
+			class="w-full border border-edge rounded-xl"
+			gradientFrom={provider.gradientFrom}
+			gradientTo={provider.gradientTo}
+			disabled={!connected}
+			onclick={() => handleSelect(provider)}
+		>
+			<div class="flex items-center gap-4 px-5 py-5">
+				<img
+					src={provider.icon}
+					alt=""
+					class="w-12 h-12 shrink-0 {connected ? '' : 'grayscale opacity-50'}"
+				/>
+				<div class="flex flex-col gap-1 min-w-0">
+					{#if provider.textIcon && provider.textAspect}
+						<span
+							class="h-5 shrink-0 self-start {connected ? 'bg-fg' : 'bg-muted'}"
+							style="
+								width: {Math.round(20 * provider.textAspect)}px;
+								-webkit-mask: url({provider.textIcon}) no-repeat center / contain;
+								mask: url({provider.textIcon}) no-repeat center / contain;
+							"
+							role="img"
+							aria-label={provider.label}
+						></span>
+					{:else}
+						<span
+							class="text-[1.1rem] font-semibold leading-tight shrink-0 {connected ? 'text-fg' : 'text-muted'}"
+							style:font-family={provider.textFont ?? 'inherit'}
+						>{provider.textLabel ?? provider.label}</span>
+					{/if}
+					{#if !connected}
+						<span class="text-[0.65rem] text-muted italic">Not detected</span>
+					{:else if status?.version}
+						<span class="text-[0.65rem] text-success">{status.version}</span>
+					{/if}
+				</div>
+			</div>
+		</MagicCard>
+	</BlurFade>
+{/snippet}
+
 <StageView>
 	<BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
 		<h2 class="text-xl text-bright mb-1 text-center">New Session</h2>
 		<p class="text-[0.82rem] text-muted mb-8 text-center">Choose a coding agent to start</p>
 	</BlurFade>
 
+	<!-- Agent CLIs -->
 	<div class="grid grid-cols-2 gap-4">
 		{#each allProviders as provider, i (provider.id)}
-			{@const status = providerMap.get(provider.id)}
-			{@const connected = status !== undefined}
-			<BlurFade delay={0.1 + i * 0.08} duration={0.4} direction="up" offset={8}>
-				<MagicCard
-					class="w-full border border-edge rounded-xl"
-					gradientFrom={provider.gradientFrom}
-					gradientTo={provider.gradientTo}
-					disabled={!connected}
-					onclick={() => handleSelect(provider)}
-				>
-					<div class="flex items-center gap-4 px-5 py-5">
-						<img
-							src={provider.icon}
-							alt=""
-							class="w-12 h-12 shrink-0 {connected ? '' : 'grayscale opacity-50'}"
-						/>
-						<div class="flex flex-col gap-1 min-w-0">
-							<span
-								class="h-5 shrink-0 self-start {connected ? 'bg-fg' : 'bg-muted'}"
-								style="
-									width: {Math.round(20 * provider.textAspect)}px;
-									-webkit-mask: url({provider.textIcon}) no-repeat center / contain;
-									mask: url({provider.textIcon}) no-repeat center / contain;
-								"
-								role="img"
-								aria-label={provider.label}
-							></span>
-							{#if !connected}
-								<span class="text-[0.65rem] text-muted italic">Not detected</span>
-							{:else if status?.version}
-								<span class="text-[0.65rem] text-success">{status.version}</span>
-							{/if}
-						</div>
-					</div>
-				</MagicCard>
-			</BlurFade>
+			{@render providerCard(provider, 0.1 + i * 0.08)}
+		{/each}
+	</div>
+
+	<!-- Divider -->
+	<BlurFade delay={0.1 + allProviders.length * 0.08} duration={0.4} direction="up" offset={8}>
+		<div class="flex items-center gap-4 my-4">
+			<div class="flex-1 border-t border-edge"></div>
+			<span class="text-[0.75rem] text-muted">or</span>
+			<div class="flex-1 border-t border-edge"></div>
+		</div>
+	</BlurFade>
+
+	<!-- Direct options -->
+	<div class="grid grid-cols-2 gap-4">
+		{#each directOptions as provider, i (provider.id)}
+			{@render providerCard(provider, 0.1 + (allProviders.length + 1 + i) * 0.08)}
 		{/each}
 	</div>
 </StageView>

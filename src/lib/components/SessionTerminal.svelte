@@ -72,7 +72,7 @@
 			clearManagerListeners();
 		}
 
-		const nextManager = sessionRegistry.attach(nextSession.id, containerEl);
+		const nextManager = await sessionRegistry.attach(nextSession.id, containerEl);
 		attachedSessionId = nextSession.id;
 		bindManager(nextManager);
 

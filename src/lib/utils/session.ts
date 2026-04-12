@@ -4,7 +4,7 @@
  * Shared by SecondaryTabBar, PaneTabBar, and TerminalSessionManager.
  */
 
-import { allProviders } from '$lib/data/providers';
+import { allProviders, directOptions } from '$lib/data/providers';
 
 export function statusIcon(status: string): string {
 	if (status === 'running') return '\u25CF';
@@ -19,7 +19,9 @@ export function statusColorClass(status: string): string {
 	return 'text-muted';
 }
 
-/** Derive label from the canonical allProviders list. */
+/** Derive label from the canonical provider lists. */
 export function providerLabel(providerId: string): string {
-	return allProviders.find((p) => p.id === providerId)?.label ?? providerId;
+	return allProviders.find((p) => p.id === providerId)?.label
+		?? directOptions.find((p) => p.id === providerId)?.label
+		?? providerId;
 }

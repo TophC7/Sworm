@@ -57,6 +57,34 @@ const PROVIDERS: &[ProviderDef] = &[
         session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
+    ProviderDef {
+        id: ProviderId::Fresh,
+        label: "Fresh",
+        cli_command: "fresh",
+        detect_commands: &["fresh"],
+        version_args: &["--version"],
+        install_hint: "Fresh is not installed",
+        docs_url: "",
+        auto_approve_flag: None,
+        prompt_mode: PromptMode::KeystrokeInjection,
+        resume_mode: ResumeMode::None,
+        session_id_mode: SessionIdMode::None,
+        default_args: &[],
+    },
+    ProviderDef {
+        id: ProviderId::Terminal,
+        label: "Terminal",
+        cli_command: "sh",
+        detect_commands: &[],  // detected via $SHELL, not PATH lookup
+        version_args: &["--version"],
+        install_hint: "",
+        docs_url: "",
+        auto_approve_flag: None,
+        prompt_mode: PromptMode::KeystrokeInjection,
+        resume_mode: ResumeMode::None,
+        session_id_mode: SessionIdMode::None,
+        default_args: &[],
+    },
 ];
 
 /// Provider service: detection, registry, status caching.
@@ -75,12 +103,33 @@ impl ProviderService {
         &mut self,
         merged_path: &str,
         binary_overrides: &HashMap<String, String>,
+        detected_shell: Option<&str>,
     ) -> Vec<ProviderStatus> {
         let mut results = Vec::new();
 
         for def in PROVIDERS {
             let override_path = binary_overrides.get(&def.id.to_string()).map(String::as_str);
-            let status = detect_provider(def, merged_path, override_path);
+
+            let status = if def.id == ProviderId::Terminal {
+                // Terminal is always available — it uses the user's login shell
+                let shell = detected_shell.unwrap_or("/bin/sh");
+                let shell_name = std::path::Path::new(shell)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("sh");
+                ProviderStatus {
+                    id: def.id,
+                    label: def.label.to_string(),
+                    status: ProviderConnectionStatus::Connected,
+                    version: Some(shell_name.to_string()),
+                    resolved_path: Some(shell.to_string()),
+                    message: None,
+                    install_hint: String::new(),
+                }
+            } else {
+                detect_provider(def, merged_path, override_path)
+            };
+
             self.cache.insert(def.id.to_string(), status.clone());
             results.push(status);
         }
@@ -92,8 +141,9 @@ impl ProviderService {
         &mut self,
         merged_path: &str,
         binary_overrides: &HashMap<String, String>,
+        detected_shell: Option<&str>,
     ) -> Vec<ProviderStatus> {
-        self.detect_all(merged_path, binary_overrides)
+        self.detect_all(merged_path, binary_overrides, detected_shell)
     }
 
     pub fn definition(provider_id: &str) -> Option<&'static ProviderDef> {

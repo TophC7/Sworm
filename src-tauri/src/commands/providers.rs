@@ -12,7 +12,7 @@ pub fn provider_list(state: tauri::State<'_, AppState>) -> Result<Vec<ProviderSt
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
     let mut providers = state.providers.lock();
-    Ok(providers.list(&merged_path, &overrides))
+    Ok(providers.list(&merged_path, &overrides, Some(&state.env.detected_shell)))
 }
 
 /// Force re-detect all providers.
@@ -26,5 +26,5 @@ pub fn provider_refresh(
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
     let mut providers = state.providers.lock();
-    Ok(providers.detect_all(&merged_path, &overrides))
+    Ok(providers.detect_all(&merged_path, &overrides, Some(&state.env.detected_shell)))
 }

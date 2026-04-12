@@ -2,14 +2,14 @@ import { TerminalSessionManager } from '$lib/terminal/TerminalSessionManager';
 
 const sessions = new Map<string, TerminalSessionManager>();
 
-export function attach(sessionId: string, container: HTMLElement): TerminalSessionManager {
+export async function attach(sessionId: string, container: HTMLElement): Promise<TerminalSessionManager> {
 	let manager = sessions.get(sessionId);
 	if (!manager) {
 		manager = new TerminalSessionManager(sessionId);
 		sessions.set(sessionId, manager);
 	}
 
-	manager.attach(container);
+	await manager.attach(container);
 	return manager;
 }
 

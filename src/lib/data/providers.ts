@@ -1,17 +1,25 @@
 /**
  * CLI provider metadata for session creation cards.
+ *
+ * Text branding uses either an SVG mask (textIcon + textAspect)
+ * or plain text (textLabel + textFont).
  */
 
 export interface ProviderMeta {
 	id: string;
 	label: string;
 	icon: string;
-	textIcon: string;
-	textAspect: number;
 	gradientFrom: string;
 	gradientTo: string;
+	// SVG text mode
+	textIcon?: string;
+	textAspect?: number;
+	// Plain text mode (used when textIcon is absent)
+	textLabel?: string;
+	textFont?: string;
 }
 
+/** Agent CLI providers — detected and managed by the backend. */
 export const allProviders: ProviderMeta[] = [
 	{
 		id: 'claude_code',
@@ -48,5 +56,27 @@ export const allProviders: ProviderMeta[] = [
 		textAspect: 138 / 24,
 		gradientFrom: '#c084fc',
 		gradientTo: '#4c1d95'
+	}
+];
+
+/** Direct options — shown below the "or" divider. */
+export const directOptions: ProviderMeta[] = [
+	{
+		id: 'fresh',
+		label: 'Fresh',
+		icon: '/svg/fresh.svg',
+		textLabel: 'Fresh',
+		textFont: "'SF Mono', monospace",
+		gradientFrom: '#10b981',
+		gradientTo: '#064e3b'
+	},
+	{
+		id: 'terminal',
+		label: 'Terminal',
+		icon: '/svg/terminal.svg',
+		textLabel: 'Terminal',
+		textFont: "'SF Mono', monospace",
+		gradientFrom: '#a1a1aa',
+		gradientTo: '#3f3f46'
 	}
 ];

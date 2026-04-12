@@ -70,7 +70,7 @@ impl EnvironmentService {
     /// 3. Probe the login shell for PATH
     /// 4. Build a merged child environment
     pub fn new() -> Self {
-        let detected_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let detected_shell = detect_login_shell();
         let base_path = std::env::var("PATH").unwrap_or_default();
 
         info!("Environment bootstrap: shell={}, base PATH length={}", detected_shell, base_path.len());
@@ -128,6 +128,39 @@ impl EnvironmentService {
             webkit_disable_compositing_mode: std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").ok(),
         }
     }
+}
+
+/// Detect the user's login shell.
+///
+/// `$SHELL` can be overridden by tooling (e.g. `nix develop` sets it to
+/// a Nix-store bash). The authoritative source is `/etc/passwd`, so we
+/// check that first via `getent passwd $USER` and fall back to `$SHELL`.
+fn detect_login_shell() -> String {
+    // Check /etc/passwd — this is the user's configured login shell
+    if let Ok(user) = std::env::var("USER") {
+        if let Ok(output) = std::process::Command::new("getent")
+            .args(["passwd", &user])
+            .output()
+        {
+            if output.status.success() {
+                let line = String::from_utf8_lossy(&output.stdout);
+                if let Some(shell) = line.trim().rsplit(':').next() {
+                    if !shell.is_empty()
+                        && shell != "/bin/false"
+                        && shell != "/usr/sbin/nologin"
+                    {
+                        info!("Login shell from /etc/passwd: {}", shell);
+                        return shell.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to $SHELL
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    info!("Login shell from $SHELL: {}", shell);
+    shell
 }
 
 /// Probe the user's login shell for its PATH.

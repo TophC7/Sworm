@@ -211,16 +211,26 @@ pub fn session_start(
     let db_path = db.db_path().clone();
     drop(db);
 
-    let cli_cmd = ProviderService::resolve_command_path(
-        &session.provider_id,
-        &state.env.merged_path,
-        provider_config.binary_path_override.as_deref(),
-    )
-    .unwrap_or_else(|| {
-        ProviderService::cli_command(&session.provider_id)
-            .unwrap_or("/bin/bash")
-            .to_string()
-    });
+    let cli_cmd = if session.provider_id == "terminal" {
+        // Respect user override from settings, fall back to detected login shell
+        provider_config
+            .binary_path_override
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| state.env.detected_shell.clone())
+    } else {
+        ProviderService::resolve_command_path(
+            &session.provider_id,
+            &state.env.merged_path,
+            provider_config.binary_path_override.as_deref(),
+        )
+        .unwrap_or_else(|| {
+            ProviderService::cli_command(&session.provider_id)
+                .unwrap_or("/bin/bash")
+                .to_string()
+        })
+    };
     let (resume_token, session_app_id) = match session.provider_id.as_str() {
         "claude_code" => {
             // Claude Code uses --session-id <uuid> for both new and existing
