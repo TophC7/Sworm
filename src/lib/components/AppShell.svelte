@@ -5,10 +5,12 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { onMount } from 'svelte';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { backend } from '$lib/api/backend';
 	import { getActiveProject, addProject } from '$lib/stores/projects.svelte';
 	import { openProject } from '$lib/stores/workspace.svelte';
-	import { getZoomLevel } from '$lib/stores/ui.svelte';
+	import { getZoomLevel, zoomIn, zoomOut, zoomReset, getWindowControls } from '$lib/stores/ui.svelte';
 
 	let activeProject = $derived(getActiveProject());
 	let zoom = $derived(getZoomLevel());
@@ -16,10 +18,45 @@
 	let settingsOpen = $state(false);
 	let projectError = $state<string | null>(null);
 
+	// Restore system decorations if user previously chose that (requires restart to toggle)
+	onMount(() => {
+		const wc = getWindowControls();
+		if (wc.useSystemDecorations) {
+			getCurrentWindow().setDecorations(true);
+		}
+	});
+
 	// Root-level zoom effect — lives here so it persists across all views
 	$effect(() => {
 		document.documentElement.style.fontSize = `${zoom * 100}%`;
 		return () => { document.documentElement.style.fontSize = ''; };
+	});
+
+	// Global keyboard shortcuts
+	$effect(() => {
+		function onKeyDown(e: KeyboardEvent) {
+			if (!e.ctrlKey && !e.metaKey) return;
+			// Don't steal shortcuts from the terminal
+			if ((e.target as HTMLElement).closest?.('.xterm')) return;
+
+			switch (e.key) {
+				case '=':
+				case '+':
+					e.preventDefault();
+					zoomIn();
+					break;
+				case '-':
+					e.preventDefault();
+					zoomOut();
+					break;
+				case '0':
+					e.preventDefault();
+					zoomReset();
+					break;
+			}
+		}
+		window.addEventListener('keydown', onKeyDown);
+		return () => window.removeEventListener('keydown', onKeyDown);
 	});
 
 	async function handleNewProject() {

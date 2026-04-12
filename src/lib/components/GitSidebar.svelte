@@ -1,26 +1,31 @@
 <script lang="ts">
-	import type { GitSummary, DiffContext } from '$lib/types/backend';
-	import GitFileTree from '$lib/components/GitFileTree.svelte';
-	import GitCommitLog from '$lib/components/GitCommitLog.svelte';
-	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
-	import ChevronsLeft from '@lucide/svelte/icons/chevrons-left';
+	import GitCommitLog from '$lib/components/GitCommitLog.svelte'
+	import GitFileTree from '$lib/components/GitFileTree.svelte'
+	import { Badge } from '$lib/components/ui/badge'
+	import { Button } from '$lib/components/ui/button'
 	import {
-		isGitSidebarCollapsed,
-		setGitSidebarCollapsed
-	} from '$lib/stores/ui.svelte';
+	  ResizableHandle,
+	  ResizablePane,
+	  ResizablePaneGroup
+	} from '$lib/components/ui/resizable'
 	import {
-		SidebarProvider,
-		Sidebar,
-		SidebarHeader,
-		SidebarContent,
-		SidebarRail,
-		SidebarTrigger
-	} from '$lib/components/ui/sidebar';
+	  Sidebar,
+	  SidebarContent,
+	  SidebarHeader,
+	  SidebarProvider,
+	  SidebarRail,
+	  SidebarTrigger
+	} from '$lib/components/ui/sidebar'
 	import {
-		ResizablePaneGroup,
-		ResizablePane,
-		ResizableHandle
-	} from '$lib/components/ui/resizable';
+	  isGitSidebarCollapsed,
+	  setGitSidebarCollapsed
+	} from '$lib/stores/ui.svelte'
+	import type { DiffContext, GitSummary } from '$lib/types/backend'
+	import { PanelLeftClose } from '@lucide/svelte'
+	import ArrowDown from '@lucide/svelte/icons/arrow-down'
+	import ArrowUp from '@lucide/svelte/icons/arrow-up'
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch'
+	import RotateCw from '@lucide/svelte/icons/rotate-cw'
 
 	let {
 		summary,
@@ -50,16 +55,39 @@
 		</SidebarRail>
 
 		<SidebarHeader>
-			<span class="font-semibold text-[0.7rem] uppercase tracking-wide text-muted">Git</span>
-			<div class="flex items-center gap-1">
-				{#if summary?.branch}
-					<span class="text-[0.68rem] text-muted">{summary.branch}</span>
+			<div class="flex items-center gap-1.5">
+				<span class="font-semibold text-[0.7rem] uppercase tracking-wide text-muted">Git</span>
+				{#if onRefresh}
+					<Button variant="ghost" size="icon-sm" onclick={onRefresh} title="Refresh">
+						<RotateCw size={11} />
+					</Button>
 				{/if}
+			</div>
+			<div class="flex items-center gap-1">
 				<SidebarTrigger>
-					<ChevronsLeft size={12} />
+					<PanelLeftClose size={12} />
 				</SidebarTrigger>
 			</div>
 		</SidebarHeader>
+
+		{#if !collapsed && summary?.branch}
+			<div class="flex items-center gap-1.5 px-2.5 py-1 border-b border-edge shrink-0">
+				<Badge variant="default" class="gap-1 font-mono text-[0.68rem] normal-case">
+					<GitBranchIcon size={10} />
+					{summary.branch}
+				</Badge>
+				{#if (summary.ahead ?? 0) > 0}
+					<Badge variant="success" class="gap-0.5 text-[0.68rem]">
+						<ArrowUp size={9} />{summary.ahead}
+					</Badge>
+				{/if}
+				{#if (summary.behind ?? 0) > 0}
+					<Badge variant="danger" class="gap-0.5 text-[0.68rem]">
+						<ArrowDown size={9} />{summary.behind}
+					</Badge>
+				{/if}
+			</div>
+		{/if}
 
 		<SidebarContent>
 			{#if summary}
@@ -69,7 +97,6 @@
 							<GitFileTree
 								{summary}
 								{projectPath}
-								{onRefresh}
 								{onViewDiff}
 								{activeDiffFile}
 								{onDiffError}

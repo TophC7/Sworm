@@ -8,6 +8,8 @@
 		saveProviderConfig
 	} from '$lib/stores/settings.svelte';
 	import { refreshProviders } from '$lib/stores/providers.svelte';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
+	import { getWindowControls, setWindowControls } from '$lib/stores/ui.svelte';
 	import { DialogRoot, DialogContent, DialogTitle } from '$lib/components/ui/dialog';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -103,6 +105,18 @@
 		};
 	}
 
+	let wcConfig = $derived(getWindowControls());
+
+	function handleToggleSystemDecorations(useSystem: boolean) {
+		setWindowControls({ useSystemDecorations: useSystem });
+		const win = getCurrentWindow();
+		win.setDecorations(useSystem);
+	}
+
+	function handleToggleWcButton(key: 'showMinimize' | 'showMaximize' | 'showClose', value: boolean) {
+		setWindowControls({ [key]: value });
+	}
+
 	function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
 		if (status === 'connected') return 'success';
 		if (status === 'missing') return 'warning';
@@ -129,6 +143,53 @@
 
 		<!-- Content -->
 		<ScrollArea class="flex-1">
+			<!-- Window controls (always visible, not backend-dependent) -->
+			<div class="border-b border-edge">
+				<div class="px-5 py-2">
+					<span class="text-[0.7rem] font-semibold uppercase tracking-wide text-muted">Window Controls</span>
+				</div>
+
+				<div class="px-5 pb-3 flex flex-col gap-2.5">
+					<label class="flex items-center gap-2 text-[0.82rem]">
+						<input
+							type="checkbox"
+							checked={wcConfig.useSystemDecorations}
+							onchange={(e) => handleToggleSystemDecorations((e.currentTarget as HTMLInputElement).checked)}
+						/>
+						<span class="text-fg">Use system window decorations</span>
+					</label>
+
+					{#if !wcConfig.useSystemDecorations}
+						<div class="flex items-center gap-4 pl-5 text-[0.82rem]">
+							<label class="flex items-center gap-1.5">
+								<input
+									type="checkbox"
+									checked={wcConfig.showMinimize}
+									onchange={(e) => handleToggleWcButton('showMinimize', (e.currentTarget as HTMLInputElement).checked)}
+								/>
+								<span class="text-muted">Minimize</span>
+							</label>
+							<label class="flex items-center gap-1.5">
+								<input
+									type="checkbox"
+									checked={wcConfig.showMaximize}
+									onchange={(e) => handleToggleWcButton('showMaximize', (e.currentTarget as HTMLInputElement).checked)}
+								/>
+								<span class="text-muted">Maximize</span>
+							</label>
+							<label class="flex items-center gap-1.5">
+								<input
+									type="checkbox"
+									checked={wcConfig.showClose}
+									onchange={(e) => handleToggleWcButton('showClose', (e.currentTarget as HTMLInputElement).checked)}
+								/>
+								<span class="text-muted">Close</span>
+							</label>
+						</div>
+					{/if}
+				</div>
+			</div>
+
 			{#if loading && !settings}
 				<div class="px-5 py-8 text-muted text-[0.82rem]">Loading settings&hellip;</div>
 			{:else if settings}

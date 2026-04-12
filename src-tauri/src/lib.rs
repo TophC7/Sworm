@@ -28,16 +28,6 @@ pub fn run() {
             app.manage(state);
             tracing::info!("AppState initialized");
 
-            // GTK always draws client-side decorations (CSD) and ignores the
-            // Wayland xdg-decoration protocol. Detect tiling compositors and
-            // strip decorations so the WM's own chrome (or none) takes over.
-            if should_disable_decorations() {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_decorations(false);
-                    tracing::info!("Disabled CSD for tiling compositor");
-                }
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -165,36 +155,6 @@ fn should_apply_webkit_workarounds_for_env(
     gdk_backend
         .map(|value| value.split(',').any(|entry| entry.trim().eq("wayland")))
         .unwrap_or(false)
-}
-
-/// Check whether the desktop environment is a tiling compositor
-/// that manages its own window chrome (or uses none at all).
-///
-/// Checks `ADE_DECORATIONS` env var first (explicit override),
-/// then falls back to detecting known tiling Wayland compositors
-/// via `XDG_CURRENT_DESKTOP`.
-fn should_disable_decorations() -> bool {
-    // Explicit override: ADE_DECORATIONS=0 forces off, =1 forces on
-    if let Ok(val) = std::env::var("ADE_DECORATIONS") {
-        return val == "0";
-    }
-
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_lowercase();
-
-    // Known tiling Wayland compositors that don't want CSD
-    const TILING_DESKTOPS: &[&str] = &[
-        "niri",
-        "sway",
-        "hyprland",
-        "river",
-        "dwl",
-        "qtile",
-        "i3",
-    ];
-
-    TILING_DESKTOPS.iter().any(|&wm| desktop.contains(wm))
 }
 
 #[cfg(test)]

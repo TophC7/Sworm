@@ -18,7 +18,7 @@
 {#if !sidebar.open && sidebar.collapsible === 'icon'}
 	<button
 		class={cn(
-			'w-full h-full flex flex-col items-center pt-3 cursor-pointer bg-transparent border-none',
+			'w-full h-full flex flex-col items-center px-2 pt-3 cursor-pointer bg-transparent border-none',
 			'hover:bg-surface transition-colors',
 			className
 		)}

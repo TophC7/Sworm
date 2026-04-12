@@ -4,15 +4,12 @@
 	import { backend } from '$lib/api/backend';
 	import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree';
 	import { TreeNode } from '$lib/components/ui/file-tree';
-	import { Button } from '$lib/components/ui/button';
-	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
 	let {
 		summary,
 		projectPath,
-		onRefresh,
 		onViewDiff,
 		activeDiffFile,
 		onDiffError,
@@ -20,7 +17,6 @@
 	}: {
 		summary: GitSummary;
 		projectPath: string;
-		onRefresh?: () => void;
 		onViewDiff?: (filePath: string, context: DiffContext | null) => void;
 		activeDiffFile?: string | null;
 		onDiffError?: (message: string | null) => void;
@@ -98,15 +94,6 @@
 </script>
 
 <div class="text-[0.78rem]">
-	<div class="flex items-center justify-between px-2.5 py-1.5">
-		<span class="font-semibold text-[0.7rem] uppercase tracking-wide text-muted">Changes</span>
-		{#if onRefresh}
-			<Button variant="ghost" size="icon-sm" onclick={onRefresh} title="Refresh">
-				<RotateCw size={12} />
-			</Button>
-		{/if}
-	</div>
-
 	{#if summary.changes.length === 0}
 		<div class="py-2 px-2.5 text-subtle text-[0.75rem]">No changes.</div>
 	{/if}

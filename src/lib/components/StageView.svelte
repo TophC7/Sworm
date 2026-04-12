@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { Particles } from '$lib/components/ui/particles';
-	import type { Snippet } from 'svelte';
+	import { Particles } from '$lib/components/ui/particles'
+	import type { Snippet } from 'svelte'
 
 	let {
 		children,
 		particleColor = '#ffb59f',
-		particleQuantity = 60
+		particleQuantity = 75
 	}: {
 		children: Snippet;
 		particleColor?: string;
