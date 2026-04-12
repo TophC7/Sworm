@@ -39,7 +39,7 @@
   <div class="w-full max-w-md mx-auto">
     <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
       <div class="flex items-center gap-3 mb-1">
-        <Worm size={30} strokeWidth={1.8} class="text-accent shrink-0" />
+        <Worm size={30} strokeWidth={2} class="text-accent shrink-0 -mr-1.5" />
         <h1 class="text-2xl text-bright font-medium m-0">Sworm</h1>
       </div>
       <p class="text-[0.8rem] text-muted mb-8">Agentic Development Environment</p>

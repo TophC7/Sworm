@@ -75,16 +75,26 @@ export function toggleGitSidebar() {
 	gitSidebarCollapsed = !gitSidebarCollapsed;
 }
 
-// ---------------------------------------------------------------------------
-// Zoom
-// ---------------------------------------------------------------------------
+// Zoom — uses native webview zoom so px-based icons scale correctly //
+
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+
+let zoomTimer: ReturnType<typeof setTimeout> | undefined;
+
+function applyZoom() {
+	clearTimeout(zoomTimer);
+	zoomTimer = setTimeout(() => {
+		getCurrentWebview().setZoom(zoomLevel).catch(() => {});
+	}, 80);
+}
 
 export function getZoomLevel(): number {
 	return zoomLevel;
 }
 
 export function setZoomLevel(level: number) {
-	zoomLevel = Math.max(0.5, Math.min(2.0, level));
+	zoomLevel = Math.round(Math.max(0.5, Math.min(2.0, level)) * 10) / 10;
+	applyZoom();
 }
 
 export function zoomIn() {
@@ -96,5 +106,5 @@ export function zoomOut() {
 }
 
 export function zoomReset() {
-	zoomLevel = 1.0;
+	setZoomLevel(1.0);
 }

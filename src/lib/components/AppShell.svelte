@@ -1,19 +1,18 @@
 <script lang="ts">
-	import TitleBar from '$lib/components/TitleBar.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
-	import ProjectView from '$lib/components/ProjectView.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import { onMount } from 'svelte';
-	import { getCurrentWindow } from '@tauri-apps/api/window';
-	import { backend } from '$lib/api/backend';
-	import { getActiveProject, addProject } from '$lib/stores/projects.svelte';
-	import { openProject } from '$lib/stores/workspace.svelte';
-	import { getZoomLevel, zoomIn, zoomOut, zoomReset, getWindowControls } from '$lib/stores/ui.svelte';
+	import { backend } from '$lib/api/backend'
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
+	import EmptyState from '$lib/components/EmptyState.svelte'
+	import ProjectView from '$lib/components/ProjectView.svelte'
+	import SettingsDialog from '$lib/components/SettingsDialog.svelte'
+	import StatusBar from '$lib/components/StatusBar.svelte'
+	import TitleBar from '$lib/components/TitleBar.svelte'
+	import { addProject, getActiveProject } from '$lib/stores/projects.svelte'
+	import { getWindowControls, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
+	import { openProject } from '$lib/stores/workspace.svelte'
+	import { getCurrentWindow } from '@tauri-apps/api/window'
+	import { onMount } from 'svelte'
 
 	let activeProject = $derived(getActiveProject());
-	let zoom = $derived(getZoomLevel());
 
 	let settingsOpen = $state(false);
 	let projectError = $state<string | null>(null);
@@ -24,12 +23,6 @@
 		if (wc.useSystemDecorations) {
 			getCurrentWindow().setDecorations(true);
 		}
-	});
-
-	// Root-level zoom effect — lives here so it persists across all views
-	$effect(() => {
-		document.documentElement.style.fontSize = `${zoom * 100}%`;
-		return () => { document.documentElement.style.fontSize = ''; };
 	});
 
 	// Global keyboard shortcuts
