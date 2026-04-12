@@ -5,9 +5,7 @@ use std::path::Path;
 
 /// Open a native directory picker and return the selected path.
 #[tauri::command]
-pub async fn project_select_directory(
-    app: tauri::AppHandle,
-) -> Result<Option<String>, ApiError> {
+pub async fn project_select_directory(app: tauri::AppHandle) -> Result<Option<String>, ApiError> {
     use tauri_plugin_dialog::DialogExt;
 
     let dir = app.dialog().file().blocking_pick_folder();
@@ -17,10 +15,7 @@ pub async fn project_select_directory(
 /// Add a project from a local directory path.
 /// Validates it's a git repo, detects branch/base.
 #[tauri::command]
-pub fn project_add(
-    path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Project, ApiError> {
+pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
     let p = Path::new(&path);
 
     if !p.exists() {
@@ -70,10 +65,7 @@ pub fn project_list(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, A
 
 /// Get a single project by ID.
 #[tauri::command]
-pub fn project_get(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Project, ApiError> {
+pub fn project_get(id: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
     let db = state.db.lock();
     state
         .projects
@@ -87,10 +79,7 @@ pub fn project_get(
 /// Kills all live PTY sessions for the project before deleting
 /// DB rows, so no agent processes are orphaned.
 #[tauri::command]
-pub fn project_remove(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+pub fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let db = state.db.lock();
 
     // Enumerate the project's sessions so we can kill live PTYs

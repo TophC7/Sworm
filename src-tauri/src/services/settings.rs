@@ -68,7 +68,10 @@ impl SettingsService {
         }
     }
 
-    pub fn set_general_settings(conn: &Connection, settings: &GeneralSettings) -> Result<(), String> {
+    pub fn set_general_settings(
+        conn: &Connection,
+        settings: &GeneralSettings,
+    ) -> Result<(), String> {
         let serialized = serde_json::to_string(settings)
             .map_err(|error| format!("Failed to serialize general settings: {}", error))?;
         Self::set(conn, "general", &serialized).map_err(|error| error.to_string())
@@ -150,7 +153,9 @@ impl SettingsService {
             .map_err(|error| format!("Failed to prepare provider overrides query: {}", error))?;
 
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|error| format!("Failed to query provider overrides: {}", error))?;
 
         let mut overrides = HashMap::new();

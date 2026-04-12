@@ -5,8 +5,8 @@ use crate::services::codex_state::CodexStateReader;
 use crate::services::nix::NixService;
 use crate::services::providers::ProviderService;
 use crate::services::pty::PtyEvent;
-use crate::services::settings::SettingsService;
 use crate::services::sessions::SessionService;
+use crate::services::settings::SettingsService;
 use chrono::{Duration, Utc};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -43,11 +43,13 @@ fn spawn_codex_bind_thread(
                 match CodexStateReader::find_recent_threads_for_cwd(&cwd, &since) {
                     Ok(threads) if !threads.is_empty() => {
                         if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                            let _ = conn.execute_batch(
-                                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+                            let _ = conn
+                                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                            let _ = SessionService::new().set_resume_token(
+                                &conn,
+                                &session_id,
+                                &threads[0].id,
                             );
-                            let _ = SessionService::new()
-                                .set_resume_token(&conn, &session_id, &threads[0].id);
                             tracing::info!(
                                 "Bound Codex thread {} to session {}",
                                 threads[0].id,
@@ -70,11 +72,13 @@ fn spawn_codex_bind_thread(
             match CodexStateReader::find_latest_thread_for_cwd(&cwd) {
                 Ok(Some(thread_state)) => {
                     if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                        let _ = conn.execute_batch(
-                            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+                        let _ =
+                            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                        let _ = SessionService::new().set_resume_token(
+                            &conn,
+                            &session_id,
+                            &thread_state.id,
                         );
-                        let _ = SessionService::new()
-                            .set_resume_token(&conn, &session_id, &thread_state.id);
                         tracing::info!(
                             "Fallback bound Codex thread {} to session {}",
                             thread_state.id,
@@ -131,7 +135,9 @@ pub fn session_create(
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
 
-    let branch = state.git.current_branch(std::path::Path::new(&project.path));
+    let branch = state
+        .git
+        .current_branch(std::path::Path::new(&project.path));
 
     state
         .sessions
@@ -174,10 +180,7 @@ pub fn session_list(
 
 /// Get a single session.
 #[tauri::command]
-pub fn session_get(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Session, ApiError> {
+pub fn session_get(id: String, state: tauri::State<'_, AppState>) -> Result<Session, ApiError> {
     let db = state.db.lock();
     state
         .sessions
@@ -216,8 +219,14 @@ pub fn session_start(
     // support session resumption. Codex handles its own binding separately.
     if first_start {
         let token = match session.provider_id.as_str() {
-            "claude_code" => Some(SessionService::deterministic_session_uuid("claude", &session_id)),
-            "copilot" => Some(SessionService::deterministic_session_uuid("copilot", &session_id)),
+            "claude_code" => Some(SessionService::deterministic_session_uuid(
+                "claude",
+                &session_id,
+            )),
+            "copilot" => Some(SessionService::deterministic_session_uuid(
+                "copilot",
+                &session_id,
+            )),
             "codex" | "terminal" | "fresh" => None,
             // GenericFlag providers (Gemini, etc.): marker so restarts add resume flags
             _ => Some("started".to_string()),
@@ -260,9 +269,13 @@ pub fn session_start(
     let db_path = db.db_path().clone();
 
     // Load Nix env before dropping db — needed for both PATH resolution and child env
-    let nix_env_vars = NixService::load_env_vars(db.conn(), &session.project_id)
-        .unwrap_or_else(|e| {
-            tracing::warn!("Failed to load Nix env for project {}: {}", session.project_id, e);
+    let nix_env_vars =
+        NixService::load_env_vars(db.conn(), &session.project_id).unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to load Nix env for project {}: {}",
+                session.project_id,
+                e
+            );
             None
         });
     drop(db);
@@ -295,10 +308,9 @@ pub fn session_start(
     };
     let (resume_token, session_app_id) = match session.provider_id.as_str() {
         "claude_code" => {
-            let token = session
-                .provider_resume_token
-                .clone()
-                .unwrap_or_else(|| SessionService::deterministic_session_uuid("claude", &session_id));
+            let token = session.provider_resume_token.clone().unwrap_or_else(|| {
+                SessionService::deterministic_session_uuid("claude", &session_id)
+            });
             if first_start {
                 // First start: `claude --session-id <uuid>`
                 (None, Some(token))
@@ -309,10 +321,9 @@ pub fn session_start(
         }
         "copilot" => {
             // Copilot uses --resume for both new and existing sessions
-            let token = session
-                .provider_resume_token
-                .clone()
-                .unwrap_or_else(|| SessionService::deterministic_session_uuid("copilot", &session_id));
+            let token = session.provider_resume_token.clone().unwrap_or_else(|| {
+                SessionService::deterministic_session_uuid("copilot", &session_id)
+            });
             (Some(token), None)
         }
         "codex" => (session.provider_resume_token.clone(), None),
@@ -342,9 +353,8 @@ pub fn session_start(
         None => state.env.child_env.clone(),
     };
 
-    let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> =
-        Box::new(move |sid: &str, exit_code: Option<i32>| match rusqlite::Connection::open(&db_path)
-        {
+    let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> = Box::new(
+        move |sid: &str, exit_code: Option<i32>| match rusqlite::Connection::open(&db_path) {
             Ok(conn) => {
                 let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
                 let now = chrono::Utc::now().to_rfc3339();
@@ -361,7 +371,8 @@ pub fn session_start(
             Err(error) => {
                 tracing::error!("Failed to open DB for exit callback: {}", error);
             }
-        });
+        },
+    );
 
     let started_at = Utc::now();
     let spawn_result = state.pty.spawn(
@@ -388,7 +399,8 @@ pub fn session_start(
             if session.provider_id == "codex" && session.provider_resume_token.is_none() {
                 let bind_lock = {
                     let mut locks = state.codex_bind_locks.lock();
-                    locks.entry(session.cwd.clone())
+                    locks
+                        .entry(session.cwd.clone())
                         .or_insert_with(|| Arc::new(Mutex::new(())))
                         .clone()
                 };
@@ -439,10 +451,7 @@ pub fn session_resize(
 
 /// Stop a running session.
 #[tauri::command]
-pub fn session_stop(
-    session_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+pub fn session_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
 
     let db = state.db.lock();
@@ -472,8 +481,14 @@ pub fn session_reset(
 
     // Generate a fresh deterministic token for providers that use session IDs
     let new_token = match session.provider_id.as_str() {
-        "claude_code" => Some(SessionService::deterministic_session_uuid("claude", &session_id)),
-        "copilot" => Some(SessionService::deterministic_session_uuid("copilot", &session_id)),
+        "claude_code" => Some(SessionService::deterministic_session_uuid(
+            "claude",
+            &session_id,
+        )),
+        "copilot" => Some(SessionService::deterministic_session_uuid(
+            "copilot",
+            &session_id,
+        )),
         _ => None,
     };
 

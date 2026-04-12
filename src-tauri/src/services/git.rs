@@ -46,7 +46,6 @@ pub struct DiffContext {
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
 /// Git service using the system git CLI.
-///
 pub struct GitService;
 
 impl GitService {
@@ -74,7 +73,11 @@ impl GitService {
 
         if output.status.success() {
             let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if branch.is_empty() { None } else { Some(branch) }
+            if branch.is_empty() {
+                None
+            } else {
+                Some(branch)
+            }
         } else {
             None
         }
@@ -141,10 +144,7 @@ impl GitService {
             .iter()
             .filter(|c| !c.staged && c.status != "?")
             .count() as i32;
-        let untracked_count = changes
-            .iter()
-            .filter(|c| c.status == "?")
-            .count() as i32;
+        let untracked_count = changes.iter().filter(|c| c.status == "?").count() as i32;
 
         GitSummary {
             is_repo: true,
@@ -331,7 +331,11 @@ impl GitService {
     /// Get file content at HEAD, returning `None` for binary or oversized files.
     fn get_old_content(&self, path: &Path, file_path: &str) -> Option<String> {
         let output = std::process::Command::new("git")
-            .args(["--no-optional-locks", "show", &format!("HEAD:{}", file_path)])
+            .args([
+                "--no-optional-locks",
+                "show",
+                &format!("HEAD:{}", file_path),
+            ])
             .current_dir(path)
             .output()
             .ok()?;

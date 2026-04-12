@@ -134,8 +134,7 @@ impl NixService {
         )
         .map_err(|e| e.to_string())?;
 
-        Self::get(conn, project_id)?
-            .ok_or_else(|| "Failed to read back Nix env record".to_string())
+        Self::get(conn, project_id)?.ok_or_else(|| "Failed to read back Nix env record".to_string())
     }
 
     /// Remove the Nix env association for a project.
@@ -237,11 +236,7 @@ impl NixService {
         } else {
             let file_path = Path::new(project_path).join(nix_file);
             let mut c = std::process::Command::new("nix-shell");
-            c.args([
-                file_path.to_str().unwrap_or(nix_file),
-                "--run",
-                "env -0",
-            ]);
+            c.args([file_path.to_str().unwrap_or(nix_file), "--run", "env -0"]);
             c
         };
 
@@ -249,24 +244,23 @@ impl NixService {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| NixEvalError::CommandFailed {
-                stderr: e.to_string(),
-                exit_code: None,
-            })?;
+        let mut child = cmd.spawn().map_err(|e| NixEvalError::CommandFailed {
+            stderr: e.to_string(),
+            exit_code: None,
+        })?;
 
         // Wait with timeout
         let start = std::time::Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let output = child.wait_with_output().map_err(|e| {
-                        NixEvalError::CommandFailed {
-                            stderr: e.to_string(),
-                            exit_code: None,
-                        }
-                    })?;
+                    let output =
+                        child
+                            .wait_with_output()
+                            .map_err(|e| NixEvalError::CommandFailed {
+                                stderr: e.to_string(),
+                                exit_code: None,
+                            })?;
 
                     if !status.success() {
                         return Err(NixEvalError::CommandFailed {
@@ -460,10 +454,7 @@ mod tests {
     #[test]
     fn test_merged_path_with_nix() {
         let mut nix = HashMap::new();
-        nix.insert(
-            "PATH".to_string(),
-            "/nix/store/bin:/usr/bin".to_string(),
-        );
+        nix.insert("PATH".to_string(), "/nix/store/bin:/usr/bin".to_string());
         let result = NixService::merged_path("/usr/bin:/usr/local/bin", &nix);
         assert!(result.starts_with("/nix/store/bin"));
         assert!(result.contains("/usr/local/bin"));

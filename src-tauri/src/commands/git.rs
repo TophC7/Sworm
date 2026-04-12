@@ -7,10 +7,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Returns `Ok(())` on success — callers pass the original paths to the
 /// service layer (git CLI resolves them relative to its `current_dir`).
-fn validated_project_file(
-    project_path: &str,
-    file_path: &str,
-) -> Result<(), ApiError> {
+fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), ApiError> {
     let root = PathBuf::from(project_path)
         .canonicalize()
         .map_err(|e| ApiError::InvalidArgument(format!("Invalid project path: {}", e)))?;

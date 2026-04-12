@@ -154,13 +154,19 @@ impl PtyService {
                         Ok(n) => {
                             if output_channel.send(buf[..n].to_vec()).is_err() {
                                 detached.store(true, Ordering::Relaxed);
-                                info!("Output channel closed for {}, detaching frontend", sid_for_thread);
+                                info!(
+                                    "Output channel closed for {}, detaching frontend",
+                                    sid_for_thread
+                                );
                                 break;
                             }
                         }
                         Err(err) => {
                             if shutdown.load(Ordering::Relaxed) {
-                                info!("PTY read loop stopped during shutdown for {}", sid_for_thread);
+                                info!(
+                                    "PTY read loop stopped during shutdown for {}",
+                                    sid_for_thread
+                                );
                             } else {
                                 error!("PTY read error for {}: {}", sid_for_thread, err);
                                 let _ = event_channel.send(PtyEvent::Error {
@@ -288,7 +294,10 @@ impl PtyService {
             self.finalized_ptys.lock().insert(live.runtime_id.clone());
 
             if let Err(err) = live.killer.kill() {
-                warn!("Failed to kill PTY child {} during shutdown: {}", session_id, err);
+                warn!(
+                    "Failed to kill PTY child {} during shutdown: {}",
+                    session_id, err
+                );
             } else {
                 info!("Cleanup: killed PTY {}", session_id);
             }

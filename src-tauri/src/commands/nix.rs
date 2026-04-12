@@ -146,10 +146,7 @@ pub async fn nix_evaluate(
 
 /// Clear the Nix environment for a project.
 #[tauri::command]
-pub fn nix_clear(
-    project_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+pub fn nix_clear(project_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let db = state.db.lock();
     NixService::remove(db.conn(), &project_id).map_err(ApiError::Database)
 }
@@ -177,13 +174,9 @@ pub fn provider_list_for_project(
         _ => state.env.merged_path.clone(),
     };
 
-    let overrides = SettingsService::load_binary_overrides(db.conn())
-        .map_err(ApiError::Database)?;
+    let overrides =
+        SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
     let mut providers = state.providers.lock();
-    Ok(providers.detect_all(
-        &merged_path,
-        &overrides,
-        Some(&state.env.detected_shell),
-    ))
+    Ok(providers.detect_all(&merged_path, &overrides, Some(&state.env.detected_shell)))
 }

@@ -193,12 +193,7 @@ impl SessionService {
         Ok(())
     }
 
-    pub fn set_resume_token(
-        &self,
-        conn: &Connection,
-        id: &str,
-        token: &str,
-    ) -> Result<(), String> {
+    pub fn set_resume_token(&self, conn: &Connection, id: &str, token: &str) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE sessions SET provider_resume_token = ?1, updated_at = ?2 WHERE id = ?3",
@@ -282,7 +277,10 @@ impl SessionService {
             .map_err(|e| format!("Failed to reset stale sessions: {}", e))?;
 
         if count > 0 {
-            tracing::info!("Reset {} stale running session(s) from previous process", count);
+            tracing::info!(
+                "Reset {} stale running session(s) from previous process",
+                count
+            );
         }
         Ok(count)
     }

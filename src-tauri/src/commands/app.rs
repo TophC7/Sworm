@@ -28,7 +28,8 @@ pub fn app_get_info() -> AppInfo {
 #[tauri::command]
 pub fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
     let db = state.db.lock();
-    db.smoke_test().map_err(|e| ApiError::Database(e.to_string()))
+    db.smoke_test()
+        .map_err(|e| ApiError::Database(e.to_string()))
 }
 
 /// Keyring smoke test: write/read/delete a test secret.

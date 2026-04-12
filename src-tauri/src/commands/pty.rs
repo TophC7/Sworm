@@ -68,8 +68,5 @@ pub fn pty_demo_kill(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state
-        .pty
-        .kill(&session_id)
-        .map_err(|e| ApiError::Pty(e))
+    state.pty.kill(&session_id).map_err(|e| ApiError::Pty(e))
 }

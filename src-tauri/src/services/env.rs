@@ -73,7 +73,11 @@ impl EnvironmentService {
         let detected_shell = detect_login_shell();
         let base_path = std::env::var("PATH").unwrap_or_default();
 
-        info!("Environment bootstrap: shell={}, base PATH length={}", detected_shell, base_path.len());
+        info!(
+            "Environment bootstrap: shell={}, base PATH length={}",
+            detected_shell,
+            base_path.len()
+        );
 
         // Probe the login shell for its PATH
         let (shell_path, probe_succeeded) = probe_shell_path(&detected_shell);
@@ -145,10 +149,7 @@ fn detect_login_shell() -> String {
             if output.status.success() {
                 let line = String::from_utf8_lossy(&output.stdout);
                 if let Some(shell) = line.trim().rsplit(':').next() {
-                    if !shell.is_empty()
-                        && shell != "/bin/false"
-                        && shell != "/usr/sbin/nologin"
-                    {
+                    if !shell.is_empty() && shell != "/bin/false" && shell != "/usr/sbin/nologin" {
                         info!("Login shell from /etc/passwd: {}", shell);
                         return shell.to_string();
                     }
@@ -178,7 +179,10 @@ fn probe_shell_path(shell: &str) -> (Option<String>, bool) {
                 warn!("Shell probe returned empty PATH");
                 (None, false)
             } else {
-                info!("Shell probe succeeded, PATH has {} entries", path.split(':').count());
+                info!(
+                    "Shell probe succeeded, PATH has {} entries",
+                    path.split(':').count()
+                );
                 (Some(path), true)
             }
         }

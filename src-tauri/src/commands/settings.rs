@@ -32,7 +32,11 @@ pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
     let mut providers = state.providers.lock();
-    let statuses = providers.detect_all(&state.env.merged_path, &overrides, Some(&state.env.detected_shell));
+    let statuses = providers.detect_all(
+        &state.env.merged_path,
+        &overrides,
+        Some(&state.env.detected_shell),
+    );
     let entries = statuses
         .into_iter()
         .map(|provider| {

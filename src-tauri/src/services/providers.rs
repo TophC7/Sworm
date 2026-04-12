@@ -71,9 +71,7 @@ const PROVIDERS: &[ProviderDef] = &[
             session_flag: "--resume",
             continue_flags: &["--resume"],
         },
-        session_id_mode: SessionIdMode::Deterministic {
-            flag: "--resume",
-        },
+        session_id_mode: SessionIdMode::Deterministic { flag: "--resume" },
         default_args: &[],
     },
     ProviderDef {
@@ -124,7 +122,7 @@ const PROVIDERS: &[ProviderDef] = &[
         id: ProviderId::Terminal,
         label: "Terminal",
         cli_command: "sh",
-        detect_commands: &[],  // detected via $SHELL, not PATH lookup
+        detect_commands: &[], // detected via $SHELL, not PATH lookup
         version_args: &["--version"],
         install_hint: "",
         docs_url: "",
@@ -157,7 +155,9 @@ impl ProviderService {
         let mut results = Vec::new();
 
         for def in PROVIDERS {
-            let override_path = binary_overrides.get(&def.id.to_string()).map(String::as_str);
+            let override_path = binary_overrides
+                .get(&def.id.to_string())
+                .map(String::as_str);
 
             let status = if def.id == ProviderId::Terminal {
                 // Terminal is always available — it uses the user's login shell
@@ -196,7 +196,9 @@ impl ProviderService {
     }
 
     pub fn definition(provider_id: &str) -> Option<&'static ProviderDef> {
-        PROVIDERS.iter().find(|provider| provider.id.to_string() == provider_id)
+        PROVIDERS
+            .iter()
+            .find(|provider| provider.id.to_string() == provider_id)
     }
 
     pub fn exists(provider_id: &str) -> bool {
@@ -363,7 +365,10 @@ fn detect_provider(
                 }
             }
             Err(error) => {
-                warn!("{} found but could not execute: {}", definition.label, error);
+                warn!(
+                    "{} found but could not execute: {}",
+                    definition.label, error
+                );
                 ProviderStatus {
                     id: definition.id,
                     label: definition.label.to_string(),
