@@ -214,6 +214,46 @@
 	font-family: 'Monocraft Nerd Font', monospace;
 }
 
+.diff-viewer-root .diff-tailwindcss-wrapper,
+.diff-viewer-root .diff-style-root,
+.diff-viewer-root .diff-view-wrapper,
+.diff-viewer-root .split-diff-view,
+.diff-viewer-root .unified-diff-view,
+.diff-viewer-root .old-diff-table-wrapper,
+.diff-viewer-root .new-diff-table-wrapper,
+.diff-viewer-root .unified-diff-table-wrapper {
+	min-height: 0;
+	height: 100%;
+}
+
+.diff-viewer-root .diff-tailwindcss-wrapper,
+.diff-viewer-root .diff-style-root,
+.diff-viewer-root .diff-view-wrapper,
+.diff-viewer-root .split-diff-view,
+.diff-viewer-root .unified-diff-view {
+	display: flex;
+	flex: 1 1 auto;
+}
+
+.diff-viewer-root .diff-tailwindcss-wrapper,
+.diff-viewer-root .diff-style-root,
+.diff-viewer-root .diff-view-wrapper,
+.diff-viewer-root .unified-diff-view {
+	flex-direction: column;
+}
+
+.diff-viewer-root .split-diff-view {
+	flex-direction: row;
+	flex-basis: auto;
+}
+
+.diff-viewer-root .old-diff-table-wrapper,
+.diff-viewer-root .new-diff-table-wrapper,
+.diff-viewer-root .unified-diff-table-wrapper {
+	flex: 1 1 auto;
+	overflow-y: auto;
+}
+
 .diff-viewer-root ::-webkit-scrollbar {
 	width: 6px;
 	height: 6px;

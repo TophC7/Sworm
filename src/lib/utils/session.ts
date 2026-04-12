@@ -1,7 +1,7 @@
 /**
  * Session status display helpers.
  *
- * Shared by SecondaryTabBar, PaneTabBar, and TerminalSessionManager.
+ * Shared by PaneTabBar and TerminalSessionManager.
  */
 
 import { allProviders, directOptions } from '$lib/data/providers';

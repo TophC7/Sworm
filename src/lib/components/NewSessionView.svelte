@@ -6,7 +6,8 @@
 	import { allProviders, directOptions, type ProviderMeta } from '$lib/data/providers'
 	import { getActiveProjectId } from '$lib/stores/projects.svelte'
 	import { getConnectedProviders } from '$lib/stores/providers.svelte'
-	import { createSession, hasRunningSessions, selectSession } from '$lib/stores/sessions.svelte'
+	import { createSession, hasRunningSessions } from '$lib/stores/sessions.svelte'
+	import { addSessionTab } from '$lib/stores/workspace.svelte'
 	import type { ProviderStatus } from '$lib/types/backend'
 
 	let { onCreated }: { onCreated?: () => void } = $props();
@@ -39,7 +40,7 @@
 		if (!activeProjectId) return;
 		try {
 			const session = await createSession(activeProjectId, provider.id, `${provider.label} session`);
-			selectSession(session.id);
+			addSessionTab(activeProjectId, session.id, session.title, session.provider_id);
 			onCreated?.();
 		} catch (e) {
 			error = `Failed to create session:\n${e}`;

@@ -1,8 +1,10 @@
 <script lang="ts">
-	import type { Tab, PaneState, PaneSlot } from '$lib/stores/workspace.svelte';
-	import { getPanes, getSplitMode, getAllTabs } from '$lib/stores/workspace.svelte';
-	import { ResizablePaneGroup, ResizablePane, ResizableHandle } from '$lib/components/ui/resizable';
-	import Pane from '$lib/components/Pane.svelte';
+	import Pane from '$lib/components/Pane.svelte'
+	import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
+	import type { PaneSlot, PaneState, Tab } from '$lib/stores/workspace.svelte'
+	import { createPane, getAllTabs, getPanes, getQuadLayout, getSplitMode } from '$lib/stores/workspace.svelte'
+
+	const PANE_CLASS = 'min-h-0 min-w-0 overflow-hidden';
 
 	let {
 		projectId,
@@ -14,95 +16,160 @@
 
 	let panes = $derived(getPanes(projectId));
 	let splitMode = $derived(getSplitMode(projectId));
+	let quadLayout = $derived(getQuadLayout(projectId));
 	let allTabs = $derived(getAllTabs(projectId));
 
 	// Single-pass slot lookup instead of 6 separate .find() scans
 	let panesBySlot = $derived(
 		Object.fromEntries(panes.map((p) => [p.slot, p])) as Partial<Record<PaneSlot, PaneState>>
 	);
-	let leftPane = $derived(panesBySlot['left']);
-	let rightPane = $derived(panesBySlot['right']);
-	let topLeft = $derived(panesBySlot['top-left']);
-	let topRight = $derived(panesBySlot['top-right']);
-	let bottomLeft = $derived(panesBySlot['bottom-left']);
-	let bottomRight = $derived(panesBySlot['bottom-right']);
+	let leftPane = $derived(panesBySlot['left'] ?? createPane('left'));
+	let rightPane = $derived(panesBySlot['right'] ?? createPane('right'));
+	let topLeft = $derived(panesBySlot['top-left'] ?? createPane('top-left'));
+	let topRight = $derived(panesBySlot['top-right'] ?? createPane('top-right'));
+	let bottomLeft = $derived(panesBySlot['bottom-left'] ?? createPane('bottom-left'));
+	let bottomRight = $derived(panesBySlot['bottom-right'] ?? createPane('bottom-right'));
 
 	function tabsForPane(pane: PaneState): Tab[] {
 		return pane.tabs
 			.map((id) => allTabs.find((t) => t.id === id))
 			.filter((t): t is Tab => t !== undefined);
 	}
+
+	function renderPane(pane: PaneState) {
+		return {
+			pane,
+			tabs: tabsForPane(pane)
+		};
+	}
 </script>
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
 	{#if splitMode === 'single'}
-		{#if panes[0]}
-			<Pane pane={panes[0]} tabs={tabsForPane(panes[0])} {projectId} {projectPath} />
-		{/if}
+		{@const sole = panes[0] ?? createPane('sole')}
+		<Pane pane={sole} tabs={tabsForPane(sole)} {projectId} {projectPath} />
 
 	{:else if splitMode === 'horizontal'}
-		<ResizablePaneGroup direction="horizontal" autoSaveId="{projectId}-h">
-			{#if leftPane}
-				<ResizablePane defaultSize={50} minSize={20}>
-					<Pane pane={leftPane} tabs={tabsForPane(leftPane)} {projectId} {projectPath} />
-				</ResizablePane>
-			{/if}
+		<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-h`}>
+			<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+				<Pane pane={leftPane} tabs={tabsForPane(leftPane)} {projectId} {projectPath} />
+			</ResizablePane>
 			<ResizableHandle />
-			{#if rightPane}
-				<ResizablePane defaultSize={50} minSize={20}>
-					<Pane pane={rightPane} tabs={tabsForPane(rightPane)} {projectId} {projectPath} />
-				</ResizablePane>
-			{/if}
+			<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+				<Pane pane={rightPane} tabs={tabsForPane(rightPane)} {projectId} {projectPath} />
+			</ResizablePane>
 		</ResizablePaneGroup>
 
 	{:else if splitMode === 'vertical'}
-		<ResizablePaneGroup direction="vertical" autoSaveId="{projectId}-v">
-			{#if leftPane}
-				<ResizablePane defaultSize={50} minSize={20}>
-					<Pane pane={leftPane} tabs={tabsForPane(leftPane)} {projectId} {projectPath} />
-				</ResizablePane>
-			{/if}
+		<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-v`}>
+			<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+				<Pane pane={leftPane} tabs={tabsForPane(leftPane)} {projectId} {projectPath} />
+			</ResizablePane>
 			<ResizableHandle />
-			{#if rightPane}
-				<ResizablePane defaultSize={50} minSize={20}>
-					<Pane pane={rightPane} tabs={tabsForPane(rightPane)} {projectId} {projectPath} />
-				</ResizablePane>
-			{/if}
+			<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+				<Pane pane={rightPane} tabs={tabsForPane(rightPane)} {projectId} {projectPath} />
+			</ResizablePane>
 		</ResizablePaneGroup>
 
 	{:else if splitMode === 'quad'}
-		<ResizablePaneGroup direction="vertical" autoSaveId="{projectId}-quad-v">
-			<ResizablePane defaultSize={50} minSize={20}>
-				<ResizablePaneGroup direction="horizontal" autoSaveId="{projectId}-quad-ht">
-					{#if topLeft}
-						<ResizablePane defaultSize={50} minSize={20}>
-							<Pane pane={topLeft} tabs={tabsForPane(topLeft)} {projectId} {projectPath} />
+		{#if quadLayout === 'top'}
+			<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-quad-top-v`}>
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<Pane {...renderPane(topLeft)} {projectId} {projectPath} />
+				</ResizablePane>
+				<ResizableHandle />
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-top-h`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomLeft)} {projectId} {projectPath} />
 						</ResizablePane>
-					{/if}
-					<ResizableHandle />
-					{#if topRight}
-						<ResizablePane defaultSize={50} minSize={20}>
-							<Pane pane={topRight} tabs={tabsForPane(topRight)} {projectId} {projectPath} />
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomRight)} {projectId} {projectPath} />
 						</ResizablePane>
-					{/if}
-				</ResizablePaneGroup>
-			</ResizablePane>
-			<ResizableHandle />
-			<ResizablePane defaultSize={50} minSize={20}>
-				<ResizablePaneGroup direction="horizontal" autoSaveId="{projectId}-quad-hb">
-					{#if bottomLeft}
-						<ResizablePane defaultSize={50} minSize={20}>
-							<Pane pane={bottomLeft} tabs={tabsForPane(bottomLeft)} {projectId} {projectPath} />
+					</ResizablePaneGroup>
+				</ResizablePane>
+			</ResizablePaneGroup>
+		{:else if quadLayout === 'bottom'}
+			<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-quad-bottom-v`}>
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-bottom-h`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topLeft)} {projectId} {projectPath} />
 						</ResizablePane>
-					{/if}
-					<ResizableHandle />
-					{#if bottomRight}
-						<ResizablePane defaultSize={50} minSize={20}>
-							<Pane pane={bottomRight} tabs={tabsForPane(bottomRight)} {projectId} {projectPath} />
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topRight)} {projectId} {projectPath} />
 						</ResizablePane>
-					{/if}
-				</ResizablePaneGroup>
-			</ResizablePane>
-		</ResizablePaneGroup>
+					</ResizablePaneGroup>
+				</ResizablePane>
+				<ResizableHandle />
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<Pane {...renderPane(bottomLeft)} {projectId} {projectPath} />
+				</ResizablePane>
+			</ResizablePaneGroup>
+		{:else if quadLayout === 'left'}
+			<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-left-h`}>
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<Pane {...renderPane(topLeft)} {projectId} {projectPath} />
+				</ResizablePane>
+				<ResizableHandle />
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-quad-left-v`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topRight)} {projectId} {projectPath} />
+						</ResizablePane>
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomRight)} {projectId} {projectPath} />
+						</ResizablePane>
+					</ResizablePaneGroup>
+				</ResizablePane>
+			</ResizablePaneGroup>
+		{:else if quadLayout === 'right'}
+			<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-right-h`}>
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-quad-right-v`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topLeft)} {projectId} {projectPath} />
+						</ResizablePane>
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomLeft)} {projectId} {projectPath} />
+						</ResizablePane>
+					</ResizablePaneGroup>
+				</ResizablePane>
+				<ResizableHandle />
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<Pane {...renderPane(topRight)} {projectId} {projectPath} />
+				</ResizablePane>
+			</ResizablePaneGroup>
+		{:else}
+			<ResizablePaneGroup direction="vertical" autoSaveId={`${projectId}-quad-v`}>
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-ht`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topLeft)} {projectId} {projectPath} />
+						</ResizablePane>
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(topRight)} {projectId} {projectPath} />
+						</ResizablePane>
+					</ResizablePaneGroup>
+				</ResizablePane>
+				<ResizableHandle />
+				<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+					<ResizablePaneGroup direction="horizontal" autoSaveId={`${projectId}-quad-hb`}>
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomLeft)} {projectId} {projectPath} />
+						</ResizablePane>
+						<ResizableHandle />
+						<ResizablePane class={PANE_CLASS} defaultSize={50} minSize={20}>
+							<Pane {...renderPane(bottomRight)} {projectId} {projectPath} />
+						</ResizablePane>
+					</ResizablePaneGroup>
+				</ResizablePane>
+			</ResizablePaneGroup>
+		{/if}
 	{/if}
 </div>

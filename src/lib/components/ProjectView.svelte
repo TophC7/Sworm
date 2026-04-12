@@ -1,18 +1,15 @@
 <script lang="ts">
 	import type { Project, DiffContext } from '$lib/types/backend';
-	import {
-		getActiveSession,
-		getSessions,
-		updateSessionInList
-	} from '$lib/stores/sessions.svelte';
 	import { loadSessions } from '$lib/stores/sessions.svelte';
 	import { startGitPolling, stopGitPolling, getGitSummary, refreshGit } from '$lib/stores/git.svelte';
-	import SecondaryTabBar from '$lib/components/SecondaryTabBar.svelte';
-	import SessionTerminal from '$lib/components/SessionTerminal.svelte';
 	import GitSidebar from '$lib/components/GitSidebar.svelte';
 	import { getGitSidebarWidth, setGitSidebarWidth, isGitSidebarCollapsed } from '$lib/stores/ui.svelte';
-	import DiffViewer from '$lib/components/DiffViewer.svelte';
-	import NewSessionView from '$lib/components/NewSessionView.svelte';
+	import PaneGrid from '$lib/components/PaneGrid.svelte';
+	import {
+		addDiffTab,
+		getFocusedDiffTab,
+		promoteTemporaryTab
+	} from '$lib/stores/workspace.svelte';
 
 	let {
 		project
@@ -20,16 +17,9 @@
 		project: Project;
 	} = $props();
 
-	let activeSession = $derived(getActiveSession());
-	let sessions = $derived(getSessions());
-	let liveSessions = $derived(sessions.filter((s) => s.status === 'running'));
 	let gitSummary = $derived(getGitSummary(project.id));
-
-	// View state: terminal, diff, or new-session picker
-	let activeDiff = $state<{ filePath: string; context: DiffContext } | null>(null);
-	let diffTemporary = $state(true);
+	let focusedDiffTab = $derived(getFocusedDiffTab(project.id));
 	let diffError = $state<string | null>(null);
-	let mainView = $state<'terminal' | 'diff' | 'new-session'>('terminal');
 
 	let sidebarCollapsed = $derived(isGitSidebarCollapsed());
 	let sidebarWidth = $derived(getGitSidebarWidth());
@@ -73,51 +63,32 @@
 		};
 	});
 
-	// Reset state on project switch
+	// Reset transient git UI state on project switch
 	$effect(() => {
 		project.id;
-		activeDiff = null;
 		diffError = null;
-		mainView = 'terminal';
 	});
 
 	function handleViewDiff(filePath: string, context: DiffContext | null) {
 		diffError = null;
 		if (!context?.raw_diff) {
-			activeDiff = null;
-			mainView = 'terminal';
 			return;
 		}
-		activeDiff = { filePath, context };
-		diffTemporary = true;
-		mainView = 'diff';
+		addDiffTab(project.id, filePath, context, true);
 	}
 
 	function handlePersistDiff() {
-		diffTemporary = false;
-	}
-
-	function closeDiff() {
-		activeDiff = null;
-		mainView = 'terminal';
+		if (focusedDiffTab?.temporary) {
+			promoteTemporaryTab(focusedDiffTab.id);
+		}
 	}
 
 	function handleDiffError(message: string | null) {
 		diffError = message;
-		if (message) {
-			activeDiff = null;
-			mainView = 'terminal';
-		}
 	}
 
 	function handleRefreshGit() {
 		void refreshGit(project.id, project.path);
-	}
-
-	function handleSelectDiff() {
-		if (activeDiff) {
-			mainView = 'diff';
-		}
 	}
 </script>
 
@@ -133,7 +104,7 @@
 			projectPath={project.path}
 			onRefresh={handleRefreshGit}
 			onViewDiff={handleViewDiff}
-			activeDiffFile={activeDiff?.filePath}
+			activeDiffFile={focusedDiffTab?.filePath}
 			onDiffError={handleDiffError}
 			onPersistDiff={handlePersistDiff}
 		/>
@@ -151,18 +122,6 @@
 
 	<!-- Right column: session tabs + content -->
 	<div class="flex-1 flex flex-col min-w-0 overflow-hidden">
-		<!-- Secondary tab bar (sessions + diff) -->
-		<SecondaryTabBar
-			onNewSession={() => (mainView = 'new-session')}
-			onSelectSession={() => (mainView = 'terminal')}
-			activeDiffFile={activeDiff?.filePath}
-			{diffTemporary}
-			onSelectDiff={handleSelectDiff}
-			onCloseDiff={closeDiff}
-			onPersistDiff={handlePersistDiff}
-		/>
-
-		<!-- Content area -->
 		<div class="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
 			{#if diffError}
 				<div class="border-b border-danger-border bg-danger-bg px-3 py-2 text-[0.76rem] text-danger-bright">
@@ -170,36 +129,7 @@
 				</div>
 			{/if}
 
-			{#if mainView === 'new-session'}
-				<!-- New session picker -->
-				<NewSessionView onCreated={() => (mainView = 'terminal')} />
-			{:else if mainView === 'diff' && activeDiff}
-				<!-- Diff view -->
-				<DiffViewer
-					rawDiff={activeDiff.context.raw_diff}
-					filePath={activeDiff.filePath}
-					oldContent={activeDiff.context.old_content}
-					newContent={activeDiff.context.new_content}
-					onClose={closeDiff}
-				/>
-			{:else}
-				<!-- Terminal view -->
-				<div class="flex-1 flex flex-col min-w-0">
-					{#if activeSession}
-						<SessionTerminal
-							session={activeSession}
-							onStatusChange={(status) => {
-								updateSessionInList(activeSession.id, { status });
-								if (status === 'exited' || status === 'stopped') {
-									handleRefreshGit();
-								}
-							}}
-						/>
-					{:else}
-						<NewSessionView onCreated={() => (mainView = 'terminal')} />
-					{/if}
-				</div>
-			{/if}
+			<PaneGrid projectId={project.id} projectPath={project.path} />
 		</div>
 	</div>
 </div>

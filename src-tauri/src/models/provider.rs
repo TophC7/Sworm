@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderId {
     ClaudeCode,
     Codex,
+    Copilot,
+    Crush,
+    Gemini,
     Fresh,
     Terminal,
 }
@@ -14,6 +17,9 @@ impl std::fmt::Display for ProviderId {
         match self {
             ProviderId::ClaudeCode => write!(f, "claude_code"),
             ProviderId::Codex => write!(f, "codex"),
+            ProviderId::Copilot => write!(f, "copilot"),
+            ProviderId::Crush => write!(f, "crush"),
+            ProviderId::Gemini => write!(f, "gemini"),
             ProviderId::Fresh => write!(f, "fresh"),
             ProviderId::Terminal => write!(f, "terminal"),
         }

@@ -15,6 +15,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+    crane.url = "github:ipetkov/crane";
+
     bun2nix.url = "github:nix-community/bun2nix";
     bun2nix.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -23,6 +25,7 @@
     {
       self,
       nixpkgs,
+      crane,
       bun2nix,
     }:
     let
@@ -33,6 +36,25 @@
       ];
       forAllSystems = lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+
+      # Runtime libraries needed by WebKitGTK/Tauri at both build and run time.
+      runtimeLibsFor =
+        pkgs: with pkgs; [
+          atk
+          cairo
+          dbus
+          gdk-pixbuf
+          glib
+          glib-networking
+          gtk3
+          libayatana-appindicator
+          librsvg
+          libsoup_3
+          openssl
+          pango
+          webkitgtk_4_1
+          xdotool
+        ];
     in
     {
       packages = forAllSystems (
@@ -40,46 +62,30 @@
         let
           pkgs = pkgsFor system;
           b2n = bun2nix.packages.${system}.default;
+          craneLib = crane.mkLib pkgs;
           fs = pkgs.lib.fileset;
-          hasPackageJson = builtins.pathExists ./package.json;
-          hasBunLock = builtins.pathExists ./bun.lock;
-          hasBunNix = builtins.pathExists ./bun.nix;
-          hasFrontendSrc = builtins.pathExists ./src;
-          hasTauriSrc = builtins.pathExists ./src-tauri;
-          hasTauriConfig = builtins.pathExists ./src-tauri/tauri.conf.json;
+          runtimeLibraries = runtimeLibsFor pkgs;
 
-          runtimeLibraries = with pkgs; [
-            atk
-            cairo
-            dbus
-            gdk-pixbuf
-            glib
-            glib-networking
-            gtk3
-            libayatana-appindicator
-            librsvg
-            libsoup_3
-            openssl
-            pango
-            webkitgtk_4_1
-            xdotool
-          ];
+          hasScaffold =
+            builtins.pathExists ./package.json
+            && builtins.pathExists ./bun.lock
+            && builtins.pathExists ./bun.nix
+            && builtins.pathExists ./src
+            && builtins.pathExists ./src-tauri
+            && builtins.pathExists ./src-tauri/tauri.conf.json;
 
           docsPackage = pkgs.writeTextDir "share/doc/sworm/README.txt" ''
-            Sworm bootstrap flake
-
-            This package exists so `nix build` works before the Tauri app scaffold is present.
-
-            Current purpose:
-            - provide a valid default package for the repository
-            - keep the flake usable during the planning/bootstrap phase
-
-            Once the application scaffold exists, the default package switches to the real app-facing derivation.
+            Sworm bootstrap flake — scaffold not yet present.
           '';
 
-          appPackage =
-            let
-              sourceFiles = fs.unions (
+          # Frontend-only build (SvelteKit via bun).
+          frontend = pkgs.stdenv.mkDerivation {
+            pname = "sworm-frontend";
+            version = "0.1.0";
+
+            src = fs.toSource {
+              root = ./.;
+              fileset = fs.unions (
                 [
                   ./package.json
                   ./bun.lock
@@ -89,74 +95,116 @@
                 ]
                 ++ lib.optional (builtins.pathExists ./tsconfig.json) ./tsconfig.json
                 ++ lib.optional (builtins.pathExists ./src) ./src
-                ++ lib.optional (builtins.pathExists ./src-tauri) ./src-tauri
+                ++ lib.optional (builtins.pathExists ./static) ./static
               );
-            in
-            pkgs.stdenv.mkDerivation {
-              pname = "sworm";
-              version = "0.1.0";
+            };
 
-              src = fs.toSource {
-                root = ./.;
-                fileset = sourceFiles;
-              };
+            nativeBuildInputs = [
+              b2n.hook
+              pkgs.bun
+            ];
 
-              nativeBuildInputs = [
-                b2n.hook
-                pkgs.bun
-                pkgs.clang
-                pkgs.pkg-config
-              ];
+            bunDeps = b2n.fetchBunDeps {
+              bunNix = ./bun.nix;
+            };
 
-              buildInputs = runtimeLibraries;
+            dontUseBunBuild = true;
+            dontUseBunCheck = true;
+            dontUseBunInstall = true;
 
-              bunDeps = b2n.fetchBunDeps {
-                bunNix = ./bun.nix;
-              };
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR"
+              bun run build
+              runHook postBuild
+            '';
 
-              # bun2nix's default build target is not what we want for a Tauri/SvelteKit app.
-              dontUseBunBuild = true;
-              dontUseBunCheck = true;
-              dontUseBunInstall = true;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              cp -r build/* $out/
+              runHook postInstall
+            '';
+          };
 
-              buildPhase = ''
-                runHook preBuild
+          # Shared args for crane's dep and source builds.
+          # src-tauri IS the Cargo root, so use it directly as the source.
+          # cleanCargoSource strips non-Cargo files so buildDepsOnly doesn't
+          # invalidate when only .rs or config files change.
+          commonArgs = {
+            pname = "sworm";
+            version = "0.1.0";
+            src = craneLib.cleanCargoSource ./src-tauri;
 
-                export HOME="$TMPDIR"
-                export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules"
-                export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:${pkgs.shared-mime-info}/share"
-                export LD_LIBRARY_PATH="${lib.makeLibraryPath runtimeLibraries}"
-                export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+            strictDeps = true;
 
-                bun run build
+            nativeBuildInputs = with pkgs; [
+              clang
+              pkg-config
+              wrapGAppsHook3
+            ];
 
-                runHook postBuild
+            buildInputs = runtimeLibraries;
+
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          };
+
+          # Phase 1: build only Cargo deps (cached until Cargo.lock changes)
+          cargoArtifacts = craneLib.buildDepsOnly (
+            commonArgs
+            // {
+              # Dummy frontend so Tauri's build.rs doesn't fail during dep compilation.
+              # frontendDist in tauri.conf.json is "../build" relative to src-tauri.
+              preBuild = ''
+                mkdir -p $NIX_BUILD_TOP/build
+                echo '<html></html>' > $NIX_BUILD_TOP/build/index.html
+              '';
+            }
+          );
+
+          # Phase 2: build the app against pre-built deps (only recompiles sworm crate)
+          appPackage = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+
+              # Place the real frontend where Tauri expects it (frontendDist = "../build")
+              preBuild = ''
+                mkdir -p $NIX_BUILD_TOP/build
+                cp -r ${frontend}/* $NIX_BUILD_TOP/build/
               '';
 
-              installPhase = ''
-                runHook preInstall
+              TAURI_SKIP_DEVSERVER_CHECK = "true";
 
-                mkdir -p $out/share/sworm
-                cp -r build $out/share/sworm/frontend
-                cp -r src-tauri $out/share/sworm/src-tauri
-
-                runHook postInstall
+              postInstall = ''
+                install -Dm644 icons/128x128.png $out/share/icons/hicolor/128x128/apps/sworm.png
+                install -Dm644 ${desktopFile} $out/share/applications/sworm.desktop
               '';
 
               meta = {
                 description = "Sworm - Linux-first desktop app for coding-agent CLIs";
-                license = pkgs.lib.licenses.mit;
-                platforms = pkgs.lib.platforms.linux;
+                license = lib.licenses.mit;
+                platforms = lib.platforms.linux;
+                mainProgram = "sworm";
               };
-            };
+            }
+          );
+
+          desktopFile = pkgs.writeText "sworm.desktop" ''
+            [Desktop Entry]
+            Name=Sworm
+            Comment=Agentic Development Environment
+            Exec=sworm
+            Icon=sworm
+            Terminal=false
+            Type=Application
+            Categories=Development;IDE;
+          '';
         in
         {
           docs = docsPackage;
-          default =
-            if hasPackageJson && hasBunLock && hasBunNix && hasFrontendSrc && hasTauriSrc && hasTauriConfig then
-              appPackage
-            else
-              docsPackage;
+          inherit frontend;
+          default = if hasScaffold then appPackage else docsPackage;
         }
       );
 
@@ -165,22 +213,7 @@
         let
           pkgs = pkgsFor system;
           b2n = bun2nix.packages.${system}.default;
-          runtimeLibraries = with pkgs; [
-            atk
-            cairo
-            dbus
-            gdk-pixbuf
-            glib
-            glib-networking
-            gtk3
-            libayatana-appindicator
-            librsvg
-            libsoup_3
-            openssl
-            pango
-            webkitgtk_4_1
-            xdotool
-          ];
+          runtimeLibraries = runtimeLibsFor pkgs;
         in
         {
           default = pkgs.mkShell {
@@ -204,7 +237,7 @@
               pkgs.git
               pkgs.gsettings-desktop-schemas
               pkgs.jq
-              pkgs.nixfmt-classic
+              pkgs.nixfmt
               pkgs.openssl
               pkgs.ripgrep
               pkgs.rust-analyzer
@@ -226,6 +259,6 @@
         }
       );
 
-      formatter = forAllSystems (system: (pkgsFor system).nixfmt-classic);
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
     };
 }

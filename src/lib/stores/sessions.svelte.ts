@@ -1,35 +1,20 @@
 // Session state module using Svelte 5 runes.
 //
 // Manages the session list for the active project (CRUD against the backend).
-// During Phase 0, activeSessionId still lives here for backward compatibility.
-// Phase 1 will remove it and switch to workspace.svelte.ts tab model.
+// Active-session identity is derived from the workspace tab model.
 
 import { backend } from '$lib/api/backend';
+import { syncSessionTabs } from '$lib/stores/workspace.svelte';
 import type { Session } from '$lib/types/backend';
 
 let sessions = $state<Session[]>([]);
-let activeSessionId = $state<string | null>(null);
-
-let activeSession = $derived(sessions.find((s) => s.id === activeSessionId) ?? null);
 
 export function getSessions() {
 	return sessions;
 }
 
-export function getActiveSession() {
-	return activeSession;
-}
-
-export function getActiveSessionId() {
-	return activeSessionId;
-}
-
 export function hasRunningSessions(): boolean {
 	return sessions.some((s) => s.status === 'running');
-}
-
-export function selectSession(id: string | null) {
-	activeSessionId = id;
 }
 
 // --- Backend CRUD ---
@@ -37,15 +22,11 @@ export function selectSession(id: string | null) {
 export async function loadSessions(projectId: string) {
 	try {
 		sessions = await backend.sessions.list(projectId);
+		syncSessionTabs(projectId, sessions);
 	} catch (e) {
 		console.error('Failed to load sessions:', e);
 		sessions = [];
 	}
-}
-
-export function clearSessions() {
-	sessions = [];
-	activeSessionId = null;
 }
 
 export async function createSession(
@@ -60,9 +41,6 @@ export async function createSession(
 
 export async function removeSession(sessionId: string, projectId: string) {
 	await backend.sessions.remove(sessionId);
-	if (activeSessionId === sessionId) {
-		activeSessionId = null;
-	}
 	await loadSessions(projectId);
 }
 

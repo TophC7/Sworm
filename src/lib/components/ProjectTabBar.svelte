@@ -8,10 +8,8 @@
 		reorderProjects
 	} from '$lib/stores/workspace.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-
-	import X from '@lucide/svelte/icons/x';
 	import Plus from '@lucide/svelte/icons/plus';
-	import TabBeam from '$lib/components/ui/tab-beam.svelte';
+	import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs';
 
 	let { onAddProject }: { onAddProject: () => void } = $props();
 
@@ -31,6 +29,11 @@
 	function handleClose(e: Event, id: string) {
 		e.stopPropagation();
 		confirmClose = id;
+	}
+
+	function handleAuxClick(e: MouseEvent, id: string) {
+		if (e.button !== 1) return;
+		handleClose(e, id);
 	}
 
 	function doClose() {
@@ -61,55 +64,36 @@
 		dragIndex = null;
 	}
 
-	function handleTablistKeydown(e: KeyboardEvent) {
-		if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-		const tabs = Array.from((e.currentTarget as HTMLElement).querySelectorAll('[role="tab"]'));
-		const current = tabs.indexOf(e.target as HTMLElement);
-		if (current === -1) return;
-		e.preventDefault();
-		const next = e.key === 'ArrowRight'
-			? (current + 1) % tabs.length
-			: (current - 1 + tabs.length) % tabs.length;
-		(tabs[next] as HTMLElement).focus();
-	}
 </script>
 
-<div class="flex items-center min-w-0 flex-1 overflow-x-auto scrollbar-none gap-px" role="tablist" aria-label="Open projects" tabindex="-1" onkeydown={handleTablistKeydown}>
+<TabStrip variant="project" ariaLabel="Open projects">
 	{#each openIds as id, index (id)}
 		{@const project = getProjectById(id)}
 		{#if project}
-			<button
-				class="group relative flex items-center gap-1.5 px-3 h-8 shrink-0 border-none cursor-pointer text-[0.78rem] rounded-t transition-colors
-					{activeId === id
-						? 'bg-ground text-bright'
-						: 'bg-transparent text-muted hover:text-fg hover:bg-surface/50'}"
-				role="tab"
-				aria-selected={activeId === id}
+			<TabButton
+				variant="project"
+				active={activeId === id}
 				onclick={() => handleSelect(id)}
+				onauxclick={(e) => handleAuxClick(e, id)}
+				onClose={(e) => handleClose(e, id)}
 				draggable="true"
 				ondragstart={(e) => handleDragStart(e, index)}
 				ondragover={(e) => handleDragOver(e, index)}
 				ondragend={handleDragEnd}
 			>
-				{#if activeId === id}<TabBeam />{/if}
 				<span class="truncate max-w-[140px]">{project.name}</span>
-				<span
-					class="text-[0.7rem] opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all leading-none"
-					role="button"
-					tabindex="0"
-					onclick={(e) => handleClose(e, id)}
-					onkeydown={(e) => e.key === 'Enter' && handleClose(e, id)}
-				><X size={10} /></span>
-			</button>
+			</TabButton>
 		{/if}
 	{/each}
 
-	<button
-		class="flex items-center justify-center w-7 h-7 shrink-0 bg-transparent border-none text-muted cursor-pointer text-sm hover:text-bright transition-colors ml-0.5"
-		onclick={onAddProject}
-		title="Open project"
-	><Plus size={14} /></button>
-</div>
+	{#snippet trailing()}
+		<button
+			class="flex items-center justify-center w-7 h-7 shrink-0 bg-transparent border-none text-muted cursor-pointer text-sm hover:text-bright transition-colors ml-0.5"
+			onclick={onAddProject}
+			title="Open project"
+		><Plus size={14} /></button>
+	{/snippet}
+</TabStrip>
 
 <ConfirmDialog
 	open={confirmClose !== null}

@@ -40,6 +40,24 @@ export const allProviders: ProviderMeta[] = [
 		gradientTo: '#065f46'
 	},
 	{
+		id: 'copilot',
+		label: 'GitHub Copilot',
+		icon: '/png/copilot.png',
+		textLabel: 'Copilot',
+		textFont: "'SF Mono', monospace",
+		gradientFrom: '#a78bfa',
+		gradientTo: '#4c1d95'
+	},
+	{
+		id: 'crush',
+		label: 'Crush',
+		icon: '/png/crush.png',
+		textLabel: 'CRUSH',
+		textFont: "'Monocraft Nerd Font', monospace",
+		gradientFrom: '#f0abfc',
+		gradientTo: '#701a75'
+	},
+	{
 		id: 'gemini',
 		label: 'Gemini CLI',
 		icon: '/svg/gemini.svg',
@@ -75,7 +93,7 @@ export const directOptions: ProviderMeta[] = [
 		label: 'Terminal',
 		icon: '/svg/terminal.svg',
 		textLabel: 'Terminal',
-		textFont: "'SF Mono', monospace",
+		textFont: "'Monocraft Nerd Font', monospace",
 		gradientFrom: '#a1a1aa',
 		gradientTo: '#3f3f46'
 	}
