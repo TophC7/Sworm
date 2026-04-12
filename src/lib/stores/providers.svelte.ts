@@ -36,6 +36,18 @@ export async function refreshProviders() {
 	}
 }
 
+export async function loadProvidersForProject(projectId: string) {
+	loading = true;
+	try {
+		providers = await backend.providers.listForProject(projectId);
+	} catch {
+		// Fall back to global detection
+		providers = await backend.providers.list();
+	} finally {
+		loading = false;
+	}
+}
+
 export function getConnectedProviders() {
 	return providers.filter((p) => p.status === 'connected');
 }

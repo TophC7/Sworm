@@ -196,7 +196,7 @@ fn probe_shell_path(shell: &str) -> (Option<String>, bool) {
 
 /// Merge two PATH strings, preferring entries from `primary` but
 /// appending unique entries from `secondary`.
-fn merge_paths(primary: &str, secondary: &str) -> String {
+pub(crate) fn merge_paths(primary: &str, secondary: &str) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut parts = Vec::new();
 

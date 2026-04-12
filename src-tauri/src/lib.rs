@@ -60,6 +60,13 @@ pub fn run() {
             commands::sessions::session_stop,
             commands::sessions::session_reset,
             commands::sessions::session_remove,
+            // Nix environment commands
+            commands::nix::nix_detect,
+            commands::nix::nix_select,
+            commands::nix::nix_evaluate,
+            commands::nix::nix_clear,
+            commands::nix::nix_status,
+            commands::nix::provider_list_for_project,
             // Git commands
             commands::git::git_get_summary,
             commands::git::git_get_file_diff,

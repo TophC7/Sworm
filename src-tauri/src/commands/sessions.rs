@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::session::Session;
 use crate::services::codex_state::CodexStateReader;
+use crate::services::nix::NixService;
 use crate::services::providers::ProviderService;
 use crate::services::pty::PtyEvent;
 use crate::services::settings::SettingsService;
@@ -209,7 +210,20 @@ pub fn session_start(
         .map_err(ApiError::Database)?;
 
     let db_path = db.db_path().clone();
+
+    // Load Nix env before dropping db — needed for both PATH resolution and child env
+    let nix_env_vars = NixService::load_env_vars(db.conn(), &session.project_id)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to load Nix env for project {}: {}", session.project_id, e);
+            None
+        });
     drop(db);
+
+    // Use Nix-augmented PATH for command resolution when available
+    let effective_path = match &nix_env_vars {
+        Some(nix_env) => NixService::merged_path(&state.env.merged_path, nix_env),
+        None => state.env.merged_path.clone(),
+    };
 
     let cli_cmd = if session.provider_id == "terminal" {
         // Respect user override from settings, fall back to detected login shell
@@ -222,7 +236,7 @@ pub fn session_start(
     } else {
         ProviderService::resolve_command_path(
             &session.provider_id,
-            &state.env.merged_path,
+            &effective_path,
             provider_config.binary_path_override.as_deref(),
         )
         .unwrap_or_else(|| {
@@ -255,7 +269,12 @@ pub fn session_start(
     );
     args.extend(provider_config.extra_args);
     let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
-    let child_env = state.env.child_env.clone();
+
+    // Build child env: merge Nix environment if available
+    let child_env = match nix_env_vars {
+        Some(nix_env) => NixService::merge_env(&state.env.child_env, &nix_env),
+        None => state.env.child_env.clone(),
+    };
 
     let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> =
         Box::new(move |sid: &str, exit_code: Option<i32>| match rusqlite::Connection::open(&db_path)

@@ -122,3 +122,24 @@ export interface DiffContext {
 	old_content: string | null;
 	new_content: string | null;
 }
+
+// ── Nix Environment ─────────────────────────
+
+export type NixEnvStatus = 'pending' | 'evaluating' | 'ready' | 'error' | 'timeout';
+
+export interface NixEnvRecord {
+	project_id: string;
+	nix_file: string;
+	status: NixEnvStatus;
+	error_message: string | null;
+	evaluated_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface NixDetection {
+	project_id: string;
+	project_path: string;
+	detected_files: string[];
+	selected: NixEnvRecord | null;
+}

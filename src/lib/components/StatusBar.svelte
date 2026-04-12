@@ -2,6 +2,7 @@
 	import { getSessions } from '$lib/stores/sessions.svelte';
 	import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import NixEnvIndicator from '$lib/components/NixEnvIndicator.svelte';
 	import Circle from '@lucide/svelte/icons/circle';
 	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
 	import Minus from '@lucide/svelte/icons/minus';
@@ -12,7 +13,11 @@
 	let zoom = $derived(getZoomLevel());
 </script>
 
-<footer class="flex items-center justify-end px-3 py-0.5 bg-surface border-t border-edge text-[0.68rem] shrink-0 min-h-6 gap-3">
+<footer class="flex items-center justify-between px-3 py-0.5 bg-surface border-t border-edge text-[0.68rem] shrink-0 min-h-6 gap-3">
+	<div class="flex items-center gap-2.5">
+		<NixEnvIndicator />
+	</div>
+
 	<div class="flex items-center gap-2.5">
 		{#if liveSessions.length > 0}
 			<span class="flex items-center gap-1 text-success">

@@ -1,0 +1,195 @@
+use crate::app_state::AppState;
+use crate::errors::ApiError;
+use crate::models::nix_env::{NixDetection, NixEnvRecord, NixEnvStatus};
+use crate::models::provider::ProviderStatus;
+use crate::services::nix::NixService;
+use crate::services::settings::SettingsService;
+
+/// Detect Nix files in a project directory and return current selection.
+#[tauri::command]
+pub fn nix_detect(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<NixDetection, ApiError> {
+    let db = state.db.lock();
+    let project = state
+        .projects
+        .get(db.conn(), &project_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
+
+    let detected_files = NixService::detect(&project.path);
+    let selected = NixService::get(db.conn(), &project_id).map_err(ApiError::Database)?;
+
+    Ok(NixDetection {
+        project_id,
+        project_path: project.path,
+        detected_files,
+        selected,
+    })
+}
+
+/// Select a Nix file for a project. Validates against detected files.
+#[tauri::command]
+pub fn nix_select(
+    project_id: String,
+    nix_file: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<NixEnvRecord, ApiError> {
+    let db = state.db.lock();
+
+    let project = state
+        .projects
+        .get(db.conn(), &project_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
+
+    // Validate nix_file exists in the project directory
+    let detected = NixService::detect(&project.path);
+    if !detected.iter().any(|f| f == &nix_file) {
+        return Err(ApiError::InvalidArgument(format!(
+            "Nix file '{}' not found in project. Detected: {:?}",
+            nix_file, detected
+        )));
+    }
+
+    NixService::select(db.conn(), &project_id, &nix_file).map_err(ApiError::Database)
+}
+
+/// RAII guard that removes a project_id from the eval lock set on drop.
+struct NixEvalGuard<'a> {
+    locks: &'a parking_lot::Mutex<std::collections::HashSet<String>>,
+    project_id: String,
+}
+
+impl<'a> Drop for NixEvalGuard<'a> {
+    fn drop(&mut self) {
+        self.locks.lock().remove(&self.project_id);
+    }
+}
+
+/// Evaluate the selected Nix expression (async, potentially slow).
+#[tauri::command]
+pub async fn nix_evaluate(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<NixEnvRecord, ApiError> {
+    // Check and acquire evaluation lock
+    {
+        let mut locks = state.nix_eval_locks.lock();
+        if locks.contains(&project_id) {
+            return Err(ApiError::InvalidArgument(
+                "Nix evaluation already in progress for this project".to_string(),
+            ));
+        }
+        locks.insert(project_id.clone());
+    }
+
+    // RAII guard ensures the lock is always released, even on early ? returns or panics
+    let _guard = NixEvalGuard {
+        locks: &state.nix_eval_locks,
+        project_id: project_id.clone(),
+    };
+
+    // Load project path and nix_file from DB
+    let (project_path, nix_file) = {
+        let db = state.db.lock();
+        let project = state
+            .projects
+            .get(db.conn(), &project_id)
+            .map_err(ApiError::Database)?
+            .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
+
+        let record = NixService::get(db.conn(), &project_id)
+            .map_err(ApiError::Database)?
+            .ok_or_else(|| {
+                ApiError::InvalidArgument(
+                    "No Nix file selected for this project. Call nix_select first.".to_string(),
+                )
+            })?;
+
+        NixService::set_status(db.conn(), &project_id, NixEnvStatus::Evaluating)
+            .map_err(ApiError::Database)?;
+
+        (project.path.clone(), record.nix_file.clone())
+    };
+
+    // Run evaluation on a blocking thread (can take 30+ seconds)
+    let eval_project_path = project_path.clone();
+    let eval_nix_file = nix_file.clone();
+    let eval_result = tokio::task::spawn_blocking(move || {
+        NixService::evaluate(&eval_project_path, &eval_nix_file, 120)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Evaluation task panicked: {}", e)))?;
+
+    // Save result to DB
+    {
+        let db = state.db.lock();
+        match &eval_result {
+            Ok(env_vars) => {
+                NixService::save_success(db.conn(), &project_id, env_vars)
+                    .map_err(ApiError::Database)?;
+            }
+            Err(eval_error) => {
+                NixService::save_error(db.conn(), &project_id, eval_error)
+                    .map_err(ApiError::Database)?;
+            }
+        }
+    }
+
+    // _guard drops here, releasing the lock
+
+    if let Err(eval_error) = eval_result {
+        return Err(ApiError::Internal(eval_error.to_string()));
+    }
+
+    let db = state.db.lock();
+    NixService::get(db.conn(), &project_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::Internal("Nix env record disappeared after save".to_string()))
+}
+
+/// Clear the Nix environment for a project.
+#[tauri::command]
+pub fn nix_clear(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let db = state.db.lock();
+    NixService::remove(db.conn(), &project_id).map_err(ApiError::Database)
+}
+
+/// Get the current Nix environment status for a project.
+#[tauri::command]
+pub fn nix_status(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<NixEnvRecord>, ApiError> {
+    let db = state.db.lock();
+    NixService::get(db.conn(), &project_id).map_err(ApiError::Database)
+}
+
+/// Detect providers using the project's Nix-augmented PATH.
+#[tauri::command]
+pub fn provider_list_for_project(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ProviderStatus>, ApiError> {
+    let db = state.db.lock();
+
+    let merged_path = match NixService::load_env_vars(db.conn(), &project_id) {
+        Ok(Some(nix_env)) => NixService::merged_path(&state.env.merged_path, &nix_env),
+        _ => state.env.merged_path.clone(),
+    };
+
+    let overrides = SettingsService::load_binary_overrides(db.conn())
+        .map_err(ApiError::Database)?;
+
+    let mut providers = state.providers.lock();
+    Ok(providers.detect_all(
+        &merged_path,
+        &overrides,
+        Some(&state.env.detected_shell),
+    ))
+}

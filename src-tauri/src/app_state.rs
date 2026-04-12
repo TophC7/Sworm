@@ -9,6 +9,7 @@ use crate::services::{
     sessions::SessionService,
 };
 use parking_lot::Mutex;
+use std::collections::HashSet;
 
 /// Central application state managed by Tauri.
 ///
@@ -24,6 +25,8 @@ pub struct AppState {
     pub git: GitService,
     pub credentials: CredentialService,
     pub env: EnvironmentService,
+    /// Tracks project IDs with Nix evaluations in progress to prevent concurrent runs.
+    pub nix_eval_locks: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ impl AppState {
             git: GitService::new(),
             credentials: CredentialService::new(),
             env: EnvironmentService::new(),
+            nix_eval_locks: Mutex::new(HashSet::new()),
         })
     }
 }

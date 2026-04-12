@@ -11,6 +11,8 @@ import type {
 	GitCommit,
 	GitSummary,
 	GeneralSettings,
+	NixDetection,
+	NixEnvRecord,
 	Project,
 	ProviderStatus,
 	PtyEvent,
@@ -62,6 +64,9 @@ export const backend = {
 		},
 		refresh(): Promise<ProviderStatus[]> {
 			return invoke<ProviderStatus[]>('provider_refresh');
+		},
+		listForProject(projectId: string): Promise<ProviderStatus[]> {
+			return invoke<ProviderStatus[]>('provider_list_for_project', { projectId });
 		}
 	},
 
@@ -134,6 +139,24 @@ export const backend = {
 		},
 		getLog(path: string, limit = 20): Promise<GitCommit[]> {
 			return invoke<GitCommit[]>('git_get_log', { path, limit });
+		}
+	},
+
+	nix: {
+		detect(projectId: string): Promise<NixDetection> {
+			return invoke<NixDetection>('nix_detect', { projectId });
+		},
+		select(projectId: string, nixFile: string): Promise<NixEnvRecord> {
+			return invoke<NixEnvRecord>('nix_select', { projectId, nixFile });
+		},
+		evaluate(projectId: string): Promise<NixEnvRecord> {
+			return invoke<NixEnvRecord>('nix_evaluate', { projectId });
+		},
+		clear(projectId: string): Promise<void> {
+			return invoke<void>('nix_clear', { projectId });
+		},
+		status(projectId: string): Promise<NixEnvRecord | null> {
+			return invoke<NixEnvRecord | null>('nix_status', { projectId });
 		}
 	},
 
