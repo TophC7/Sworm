@@ -5,7 +5,7 @@
 // Replaces activeProjectId (from projects store) and activeSessionId
 // (from sessions store) with a richer per-pane model.
 
-import type { DiffContext, Session } from '$lib/types/backend'
+import type { Session } from '$lib/types/backend'
 import * as sessionRegistry from '$lib/terminal/sessionRegistry'
 import { clearGitState } from '$lib/stores/git.svelte'
 
@@ -31,16 +31,28 @@ export interface SessionTab {
   locked: boolean
 }
 
-export interface DiffTab {
-  kind: 'diff'
+export interface CommitTab {
+  kind: 'commit'
   id: TabId
-  filePath: string
-  context: DiffContext
+  commitHash: string
+  shortHash: string
+  message: string
+  initialFile: string | null
   temporary: boolean
   locked: boolean
 }
 
-export type Tab = SessionTab | DiffTab
+export interface ChangesTab {
+  kind: 'changes'
+  id: TabId
+  label: string
+  staged: boolean
+  initialFile: string | null
+  temporary: boolean
+  locked: boolean
+}
+
+export type Tab = SessionTab | CommitTab | ChangesTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -296,56 +308,78 @@ export function addSessionTab(projectId: string, sessionId: string, title: strin
   return tab.id
 }
 
-export function addDiffTab(projectId: string, filePath: string, context: DiffContext, temporary: boolean): TabId {
+/** Compare the content-bearing fields of two tabs (ignoring id/locked). */
+function tabDataChanged(a: Tab, b: Tab): boolean {
+  if (a.kind !== b.kind) return true
+  switch (a.kind) {
+    case 'commit':
+      return b.kind !== 'commit' || a.commitHash !== b.commitHash || a.initialFile !== b.initialFile
+    case 'changes':
+      return b.kind !== 'changes' || a.staged !== b.staged || a.initialFile !== b.initialFile
+    default:
+      return true
+  }
+}
+
+/**
+ * Generic content-tab helper. Handles the 3-phase pattern:
+ * 1. Replace existing temporary tab of same kind in active pane
+ * 2. Reuse an existing persistent tab (optional update via `onReuse`)
+ * 3. Create a new tab
+ */
+function addContentTab(
+  projectId: string,
+  kind: Tab['kind'],
+  makeTab: (id: TabId) => Tab,
+  temporary: boolean,
+  matchPersistent?: (t: Tab) => boolean,
+  onReuse?: (existing: Tab) => Tab
+): TabId {
   const ws = ensureWorkspace(projectId)
   const pane = activePaneOf(ws)
 
-  // If temporary, replace existing temporary diff tab in this pane
+  // Phase 1: replace existing temporary tab of same kind in this pane
   if (temporary) {
     const existingTempId = pane.tabs.find((id) => {
-      const tab = findTab(ws, id)
-      return tab?.kind === 'diff' && tab.temporary
+      const t = findTab(ws, id)
+      return t?.kind === kind && t.kind !== 'session' && t.temporary
     })
 
     if (existingTempId) {
-      // Update the existing temporary tab in place
-      ws.tabs = ws.tabs.map((t) =>
-        t.id === existingTempId
-          ? {
-              kind: 'diff' as const,
-              id: existingTempId,
-              filePath,
-              context,
-              temporary: true,
-              locked: t.kind === 'diff' ? t.locked : false
-            }
-          : t
-      )
+      const newTab = makeTab(existingTempId)
+      const existingTab = findTab(ws, existingTempId)
+      // Skip workspace mutation when tab data hasn't changed
+      // (e.g. second click of a double-click on the same file)
+      if (existingTab && !tabDataChanged(existingTab, newTab)) {
+        return existingTempId
+      }
+      ws.tabs = ws.tabs.map((t) => (t.id === existingTempId ? newTab : t))
       pane.activeTabId = existingTempId
       commitWorkspace(ws)
       return existingTempId
     }
   }
 
-  // Check if a persistent tab for this file already exists
-  const existing = ws.tabs.find((t) => t.kind === 'diff' && t.filePath === filePath && !t.temporary)
-  if (existing) {
-    const existingPane = findPaneForTab(ws, existing.id) ?? pane
-    existingPane.activeTabId = existing.id
-    focusedPaneSlot = existingPane.slot
-    commitWorkspace(ws)
-    return existing.id
+  // Phase 2: reuse existing persistent tab
+  if (matchPersistent) {
+    const existing = ws.tabs.find((t) => matchPersistent(t))
+    if (existing) {
+      if (onReuse) {
+        const updated = onReuse(existing)
+        if (updated !== existing) {
+          ws.tabs = ws.tabs.map((t) => (t.id === existing.id ? updated : t))
+        }
+      }
+      const existingPane = findPaneForTab(ws, existing.id) ?? pane
+      existingPane.activeTabId = existing.id
+      focusedPaneSlot = existingPane.slot
+      commitWorkspace(ws)
+      return existing.id
+    }
   }
 
-  const tab: DiffTab = {
-    kind: 'diff',
-    id: generateTabId(),
-    filePath,
-    context,
-    temporary,
-    locked: false
-  }
-
+  // Phase 3: create new tab
+  const tab = makeTab(generateTabId())
   ws.tabs = [...ws.tabs, tab]
   pane.tabs = [...pane.tabs, tab.id]
   pane.activeTabId = tab.id
@@ -355,11 +389,50 @@ export function addDiffTab(projectId: string, filePath: string, context: DiffCon
   return tab.id
 }
 
+export function addCommitTab(
+  projectId: string,
+  commitHash: string,
+  shortHash: string,
+  message: string,
+  initialFile: string | null = null,
+  temporary = true
+): TabId {
+  return addContentTab(
+    projectId,
+    'commit',
+    (id): CommitTab => ({ kind: 'commit', id, commitHash, shortHash, message, initialFile, temporary, locked: false }),
+    temporary,
+    (t) => t.kind === 'commit' && t.commitHash === commitHash && !t.temporary,
+    (t) => (t.kind === 'commit' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
+  )
+}
+
+export function addChangesTab(
+  projectId: string,
+  staged: boolean,
+  initialFile: string | null = null,
+  temporary = true
+): TabId {
+  const label = staged ? 'Staged Changes' : 'Changes'
+  return addContentTab(
+    projectId,
+    'changes',
+    (id): ChangesTab => ({ kind: 'changes', id, label, staged, initialFile, temporary, locked: false }),
+    temporary,
+    (t) => t.kind === 'changes' && t.staged === staged && !t.temporary,
+    (t) => (t.kind === 'changes' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
+  )
+}
+
 export function promoteTemporaryTab(tabId: TabId) {
   const ws = activeProjectId ? getWorkspace(activeProjectId) : undefined
   if (!ws) return
 
-  ws.tabs = ws.tabs.map((t) => (t.id === tabId && t.kind === 'diff' && t.temporary ? { ...t, temporary: false } : t))
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.id !== tabId || t.kind === 'session') return t
+    if (t.temporary) return { ...t, temporary: false }
+    return t
+  })
   commitWorkspace(ws)
 }
 
@@ -457,11 +530,6 @@ export function getFocusedTab(projectId: string): Tab | null {
   if (!pane?.activeTabId) return null
 
   return findTab(ws, pane.activeTabId) ?? null
-}
-
-export function getFocusedDiffTab(projectId: string): DiffTab | null {
-  const tab = getFocusedTab(projectId)
-  return tab?.kind === 'diff' ? tab : null
 }
 
 function paneSlots(ws: ProjectWorkspace): Set<PaneSlot> {

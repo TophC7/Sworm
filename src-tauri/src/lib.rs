@@ -74,7 +74,10 @@ pub fn run() {
             commands::git::git_get_summary,
             commands::git::git_get_file_diff,
             commands::git::git_get_diff_context,
-            commands::git::git_get_log,
+            commands::git::git_get_graph,
+            commands::git::git_get_commit_detail,
+            commands::git::git_get_commit_diffs,
+            commands::git::git_get_working_diffs,
             // PTY demo commands (kept for backwards compat)
             commands::pty::pty_demo_start,
             commands::pty::pty_demo_write,

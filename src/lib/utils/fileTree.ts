@@ -5,23 +5,23 @@
 
 import type { GitChange } from '$lib/types/backend'
 
-export interface FileTreeNode {
+export interface FileTreeNode<T extends { path: string } = GitChange> {
   /** Segment name (e.g. "components" or "Foo.svelte") */
   name: string
   /** Full relative path from project root */
   path: string
   type: 'file' | 'directory'
-  children: FileTreeNode[]
+  children: FileTreeNode<T>[]
   /** Only set on leaf file nodes */
-  change?: GitChange
+  change?: T
 }
 
 /**
- * Build a nested tree from flat GitChange paths.
+ * Build a nested tree from flat paths.
  * Single-child directory chains are compacted (e.g. "src/lib" instead of "src" > "lib").
  */
-export function buildFileTree(changes: GitChange[]): FileTreeNode[] {
-  const root: FileTreeNode = {
+export function buildFileTree<T extends { path: string }>(changes: T[]): FileTreeNode<T>[] {
+  const root: FileTreeNode<T> = {
     name: '',
     path: '',
     type: 'directory',
@@ -37,7 +37,9 @@ export function buildFileTree(changes: GitChange[]): FileTreeNode[] {
       const isFile = i === segments.length - 1
       const partialPath = segments.slice(0, i + 1).join('/')
 
-      let child = current.children.find((c) => c.name === segment && c.type === (isFile ? 'file' : 'directory'))
+      let child: FileTreeNode<T> | undefined = current.children.find(
+        (c) => c.name === segment && c.type === (isFile ? 'file' : 'directory')
+      )
 
       if (!child) {
         child = {
@@ -60,7 +62,7 @@ export function buildFileTree(changes: GitChange[]): FileTreeNode[] {
   return compactTree(root.children)
 }
 
-function sortTree(node: FileTreeNode): void {
+function sortTree(node: FileTreeNode<{ path: string }>): void {
   node.children.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
     return a.name.localeCompare(b.name)
@@ -76,7 +78,7 @@ function sortTree(node: FileTreeNode): void {
  *
  * Fully immutable — returns new nodes rather than mutating inputs.
  */
-function compactTree(nodes: FileTreeNode[]): FileTreeNode[] {
+function compactTree<T extends { path: string }>(nodes: FileTreeNode<T>[]): FileTreeNode<T>[] {
   return nodes.map((node) => {
     if (node.type !== 'directory') return node
 
@@ -95,7 +97,7 @@ function compactTree(nodes: FileTreeNode[]): FileTreeNode[] {
 }
 
 /** Count leaf files in a tree (for group header counts). */
-export function countFiles(nodes: FileTreeNode[]): number {
+export function countFiles(nodes: FileTreeNode<{ path: string }>[]): number {
   let count = 0
   for (const node of nodes) {
     if (node.type === 'file') count++

@@ -6,10 +6,11 @@
 import { invoke, Channel } from '@tauri-apps/api/core'
 import type {
   AppInfo,
+  CommitDetail,
   DiffContext,
   EnvProbeResult,
-  GitCommit,
   GitSummary,
+  GraphCommit,
   GeneralSettings,
   NixDetection,
   NixEnvRecord,
@@ -146,8 +147,17 @@ export const backend = {
     getDiffContext(projectPath: string, filePath: string, staged: boolean): Promise<DiffContext | null> {
       return invoke<DiffContext | null>('git_get_diff_context', { projectPath, filePath, staged })
     },
-    getLog(path: string, limit = 20): Promise<GitCommit[]> {
-      return invoke<GitCommit[]>('git_get_log', { path, limit })
+    getGraph(path: string, limit = 100): Promise<GraphCommit[]> {
+      return invoke<GraphCommit[]>('git_get_graph', { path, limit })
+    },
+    getCommitDetail(path: string, hash: string): Promise<CommitDetail | null> {
+      return invoke<CommitDetail | null>('git_get_commit_detail', { path, hash })
+    },
+    getWorkingDiffs(path: string, staged: boolean, untrackedPaths: string[]): Promise<Record<string, string>> {
+      return invoke<Record<string, string>>('git_get_working_diffs', { path, staged, untrackedPaths })
+    },
+    getCommitDiffs(path: string, hash: string): Promise<Record<string, string>> {
+      return invoke<Record<string, string>>('git_get_commit_diffs', { path, hash })
     }
   },
 

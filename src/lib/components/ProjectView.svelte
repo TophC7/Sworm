@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Project, DiffContext } from '$lib/types/backend'
+  import type { Project } from '$lib/types/backend'
   import { loadSessions } from '$lib/stores/sessions.svelte'
   import { startGitPolling, stopGitPolling, getGitSummary, refreshGit } from '$lib/stores/git.svelte'
   import ActivityBar from '$lib/components/ActivityBar.svelte'
@@ -7,7 +7,7 @@
   import SessionHistoryView from '$lib/components/SessionHistoryView.svelte'
   import { getGitSidebarWidth, setGitSidebarWidth, isGitSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
   import PaneGrid from '$lib/components/PaneGrid.svelte'
-  import { addDiffTab, getFocusedDiffTab, promoteTemporaryTab } from '$lib/stores/workspace.svelte'
+  import { addCommitTab, addChangesTab, getFocusedTab, promoteTemporaryTab } from '$lib/stores/workspace.svelte'
 
   let {
     project
@@ -16,9 +16,6 @@
   } = $props()
 
   let gitSummary = $derived(getGitSummary(project.id))
-  let focusedDiffTab = $derived(getFocusedDiffTab(project.id))
-  let diffError = $state<string | null>(null)
-
   let sidebarCollapsed = $derived(isGitSidebarCollapsed())
   let sidebarWidth = $derived(getGitSidebarWidth())
   let sidebarView = $derived(getSidebarView())
@@ -62,30 +59,6 @@
     }
   })
 
-  // Reset transient git UI state on project switch
-  $effect(() => {
-    project.id
-    diffError = null
-  })
-
-  function handleViewDiff(filePath: string, context: DiffContext | null) {
-    diffError = null
-    if (!context?.raw_diff) {
-      return
-    }
-    addDiffTab(project.id, filePath, context, true)
-  }
-
-  function handlePersistDiff() {
-    if (focusedDiffTab?.temporary) {
-      promoteTemporaryTab(focusedDiffTab.id)
-    }
-  }
-
-  function handleDiffError(message: string | null) {
-    diffError = message
-  }
-
   function handleRefreshGit() {
     void refreshGit(project.id, project.path)
   }
@@ -106,10 +79,14 @@
             summary={gitSummary}
             projectPath={project.path}
             onRefresh={handleRefreshGit}
-            onViewDiff={handleViewDiff}
-            activeDiffFile={focusedDiffTab?.filePath}
-            onDiffError={handleDiffError}
-            onPersistDiff={handlePersistDiff}
+            onFileClick={(filePath, staged) => addChangesTab(project.id, staged, filePath)}
+            onPersistTab={() => {
+              const tab = getFocusedTab(project.id)
+              if (tab && tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
+            }}
+            onCommitFileClick={(hash, shortHash, message, filePath) =>
+              addCommitTab(project.id, hash, shortHash, message, filePath)}
+            onViewAllChanges={(staged) => addChangesTab(project.id, staged, null, false)}
           />
         {:else if sidebarView === 'sessions'}
           <SessionHistoryView projectId={project.id} />
@@ -128,12 +105,6 @@
     <!-- Right column: session tabs + content -->
     <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {#if diffError}
-          <div class="border-b border-danger-border bg-danger-bg px-3 py-2 text-[0.76rem] text-danger-bright">
-            {diffError}
-          </div>
-        {/if}
-
         <PaneGrid projectId={project.id} projectPath={project.path} />
       </div>
     </div>

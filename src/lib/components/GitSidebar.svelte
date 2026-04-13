@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GitCommitLog from '$lib/components/GitCommitLog.svelte'
+  import GitGraph from '$lib/components/GitGraph.svelte'
   import GitFileTree from '$lib/components/GitFileTree.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
@@ -7,7 +7,7 @@
   import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider, SidebarTrigger } from '$lib/components/ui/sidebar'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { isGitSidebarCollapsed, setGitSidebarCollapsed } from '$lib/stores/ui.svelte'
-  import type { DiffContext, GitSummary } from '$lib/types/backend'
+  import type { GitSummary } from '$lib/types/backend'
   import { PanelLeftClose } from '@lucide/svelte'
   import ArrowDown from '@lucide/svelte/icons/arrow-down'
   import ArrowUp from '@lucide/svelte/icons/arrow-up'
@@ -18,18 +18,18 @@
     summary,
     projectPath,
     onRefresh,
-    onViewDiff,
-    activeDiffFile,
-    onDiffError,
-    onPersistDiff
+    onFileClick,
+    onPersistTab,
+    onCommitFileClick,
+    onViewAllChanges
   }: {
     summary: GitSummary | null
     projectPath: string
     onRefresh?: () => void
-    onViewDiff?: (filePath: string, context: DiffContext | null) => void
-    activeDiffFile?: string | null
-    onDiffError?: (message: string | null) => void
-    onPersistDiff?: () => void
+    onFileClick?: (filePath: string, staged: boolean) => void
+    onPersistTab?: () => void
+    onCommitFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => void
+    onViewAllChanges?: (staged: boolean) => void
   } = $props()
 
   let collapsed = $derived(isGitSidebarCollapsed())
@@ -53,6 +53,8 @@
             <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
               <span class="font-mono font-bold text-warning">M</span>
               <span>Modified content</span>
+              <span class="font-mono font-bold text-success">U</span>
+              <span>Untracked (new file, not yet staged)</span>
               <span class="font-mono font-bold text-danger">D</span>
               <span>File deleted</span>
               <span class="font-mono font-bold text-accent">R</span>
@@ -102,13 +104,13 @@
         <ResizablePaneGroup direction="vertical">
           <ResizablePane defaultSize={60} minSize={15}>
             <div class="h-full overflow-y-auto">
-              <GitFileTree {summary} {projectPath} {onViewDiff} {activeDiffFile} {onDiffError} {onPersistDiff} />
+              <GitFileTree {summary} {projectPath} {onFileClick} {onPersistTab} {onViewAllChanges} />
             </div>
           </ResizablePane>
           <ResizableHandle />
           <ResizablePane defaultSize={40} minSize={15}>
             <div class="h-full overflow-y-auto">
-              <GitCommitLog {projectPath} />
+              <GitGraph {projectPath} onFileClick={onCommitFileClick} {onPersistTab} />
             </div>
           </ResizablePane>
         </ResizablePaneGroup>

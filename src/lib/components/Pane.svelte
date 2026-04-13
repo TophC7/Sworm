@@ -12,7 +12,8 @@
   } from '$lib/stores/workspace.svelte'
   import PaneTabBar from '$lib/components/PaneTabBar.svelte'
   import SessionTerminal from '$lib/components/SessionTerminal.svelte'
-  import DiffViewer from '$lib/components/DiffViewer.svelte'
+  import ChangesView from '$lib/components/ChangesView.svelte'
+  import CommitView from '$lib/components/CommitView.svelte'
   import NewSessionView from '$lib/components/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
@@ -161,13 +162,10 @@
           }
         }}
       />
-    {:else if activeTab.kind === 'diff'}
-      <DiffViewer
-        rawDiff={activeTab.context.raw_diff}
-        filePath={activeTab.filePath}
-        oldContent={activeTab.context.old_content}
-        newContent={activeTab.context.new_content}
-      />
+    {:else if activeTab.kind === 'commit'}
+      <CommitView commitHash={activeTab.commitHash} {projectPath} initialFile={activeTab.initialFile} />
+    {:else if activeTab.kind === 'changes'}
+      <ChangesView {projectId} {projectPath} staged={activeTab.staged} initialFile={activeTab.initialFile} />
     {/if}
 
     {#if showLockedOverlay}

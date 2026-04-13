@@ -25,13 +25,37 @@ pub struct GitSummary {
     pub untracked_count: i32,
 }
 
+/// Commit data for git graph rendering (includes parent hashes and refs).
 #[derive(Debug, Clone, Serialize)]
-pub struct GitCommit {
+pub struct GraphCommit {
     pub hash: String,
     pub short_hash: String,
+    pub parents: Vec<String>,
     pub author: String,
     pub date: String,
     pub message: String,
+    pub refs: Vec<String>,
+}
+
+/// Full commit detail for the commit-view page.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitDetail {
+    pub hash: String,
+    pub short_hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub date: String,
+    pub message: String,
+    pub files: Vec<CommitFileChange>,
+}
+
+/// Single file entry within a commit.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitFileChange {
+    pub path: String,
+    pub status: String,
+    pub additions: i32,
+    pub deletions: i32,
 }
 
 /// Structured diff data including file content for diff viewer rendering.
@@ -295,11 +319,13 @@ impl GitService {
         file_path: &str,
         staged: bool,
     ) -> Option<DiffContext> {
-        let raw_diff = self.get_file_diff(path, file_path, staged);
+        let raw_diff = self
+            .get_file_diff(path, file_path, staged)
+            .filter(|d| !d.trim().is_empty());
         let old_content = self.get_old_content(path, file_path);
         let new_content = self.get_new_content(path, file_path, staged);
 
-        // For untracked files, git diff returns nothing but we still have content.
+        // For untracked files, git diff returns empty but we still have content.
         // `git diff --no-index` exits with code 1 when differences exist (always
         // true for new-file vs /dev/null), so we check stdout length rather than
         // exit status — this is intentional, not an oversight.
@@ -373,13 +399,16 @@ impl GitService {
         }
     }
 
-    pub fn get_log(&self, path: &Path, limit: usize) -> Vec<GitCommit> {
+    /// Get commit graph data for all branches (for graph visualization).
+    pub fn get_graph(&self, path: &Path, limit: usize) -> Vec<GraphCommit> {
         let output = std::process::Command::new("git")
             .args([
                 "--no-optional-locks",
                 "log",
+                "--all",
+                "--topo-order",
                 &format!("--max-count={}", limit),
-                "--format=%H%n%h%n%an%n%aI%n%s",
+                "--format=%H%n%h%n%P%n%an%n%aI%n%s%n%D",
             ])
             .current_dir(path)
             .output();
@@ -398,21 +427,278 @@ impl GitService {
             .collect();
 
         lines
-            .chunks(5)
+            .chunks(7)
             .filter_map(|chunk| {
-                if chunk.len() != 5 {
+                if chunk.len() != 7 {
                     return None;
                 }
 
-                Some(GitCommit {
+                let parents = if chunk[2].is_empty() {
+                    Vec::new()
+                } else {
+                    chunk[2].split(' ').map(|s| s.to_string()).collect()
+                };
+
+                let refs = if chunk[6].is_empty() {
+                    Vec::new()
+                } else {
+                    chunk[6].split(", ").map(|s| s.trim().to_string()).collect()
+                };
+
+                Some(GraphCommit {
                     hash: chunk[0].clone(),
                     short_hash: chunk[1].clone(),
-                    author: chunk[2].clone(),
-                    date: chunk[3].clone(),
-                    message: chunk[4].clone(),
+                    parents,
+                    author: chunk[3].clone(),
+                    date: chunk[4].clone(),
+                    message: chunk[5].clone(),
+                    refs,
                 })
             })
             .collect()
+    }
+
+    /// Get full commit detail (info + changed files with stats).
+    pub fn get_commit_detail(&self, path: &Path, hash: &str) -> Option<CommitDetail> {
+        // 1. Commit metadata
+        let info = std::process::Command::new("git")
+            .args(["show", "-s", "--format=%H%n%h%n%P%n%an%n%aI%n%s", hash])
+            .current_dir(path)
+            .output()
+            .ok()?;
+
+        if !info.status.success() {
+            return None;
+        }
+
+        let info_text = String::from_utf8_lossy(&info.stdout);
+        let il: Vec<&str> = info_text.lines().collect();
+        if il.len() < 6 {
+            return None;
+        }
+
+        let parents: Vec<String> = if il[2].is_empty() {
+            Vec::new()
+        } else {
+            il[2].split(' ').map(|s| s.to_string()).collect()
+        };
+
+        // 2. File stats — diff against first parent (like GitHub).
+        //    For root commits, diff-tree --root shows everything as added.
+        let diff_ref = if parents.is_empty() {
+            // Root commit — use diff-tree --root
+            String::new()
+        } else {
+            format!("{}^..{}", hash, hash)
+        };
+
+        let (numstat_lines, status_lines) = if diff_ref.is_empty() {
+            let ns = std::process::Command::new("git")
+                .args([
+                    "diff-tree",
+                    "--root",
+                    "-r",
+                    "--no-commit-id",
+                    "--numstat",
+                    hash,
+                ])
+                .current_dir(path)
+                .output()
+                .ok()?;
+            let st = std::process::Command::new("git")
+                .args([
+                    "diff-tree",
+                    "--root",
+                    "-r",
+                    "--no-commit-id",
+                    "--name-status",
+                    hash,
+                ])
+                .current_dir(path)
+                .output()
+                .ok()?;
+            (
+                String::from_utf8_lossy(&ns.stdout).to_string(),
+                String::from_utf8_lossy(&st.stdout).to_string(),
+            )
+        } else {
+            let ns = std::process::Command::new("git")
+                .args(["diff", "--numstat", &diff_ref])
+                .current_dir(path)
+                .output()
+                .ok()?;
+            let st = std::process::Command::new("git")
+                .args(["diff", "--name-status", &diff_ref])
+                .current_dir(path)
+                .output()
+                .ok()?;
+            (
+                String::from_utf8_lossy(&ns.stdout).to_string(),
+                String::from_utf8_lossy(&st.stdout).to_string(),
+            )
+        };
+
+        // Parse numstat: "10\t5\tpath/to/file"
+        let mut stats = std::collections::HashMap::<String, (i32, i32)>::new();
+        for line in numstat_lines.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                let adds = parts[0].parse().unwrap_or(0);
+                let dels = parts[1].parse().unwrap_or(0);
+                stats.insert(parts[2].to_string(), (adds, dels));
+            }
+        }
+
+        // Parse name-status: "M\tpath" or "R100\told\tnew"
+        let mut files: Vec<CommitFileChange> = Vec::new();
+        for line in status_lines.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 2 {
+                let status = parts[0].chars().next().unwrap_or('M').to_string();
+                let file_path = parts[parts.len() - 1].to_string();
+                let (additions, deletions) = stats.get(&file_path).copied().unwrap_or((0, 0));
+                files.push(CommitFileChange {
+                    path: file_path,
+                    status,
+                    additions,
+                    deletions,
+                });
+            }
+        }
+
+        Some(CommitDetail {
+            hash: il[0].to_string(),
+            short_hash: il[1].to_string(),
+            parents,
+            author: il[3].to_string(),
+            date: il[4].to_string(),
+            message: il[5].to_string(),
+            files,
+        })
+    }
+
+    /// Get all file diffs for a commit in one git call.
+    pub fn get_commit_diffs(
+        &self,
+        path: &Path,
+        hash: &str,
+    ) -> std::collections::HashMap<String, String> {
+        Self::split_diff_patch(&self.full_commit_patch(path, hash))
+    }
+
+    /// Get all working-tree diffs in one git call (staged or unstaged).
+    /// Includes synthetic diffs for untracked files.
+    pub fn get_working_diffs(
+        &self,
+        path: &Path,
+        staged: bool,
+        untracked_paths: &[String],
+    ) -> std::collections::HashMap<String, String> {
+        let mut args = vec!["diff"];
+        if staged {
+            args.push("--cached");
+        }
+
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(path)
+            .output();
+
+        let full = match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => String::new(),
+        };
+
+        let mut result = Self::split_diff_patch(&full);
+
+        // Synthetic diffs for untracked files (not in git diff output)
+        for file_path in untracked_paths {
+            let output = std::process::Command::new("git")
+                .args(["diff", "--no-index", "--", "/dev/null", file_path])
+                .current_dir(path)
+                .output();
+
+            if let Some(diff) = output
+                .ok()
+                .filter(|o| !o.stdout.is_empty() && o.stdout.len() <= MAX_CONTENT_BYTES)
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            {
+                result.insert(file_path.clone(), diff);
+            }
+        }
+
+        result
+    }
+
+    fn split_diff_patch(full: &str) -> std::collections::HashMap<String, String> {
+        let mut result = std::collections::HashMap::new();
+        if full.is_empty() {
+            return result;
+        }
+
+        let mut start = if full.starts_with("diff --git ") {
+            0
+        } else {
+            match full.find("diff --git ") {
+                Some(i) => i,
+                None => return result,
+            }
+        };
+
+        loop {
+            let next = full[start + 1..].find("diff --git ").map(|i| i + start + 1);
+            let end = next.unwrap_or(full.len());
+            let chunk = &full[start..end];
+
+            if let Some(file_path) = Self::extract_diff_path(chunk) {
+                if chunk.len() <= MAX_CONTENT_BYTES {
+                    result.insert(file_path, chunk.to_string());
+                }
+            }
+
+            match next {
+                Some(n) => start = n,
+                None => break,
+            }
+        }
+
+        result
+    }
+
+    fn full_commit_patch(&self, path: &Path, hash: &str) -> String {
+        // Try first-parent diff
+        let output = std::process::Command::new("git")
+            .args(["diff", &format!("{}^..{}", hash, hash)])
+            .current_dir(path)
+            .output();
+
+        if let Ok(ref o) = output {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout);
+                if !s.trim().is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+
+        // Fallback for root commits
+        let output = std::process::Command::new("git")
+            .args(["diff-tree", "--root", "-p", "--no-commit-id", "-r", hash])
+            .current_dir(path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn extract_diff_path(chunk: &str) -> Option<String> {
+        // "diff --git a/... b/PATH\n..."
+        let first_line = chunk.lines().next()?;
+        let b_pos = first_line.rfind(" b/")?;
+        let raw = &first_line[b_pos + 3..];
+        Some(raw.trim_matches('"').to_string())
     }
 }
 

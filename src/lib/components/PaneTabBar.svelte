@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { tick } from 'svelte'
   import { backend } from '$lib/api/backend'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
+  import { allProviders, directOptions } from '$lib/data/providers'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
   import {
@@ -15,10 +15,11 @@
     toggleTabLocked
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
-  import { allProviders, directOptions } from '$lib/data/providers'
-  import FileIcon from '$lib/icons/FileIcon.svelte'
+  import FileDiff from '@lucide/svelte/icons/file-diff'
+  import GitCommitIcon from '@lucide/svelte/icons/git-commit-horizontal'
   import Lock from '@lucide/svelte/icons/lock'
   import Plus from '@lucide/svelte/icons/plus'
+  import { tick } from 'svelte'
 
   let {
     tabs,
@@ -87,8 +88,14 @@
   }
 
   function tabLabel(tab: Tab): string {
-    if (tab.kind === 'session') return tab.title
-    return tab.filePath.split('/').pop() ?? tab.filePath
+    switch (tab.kind) {
+      case 'session':
+        return tab.title
+      case 'commit':
+        return tab.shortHash
+      case 'changes':
+        return tab.label
+    }
   }
 
   function providerIcon(tab: Tab): string | null {
@@ -221,9 +228,7 @@
       draggable={!tab.locked}
       onclick={() => handleTabClick(tab.id)}
       ondblclick={() => {
-        if (tab.kind === 'diff' && tab.temporary) {
-          promoteTemporaryTab(tab.id)
-        }
+        if (tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
       }}
       oncontextmenu={(e) => handleContextMenu(e, tab.id)}
       onauxclick={(e) => handleAuxClick(e, tab.id)}
@@ -232,8 +237,10 @@
       onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
     >
       {#snippet leading()}
-        {#if tab.kind === 'diff'}
-          <FileIcon filename={tab.filePath} size={14} />
+        {#if tab.kind === 'changes'}
+          <FileDiff size={14} class="shrink-0 text-accent" />
+        {:else if tab.kind === 'commit'}
+          <GitCommitIcon size={14} class="shrink-0 text-accent" />
         {:else}
           {@const icon = providerIcon(tab)}
           {#if icon}
@@ -244,7 +251,7 @@
           <Lock size={11} class="shrink-0 text-muted" />
         {/if}
       {/snippet}
-      <span class="max-w-[120px] truncate {tab.kind === 'diff' && tab.temporary ? 'italic' : ''}">
+      <span class="max-w-[120px] truncate {tab.kind !== 'session' && tab.temporary ? 'italic' : ''}">
         {tabLabel(tab)}
       </span>
     </TabButton>

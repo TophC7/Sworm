@@ -110,12 +110,31 @@ export interface GitSummary {
   untracked_count: number
 }
 
-export interface GitCommit {
+export interface GraphCommit {
   hash: string
   short_hash: string
+  parents: string[]
   author: string
   date: string
   message: string
+  refs: string[]
+}
+
+export interface CommitDetail {
+  hash: string
+  short_hash: string
+  parents: string[]
+  author: string
+  date: string
+  message: string
+  files: CommitFileChange[]
+}
+
+export interface CommitFileChange {
+  path: string
+  status: string
+  additions: number
+  deletions: number
 }
 
 export interface DiffContext {
