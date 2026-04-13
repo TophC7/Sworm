@@ -46,6 +46,7 @@ pub struct CommitDetail {
     pub author: String,
     pub date: String,
     pub message: String,
+    pub body: String,
     pub files: Vec<CommitFileChange>,
 }
 
@@ -461,8 +462,14 @@ impl GitService {
     /// Get full commit detail (info + changed files with stats).
     pub fn get_commit_detail(&self, path: &Path, hash: &str) -> Option<CommitDetail> {
         // 1. Commit metadata
+        // Use null-byte delimiters so %b (body) can contain newlines safely.
         let info = std::process::Command::new("git")
-            .args(["show", "-s", "--format=%H%n%h%n%P%n%an%n%aI%n%s", hash])
+            .args([
+                "show",
+                "-s",
+                "--format=%H%x00%h%x00%P%x00%an%x00%aI%x00%s%x00%b",
+                hash,
+            ])
             .current_dir(path)
             .output()
             .ok()?;
@@ -472,15 +479,15 @@ impl GitService {
         }
 
         let info_text = String::from_utf8_lossy(&info.stdout);
-        let il: Vec<&str> = info_text.lines().collect();
-        if il.len() < 6 {
+        let parts: Vec<&str> = info_text.splitn(7, '\0').collect();
+        if parts.len() < 6 {
             return None;
         }
 
-        let parents: Vec<String> = if il[2].is_empty() {
+        let parents: Vec<String> = if parts[2].is_empty() {
             Vec::new()
         } else {
-            il[2].split(' ').map(|s| s.to_string()).collect()
+            parts[2].split(' ').map(|s| s.to_string()).collect()
         };
 
         // 2. File stats — diff against first parent (like GitHub).
@@ -567,12 +574,13 @@ impl GitService {
         }
 
         Some(CommitDetail {
-            hash: il[0].to_string(),
-            short_hash: il[1].to_string(),
+            hash: parts[0].to_string(),
+            short_hash: parts[1].to_string(),
             parents,
-            author: il[3].to_string(),
-            date: il[4].to_string(),
-            message: il[5].to_string(),
+            author: parts[3].to_string(),
+            date: parts[4].to_string(),
+            message: parts[5].to_string(),
+            body: parts.get(6).unwrap_or(&"").trim().to_string(),
             files,
         })
     }

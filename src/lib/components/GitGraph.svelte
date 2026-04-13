@@ -6,7 +6,10 @@
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
-  import { SvelteSet } from 'svelte/reactivity'
+  import { refLabel, visibleRefs } from '$lib/utils/gitRefs'
+  import CommitTooltip from '$lib/components/CommitTooltip.svelte'
+  import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
   let {
     projectPath,
@@ -28,11 +31,15 @@
   let expandedTree = $state<FileTreeNode<CommitFileChange>[]>([])
   let collapsedDirs = new SvelteSet<string>()
 
+  // Shared detail cache (tooltip prefetch + expand reuse the same data)
+  let detailCache = new SvelteMap<string, CommitDetail>()
+
   $effect(() => {
     const path = projectPath
     currentPath = path
     expandedHash = null
     expandedDetail = null
+    detailCache.clear()
     void loadGraph(path)
   })
 
@@ -44,6 +51,20 @@
     } catch {
       if (path === currentPath) rows = []
     }
+  }
+
+  /** Fetch commit detail, returning from cache when available. */
+  async function fetchDetail(hash: string): Promise<CommitDetail | null> {
+    const cached = detailCache.get(hash)
+    if (cached) return cached
+    const detail = await backend.git.getCommitDetail(projectPath, hash)
+    if (detail) detailCache.set(hash, detail)
+    return detail
+  }
+
+  /** Prefetch detail on hover so the tooltip opens with data ready. */
+  function prefetchDetail(hash: string) {
+    if (!detailCache.has(hash)) void fetchDetail(hash)
   }
 
   async function toggleCommit(hash: string) {
@@ -59,7 +80,7 @@
     expandedTree = []
     collapsedDirs.clear()
 
-    const detail = await backend.git.getCommitDetail(projectPath, hash)
+    const detail = await fetchDetail(hash)
     if (expandedHash !== hash) return
     expandedDetail = detail
     if (detail) {
@@ -76,30 +97,6 @@
     if (collapsedDirs.has(path)) collapsedDirs.delete(path)
     else collapsedDirs.add(path)
   }
-
-  function formatRef(ref: string): { label: string; kind: 'head' | 'remote' | 'tag' | 'branch' } {
-    if (ref.startsWith('HEAD -> ')) return { label: ref.slice(8), kind: 'head' }
-    if (ref.startsWith('tag: ')) return { label: ref.slice(5), kind: 'tag' }
-    if (ref.includes('/')) return { label: ref, kind: 'remote' }
-    return { label: ref, kind: 'branch' }
-  }
-
-  function visibleRefs(refs: string[]): string[] {
-    return refs.filter((r) => r !== 'HEAD')
-  }
-
-  function refClass(kind: 'head' | 'remote' | 'tag' | 'branch'): string {
-    switch (kind) {
-      case 'head':
-        return 'bg-accent/20 text-accent'
-      case 'branch':
-        return 'bg-accent/10 text-accent-dim'
-      case 'remote':
-        return 'bg-success/10 text-success'
-      case 'tag':
-        return 'bg-warning/10 text-warning'
-    }
-  }
 </script>
 
 <div class="flex h-full flex-col text-[0.78rem]">
@@ -110,80 +107,96 @@
   {#if rows.length === 0}
     <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No commits found.</div>
   {:else}
-    <div class="flex-1 overflow-y-auto">
-      {#each rows as row, i (row.commit.hash)}
-        {@const r = renders[i]}
-        {@const refs = visibleRefs(row.commit.refs)}
-        {@const isExpanded = expandedHash === row.commit.hash}
+    <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+      <div class="flex-1 overflow-y-auto">
+        {#each rows as row, i (row.commit.hash)}
+          {@const r = renders[i]}
+          {@const refs = visibleRefs(row.commit.refs)}
+          {@const isExpanded = expandedHash === row.commit.hash}
 
-        <!-- Commit row -->
-        <button
-          class="group flex w-full items-center border-t border-edge/30 text-left hover:bg-raised/50 {isExpanded
-            ? 'bg-raised/60'
-            : ''}"
-          style="height: {SWIMLANE_HEIGHT}px"
-          onclick={() => toggleCommit(row.commit.hash)}
-        >
-          <svg class="shrink-0" width={r.width} height={SWIMLANE_HEIGHT} viewBox="0 0 {r.width} {SWIMLANE_HEIGHT}">
-            {#each r.paths as p, pi (pi)}
-              <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
-            {/each}
-            {#if r.circle.isMerge}
-              <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS + 2} fill={r.circle.color} stroke="none" />
-              <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS - 1} fill={r.circle.color} stroke="none" />
-            {:else}
-              <circle cx={r.circle.cx} cy={r.circle.cy} r={r.circle.r} fill={r.circle.color} stroke="none" />
-            {/if}
-          </svg>
-          <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-            {#if refs.length > 0}
-              {#each refs as ref (ref)}
-                {@const f = formatRef(ref)}
-                <span
-                  class="inline-flex max-w-20 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight {refClass(
-                    f.kind
-                  )}"
-                  title={f.label}
-                >
-                  {f.label}
-                </span>
-              {/each}
-            {/if}
-            <span class="min-w-0 truncate text-[0.72rem] text-fg">{row.commit.message}</span>
-            <span class="ml-auto shrink-0 font-mono text-[0.62rem] text-muted">{row.commit.short_hash}</span>
-          </div>
-        </button>
-
-        <!-- Expanded file tree (inline under this commit) -->
-        {#if isExpanded}
-          <div class="border-t border-edge/30 bg-surface/40 py-1">
-            {#if !expandedDetail}
-              <div class="px-4 py-1.5 text-[0.68rem] text-subtle">Loading files...</div>
-            {:else if expandedTree.length === 0}
-              <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
-            {:else}
-              <FileTreeItems
-                nodes={expandedTree}
-                isCollapsed={(path) => collapsedDirs.has(path)}
-                onToggleDir={toggleDir}
-                onFileClick={(node) => expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
-                onFileDblClick={() => onPersistTab?.()}
-              >
-                {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
-                  {#if node.change}
+          <!-- Commit row with tooltip -->
+          <TooltipRoot>
+            <TooltipTrigger
+              class="group flex w-full items-center border-t border-edge/30 text-left hover:bg-raised/50 {isExpanded
+                ? 'bg-raised/60'
+                : ''}"
+              style="height: {SWIMLANE_HEIGHT}px"
+              onclick={() => toggleCommit(row.commit.hash)}
+              onmouseenter={() => prefetchDetail(row.commit.hash)}
+            >
+              <svg class="shrink-0" width={r.width} height={SWIMLANE_HEIGHT} viewBox="0 0 {r.width} {SWIMLANE_HEIGHT}">
+                {#each r.paths as p, pi (pi)}
+                  <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
+                {/each}
+                {#if r.circle.isMerge}
+                  <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS + 2} fill={r.circle.color} stroke="none" />
+                  <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS - 1} fill={r.circle.color} stroke="none" />
+                {:else}
+                  <circle cx={r.circle.cx} cy={r.circle.cy} r={r.circle.r} fill={r.circle.color} stroke="none" />
+                {/if}
+              </svg>
+              <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+                <span class="min-w-0 truncate text-[0.72rem] text-fg">{row.commit.message}</span>
+                {#if refs.length > 0}
+                  <!-- First ref: full label badge, colored to match the graph line -->
+                  <span
+                    class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight"
+                    style="background: {r.circle.color}20; color: {r.circle.color}"
+                    title={refLabel(refs[0])}
+                  >
+                    {refLabel(refs[0])}
+                  </span>
+                  <!-- Remaining refs: small colored squares -->
+                  {#each refs.slice(1) as ref (ref)}
                     <span
-                      class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
-                      title={gitStatusLabel(node.change.status)}
-                    >
-                      {gitStatusDisplay(node.change.status)}
-                    </span>
-                  {/if}
-                {/snippet}
-              </FileTreeItems>
-            {/if}
-          </div>
-        {/if}
-      {/each}
-    </div>
+                      class="size-3 shrink-0 rounded-sm"
+                      style="background: {r.circle.color}40"
+                      title={refLabel(ref)}
+                    ></span>
+                  {/each}
+                {/if}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent class="max-w-135" sideOffset={6} side="right" align="center">
+              <CommitTooltip
+                commit={row.commit}
+                detail={detailCache.get(row.commit.hash) ?? null}
+                graphColor={r.circle.color}
+              />
+            </TooltipContent>
+          </TooltipRoot>
+
+          <!-- Expanded file tree (inline under this commit) -->
+          {#if isExpanded}
+            <div class="border-t border-edge/30 bg-surface/40 py-1">
+              {#if !expandedDetail}
+                <div class="px-4 py-1.5 text-[0.68rem] text-subtle">Loading files...</div>
+              {:else if expandedTree.length === 0}
+                <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
+              {:else}
+                <FileTreeItems
+                  nodes={expandedTree}
+                  isCollapsed={(path) => collapsedDirs.has(path)}
+                  onToggleDir={toggleDir}
+                  onFileClick={(node) => expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
+                  onFileDblClick={() => onPersistTab?.()}
+                >
+                  {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
+                    {#if node.change}
+                      <span
+                        class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
+                        title={gitStatusLabel(node.change.status)}
+                      >
+                        {gitStatusDisplay(node.change.status)}
+                      </span>
+                    {/if}
+                  {/snippet}
+                </FileTreeItems>
+              {/if}
+            </div>
+          {/if}
+        {/each}
+      </div>
+    </TooltipProvider>
   {/if}
 </div>

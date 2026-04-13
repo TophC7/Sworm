@@ -18,6 +18,7 @@
   import { DiffModeEnum } from '@git-diff-view/svelte'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import DiffViewer from '$lib/components/DiffViewer.svelte'
+  import LazyRender from '$lib/components/LazyRender.svelte'
   import DiffControls from '$lib/components/DiffControls.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
@@ -177,15 +178,17 @@
           {#if loading}
             <div class="px-4 py-6 text-center text-[0.72rem] text-subtle">Loading diff...</div>
           {:else if entry}
-            <DiffViewer
-              rawDiff={entry.rawDiff}
-              filePath={file.path}
-              oldContent={entry.oldContent}
-              newContent={entry.newContent}
-              mode={diffMode}
-              wrap={diffWrap}
-              fontSize={diffFontSize}
-            />
+            <LazyRender minHeight={Math.min(Math.max(80, (file.additions + file.deletions) * 22), 600)}>
+              <DiffViewer
+                rawDiff={entry.rawDiff}
+                filePath={file.path}
+                oldContent={entry.oldContent}
+                newContent={entry.newContent}
+                mode={diffMode}
+                wrap={diffWrap}
+                fontSize={diffFontSize}
+              />
+            </LazyRender>
           {:else}
             <div class="px-4 py-6 text-center text-[0.72rem] text-subtle">No diff available</div>
           {/if}

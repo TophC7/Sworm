@@ -127,6 +127,7 @@ export interface CommitDetail {
   author: string
   date: string
   message: string
+  body: string
   files: CommitFileChange[]
 }
 
