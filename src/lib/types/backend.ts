@@ -46,6 +46,7 @@ export interface Session {
   shared_workspace: boolean
   auto_approve: boolean
   provider_resume_token: string | null
+  archived: boolean
   created_at: string
   updated_at: string
   last_started_at: string | null

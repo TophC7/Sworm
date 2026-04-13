@@ -70,14 +70,11 @@
     attachedSessionId = nextSession.id
     bindManager(nextManager)
 
-    // Auto-start only when reconnecting after a webview reload:
-    // the backend still has a live PTY (status running/starting) but
-    // the frontend lost its channel. All other statuses are intentional
-    // — the user must explicitly restart from the tab menu.
-    const shouldAutoStart =
-      switchingSessions &&
-      !nextManager.isPtyActive() &&
-      (nextSession.status === 'running' || nextSession.status === 'starting')
+    // Auto-start when switching to a session whose PTY isn't active.
+    // Covers both webview-reload reconnection (status running/starting)
+    // and opening historical sessions from the sidebar (status stopped/exited/idle).
+    // Skip failed sessions so the user sees the error before retrying.
+    const shouldAutoStart = switchingSessions && !nextManager.isPtyActive() && nextSession.status !== 'failed'
 
     if (shouldAutoStart) {
       try {

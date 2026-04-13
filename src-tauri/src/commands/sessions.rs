@@ -308,16 +308,14 @@ pub fn session_start(
     };
     let (resume_token, session_app_id) = match session.provider_id.as_str() {
         "claude_code" => {
+            // Always use --session-id for Claude Code. It's idempotent:
+            // creates the conversation if missing, resumes if it exists.
+            // --resume errors with "No conversation found" when the
+            // conversation data has been cleaned up or never completed.
             let token = session.provider_resume_token.clone().unwrap_or_else(|| {
                 SessionService::deterministic_session_uuid("claude", &session_id)
             });
-            if first_start {
-                // First start: `claude --session-id <uuid>`
-                (None, Some(token))
-            } else {
-                // Restart: `claude --resume <uuid>`
-                (Some(token), None)
-            }
+            (None, Some(token))
         }
         "copilot" => {
             // Copilot uses --resume for both new and existing sessions
@@ -512,5 +510,71 @@ pub fn session_remove(
     state
         .sessions
         .remove(db.conn(), &session_id)
+        .map_err(ApiError::Database)
+}
+
+/// Archive a session. Stops its PTY if running, then marks it archived.
+#[tauri::command]
+pub fn session_archive(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    // Stop the PTY if it's alive — archived sessions are never running
+    let _ = state.pty.kill(&session_id);
+
+    let db = state.db.lock();
+
+    // Ensure the session exists before archiving
+    let session = state
+        .sessions
+        .get(db.conn(), &session_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", session_id)))?;
+
+    // Mark as stopped if it was running/starting
+    if session.status == "running" || session.status == "starting" {
+        state
+            .sessions
+            .update_status(db.conn(), &session_id, "stopped")
+            .map_err(ApiError::Database)?;
+    }
+
+    state
+        .sessions
+        .archive(db.conn(), &session_id)
+        .map_err(ApiError::Database)
+}
+
+/// Unarchive a session. Restores it to the active session list.
+#[tauri::command]
+pub fn session_unarchive(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let db = state.db.lock();
+
+    // Ensure the session exists before unarchiving
+    let _session = state
+        .sessions
+        .get(db.conn(), &session_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", session_id)))?;
+
+    state
+        .sessions
+        .unarchive(db.conn(), &session_id)
+        .map_err(ApiError::Database)
+}
+
+/// List archived sessions for a project.
+#[tauri::command]
+pub fn session_list_archived(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Session>, ApiError> {
+    let db = state.db.lock();
+    state
+        .sessions
+        .list_archived_for_project(db.conn(), &project_id)
         .map_err(ApiError::Database)
 }

@@ -4,7 +4,6 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
   import { openProject } from '$lib/stores/workspace.svelte'
-  import Clock from '@lucide/svelte/icons/clock'
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import Worm from '@lucide/svelte/icons/worm'
 
@@ -58,10 +57,7 @@
 
     {#if projects.length > 0}
       <BlurFade delay={0.25} duration={0.4} direction="up" offset={8}>
-        <h2 class="mt-8 mb-3 flex items-center gap-1.5 text-[0.7rem] tracking-widest text-muted uppercase">
-          <Clock size={11} />
-          Recent
-        </h2>
+        <h2 class="mt-8 mb-3 flex items-center gap-1.5 text-[0.7rem] tracking-widest text-muted uppercase">Recent</h2>
         <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
           {#each projects.slice(0, 8) as project (project.id)}
             <li>

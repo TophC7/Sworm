@@ -12,6 +12,7 @@ pub struct Session {
     pub shared_workspace: bool,
     pub auto_approve: bool,
     pub provider_resume_token: Option<String>,
+    pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
     pub last_started_at: Option<String>,

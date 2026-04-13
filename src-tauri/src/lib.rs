@@ -60,6 +60,9 @@ pub fn run() {
             commands::sessions::session_stop,
             commands::sessions::session_reset,
             commands::sessions::session_remove,
+            commands::sessions::session_archive,
+            commands::sessions::session_unarchive,
+            commands::sessions::session_list_archived,
             // Nix environment commands
             commands::nix::nix_detect,
             commands::nix::nix_select,

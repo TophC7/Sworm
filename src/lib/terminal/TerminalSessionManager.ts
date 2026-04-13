@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import { feedOutput, markCompleted } from '$lib/stores/activity.svelte'
 import type { PtyEvent, Session } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { FitAddon } from '@xterm/addon-fit'
@@ -59,6 +60,8 @@ export class TerminalSessionManager {
   private disposed = false
   private viewportPosition = 0
   private lastError: string | null = null
+  private providerId: string | null = null
+  private readonly textDecoder = new TextDecoder()
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
 
@@ -164,9 +167,13 @@ export class TerminalSessionManager {
     }
 
     this.lastError = null
+    this.providerId = session.provider_id
 
     const output = backend.sessions.createOutputChannel((data) => {
-      this.terminal?.write(new Uint8Array(data))
+      const bytes = new Uint8Array(data)
+      this.terminal?.write(bytes)
+      // Feed output to activity classifier for agent state detection
+      feedOutput(this.sessionId, session.provider_id, this.textDecoder.decode(bytes, { stream: true }))
     })
     const events = backend.sessions.createEventChannel((event) => {
       if (event.type === 'started') {
@@ -178,6 +185,7 @@ export class TerminalSessionManager {
         this.ptyActive = false
         this.terminal?.write('\r\n\x1b[33m[Process exited]\x1b[0m\r\n')
         this.releaseChannels()
+        markCompleted(this.sessionId)
       }
 
       if (event.type === 'error') {

@@ -4,8 +4,7 @@
   import { backend } from '$lib/api/backend'
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
   import { TreeNode } from '$lib/components/ui/file-tree'
-  import FolderOpen from '@lucide/svelte/icons/folder-open'
-  import Folder from '@lucide/svelte/icons/folder'
+  import FileIcon from '$lib/icons/FileIcon.svelte'
 
   let {
     summary,
@@ -112,13 +111,12 @@
             onclick={() => toggleDir(section, node.path)}
           >
             {@render indentGuides(depth)}
-            <span class="flex w-3 shrink-0 items-center justify-center">
-              {#if !collapsedDirs.has(getDirKey(section, node.path))}
-                <FolderOpen size={12} />
-              {:else}
-                <Folder size={12} />
-              {/if}
-            </span>
+            <FileIcon
+              filename={node.name}
+              folder
+              expanded={!collapsedDirs.has(getDirKey(section, node.path))}
+              size={14}
+            />
             <span class="truncate">{node.name}</span>
           </button>
         {/snippet}
@@ -137,6 +135,7 @@
         ondblclick={() => onPersistDiff?.()}
       >
         {@render indentGuides(depth)}
+        <FileIcon filename={node.name} size={14} />
         <span class="min-w-0 flex-1 truncate">{node.name}</span>
         {#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
           {@const net = (node.change.additions ?? 0) - (node.change.deletions ?? 0)}

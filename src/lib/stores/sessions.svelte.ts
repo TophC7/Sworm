@@ -4,13 +4,19 @@
 // Active-session identity is derived from the workspace tab model.
 
 import { backend } from '$lib/api/backend'
+import { removeSession as removeActivityEntry } from '$lib/stores/activity.svelte'
 import { syncSessionTabs } from '$lib/stores/workspace.svelte'
 import type { Session } from '$lib/types/backend'
 
 let sessions = $state<Session[]>([])
+let archivedSessions = $state<Session[]>([])
 
 export function getSessions() {
   return sessions
+}
+
+export function getArchivedSessions() {
+  return archivedSessions
 }
 
 export function hasRunningSessions(): boolean {
@@ -29,6 +35,15 @@ export async function loadSessions(projectId: string) {
   }
 }
 
+export async function loadArchivedSessions(projectId: string) {
+  try {
+    archivedSessions = await backend.sessions.listArchived(projectId)
+  } catch (e) {
+    console.error('Failed to load archived sessions:', e)
+    archivedSessions = []
+  }
+}
+
 export async function createSession(projectId: string, providerId: string, title: string): Promise<Session> {
   const session = await backend.sessions.create(projectId, providerId, title)
   await loadSessions(projectId)
@@ -36,8 +51,22 @@ export async function createSession(projectId: string, providerId: string, title
 }
 
 export async function removeSession(sessionId: string, projectId: string) {
+  removeActivityEntry(sessionId)
   await backend.sessions.remove(sessionId)
   await loadSessions(projectId)
+  await loadArchivedSessions(projectId)
+}
+
+export async function archiveSession(sessionId: string, projectId: string) {
+  await backend.sessions.archive(sessionId)
+  await loadSessions(projectId)
+  await loadArchivedSessions(projectId)
+}
+
+export async function unarchiveSession(sessionId: string, projectId: string) {
+  await backend.sessions.unarchive(sessionId)
+  await loadSessions(projectId)
+  await loadArchivedSessions(projectId)
 }
 
 export function updateSessionInList(sessionId: string, updates: Partial<Session>) {

@@ -124,6 +124,15 @@ export const backend = {
     },
     remove(sessionId: string): Promise<void> {
       return invoke('session_remove', { sessionId })
+    },
+    archive(sessionId: string): Promise<void> {
+      return invoke('session_archive', { sessionId })
+    },
+    unarchive(sessionId: string): Promise<void> {
+      return invoke('session_unarchive', { sessionId })
+    },
+    listArchived(projectId: string): Promise<Session[]> {
+      return invoke<Session[]>('session_list_archived', { projectId })
     }
   },
 

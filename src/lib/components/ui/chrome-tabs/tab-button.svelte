@@ -12,11 +12,11 @@
   import { tv, type VariantProps } from 'tailwind-variants'
 
   export const tabButtonVariants = tv({
-    base: 'group relative flex items-center gap-1.5 px-3 h-8 shrink-0 border-none cursor-pointer transition-colors',
+    base: 'group relative flex items-center gap-1.5 px-3 shrink-0 border-none cursor-pointer transition-colors',
     variants: {
       variant: {
-        project: 'text-[0.78rem] rounded-t',
-        pane: 'text-[0.75rem]'
+        project: 'text-[0.78rem] rounded-t h-8',
+        pane: 'text-[0.75rem] self-stretch'
       },
       active: {
         true: '',
@@ -37,7 +37,7 @@
 </script>
 
 <script lang="ts">
-  import TabBeam from '$lib/components/ui/tab-beam.svelte'
+  import TabBeam, { type BeamVariant } from '$lib/components/ui/tab-beam.svelte'
   import { cn } from '$lib/utils/cn'
   import X from '@lucide/svelte/icons/x'
   import type { Snippet } from 'svelte'
@@ -48,7 +48,8 @@
   let {
     variant = 'pane',
     active = false,
-    showBeam = active,
+    showBeam,
+    beamVariant = 'accent' as BeamVariant,
     leading,
     onClose,
     class: className,
@@ -58,11 +59,17 @@
     variant?: TabButtonVariant
     active?: boolean
     showBeam?: boolean
+    beamVariant?: BeamVariant
     leading?: Snippet
     onClose?: (event: CloseEvent) => void | Promise<void>
     class?: string
     children?: Snippet
   } = $props()
+
+  // Derive from active when not explicitly provided.
+  // Cannot use a $props() default for this — defaults capture the
+  // initial value of `active`, not a reactive binding.
+  let effectiveShowBeam = $derived(showBeam ?? active)
 
   function handleClose(event: CloseEvent) {
     event.stopPropagation()
@@ -72,7 +79,7 @@
 </script>
 
 <button class={cn(tabButtonVariants({ variant, active }), className)} role="tab" aria-selected={active} {...rest}>
-  {#if active && showBeam}<TabBeam />{/if}
+  {#if active && effectiveShowBeam}<TabBeam variant={beamVariant} />{/if}
   {#if leading}{@render leading()}{/if}
   {#if children}{@render children()}{/if}
   {#if onClose}

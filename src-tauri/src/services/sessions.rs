@@ -4,6 +4,32 @@ use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Column list shared by all Session SELECT queries.
+const SESSION_COLS: &str = "id, project_id, provider_id, title, cwd, branch, status,
+     shared_workspace, auto_approve, provider_resume_token, archived,
+     created_at, updated_at, last_started_at, last_stopped_at";
+
+/// Build a Session from a row using the standard column order.
+fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
+    Ok(Session {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        provider_id: row.get(2)?,
+        title: row.get(3)?,
+        cwd: row.get(4)?,
+        branch: row.get(5)?,
+        status: row.get(6)?,
+        shared_workspace: row.get(7)?,
+        auto_approve: row.get(8)?,
+        provider_resume_token: row.get(9)?,
+        archived: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        last_started_at: row.get(13)?,
+        last_stopped_at: row.get(14)?,
+    })
+}
+
 /// Session service: CRUD for persisted sessions.
 pub struct SessionService;
 
@@ -60,6 +86,7 @@ impl SessionService {
             shared_workspace: true,
             auto_approve: false,
             provider_resume_token,
+            archived: false,
             created_at: now.clone(),
             updated_at: now,
             last_started_at: None,
@@ -83,39 +110,22 @@ impl SessionService {
         Uuid::from_bytes(bytes).to_string()
     }
 
+    /// List non-archived sessions for a project.
     pub fn list_for_project(
         &self,
         conn: &Connection,
         project_id: &str,
     ) -> Result<Vec<Session>, String> {
+        let query = format!(
+            "SELECT {} FROM sessions WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC",
+            SESSION_COLS
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT id, project_id, provider_id, title, cwd, branch, status,
-                 shared_workspace, auto_approve, provider_resume_token,
-                 created_at, updated_at, last_started_at, last_stopped_at
-                 FROM sessions WHERE project_id = ?1 ORDER BY updated_at DESC",
-            )
+            .prepare(&query)
             .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
         let rows = stmt
-            .query_map(rusqlite::params![project_id], |row| {
-                Ok(Session {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    provider_id: row.get(2)?,
-                    title: row.get(3)?,
-                    cwd: row.get(4)?,
-                    branch: row.get(5)?,
-                    status: row.get(6)?,
-                    shared_workspace: row.get(7)?,
-                    auto_approve: row.get(8)?,
-                    provider_resume_token: row.get(9)?,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
-                    last_started_at: row.get(12)?,
-                    last_stopped_at: row.get(13)?,
-                })
-            })
+            .query_map(rusqlite::params![project_id], row_to_session)
             .map_err(|e| format!("Failed to query sessions: {}", e))?;
 
         let mut sessions = Vec::new();
@@ -131,36 +141,46 @@ impl SessionService {
         Ok(sessions)
     }
 
-    pub fn get(&self, conn: &Connection, id: &str) -> Result<Option<Session>, String> {
+    /// List archived sessions for a project.
+    pub fn list_archived_for_project(
+        &self,
+        conn: &Connection,
+        project_id: &str,
+    ) -> Result<Vec<Session>, String> {
+        let query = format!(
+            "SELECT {} FROM sessions WHERE project_id = ?1 AND archived = 1 ORDER BY updated_at DESC",
+            SESSION_COLS
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT id, project_id, provider_id, title, cwd, branch, status,
-                 shared_workspace, auto_approve, provider_resume_token,
-                 created_at, updated_at, last_started_at, last_stopped_at
-                 FROM sessions WHERE id = ?1",
-            )
+            .prepare(&query)
             .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-        stmt.query_row(rusqlite::params![id], |row| {
-            Ok(Session {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                provider_id: row.get(2)?,
-                title: row.get(3)?,
-                cwd: row.get(4)?,
-                branch: row.get(5)?,
-                status: row.get(6)?,
-                shared_workspace: row.get(7)?,
-                auto_approve: row.get(8)?,
-                provider_resume_token: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-                last_started_at: row.get(12)?,
-                last_stopped_at: row.get(13)?,
-            })
-        })
-        .optional()
-        .map_err(|e| format!("Failed to get session: {}", e))
+        let rows = stmt
+            .query_map(rusqlite::params![project_id], row_to_session)
+            .map_err(|e| format!("Failed to query archived sessions: {}", e))?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            match row {
+                Ok(session) => sessions.push(session),
+                Err(error) => {
+                    tracing::warn!("Dropping unreadable archived session row: {}", error);
+                }
+            }
+        }
+
+        Ok(sessions)
+    }
+
+    pub fn get(&self, conn: &Connection, id: &str) -> Result<Option<Session>, String> {
+        let query = format!("SELECT {} FROM sessions WHERE id = ?1", SESSION_COLS);
+        let mut stmt = conn
+            .prepare(&query)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        stmt.query_row(rusqlite::params![id], row_to_session)
+            .optional()
+            .map_err(|e| format!("Failed to get session: {}", e))
     }
 
     pub fn update_status(&self, conn: &Connection, id: &str, status: &str) -> Result<(), String> {
@@ -190,6 +210,28 @@ impl SessionService {
                 .map_err(|e| format!("Failed to update session status: {}", e))?,
         };
 
+        Ok(())
+    }
+
+    /// Archive a session (set archived = 1).
+    pub fn archive(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE sessions SET archived = 1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, id],
+        )
+        .map_err(|e| format!("Failed to archive session: {}", e))?;
+        Ok(())
+    }
+
+    /// Unarchive a session (set archived = 0).
+    pub fn unarchive(&self, conn: &Connection, id: &str) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE sessions SET archived = 0, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, id],
+        )
+        .map_err(|e| format!("Failed to unarchive session: {}", e))?;
         Ok(())
     }
 

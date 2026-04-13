@@ -15,7 +15,7 @@
     variants: {
       variant: {
         project: 'min-w-0 flex-1 gap-px',
-        pane: 'bg-ground border-b shrink-0 min-h-8 relative'
+        pane: 'bg-ground border-b shrink-0 h-8 relative'
       }
     },
     defaultVariants: {

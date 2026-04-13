@@ -4,6 +4,7 @@
   import { parseDiffMeta, extToHighlightLang, isBinaryDiff } from '$lib/utils/diffParser'
   import { Button } from '$lib/components/ui/button'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
+  import FileIcon from '$lib/icons/FileIcon.svelte'
 
   let {
     rawDiff,
@@ -56,6 +57,7 @@
   <!-- Toolbar -->
   <div class="flex items-center justify-between gap-2 border-b border-edge bg-surface px-3 py-1.5 text-[0.75rem]">
     <div class="flex min-w-0 items-center gap-2">
+      <FileIcon filename={filePath} size={14} />
       <span class="truncate font-mono text-fg" title={filePath}>{filePath}</span>
     </div>
 

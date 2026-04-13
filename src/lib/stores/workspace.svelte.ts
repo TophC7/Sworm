@@ -391,6 +391,14 @@ export function closeTab(projectId: string, tabId: TabId) {
   commitWorkspace(ws)
 }
 
+/** Close a tab by its sessionId (used when archiving). Skips locked tabs. */
+export function closeTabBySessionId(projectId: string, sessionId: string) {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  const tab = ws.tabs.find((t) => t.kind === 'session' && t.sessionId === sessionId)
+  if (tab) closeTab(projectId, tab.id)
+}
+
 export function setActiveTab(projectId: string, paneSlot: PaneSlot, tabId: TabId) {
   const ws = getWorkspace(projectId)
   if (!ws) return

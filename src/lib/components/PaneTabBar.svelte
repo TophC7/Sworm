@@ -15,7 +15,8 @@
     toggleTabLocked
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
-  import { statusColorClass, statusIcon } from '$lib/utils/session'
+  import { allProviders, directOptions } from '$lib/data/providers'
+  import FileIcon from '$lib/icons/FileIcon.svelte'
   import Lock from '@lucide/svelte/icons/lock'
   import Plus from '@lucide/svelte/icons/plus'
 
@@ -90,9 +91,11 @@
     return tab.filePath.split('/').pop() ?? tab.filePath
   }
 
-  function sessionStatus(tab: Tab): string | null {
+  function providerIcon(tab: Tab): string | null {
     if (tab.kind !== 'session') return null
-    return sessions.find((session) => session.id === tab.sessionId)?.status ?? null
+    const provider =
+      allProviders.find((p) => p.id === tab.providerId) ?? directOptions.find((p) => p.id === tab.providerId)
+    return provider?.icon ?? null
   }
 
   function handleDragStart(e: DragEvent, tabId: TabId) {
@@ -228,21 +231,19 @@
       ondragend={handleDragEnd}
       onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
     >
-      {#if tab.kind === 'session'}
-        {#snippet leading()}
-          {@const status = sessionStatus(tab)}
-          <span class="shrink-0 text-[0.55rem] {status ? statusColorClass(status) : 'text-muted'}">
-            {status ? statusIcon(status) : '◌'}
-          </span>
-          {#if tab.locked}
-            <Lock size={11} class="shrink-0 text-muted" />
+      {#snippet leading()}
+        {#if tab.kind === 'diff'}
+          <FileIcon filename={tab.filePath} size={14} />
+        {:else}
+          {@const icon = providerIcon(tab)}
+          {#if icon}
+            <img src={icon} alt="" width={14} height={14} class="shrink-0" />
           {/if}
-        {/snippet}
-      {:else if tab.locked}
-        {#snippet leading()}
+        {/if}
+        {#if tab.locked}
           <Lock size={11} class="shrink-0 text-muted" />
-        {/snippet}
-      {/if}
+        {/if}
+      {/snippet}
       <span class="max-w-[120px] truncate {tab.kind === 'diff' && tab.temporary ? 'italic' : ''}">
         {tabLabel(tab)}
       </span>
