@@ -5,7 +5,7 @@
 
 import { backend } from '$lib/api/backend'
 import { removeSession as removeActivityEntry } from '$lib/stores/activity.svelte'
-import { syncSessionTabs } from '$lib/stores/workspace.svelte'
+import { addSessionTab, syncSessionTabs } from '$lib/stores/workspace.svelte'
 import type { Session } from '$lib/types/backend'
 
 let sessions = $state<Session[]>([])
@@ -71,4 +71,11 @@ export async function unarchiveSession(sessionId: string, projectId: string) {
 
 export function updateSessionInList(sessionId: string, updates: Partial<Session>) {
   sessions = sessions.map((s) => (s.id === sessionId ? { ...s, ...updates } : s))
+}
+
+/** Create a session and open it as a tab in one step. */
+export async function createAndOpenSession(projectId: string, providerId: string, title: string): Promise<Session> {
+  const session = await createSession(projectId, providerId, title)
+  addSessionTab(projectId, session.id, session.title, session.provider_id)
+  return session
 }

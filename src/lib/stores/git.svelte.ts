@@ -68,6 +68,19 @@ export function stopGitPolling(projectId: string) {
   projectPaths.delete(projectId)
 }
 
+/**
+ * Run a git operation against a project, then refresh git state.
+ * Errors propagate to the caller.
+ */
+export async function runGitAction(
+  projectId: string,
+  projectPath: string,
+  fn: (path: string) => Promise<unknown>
+): Promise<void> {
+  await fn(projectPath)
+  await refreshGit(projectId, projectPath)
+}
+
 export function clearGitState(projectId: string) {
   stopGitPolling(projectId)
   const next = new Map(gitSummaries)

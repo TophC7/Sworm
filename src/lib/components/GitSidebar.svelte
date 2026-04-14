@@ -7,7 +7,7 @@
   import { Sidebar, SidebarContent, SidebarHeader, SidebarProvider, SidebarTrigger } from '$lib/components/ui/sidebar'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { isGitSidebarCollapsed, setGitSidebarCollapsed } from '$lib/stores/ui.svelte'
-  import { refreshGit } from '$lib/stores/git.svelte'
+  import { refreshGit, runGitAction } from '$lib/stores/git.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
   import { PanelLeftClose } from '@lucide/svelte'
@@ -46,55 +46,54 @@
     await refreshGit(projectId, projectPath)
   }
 
-  async function gitAction(fn: () => Promise<unknown>, label: string) {
+  async function handleGitAction(fn: (path: string) => Promise<unknown>, label: string) {
     try {
-      await fn()
-      await refresh()
+      await runGitAction(projectId, projectPath, fn)
     } catch (e) {
       console.error(`${label} failed:`, e)
     }
   }
 
   async function handleCommit(message: string) {
-    await gitAction(() => backend.git.commit(projectPath, message), 'Commit')
+    await handleGitAction((path) => backend.git.commit(path, message), 'Commit')
   }
 
   async function handleStageAll() {
-    await gitAction(() => backend.git.stageAll(projectPath), 'Stage all')
+    await handleGitAction((path) => backend.git.stageAll(path), 'Stage all')
   }
 
   async function handleUnstageAll() {
-    await gitAction(() => backend.git.unstageAll(projectPath), 'Unstage all')
+    await handleGitAction((path) => backend.git.unstageAll(path), 'Unstage all')
   }
 
   async function handleDiscardAll() {
     showDiscardConfirm = false
-    await gitAction(() => backend.git.discardAll(projectPath), 'Discard all')
+    await handleGitAction((path) => backend.git.discardAll(path), 'Discard all')
   }
 
   async function handleStashAll() {
-    await gitAction(() => backend.git.stashAll(projectPath), 'Stash all')
+    await handleGitAction((path) => backend.git.stashAll(path), 'Stash all')
   }
 
   async function handleUndoLastCommit() {
     showUndoCommitConfirm = false
-    await gitAction(() => backend.git.undoLastCommit(projectPath), 'Undo commit')
+    await handleGitAction((path) => backend.git.undoLastCommit(path), 'Undo commit')
   }
 
   async function handlePush() {
-    await gitAction(() => backend.git.push(projectPath), 'Push')
+    await handleGitAction((path) => backend.git.push(path), 'Push')
   }
 
   async function handlePushForceWithLease() {
-    await gitAction(() => backend.git.pushForceWithLease(projectPath), 'Force push')
+    await handleGitAction((path) => backend.git.pushForceWithLease(path), 'Force push')
   }
 
   async function handlePull() {
-    await gitAction(() => backend.git.pull(projectPath), 'Pull')
+    await handleGitAction((path) => backend.git.pull(path), 'Pull')
   }
 
   async function handleFetch() {
-    await gitAction(() => backend.git.fetch(projectPath), 'Fetch')
+    await handleGitAction((path) => backend.git.fetch(path), 'Fetch')
   }
 </script>
 
