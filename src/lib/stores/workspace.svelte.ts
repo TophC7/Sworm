@@ -52,7 +52,17 @@ export interface ChangesTab {
   locked: boolean
 }
 
-export type Tab = SessionTab | CommitTab | ChangesTab
+export interface StashTab {
+  kind: 'stash'
+  id: TabId
+  stashIndex: number
+  message: string
+  initialFile: string | null
+  temporary: boolean
+  locked: boolean
+}
+
+export type Tab = SessionTab | CommitTab | ChangesTab | StashTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -316,6 +326,8 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'commit' || a.commitHash !== b.commitHash || a.initialFile !== b.initialFile
     case 'changes':
       return b.kind !== 'changes' || a.staged !== b.staged || a.initialFile !== b.initialFile
+    case 'stash':
+      return b.kind !== 'stash' || a.stashIndex !== b.stashIndex || a.initialFile !== b.initialFile
     default:
       return true
   }
@@ -421,6 +433,23 @@ export function addChangesTab(
     temporary,
     (t) => t.kind === 'changes' && t.staged === staged && !t.temporary,
     (t) => (t.kind === 'changes' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
+  )
+}
+
+export function addStashTab(
+  projectId: string,
+  stashIndex: number,
+  message: string,
+  initialFile: string | null = null,
+  temporary = true
+): TabId {
+  return addContentTab(
+    projectId,
+    'stash',
+    (id): StashTab => ({ kind: 'stash', id, stashIndex, message, initialFile, temporary, locked: false }),
+    temporary,
+    (t) => t.kind === 'stash' && t.stashIndex === stashIndex && !t.temporary,
+    (t) => (t.kind === 'stash' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
   )
 }
 

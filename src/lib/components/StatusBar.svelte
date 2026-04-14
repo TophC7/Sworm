@@ -1,22 +1,45 @@
 <script lang="ts">
   import { getSessions } from '$lib/stores/sessions.svelte'
+  import { getGitSummary } from '$lib/stores/git.svelte'
+  import { getActiveProjectId } from '$lib/stores/workspace.svelte'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
   import { Button } from '$lib/components/ui/button'
   import NixEnvIndicator from '$lib/components/NixEnvIndicator.svelte'
   import Circle from '@lucide/svelte/icons/circle'
   import AlertTriangle from '@lucide/svelte/icons/alert-triangle'
+  import GitBranchIcon from '@lucide/svelte/icons/git-branch'
+  import ArrowUp from '@lucide/svelte/icons/arrow-up'
+  import ArrowDown from '@lucide/svelte/icons/arrow-down'
   import Minus from '@lucide/svelte/icons/minus'
   import Plus from '@lucide/svelte/icons/plus'
 
   let sessions = $derived(getSessions())
   let liveSessions = $derived(sessions.filter((s) => s.status === 'running'))
   let zoom = $derived(getZoomLevel())
+  let activeProjectId = $derived(getActiveProjectId())
+  let gitSummary = $derived(activeProjectId ? getGitSummary(activeProjectId) : null)
 </script>
 
 <footer
   class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-[0.68rem]"
 >
   <div class="flex items-center gap-2.5">
+    {#if gitSummary?.branch}
+      <span class="flex items-center gap-1 font-mono text-muted">
+        <GitBranchIcon size={10} />
+        {gitSummary.branch}
+      </span>
+      {#if (gitSummary.ahead ?? 0) > 0}
+        <span class="flex items-center gap-0.5 text-success">
+          <ArrowUp size={9} />{gitSummary.ahead}
+        </span>
+      {/if}
+      {#if (gitSummary.behind ?? 0) > 0}
+        <span class="flex items-center gap-0.5 text-danger">
+          <ArrowDown size={9} />{gitSummary.behind}
+        </span>
+      {/if}
+    {/if}
     <NixEnvIndicator />
   </div>
 

@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::services::git::{CommitDetail, DiffContext, GitSummary, GraphCommit};
+use crate::services::git::{CommitDetail, DiffContext, GitSummary, GraphCommit, StashEntry};
 use std::path::{Path, PathBuf};
 
 /// Reject anything that isn't a hex commit hash (40-char full or 7+ short).
@@ -124,4 +124,164 @@ pub fn git_get_graph(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<GraphCommit>, ApiError> {
     Ok(state.git.get_graph(Path::new(&path), limit))
+}
+
+// ── Write operations ────────────────────────────────────────────
+
+/// Stage all changes (tracked + untracked).
+#[tauri::command]
+pub fn git_stage_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state
+        .git
+        .stage_all(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Unstage all staged changes.
+#[tauri::command]
+pub fn git_unstage_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state
+        .git
+        .unstage_all(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Discard all unstaged changes and untracked files.
+#[tauri::command]
+pub fn git_discard_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state
+        .git
+        .discard_all(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Create a commit with the given message.
+#[tauri::command]
+pub fn git_commit(
+    path: String,
+    message: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, ApiError> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::InvalidArgument(
+            "Commit message cannot be empty".to_string(),
+        ));
+    }
+    state
+        .git
+        .commit(Path::new(&path), trimmed)
+        .map_err(ApiError::Internal)
+}
+
+/// Undo the last commit (soft reset to HEAD~1).
+#[tauri::command]
+pub fn git_undo_last_commit(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .undo_last_commit(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Push current branch to upstream.
+#[tauri::command]
+pub fn git_push(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state.git.push(Path::new(&path)).map_err(ApiError::Internal)
+}
+
+/// Push with --force-with-lease.
+#[tauri::command]
+pub fn git_push_force_with_lease(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .push_force_with_lease(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Pull from upstream (fetch + merge).
+#[tauri::command]
+pub fn git_pull(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state.git.pull(Path::new(&path)).map_err(ApiError::Internal)
+}
+
+/// Fetch from all remotes.
+#[tauri::command]
+pub fn git_fetch(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state
+        .git
+        .fetch(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Stash all changes including untracked files.
+#[tauri::command]
+pub fn git_stash_all(
+    path: String,
+    message: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .stash_all(Path::new(&path), message.as_deref())
+        .map_err(ApiError::Internal)
+}
+
+/// Count stash entries (lightweight, no per-entry file stats).
+#[tauri::command]
+pub fn git_stash_count(path: String, state: tauri::State<'_, AppState>) -> Result<usize, ApiError> {
+    state
+        .git
+        .stash_count(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// List all stash entries.
+#[tauri::command]
+pub fn git_stash_list(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<StashEntry>, ApiError> {
+    Ok(state.git.stash_list(Path::new(&path)))
+}
+
+/// Pop a stash entry (apply + drop).
+#[tauri::command]
+pub fn git_stash_pop(
+    path: String,
+    index: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .stash_pop(Path::new(&path), index)
+        .map_err(ApiError::Internal)
+}
+
+/// Drop a stash entry without applying.
+#[tauri::command]
+pub fn git_stash_drop(
+    path: String,
+    index: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .stash_drop(Path::new(&path), index)
+        .map_err(ApiError::Internal)
+}
+
+/// Get all file diffs for a stash entry.
+#[tauri::command]
+pub fn git_get_stash_diffs(
+    path: String,
+    index: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, ApiError> {
+    Ok(state.git.get_stash_diffs(Path::new(&path), index))
 }

@@ -1,3 +1,4 @@
+pub mod activity_map;
 pub mod app;
 pub mod editor;
 pub mod git;

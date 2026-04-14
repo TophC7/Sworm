@@ -67,6 +67,15 @@ pub struct DiffContext {
     pub new_content: Option<String>,
 }
 
+/// A single stash entry with its file changes.
+#[derive(Debug, Clone, Serialize)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+    pub date: String,
+    pub files: Vec<CommitFileChange>,
+}
+
 /// Hard limit on file content sent over IPC to prevent OOM on large files.
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
@@ -707,6 +716,242 @@ impl GitService {
         let b_pos = first_line.rfind(" b/")?;
         let raw = &first_line[b_pos + 3..];
         Some(raw.trim_matches('"').to_string())
+    }
+
+    // ── Write operations ────────────────────────────────────────────
+
+    /// Stage all changes (tracked + untracked).
+    pub fn stage_all(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["add", "-A"])
+    }
+
+    /// Unstage all staged changes back to the working tree.
+    pub fn unstage_all(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["reset", "HEAD"])
+    }
+
+    /// Discard all unstaged changes and remove untracked files.
+    pub fn discard_all(&self, path: &Path) -> Result<(), String> {
+        // Restore tracked files to HEAD state
+        run_git_mutate(path, &["checkout", "--", "."])?;
+        // Remove untracked files and directories (but not ignored ones)
+        run_git_mutate(path, &["clean", "-fd"])
+    }
+
+    /// Create a commit with the given message. Returns the new short hash.
+    pub fn commit(&self, path: &Path, message: &str) -> Result<String, String> {
+        run_git_mutate(path, &["commit", "-m", message])?;
+        // Read back the new commit hash
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Soft-reset the last commit, preserving changes as staged.
+    pub fn undo_last_commit(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["reset", "--soft", "HEAD~1"])
+    }
+
+    /// Push current branch to its upstream remote.
+    pub fn push(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["push"])
+    }
+
+    /// Push with --force-with-lease (safe force push).
+    pub fn push_force_with_lease(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["push", "--force-with-lease"])
+    }
+
+    /// Pull from the upstream remote (fetch + merge).
+    pub fn pull(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["pull"])
+    }
+
+    /// Fetch from all remotes.
+    pub fn fetch(&self, path: &Path) -> Result<(), String> {
+        run_git_mutate(path, &["fetch", "--all"])
+    }
+
+    /// Stash all changes including untracked files.
+    pub fn stash_all(&self, path: &Path, message: Option<&str>) -> Result<(), String> {
+        let mut args = vec!["stash", "push", "--include-untracked"];
+        if let Some(msg) = message {
+            args.push("-m");
+            args.push(msg);
+        }
+        run_git_mutate(path, &args)
+    }
+
+    /// Count stash entries without fetching per-entry file stats.
+    pub fn stash_count(&self, path: &Path) -> Result<usize, String> {
+        let output = std::process::Command::new("git")
+            .args(["--no-optional-locks", "stash", "list"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            return Ok(0);
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        Ok(text.lines().filter(|l| !l.is_empty()).count())
+    }
+
+    /// List all stash entries with their changed files.
+    pub fn stash_list(&self, path: &Path) -> Vec<StashEntry> {
+        let output = std::process::Command::new("git")
+            .args(["stash", "list", "--format=%gd%x00%gs%x00%aI"])
+            .current_dir(path)
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.splitn(3, '\0').collect();
+                if parts.len() < 3 {
+                    return None;
+                }
+                // parts[0] = "stash@{N}", extract N
+                let idx_str = parts[0]
+                    .strip_prefix("stash@{")
+                    .and_then(|s| s.strip_suffix('}'))?;
+                let index: usize = idx_str.parse().ok()?;
+
+                let files = self.stash_files(path, index);
+
+                Some(StashEntry {
+                    index,
+                    message: parts[1].to_string(),
+                    date: parts[2].to_string(),
+                    files,
+                })
+            })
+            .collect()
+    }
+
+    /// Get changed files for a specific stash entry.
+    fn stash_files(&self, path: &Path, index: usize) -> Vec<CommitFileChange> {
+        let stash_ref = format!("stash@{{{}}}", index);
+
+        // numstat for line counts
+        let ns_output = std::process::Command::new("git")
+            .args(["stash", "show", "--numstat", &stash_ref])
+            .current_dir(path)
+            .output();
+
+        // name-status for change type
+        let st_output = std::process::Command::new("git")
+            .args(["stash", "show", "--name-status", &stash_ref])
+            .current_dir(path)
+            .output();
+
+        let mut stats = std::collections::HashMap::<String, (i32, i32)>::new();
+        if let Ok(ref o) = ns_output {
+            if o.status.success() {
+                for line in String::from_utf8_lossy(&o.stdout).lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 3 {
+                        let adds = parts[0].parse().unwrap_or(0);
+                        let dels = parts[1].parse().unwrap_or(0);
+                        stats.insert(parts[2].to_string(), (adds, dels));
+                    }
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        if let Ok(ref o) = st_output {
+            if o.status.success() {
+                for line in String::from_utf8_lossy(&o.stdout).lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 2 {
+                        let status = parts[0].chars().next().unwrap_or('M').to_string();
+                        let file_path = parts[parts.len() - 1].to_string();
+                        let (additions, deletions) =
+                            stats.get(&file_path).copied().unwrap_or((0, 0));
+                        files.push(CommitFileChange {
+                            path: file_path,
+                            status,
+                            additions,
+                            deletions,
+                        });
+                    }
+                }
+            }
+        }
+
+        files
+    }
+
+    /// Pop (apply + drop) a stash entry by index.
+    pub fn stash_pop(&self, path: &Path, index: usize) -> Result<(), String> {
+        let stash_ref = format!("stash@{{{}}}", index);
+        run_git_mutate(path, &["stash", "pop", &stash_ref])
+    }
+
+    /// Drop a stash entry by index without applying it.
+    pub fn stash_drop(&self, path: &Path, index: usize) -> Result<(), String> {
+        let stash_ref = format!("stash@{{{}}}", index);
+        run_git_mutate(path, &["stash", "drop", &stash_ref])
+    }
+
+    /// Get all file diffs for a stash entry (including untracked files).
+    pub fn get_stash_diffs(
+        &self,
+        path: &Path,
+        index: usize,
+    ) -> std::collections::HashMap<String, String> {
+        let stash_ref = format!("stash@{{{}}}", index);
+
+        // Try with --include-untracked first (git 2.32+), fall back without
+        let output = std::process::Command::new("git")
+            .args(["stash", "show", "-p", "-u", &stash_ref])
+            .current_dir(path)
+            .output();
+
+        let full = match output {
+            Ok(ref o) if !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => {
+                // Fallback without untracked
+                let output = std::process::Command::new("git")
+                    .args(["stash", "show", "-p", &stash_ref])
+                    .current_dir(path)
+                    .output();
+                match output {
+                    Ok(o) if !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
+                    _ => return std::collections::HashMap::new(),
+                }
+            }
+        };
+
+        Self::split_diff_patch(&full)
+    }
+}
+
+/// Run a mutating git command, returning `Ok(())` on success or
+/// `Err(stderr)` on failure.
+fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
 

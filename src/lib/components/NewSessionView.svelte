@@ -96,7 +96,7 @@
             <InfoTooltip ariaLabel="What is Fresh?" contentClass="w-64">
               <p>
                 A zero-config terminal text editor with VS Code-like UX. Has multi-cursor, LSP, fuzzy finder, and full
-                mouse support. Not an AI agent.
+                mouse support. Not an AI agent. Give it a try!
               </p>
             </InfoTooltip>
           </div>

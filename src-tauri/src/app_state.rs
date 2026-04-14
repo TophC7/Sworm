@@ -1,3 +1,4 @@
+use crate::models::activity_map::DiscoveredProject;
 use crate::services::{
     credentials::CredentialService,
     db::{self, DatabaseService},
@@ -31,6 +32,8 @@ pub struct AppState {
     /// Per-cwd locks serializing Codex thread binding to avoid cross-binding races.
     /// Wrapped in Arc so bind threads can evict their entry after completing.
     pub codex_bind_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Cached activity map scan results. None = not yet scanned.
+    pub activity_map_cache: Mutex<Option<Vec<DiscoveredProject>>>,
 }
 
 impl AppState {
@@ -56,6 +59,7 @@ impl AppState {
             env: EnvironmentService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),
             codex_bind_locks: Arc::new(Mutex::new(HashMap::new())),
+            activity_map_cache: Mutex::new(None),
         })
     }
 }

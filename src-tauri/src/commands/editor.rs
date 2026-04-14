@@ -1,7 +1,21 @@
 use crate::commands::git::validated_git_ref;
 use crate::errors::ApiError;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Reject file paths containing `..` components (path traversal).
+fn validated_file_path(file_path: &str) -> Result<(), ApiError> {
+    if Path::new(file_path)
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(ApiError::InvalidArgument(format!(
+            "Invalid file path: {}",
+            file_path
+        )));
+    }
+    Ok(())
+}
 
 /// Deterministic Fresh session name for a Sworm project.
 /// Used by both session startup (sessions.rs) and file opening.
@@ -28,6 +42,37 @@ fn fresh_open(session_name: &str, files: &[&str]) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Write content to a read-only temp file under `sworm-viewer/<label>/` and
+/// open it in the project's Fresh session.
+fn write_readonly_snapshot(
+    project_id: &str,
+    label: &str,
+    file_path: &str,
+    content: &str,
+) -> Result<(), ApiError> {
+    let temp_dir: PathBuf = std::env::temp_dir().join("sworm-viewer").join(label);
+    let temp_file = temp_dir.join(file_path);
+
+    if let Some(parent) = temp_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ApiError::Io(format!("Failed to create temp directory: {}", e)))?;
+    }
+
+    std::fs::write(&temp_file, content)
+        .map_err(|e| ApiError::Io(format!("Failed to write temp file: {}", e)))?;
+
+    if let Ok(meta) = std::fs::metadata(&temp_file) {
+        let mut perms = meta.permissions();
+        perms.set_readonly(true);
+        let _ = std::fs::set_permissions(&temp_file, perms);
+    }
+
+    fresh_open(
+        &fresh_session_name(project_id),
+        &[&temp_file.to_string_lossy()],
+    )
+}
+
 /// Open a file in the running Fresh editor session for the project.
 #[tauri::command]
 pub fn editor_open_file(
@@ -51,12 +96,12 @@ pub fn editor_open_at_commit(
     file_path: String,
 ) -> Result<(), ApiError> {
     validated_git_ref(&commit_hash)?;
+    validated_file_path(&file_path)?;
 
     let repo = Path::new(&project_path);
 
-    // Try the file at this commit, then its parent (for deletions)
-    let spec1 = format!("{}:{}", commit_hash, file_path);
-    let content = git_show(repo, &spec1)
+    let spec = format!("{}:{}", commit_hash, file_path);
+    let content = git_show(repo, &spec)
         .or_else(|| git_show(repo, &format!("{}~1:{}", commit_hash, file_path)))
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -65,38 +110,38 @@ pub fn editor_open_at_commit(
             ))
         })?;
 
-    let short_hash = &commit_hash[..7.min(commit_hash.len())];
-    let temp_dir: PathBuf = std::env::temp_dir().join("sworm-viewer").join(short_hash);
-    let temp_file = temp_dir.join(&file_path);
+    let label = &commit_hash[..7.min(commit_hash.len())];
+    write_readonly_snapshot(&project_id, label, &file_path, &content)
+}
 
-    if let Some(parent) = temp_file.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| ApiError::Io(format!("Failed to create temp directory: {}", e)))?;
-    }
+/// Open a file from a stash entry as a read-only snapshot in the editor.
+#[tauri::command]
+pub fn editor_open_at_stash(
+    project_id: String,
+    project_path: String,
+    stash_index: usize,
+    file_path: String,
+) -> Result<(), ApiError> {
+    validated_file_path(&file_path)?;
 
-    // Clear read-only from a previous view so we can overwrite
-    if let Ok(meta) = std::fs::metadata(&temp_file) {
-        if meta.permissions().readonly() {
-            let mut perms = meta.permissions();
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(&temp_file, perms);
-        }
-    }
+    let repo = Path::new(&project_path);
+    let stash_ref = format!("stash@{{{}}}", stash_index);
 
-    std::fs::write(&temp_file, &content)
-        .map_err(|e| ApiError::Io(format!("Failed to write temp file: {}", e)))?;
+    let spec = format!("{}:{}", stash_ref, file_path);
+    let content = git_show(repo, &spec)
+        .or_else(|| {
+            let untracked_spec = format!("{}^3:{}", stash_ref, file_path);
+            git_show(repo, &untracked_spec)
+        })
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "File {} not found in stash@{{{}}}",
+                file_path, stash_index
+            ))
+        })?;
 
-    // Mark read-only to prevent accidental edits to historical snapshots
-    if let Ok(meta) = std::fs::metadata(&temp_file) {
-        let mut perms = meta.permissions();
-        perms.set_readonly(true);
-        let _ = std::fs::set_permissions(&temp_file, perms);
-    }
-
-    fresh_open(
-        &fresh_session_name(&project_id),
-        &[&temp_file.to_string_lossy()],
-    )
+    let label = format!("stash-{}", stash_index);
+    write_readonly_snapshot(&project_id, &label, &file_path, &content)
 }
 
 fn git_show(repo_path: &Path, rev_spec: &str) -> Option<String> {

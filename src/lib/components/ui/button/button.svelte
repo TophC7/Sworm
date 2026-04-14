@@ -48,6 +48,6 @@
   } = $props()
 </script>
 
-<button class={cn(buttonVariants({ variant, size }), className)} {...rest}>
+<button data-slot="button" class={cn(buttonVariants({ variant, size }), className)} {...rest}>
   {#if children}{@render children()}{/if}
 </button>

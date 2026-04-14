@@ -6,24 +6,33 @@
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
+  import GitStashList from '$lib/components/GitStashList.svelte'
   import { refLabel, visibleRefs } from '$lib/utils/gitRefs'
   import CommitTooltip from '$lib/components/CommitTooltip.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import GitGraphIcon from '@lucide/svelte/icons/git-graph'
+  import PackageIcon from '@lucide/svelte/icons/package'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
   let {
     projectPath,
     onFileClick,
-    onPersistTab
+    onStashFileClick,
+    onPersistTab,
+    onMutate
   }: {
     projectPath: string
     onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => void
+    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => void
     onPersistTab?: () => void
+    onMutate?: () => void
   } = $props()
 
+  let activeTab = $state<'graph' | 'stashes'>('graph')
   let rows = $state<GraphRow[]>([])
   let renders = $derived(rows.map(computeRowRender))
   let currentPath = ''
+  let stashCount = $state(0)
 
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
@@ -36,11 +45,13 @@
 
   $effect(() => {
     const path = projectPath
+    if (path === currentPath) return
     currentPath = path
     expandedHash = null
     expandedDetail = null
     detailCache.clear()
     void loadGraph(path)
+    void loadStashCount(path)
   })
 
   async function loadGraph(path: string) {
@@ -50,6 +61,16 @@
       rows = computeGraph(commits)
     } catch {
       if (path === currentPath) rows = []
+    }
+  }
+
+  async function loadStashCount(path: string) {
+    try {
+      const count = await backend.git.stashCount(path)
+      if (path !== currentPath) return
+      stashCount = count
+    } catch {
+      if (path === currentPath) stashCount = 0
     }
   }
 
@@ -97,106 +118,167 @@
     if (collapsedDirs.has(path)) collapsedDirs.delete(path)
     else collapsedDirs.add(path)
   }
+
+  /** Map branch names to their graph lane colors (first occurrence wins). */
+  let branchColorMap = $derived.by(() => {
+    const map = new Map<string, string>()
+    for (let i = 0; i < rows.length; i++) {
+      const r = renders[i]
+      for (const rawRef of visibleRefs(rows[i].commit.refs)) {
+        const name = refLabel(rawRef)
+        if (!map.has(name)) map.set(name, r.circle.color)
+      }
+    }
+    return map
+  })
+
+  function handleStashMutate() {
+    void loadStashCount(projectPath)
+    onMutate?.()
+  }
 </script>
 
 <div class="flex h-full flex-col text-[0.78rem]">
   <div class="flex shrink-0 items-center justify-between px-2.5 py-1.5">
-    <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Graph</span>
+    <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">
+      {activeTab === 'graph' ? 'Graph' : 'Stashes'}{activeTab === 'stashes' && stashCount > 0 ? ` (${stashCount})` : ''}
+    </span>
+    <div class="flex items-center gap-0.5">
+      <button
+        class="rounded p-0.5 transition-colors {activeTab === 'graph' ? 'text-fg' : 'text-muted hover:text-fg'}"
+        onclick={() => (activeTab = 'graph')}
+        title="Commit graph"
+      >
+        <GitGraphIcon size={13} />
+      </button>
+      <button
+        class="rounded p-0.5 transition-colors {activeTab === 'stashes' ? 'text-fg' : 'text-muted hover:text-fg'}"
+        onclick={() => (activeTab = 'stashes')}
+        title="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
+      >
+        <PackageIcon size={13} />
+      </button>
+    </div>
   </div>
 
-  {#if rows.length === 0}
-    <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No commits found.</div>
-  {:else}
-    <TooltipProvider delayDuration={400} skipDelayDuration={100}>
-      <div class="flex-1 overflow-y-auto">
-        {#each rows as row, i (row.commit.hash)}
-          {@const r = renders[i]}
-          {@const refs = visibleRefs(row.commit.refs)}
-          {@const isExpanded = expandedHash === row.commit.hash}
+  {#if activeTab === 'graph'}
+    {#if rows.length === 0}
+      <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No commits found.</div>
+    {:else}
+      <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+        <div class="flex-1 overflow-y-auto">
+          {#each rows as row, i (row.commit.hash)}
+            {@const r = renders[i]}
+            {@const refs = visibleRefs(row.commit.refs)}
+            {@const isExpanded = expandedHash === row.commit.hash}
 
-          <!-- Commit row with tooltip -->
-          <TooltipRoot>
-            <TooltipTrigger
-              class="group flex w-full items-center border-t border-edge/30 text-left hover:bg-raised/50 {isExpanded
-                ? 'bg-raised/60'
-                : ''}"
-              style="height: {SWIMLANE_HEIGHT}px"
-              onclick={() => toggleCommit(row.commit.hash)}
-              onmouseenter={() => prefetchDetail(row.commit.hash)}
-            >
-              <svg class="shrink-0" width={r.width} height={SWIMLANE_HEIGHT} viewBox="0 0 {r.width} {SWIMLANE_HEIGHT}">
-                {#each r.paths as p, pi (pi)}
-                  <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
-                {/each}
-                {#if r.circle.isMerge}
-                  <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS + 2} fill={r.circle.color} stroke="none" />
-                  <circle cx={r.circle.cx} cy={r.circle.cy} r={CIRCLE_RADIUS - 1} fill={r.circle.color} stroke="none" />
-                {:else}
-                  <circle cx={r.circle.cx} cy={r.circle.cy} r={r.circle.r} fill={r.circle.color} stroke="none" />
-                {/if}
-              </svg>
-              <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-                <span class="min-w-0 truncate text-[0.72rem] text-fg">{row.commit.message}</span>
-                {#if refs.length > 0}
-                  <!-- First ref: full label badge, colored to match the graph line -->
-                  <span
-                    class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight"
-                    style="background: {r.circle.color}20; color: {r.circle.color}"
-                    title={refLabel(refs[0])}
-                  >
-                    {refLabel(refs[0])}
-                  </span>
-                  <!-- Remaining refs: small colored squares -->
-                  {#each refs.slice(1) as ref (ref)}
-                    <span
-                      class="size-3 shrink-0 rounded-sm"
-                      style="background: {r.circle.color}40"
-                      title={refLabel(ref)}
-                    ></span>
+            <TooltipRoot>
+              <TooltipTrigger
+                class="group flex w-full items-center border-t border-edge/30 text-left hover:bg-raised/50 {isExpanded
+                  ? 'bg-raised/60'
+                  : ''}"
+                style="height: {SWIMLANE_HEIGHT}px"
+                onclick={() => toggleCommit(row.commit.hash)}
+                onmouseenter={() => prefetchDetail(row.commit.hash)}
+              >
+                <svg
+                  class="shrink-0"
+                  width={r.width}
+                  height={SWIMLANE_HEIGHT}
+                  viewBox="0 0 {r.width} {SWIMLANE_HEIGHT}"
+                >
+                  {#each r.paths as p, pi (pi)}
+                    <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
                   {/each}
+                  {#if r.circle.isMerge}
+                    <circle
+                      cx={r.circle.cx}
+                      cy={r.circle.cy}
+                      r={CIRCLE_RADIUS + 2}
+                      fill={r.circle.color}
+                      stroke="none"
+                    />
+                    <circle
+                      cx={r.circle.cx}
+                      cy={r.circle.cy}
+                      r={CIRCLE_RADIUS - 1}
+                      fill={r.circle.color}
+                      stroke="none"
+                    />
+                  {:else}
+                    <circle cx={r.circle.cx} cy={r.circle.cy} r={r.circle.r} fill={r.circle.color} stroke="none" />
+                  {/if}
+                </svg>
+                <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+                  <span class="min-w-0 truncate text-[0.72rem] text-fg">{row.commit.message}</span>
+                  {#if refs.length > 0}
+                    <!-- First ref: full label badge, colored to match the graph line -->
+                    <span
+                      class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight"
+                      style="background: {r.circle.color}20; color: {r.circle.color}"
+                      title={refLabel(refs[0])}
+                    >
+                      {refLabel(refs[0])}
+                    </span>
+                    {#each refs.slice(1) as ref (ref)}
+                      <span
+                        class="size-3 shrink-0 rounded-sm"
+                        style="background: {r.circle.color}40"
+                        title={refLabel(ref)}
+                      ></span>
+                    {/each}
+                  {/if}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent class="max-w-135" sideOffset={6} side="right" align="center">
+                <CommitTooltip
+                  commit={row.commit}
+                  detail={detailCache.get(row.commit.hash) ?? null}
+                  graphColor={r.circle.color}
+                />
+              </TooltipContent>
+            </TooltipRoot>
+
+            {#if isExpanded}
+              <div class="border-t border-edge/30 bg-surface/40 py-1">
+                {#if !expandedDetail}
+                  <div class="px-4 py-1.5 text-[0.68rem] text-subtle">Loading files...</div>
+                {:else if expandedTree.length === 0}
+                  <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
+                {:else}
+                  <FileTreeItems
+                    nodes={expandedTree}
+                    isCollapsed={(path) => collapsedDirs.has(path)}
+                    onToggleDir={toggleDir}
+                    onFileClick={(node) =>
+                      expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
+                    onFileDblClick={() => onPersistTab?.()}
+                  >
+                    {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
+                      {#if node.change}
+                        <span
+                          class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
+                          title={gitStatusLabel(node.change.status)}
+                        >
+                          {gitStatusDisplay(node.change.status)}
+                        </span>
+                      {/if}
+                    {/snippet}
+                  </FileTreeItems>
                 {/if}
               </div>
-            </TooltipTrigger>
-            <TooltipContent class="max-w-135" sideOffset={6} side="right" align="center">
-              <CommitTooltip
-                commit={row.commit}
-                detail={detailCache.get(row.commit.hash) ?? null}
-                graphColor={r.circle.color}
-              />
-            </TooltipContent>
-          </TooltipRoot>
-
-          <!-- Expanded file tree (inline under this commit) -->
-          {#if isExpanded}
-            <div class="border-t border-edge/30 bg-surface/40 py-1">
-              {#if !expandedDetail}
-                <div class="px-4 py-1.5 text-[0.68rem] text-subtle">Loading files...</div>
-              {:else if expandedTree.length === 0}
-                <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
-              {:else}
-                <FileTreeItems
-                  nodes={expandedTree}
-                  isCollapsed={(path) => collapsedDirs.has(path)}
-                  onToggleDir={toggleDir}
-                  onFileClick={(node) => expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
-                  onFileDblClick={() => onPersistTab?.()}
-                >
-                  {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
-                    {#if node.change}
-                      <span
-                        class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
-                        title={gitStatusLabel(node.change.status)}
-                      >
-                        {gitStatusDisplay(node.change.status)}
-                      </span>
-                    {/if}
-                  {/snippet}
-                </FileTreeItems>
-              {/if}
-            </div>
-          {/if}
-        {/each}
-      </div>
-    </TooltipProvider>
+            {/if}
+          {/each}
+        </div>
+      </TooltipProvider>
+    {/if}
+  {:else}
+    <GitStashList
+      {projectPath}
+      {branchColorMap}
+      onMutate={handleStashMutate}
+      onFileClick={onStashFileClick}
+      {onPersistTab}
+    />
   {/if}
 </div>

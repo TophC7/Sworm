@@ -144,6 +144,31 @@ export interface DiffContext {
   new_content: string | null
 }
 
+export interface StashEntry {
+  index: number
+  message: string
+  date: string
+  files: CommitFileChange[]
+}
+
+// ── Activity Map ────────────────────────────
+
+export interface DiscoveredProviderActivity {
+  provider_id: string
+  last_active: string
+  daily_counts: [number, number, number, number, number, number, number]
+}
+
+export interface DiscoveredProject {
+  path: string
+  name: string
+  path_exists: boolean
+  is_sworm_project: boolean
+  sworm_project_id: string | null
+  last_active: string
+  providers: DiscoveredProviderActivity[]
+}
+
 // ── Nix Environment ─────────────────────────
 
 export type NixEnvStatus = 'pending' | 'evaluating' | 'ready' | 'error' | 'timeout'

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import CommandCenter from '$lib/components/CommandCenter.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import EmptyState from '$lib/components/EmptyState.svelte'
   import ProjectView from '$lib/components/ProjectView.svelte'
@@ -79,6 +80,7 @@
   <StatusBar />
 </div>
 
+<CommandCenter onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
 <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
 
 {#if projectError}

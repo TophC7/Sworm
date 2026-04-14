@@ -11,7 +11,7 @@
   import Plus from '@lucide/svelte/icons/plus'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
 
-  let { onAddProject }: { onAddProject: () => void } = $props()
+  let { onAddProject: _ }: { onAddProject: () => void } = $props()
 
   let openIds = $derived(getOpenProjectIds())
   let activeId = $derived(getActiveProjectId())
@@ -88,7 +88,7 @@
   {#snippet trailing()}
     <button
       class="ml-0.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center border-none bg-transparent text-sm text-muted transition-colors hover:text-bright"
-      onclick={onAddProject}
+      onclick={() => selectProject(null)}
       title="Open project"><Plus size={14} /></button
     >
   {/snippet}

@@ -14,6 +14,7 @@
   import SessionTerminal from '$lib/components/SessionTerminal.svelte'
   import ChangesView from '$lib/components/ChangesView.svelte'
   import CommitView from '$lib/components/CommitView.svelte'
+  import StashView from '$lib/components/StashView.svelte'
   import NewSessionView from '$lib/components/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
@@ -166,6 +167,8 @@
       <CommitView commitHash={activeTab.commitHash} {projectId} {projectPath} initialFile={activeTab.initialFile} />
     {:else if activeTab.kind === 'changes'}
       <ChangesView {projectId} {projectPath} staged={activeTab.staged} initialFile={activeTab.initialFile} />
+    {:else if activeTab.kind === 'stash'}
+      <StashView stashIndex={activeTab.stashIndex} {projectId} {projectPath} initialFile={activeTab.initialFile} />
     {/if}
 
     {#if showLockedOverlay}

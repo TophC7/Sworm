@@ -17,6 +17,7 @@
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import GitCommitIcon from '@lucide/svelte/icons/git-commit-horizontal'
+  import PackageIcon from '@lucide/svelte/icons/package'
   import Lock from '@lucide/svelte/icons/lock'
   import Plus from '@lucide/svelte/icons/plus'
   import { tick } from 'svelte'
@@ -95,6 +96,8 @@
         return tab.shortHash
       case 'changes':
         return tab.label
+      case 'stash':
+        return `stash@{${tab.stashIndex}}`
     }
   }
 
@@ -241,6 +244,8 @@
           <FileDiff size={14} class="shrink-0 text-accent" />
         {:else if tab.kind === 'commit'}
           <GitCommitIcon size={14} class="shrink-0 text-accent" />
+        {:else if tab.kind === 'stash'}
+          <PackageIcon size={14} class="shrink-0 text-accent" />
         {:else}
           {@const icon = providerIcon(tab)}
           {#if icon}

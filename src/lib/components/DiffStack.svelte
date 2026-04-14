@@ -41,7 +41,8 @@
     idPrefix = 'diff',
     projectId = '',
     projectPath = '',
-    commitHash = null
+    commitHash = null,
+    stashIndex = null
   }: {
     files: DiffFile[]
     diffs: Map<string, DiffEntry>
@@ -52,6 +53,7 @@
     projectId?: string
     projectPath?: string
     commitHash?: string | null
+    stashIndex?: number | null
   } = $props()
 
   /** Ensure a Fresh session tab exists for this project, creating one if needed. */
@@ -89,6 +91,19 @@
     try {
       await ensureFreshSession()
       await backend.editor.openAtCommit(pid, pp, ch, filePath)
+    } catch (err) {
+      console.error('editor:', err)
+    }
+  }
+
+  async function viewAtStash(filePath: string) {
+    const pid = projectId,
+      pp = projectPath,
+      si = stashIndex
+    if (!pid || !pp || si == null) return
+    try {
+      await ensureFreshSession()
+      await backend.editor.openAtStash(pid, pp, si, filePath)
     } catch (err) {
       console.error('editor:', err)
     }
@@ -288,6 +303,11 @@
             <div class="flex shrink-0 items-center gap-0.5 pr-2">
               {#if commitHash}
                 {@render headerAction(Eye, 'View at commit', () => viewAtCommit(file.path))}
+                {#if file.status !== 'D'}
+                  {@render headerAction(SquareArrowOutUpRight, 'Open current file', () => openInEditor(file.path))}
+                {/if}
+              {:else if stashIndex != null}
+                {@render headerAction(Eye, 'View in stash', () => viewAtStash(file.path))}
                 {#if file.status !== 'D'}
                   {@render headerAction(SquareArrowOutUpRight, 'Open current file', () => openInEditor(file.path))}
                 {/if}

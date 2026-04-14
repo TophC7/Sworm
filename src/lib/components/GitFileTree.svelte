@@ -3,24 +3,61 @@
   import type { GitChange, GitSummary } from '$lib/types/backend'
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
+  import {
+    DropdownMenuRoot,
+    DropdownMenuTrigger,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator
+  } from '$lib/components/ui/dropdown-menu'
+  import { ButtonGroup } from '$lib/components/ui/button-group'
   import FileDiff from '@lucide/svelte/icons/file-diff'
+  import MinusCircle from '@lucide/svelte/icons/minus-circle'
+  import PlusCircle from '@lucide/svelte/icons/plus-circle'
+  import Trash2 from '@lucide/svelte/icons/trash-2'
+  import PackageIcon from '@lucide/svelte/icons/package'
+  import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
 
   let {
     summary,
     projectPath,
+    hasCommits = false,
     onFileClick,
     onPersistTab,
-    onViewAllChanges
+    onViewAllChanges,
+    onCommit,
+    onStageAll,
+    onUnstageAll,
+    onDiscardAll,
+    onStashAll,
+    onUndoLastCommit,
+    onPush,
+    onPushForceWithLease,
+    onPull,
+    onFetch
   }: {
     summary: GitSummary
     projectPath: string
+    hasCommits?: boolean
     onFileClick?: (filePath: string, staged: boolean) => void
     onPersistTab?: () => void
     onViewAllChanges?: (staged: boolean) => void
+    onCommit?: (message: string) => void
+    onStageAll?: () => void
+    onUnstageAll?: () => void
+    onDiscardAll?: () => void
+    onStashAll?: () => void
+    onUndoLastCommit?: () => void
+    onPush?: () => void
+    onPushForceWithLease?: () => void
+    onPull?: () => void
+    onFetch?: () => void
   } = $props()
 
   let collapsedDirs = new SvelteSet<string>()
+  let commitMessage = $state('')
+  let committing = $state(false)
 
   $effect(() => {
     projectPath
@@ -42,9 +79,67 @@
 
   let stagedTree = $derived(buildFileTree(stagedFiles))
   let unstagedTree = $derived(buildFileTree(unstagedFiles))
+
+  let canCommit = $derived(commitMessage.trim().length > 0 && stagedFiles.length > 0 && !committing)
+
+  function handleCommit() {
+    if (!canCommit) return
+    committing = true
+    onCommit?.(commitMessage.trim())
+    commitMessage = ''
+    committing = false
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleCommit()
+    }
+  }
 </script>
 
 <div class="text-[0.78rem]">
+  <div class="border-b border-edge px-2.5 py-2">
+    <textarea
+      class="w-full resize-none rounded border border-edge bg-surface px-2 py-1.5 text-[0.75rem] text-fg placeholder:text-subtle focus:border-accent/50 focus:outline-none"
+      rows={2}
+      placeholder="Commit message..."
+      bind:value={commitMessage}
+      onkeydown={handleKeydown}
+    ></textarea>
+    <div class="mt-1.5">
+      <ButtonGroup class="w-full">
+        <button
+          data-slot="button"
+          class="flex-1 rounded border border-edge bg-raised px-2.5 py-1 text-[0.68rem] font-medium text-fg transition-colors hover:border-accent hover:text-bright disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!canCommit}
+          onclick={handleCommit}
+        >
+          Commit{stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}
+        </button>
+        <DropdownMenuRoot>
+          <DropdownMenuTrigger
+            data-slot="button"
+            class="flex items-center rounded border border-edge bg-raised px-1 py-1 text-muted transition-colors hover:border-accent hover:text-bright"
+          >
+            <ChevronDown size={11} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent class="min-w-[180px] text-[0.72rem]">
+            <DropdownMenuItem onclick={() => onPull?.()}>Pull</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => onPush?.()}>Push</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => onFetch?.()}>Fetch</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onclick={() => onPushForceWithLease?.()}>Force Push (with lease)</DropdownMenuItem>
+            {#if hasCommits}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem destructive onclick={() => onUndoLastCommit?.()}>Undo Last Commit</DropdownMenuItem>
+            {/if}
+          </DropdownMenuContent>
+        </DropdownMenuRoot>
+      </ButtonGroup>
+    </div>
+  </div>
+
   {#if stagedTree.length === 0 && unstagedTree.length === 0}
     <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No changes.</div>
   {/if}
@@ -79,15 +174,45 @@
           <span class="text-[0.68rem] font-medium tracking-wide text-muted uppercase">
             {label} ({countFiles(tree)})
           </span>
-          {#if onViewAllChanges}
-            <button
-              class="ml-auto rounded p-0.5 text-muted opacity-0 transition-all group-hover/hdr:opacity-100 hover:text-fg"
-              onclick={() => onViewAllChanges?.(isStaged)}
-              title="View all {label.toLowerCase()} diffs"
-            >
-              <FileDiff size={13} />
-            </button>
-          {/if}
+          <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
+            {#if isStaged && onUnstageAll}
+              <button
+                class="rounded p-0.5 text-muted hover:text-fg"
+                onclick={() => onUnstageAll?.()}
+                title="Unstage all"
+              >
+                <MinusCircle size={13} />
+              </button>
+            {/if}
+            {#if !isStaged && onStageAll}
+              <button class="rounded p-0.5 text-muted hover:text-fg" onclick={() => onStageAll?.()} title="Stage all">
+                <PlusCircle size={13} />
+              </button>
+            {/if}
+            {#if !isStaged && onStashAll}
+              <button class="rounded p-0.5 text-muted hover:text-fg" onclick={() => onStashAll?.()} title="Stash all">
+                <PackageIcon size={13} />
+              </button>
+            {/if}
+            {#if !isStaged && onDiscardAll}
+              <button
+                class="rounded p-0.5 text-muted hover:text-danger"
+                onclick={() => onDiscardAll?.()}
+                title="Discard all changes"
+              >
+                <Trash2 size={13} />
+              </button>
+            {/if}
+            {#if onViewAllChanges}
+              <button
+                class="rounded p-0.5 text-muted hover:text-fg"
+                onclick={() => onViewAllChanges?.(isStaged)}
+                title="View all {label.toLowerCase()} diffs"
+              >
+                <FileDiff size={13} />
+              </button>
+            {/if}
+          </div>
         </div>
         <FileTreeItems
           nodes={tree}

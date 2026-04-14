@@ -1,3 +1,4 @@
+pub mod activity_map;
 pub mod codex_state;
 pub mod credentials;
 pub mod db;

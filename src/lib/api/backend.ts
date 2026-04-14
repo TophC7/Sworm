@@ -7,6 +7,7 @@ import { invoke, Channel } from '@tauri-apps/api/core'
 import type {
   AppInfo,
   CommitDetail,
+  DiscoveredProject,
   DiffContext,
   EnvProbeResult,
   GitSummary,
@@ -19,10 +20,20 @@ import type {
   PtyEvent,
   Session,
   SettingsPayload,
+  StashEntry,
   ProviderConfig
 } from '$lib/types/backend'
 
 export const backend = {
+  activityMap: {
+    get(): Promise<DiscoveredProject[]> {
+      return invoke<DiscoveredProject[]>('activity_map_get')
+    },
+    refresh(): Promise<DiscoveredProject[]> {
+      return invoke<DiscoveredProject[]>('activity_map_refresh')
+    }
+  },
+
   app: {
     healthPing(): Promise<string> {
       return invoke<string>('health_ping')
@@ -158,6 +169,53 @@ export const backend = {
     },
     getCommitDiffs(path: string, hash: string): Promise<Record<string, string>> {
       return invoke<Record<string, string>>('git_get_commit_diffs', { path, hash })
+    },
+
+    // Write operations
+    stageAll(path: string): Promise<void> {
+      return invoke<void>('git_stage_all', { path })
+    },
+    unstageAll(path: string): Promise<void> {
+      return invoke<void>('git_unstage_all', { path })
+    },
+    discardAll(path: string): Promise<void> {
+      return invoke<void>('git_discard_all', { path })
+    },
+    commit(path: string, message: string): Promise<string> {
+      return invoke<string>('git_commit', { path, message })
+    },
+    undoLastCommit(path: string): Promise<void> {
+      return invoke<void>('git_undo_last_commit', { path })
+    },
+    push(path: string): Promise<void> {
+      return invoke<void>('git_push', { path })
+    },
+    pushForceWithLease(path: string): Promise<void> {
+      return invoke<void>('git_push_force_with_lease', { path })
+    },
+    pull(path: string): Promise<void> {
+      return invoke<void>('git_pull', { path })
+    },
+    fetch(path: string): Promise<void> {
+      return invoke<void>('git_fetch', { path })
+    },
+    stashAll(path: string, message?: string): Promise<void> {
+      return invoke<void>('git_stash_all', { path, message: message ?? null })
+    },
+    stashCount(path: string): Promise<number> {
+      return invoke<number>('git_stash_count', { path })
+    },
+    stashList(path: string): Promise<StashEntry[]> {
+      return invoke<StashEntry[]>('git_stash_list', { path })
+    },
+    stashPop(path: string, index: number): Promise<void> {
+      return invoke<void>('git_stash_pop', { path, index })
+    },
+    stashDrop(path: string, index: number): Promise<void> {
+      return invoke<void>('git_stash_drop', { path, index })
+    },
+    getStashDiffs(path: string, index: number): Promise<Record<string, string>> {
+      return invoke<Record<string, string>>('git_get_stash_diffs', { path, index })
     }
   },
 
@@ -167,6 +225,9 @@ export const backend = {
     },
     openAtCommit(projectId: string, projectPath: string, commitHash: string, filePath: string): Promise<void> {
       return invoke('editor_open_at_commit', { projectId, projectPath, commitHash, filePath })
+    },
+    openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
+      return invoke('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
     }
   },
 

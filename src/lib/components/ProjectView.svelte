@@ -7,7 +7,13 @@
   import SessionHistoryView from '$lib/components/SessionHistoryView.svelte'
   import { getGitSidebarWidth, setGitSidebarWidth, isGitSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
   import PaneGrid from '$lib/components/PaneGrid.svelte'
-  import { addCommitTab, addChangesTab, getFocusedTab, promoteTemporaryTab } from '$lib/stores/workspace.svelte'
+  import {
+    addCommitTab,
+    addChangesTab,
+    addStashTab,
+    getFocusedTab,
+    promoteTemporaryTab
+  } from '$lib/stores/workspace.svelte'
 
   let {
     project
@@ -77,6 +83,7 @@
         {#if sidebarView === 'git'}
           <GitSidebar
             summary={gitSummary}
+            projectId={project.id}
             projectPath={project.path}
             onRefresh={handleRefreshGit}
             onFileClick={(filePath, staged) => addChangesTab(project.id, staged, filePath)}
@@ -86,6 +93,7 @@
             }}
             onCommitFileClick={(hash, shortHash, message, filePath) =>
               addCommitTab(project.id, hash, shortHash, message, filePath)}
+            onStashFileClick={(stashIndex, message, filePath) => addStashTab(project.id, stashIndex, message, filePath)}
             onViewAllChanges={(staged) => addChangesTab(project.id, staged, null, false)}
           />
         {:else if sidebarView === 'sessions'}

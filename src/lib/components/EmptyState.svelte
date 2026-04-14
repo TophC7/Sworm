@@ -1,9 +1,11 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import ActivityMap from '$lib/components/ActivityMap.svelte'
   import StageView from '$lib/components/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
   import { openProject } from '$lib/stores/workspace.svelte'
+  import { parentPath } from '$lib/utils/path'
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import Worm from '@lucide/svelte/icons/worm'
 
@@ -23,14 +25,6 @@
 
   function dirName(path: string): string {
     return path.split('/').pop() ?? path
-  }
-
-  function parentPath(path: string): string {
-    const parts = path.split('/')
-    parts.pop()
-    const parent = parts.join('/')
-    const home = '/home/' + (parts[2] ?? '')
-    return parent.startsWith(home) ? '~' + parent.slice(home.length) : parent
   }
 </script>
 
@@ -54,6 +48,8 @@
         Open Repository
       </button>
     </BlurFade>
+
+    <ActivityMap />
 
     {#if projects.length > 0}
       <BlurFade delay={0.25} duration={0.4} direction="up" offset={8}>

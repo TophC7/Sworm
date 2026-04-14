@@ -31,6 +31,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Activity map commands
+            commands::activity_map::activity_map_get,
+            commands::activity_map::activity_map_refresh,
             // App commands
             commands::app::health_ping,
             commands::app::app_get_info,
@@ -73,6 +76,7 @@ pub fn run() {
             // Editor commands
             commands::editor::editor_open_file,
             commands::editor::editor_open_at_commit,
+            commands::editor::editor_open_at_stash,
             // Git commands
             commands::git::git_get_summary,
             commands::git::git_get_file_diff,
@@ -81,6 +85,22 @@ pub fn run() {
             commands::git::git_get_commit_detail,
             commands::git::git_get_commit_diffs,
             commands::git::git_get_working_diffs,
+            // Git write commands
+            commands::git::git_stage_all,
+            commands::git::git_unstage_all,
+            commands::git::git_discard_all,
+            commands::git::git_commit,
+            commands::git::git_undo_last_commit,
+            commands::git::git_push,
+            commands::git::git_push_force_with_lease,
+            commands::git::git_pull,
+            commands::git::git_fetch,
+            commands::git::git_stash_all,
+            commands::git::git_stash_count,
+            commands::git::git_stash_list,
+            commands::git::git_stash_pop,
+            commands::git::git_stash_drop,
+            commands::git::git_get_stash_diffs,
             // PTY demo commands (kept for backwards compat)
             commands::pty::pty_demo_start,
             commands::pty::pty_demo_write,
