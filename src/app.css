@@ -154,6 +154,7 @@
   /* Scrollbar — no Tailwind equivalent */
   ::-webkit-scrollbar {
     width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
@@ -167,103 +168,47 @@
 }
 
 /*
- * Theme overrides for @git-diff-view/svelte.
- * Kept global because Tailwind v4's Vite pipeline mis-parses the same
- * custom-property block when it lives in a component-local <style>.
+ * Diff viewer highlight styles.
+ * Used by @git-diff-view/core's template system (getPlainDiffTemplate,
+ * getSyntaxDiffTemplate) which generates <span> elements with these
+ * CSS custom properties as background-color.
+ *
+ * The template system uses inline styles with var() references, so
+ * we define the variables at the root level.
  */
-.diff-viewer-root .diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
-  --diff-border--: #3a322e;
-
-  /* Added lines */
-  --diff-add-content--: rgba(152, 255, 127, 0.08);
-  --diff-add-lineNumber--: rgba(152, 255, 127, 0.12);
+:root {
+  /* Character-level diff highlight backgrounds */
   --diff-add-content-highlight--: rgba(152, 255, 127, 0.2);
-
-  /* Deleted lines */
-  --diff-del-content--: #2d1014;
-  --diff-del-lineNumber--: rgba(255, 118, 114, 0.12);
   --diff-del-content-highlight--: rgba(255, 118, 114, 0.22);
 
-  /* Plain / context lines */
+  /* Line backgrounds (used by template inline styles) */
+  --diff-add-content--: rgba(152, 255, 127, 0.08);
+  --diff-del-content--: #2d1014;
   --diff-plain-content--: #131313;
-  --diff-plain-lineNumber--: #1c1917;
-  --diff-plain-lineNumber-color--: #6e6864;
-
-  /* Expand / collapsed regions */
   --diff-expand-content--: #1c1917;
-  --diff-expand-lineNumber--: #1c1917;
-  --diff-expand-lineNumber-color--: #6e6864;
 
-  /* Hunk headers */
+  /* Hunk backgrounds */
   --diff-hunk-content--: rgba(255, 181, 159, 0.06);
   --diff-hunk-lineNumber--: rgba(255, 181, 159, 0.1);
-  --diff-hunk-lineNumber-hover--: #ffb59f;
   --diff-hunk-content-color--: #a59c99;
 
-  /* Widget */
-  --diff-add-widget--: #ffb59f;
-  --diff-add-widget-color--: #131313;
-
-  /* Empty cells (split view) */
+  /* Empty cells (split view placeholders) */
   --diff-empty-content--: #1c1917;
 
-  color: #e2e2e2;
-}
-
-.diff-viewer-root .diff-tailwindcss-wrapper {
-  font-family: 'Monocraft Nerd Font', monospace;
-}
-
-.diff-viewer-root .diff-tailwindcss-wrapper,
-.diff-viewer-root .diff-style-root,
-.diff-viewer-root .diff-view-wrapper,
-.diff-viewer-root .split-diff-view,
-.diff-viewer-root .unified-diff-view,
-.diff-viewer-root .old-diff-table-wrapper,
-.diff-viewer-root .new-diff-table-wrapper,
-.diff-viewer-root .unified-diff-table-wrapper {
-  min-height: 0;
-  height: 100%;
-}
-
-.diff-viewer-root .diff-tailwindcss-wrapper,
-.diff-viewer-root .diff-style-root,
-.diff-viewer-root .diff-view-wrapper,
-.diff-viewer-root .split-diff-view,
-.diff-viewer-root .unified-diff-view {
-  display: flex;
-  flex: 1 1 auto;
-}
-
-.diff-viewer-root .diff-tailwindcss-wrapper,
-.diff-viewer-root .diff-style-root,
-.diff-viewer-root .diff-view-wrapper,
-.diff-viewer-root .unified-diff-view {
-  flex-direction: column;
-}
-
-.diff-viewer-root .split-diff-view {
-  flex-direction: row;
-  flex-basis: auto;
-}
-
-.diff-viewer-root .old-diff-table-wrapper,
-.diff-viewer-root .new-diff-table-wrapper,
-.diff-viewer-root .unified-diff-table-wrapper {
-  flex: 1 1 auto;
-  overflow-y: auto;
-}
-
-.diff-viewer-root ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.diff-viewer-root ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.diff-viewer-root ::-webkit-scrollbar-thumb {
-  background: #3a322e;
-  border-radius: 3px;
+  /*
+   * Shiki syntax highlighting tokens.
+   * Maps the ADE base16 palette to Shiki's CSS-variables theme.
+   * Used via createCssVariablesTheme({ variablePrefix: '--shiki-' }).
+   */
+  --shiki-foreground: #e2e2e2; /* fg */
+  --shiki-background: #131313; /* ground */
+  --shiki-token-constant: #ffae57; /* orange — numbers, booleans, constants */
+  --shiki-token-string: #98ff7f; /* green — strings */
+  --shiki-token-comment: #6e6864; /* subtle — comments */
+  --shiki-token-keyword: #d6acff; /* purple — keywords, control flow */
+  --shiki-token-parameter: #ffddd3; /* peach — parameters */
+  --shiki-token-function: #7fbaff; /* blue — functions, methods */
+  --shiki-token-string-expression: #b7ffa5; /* bright green — template strings, regex */
+  --shiki-token-punctuation: #a59c99; /* muted — brackets, operators */
+  --shiki-token-link: #9effef; /* cyan — urls, links */
 }

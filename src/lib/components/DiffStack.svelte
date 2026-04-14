@@ -15,7 +15,8 @@
 
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { DiffModeEnum } from '@git-diff-view/svelte'
+  import { DiffMode } from '$lib/diff/types'
+  import { setDiffScrollContext, type DiffScrollState } from '$lib/diff/scrollContext.svelte'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import DiffViewer from '$lib/components/DiffViewer.svelte'
   import LazyRender from '$lib/components/LazyRender.svelte'
@@ -42,7 +43,7 @@
   } = $props()
 
   let expandedFiles = $state<Set<string>>(new Set())
-  let diffMode = $state(DiffModeEnum.Split)
+  let diffMode = $state(DiffMode.Split)
   let diffWrap = $state(false)
   let diffFontSize = $state(13)
 
@@ -117,6 +118,54 @@
   function collapseAll() {
     expandedFiles = new Set()
   }
+
+  // --- Scroll context for pane virtualization ---
+  let scrollEl = $state<HTMLElement | null>(null)
+
+  let scrollCtx: DiffScrollState = $state({
+    element: null,
+    scrollTop: 0,
+    containerHeight: 0
+  })
+
+  setDiffScrollContext(scrollCtx)
+
+  $effect(() => {
+    const el = scrollEl
+    if (!el) return
+
+    scrollCtx.element = el
+    scrollCtx.containerHeight = el.clientHeight
+    scrollCtx.scrollTop = el.scrollTop
+
+    let ticking = false
+    function onScroll() {
+      if (!ticking) {
+        ticking = true
+        requestAnimationFrame(() => {
+          if (!el) {
+            ticking = false
+            return
+          }
+          const top = el.scrollTop
+          if (top !== scrollCtx.scrollTop) scrollCtx.scrollTop = top
+          ticking = false
+        })
+      }
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight
+      if (h !== scrollCtx.containerHeight) scrollCtx.containerHeight = h
+    })
+    ro.observe(el)
+
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+    }
+  })
 </script>
 
 {#if files.length === 0 && !loading}
@@ -153,13 +202,13 @@
   </div>
 
   <!-- Stacked diffs -->
-  <div class="min-h-0 flex-1 overflow-y-auto">
+  <div class="min-h-0 flex-1 overflow-y-auto" bind:this={scrollEl}>
     {#each files as file (file.path)}
       {@const entry = diffs.get(file.path)}
       {@const expanded = expandedFiles.has(file.path)}
       <div id="{idPrefix}-{file.path}" class="border-b border-edge">
         <button
-          class="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-edge/50 bg-raised/90 px-3 py-1.5 text-left backdrop-blur-sm transition-colors hover:bg-raised"
+          class="sticky top-0 z-20 flex w-full items-center gap-2 border-b border-edge/50 bg-raised/90 px-3 py-1.5 text-left backdrop-blur-sm transition-colors hover:bg-raised"
           onclick={() => toggleFile(file.path)}
         >
           <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />

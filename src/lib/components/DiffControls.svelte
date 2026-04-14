@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { DiffModeEnum } from '@git-diff-view/svelte'
+  import { DiffMode } from '$lib/diff/types'
   import { Button } from '$lib/components/ui/button'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
 
   let {
-    mode = $bindable(DiffModeEnum.Split),
+    mode = $bindable(DiffMode.Split),
     wrap = $bindable(false),
     fontSize = $bindable(13)
   }: {
-    mode: DiffModeEnum
+    mode: DiffMode
     wrap: boolean
     fontSize: number
   } = $props()
@@ -20,9 +20,9 @@
 
 <div class="flex shrink-0 items-center gap-2">
   <TabsRoot
-    value={mode === DiffModeEnum.Split ? 'split' : 'unified'}
+    value={mode === DiffMode.Split ? 'split' : 'unified'}
     onValueChange={(v) => {
-      mode = v === 'split' ? DiffModeEnum.Split : DiffModeEnum.Unified
+      mode = v === 'split' ? DiffMode.Split : DiffMode.Unified
     }}
   >
     <TabsList>

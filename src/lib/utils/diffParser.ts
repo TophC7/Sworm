@@ -1,6 +1,6 @@
 /**
- * Utilities for parsing raw `git diff` output into the format
- * expected by @git-diff-view/svelte's data prop.
+ * Utilities for parsing raw `git diff` output metadata and
+ * detecting binary diffs.
  */
 
 /** File metadata extracted from diff header lines. */
@@ -42,15 +42,19 @@ export function isBinaryDiff(rawDiff: string): boolean {
   return rawDiff.includes('Binary files') && rawDiff.includes('differ')
 }
 
+/**
+ * Maps file extensions to Shiki language identifiers.
+ * This is the single source of truth for extension → language mapping.
+ */
 const EXT_LANG_MAP: Record<string, string> = {
   ts: 'typescript',
-  tsx: 'typescript',
+  tsx: 'tsx',
   js: 'javascript',
-  jsx: 'javascript',
+  jsx: 'jsx',
   mjs: 'javascript',
   cjs: 'javascript',
-  svelte: 'xml',
-  vue: 'xml',
+  svelte: 'svelte',
+  vue: 'vue',
   rs: 'rust',
   py: 'python',
   rb: 'ruby',
@@ -66,21 +70,21 @@ const EXT_LANG_MAP: Record<string, string> = {
   css: 'css',
   scss: 'scss',
   less: 'less',
-  html: 'xml',
-  htm: 'xml',
+  html: 'html',
+  htm: 'html',
   xml: 'xml',
   svg: 'xml',
   json: 'json',
   yaml: 'yaml',
   yml: 'yaml',
-  toml: 'ini',
+  toml: 'toml',
   ini: 'ini',
   md: 'markdown',
-  mdx: 'markdown',
+  mdx: 'mdx',
   sh: 'bash',
   bash: 'bash',
-  fish: 'bash',
-  zsh: 'bash',
+  fish: 'fish',
+  zsh: 'shellscript',
   sql: 'sql',
   graphql: 'graphql',
   gql: 'graphql',
@@ -93,7 +97,7 @@ const EXT_LANG_MAP: Record<string, string> = {
 }
 
 /**
- * Map a file path's extension to a highlight.js language identifier.
+ * Map a file path's extension to a Shiki language identifier.
  * Falls back to 'plaintext' for unknown extensions.
  */
 export function extToHighlightLang(filePath: string): string {
