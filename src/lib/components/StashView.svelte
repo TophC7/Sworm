@@ -1,11 +1,9 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { StashEntry } from '$lib/types/backend'
-  import DiffStack, { type DiffEntry } from '$lib/components/DiffStack.svelte'
+  import DiffStack, { type DiffEntry } from '$lib/components/diff/DiffStack.svelte'
   import { parseStashMessage } from '$lib/utils/git'
-  import PackageIcon from '@lucide/svelte/icons/package'
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch'
-  import CalendarIcon from '@lucide/svelte/icons/calendar'
+  import { PackageIcon, GitBranchIcon, CalendarIcon } from '$lib/icons/lucideExports'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
 
   let {

@@ -11,11 +11,11 @@
     endTabDrag
   } from '$lib/stores/workspace.svelte'
   import PaneTabBar from '$lib/components/PaneTabBar.svelte'
-  import SessionTerminal from '$lib/components/SessionTerminal.svelte'
+  import SessionTerminal from '$lib/components/session/SessionTerminal.svelte'
   import ChangesView from '$lib/components/ChangesView.svelte'
   import CommitView from '$lib/components/CommitView.svelte'
   import StashView from '$lib/components/StashView.svelte'
-  import NewSessionView from '$lib/components/NewSessionView.svelte'
+  import NewSessionView from '$lib/components/session/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
 

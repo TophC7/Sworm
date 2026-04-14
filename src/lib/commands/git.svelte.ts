@@ -4,11 +4,13 @@ import { getGitSummary, runGitAction } from '$lib/stores/git.svelte'
 import { getActiveProjectId } from '$lib/stores/workspace.svelte'
 import { backend } from '$lib/api/backend'
 
-import ArrowDownToLineIcon from '@lucide/svelte/icons/arrow-down-to-line'
-import ArrowUpFromLineIcon from '@lucide/svelte/icons/arrow-up-from-line'
-import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw'
-import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert'
-import Undo2Icon from '@lucide/svelte/icons/undo-2'
+import {
+  ArrowDownToLineIcon,
+  ArrowUpFromLineIcon,
+  RefreshCwIcon,
+  ShieldAlertIcon,
+  Undo2Icon
+} from '$lib/icons/lucideExports'
 
 let undoConfirmOpen = $state(false)
 

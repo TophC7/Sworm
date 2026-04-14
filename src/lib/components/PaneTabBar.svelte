@@ -15,11 +15,7 @@
     toggleTabLocked
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
-  import FileDiff from '@lucide/svelte/icons/file-diff'
-  import GitCommitIcon from '@lucide/svelte/icons/git-commit-horizontal'
-  import PackageIcon from '@lucide/svelte/icons/package'
-  import Lock from '@lucide/svelte/icons/lock'
-  import Plus from '@lucide/svelte/icons/plus'
+  import { FileDiff, GitCommitIcon, PackageIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import { tick } from 'svelte'
 
   let {

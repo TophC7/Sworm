@@ -5,13 +5,7 @@
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
   import { Button } from '$lib/components/ui/button'
   import NixEnvIndicator from '$lib/components/NixEnvIndicator.svelte'
-  import Circle from '@lucide/svelte/icons/circle'
-  import AlertTriangle from '@lucide/svelte/icons/alert-triangle'
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch'
-  import ArrowUp from '@lucide/svelte/icons/arrow-up'
-  import ArrowDown from '@lucide/svelte/icons/arrow-down'
-  import Minus from '@lucide/svelte/icons/minus'
-  import Plus from '@lucide/svelte/icons/plus'
+  import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
 
   let sessions = $derived(getSessions())
   let liveSessions = $derived(sessions.filter((s) => s.status === 'running'))

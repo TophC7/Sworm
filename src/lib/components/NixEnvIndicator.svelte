@@ -18,10 +18,7 @@
     DropdownMenuItem,
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle'
-  import Check from '@lucide/svelte/icons/check'
-  import X from '@lucide/svelte/icons/x'
-  import CircleAlert from '@lucide/svelte/icons/circle-alert'
+  import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
 
   let project = $derived(getActiveProject())
   let detection = $derived(project ? getNixDetection(project.id) : undefined)

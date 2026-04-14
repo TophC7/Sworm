@@ -14,7 +14,7 @@
   } from '$lib/stores/activityMap.svelte'
   import { timeAgo } from '$lib/utils/date'
   import { parentPath } from '$lib/utils/path'
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw'
+  import { RefreshCw } from '$lib/icons/lucideExports'
   import type { DiscoveredProject } from '$lib/types/backend'
 
   // Provider icon lookup

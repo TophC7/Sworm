@@ -8,7 +8,7 @@
     reorderProjects
   } from '$lib/stores/workspace.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
-  import Plus from '@lucide/svelte/icons/plus'
+  import { Plus } from '$lib/icons/lucideExports'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
 
   let { onAddProject: _ }: { onAddProject: () => void } = $props()

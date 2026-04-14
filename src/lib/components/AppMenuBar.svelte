@@ -13,7 +13,7 @@
   import { getProjects } from '$lib/stores/projects.svelte'
   import { isGitSidebarCollapsed, toggleGitSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
   import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
-  import ChevronRight from '@lucide/svelte/icons/chevron-right'
+  import { ChevronRight } from '$lib/icons/lucideExports'
 
   let {
     onNewProject,

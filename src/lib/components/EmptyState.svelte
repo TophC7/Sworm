@@ -6,8 +6,7 @@
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
   import { openProject } from '$lib/stores/workspace.svelte'
   import { parentPath } from '$lib/utils/path'
-  import FolderOpen from '@lucide/svelte/icons/folder-open'
-  import Worm from '@lucide/svelte/icons/worm'
+  import { FolderOpen, Worm } from '$lib/icons/lucideExports'
 
   let projects = $derived([...getProjects()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)))
 

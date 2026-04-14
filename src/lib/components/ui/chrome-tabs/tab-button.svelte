@@ -39,7 +39,7 @@
 <script lang="ts">
   import TabBeam, { type BeamVariant } from '$lib/components/ui/tab-beam.svelte'
   import { cn } from '$lib/utils/cn'
-  import X from '@lucide/svelte/icons/x'
+  import { X } from '$lib/icons/lucideExports'
   import type { Snippet } from 'svelte'
   import type { HTMLButtonAttributes } from 'svelte/elements'
 

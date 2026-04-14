@@ -8,8 +8,7 @@
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
-  import Play from '@lucide/svelte/icons/play'
-  import Trash2 from '@lucide/svelte/icons/trash-2'
+  import { Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/graph'
   import { SvelteSet } from 'svelte/reactivity'
 

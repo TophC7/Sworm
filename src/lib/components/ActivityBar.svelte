@@ -6,8 +6,7 @@
     setGitSidebarCollapsed,
     type SidebarView
   } from '$lib/stores/ui.svelte'
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch'
-  import History from '@lucide/svelte/icons/history'
+  import { GitBranchIcon, History } from '$lib/icons/lucideExports'
   import { cn } from '$lib/utils/cn'
 
   let activeView = $derived(getSidebarView())

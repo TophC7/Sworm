@@ -2,7 +2,7 @@
   import AppMenuBar from '$lib/components/AppMenuBar.svelte'
   import ProjectTabBar from '$lib/components/ProjectTabBar.svelte'
   import WindowControls from '$lib/components/WindowControls.svelte'
-  import Worm from '@lucide/svelte/icons/worm'
+  import { Worm } from '$lib/icons/lucideExports'
 
   let {
     onNewProject,

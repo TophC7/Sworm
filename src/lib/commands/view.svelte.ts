@@ -2,10 +2,7 @@ import type { CommandGroup } from './types'
 import { getActiveProjectId } from '$lib/stores/workspace.svelte'
 import { isGitSidebarCollapsed, toggleGitSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
 
-import PanelLeftIcon from '@lucide/svelte/icons/panel-left'
-import ZoomInIcon from '@lucide/svelte/icons/zoom-in'
-import ZoomOutIcon from '@lucide/svelte/icons/zoom-out'
-import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw'
+import { PanelLeftIcon, ZoomInIcon, ZoomOutIcon, RotateCcwIcon } from '$lib/icons/lucideExports'
 
 export function getViewCommands(): CommandGroup[] {
   const activeId = getActiveProjectId()

@@ -6,12 +6,11 @@
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
-  import GitStashList from '$lib/components/GitStashList.svelte'
+  import GitStashList from '$lib/components/git/GitStashList.svelte'
   import { refLabel, visibleRefs } from '$lib/utils/gitRefs'
   import CommitTooltip from '$lib/components/CommitTooltip.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
-  import GitGraphIcon from '@lucide/svelte/icons/git-graph'
-  import PackageIcon from '@lucide/svelte/icons/package'
+  import { GitGraphIcon, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
   let {

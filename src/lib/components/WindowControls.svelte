@@ -1,8 +1,7 @@
 <script lang="ts">
   import { getWindowControls } from '$lib/stores/ui.svelte'
   import { Maximize, Minimize } from '@lucide/svelte'
-  import Minus from '@lucide/svelte/icons/minus'
-  import X from '@lucide/svelte/icons/x'
+  import { Minus, X } from '$lib/icons/lucideExports'
   import { getCurrentWindow } from '@tauri-apps/api/window'
 
   let config = $derived(getWindowControls())

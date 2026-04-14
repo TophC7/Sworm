@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Command } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
-  import SearchIcon from '@lucide/svelte/icons/search'
+  import { SearchIcon } from '$lib/icons/lucideExports'
 
   let {
     class: className,

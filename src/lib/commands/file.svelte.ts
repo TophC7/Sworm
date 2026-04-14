@@ -2,10 +2,7 @@ import type { Command, CommandGroup, FileCallbacks } from './types'
 import { getProjects } from '$lib/stores/projects.svelte'
 import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
 
-import FolderOpenIcon from '@lucide/svelte/icons/folder-open'
-import FolderClockIcon from '@lucide/svelte/icons/folder-clock'
-import SettingsIcon from '@lucide/svelte/icons/settings'
-import XIcon from '@lucide/svelte/icons/x'
+import { FolderOpenIcon, FolderClockIcon, SettingsIcon, XIcon } from '$lib/icons/lucideExports'
 
 export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
   const activeId = getActiveProjectId()

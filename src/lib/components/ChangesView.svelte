@@ -1,7 +1,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { getGitSummary } from '$lib/stores/git.svelte'
-  import DiffStack, { type DiffEntry, type DiffFile } from '$lib/components/DiffStack.svelte'
+  import DiffStack, { type DiffEntry, type DiffFile } from '$lib/components/diff/DiffStack.svelte'
 
   let {
     projectId,

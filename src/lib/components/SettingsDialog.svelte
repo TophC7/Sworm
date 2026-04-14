@@ -15,7 +15,7 @@
   import { Badge } from '$lib/components/ui/badge'
   import { ScrollArea } from '$lib/components/ui/scroll-area'
   import { Separator } from '$lib/components/ui/separator'
-  import X from '@lucide/svelte/icons/x'
+  import { X } from '$lib/icons/lucideExports'
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 

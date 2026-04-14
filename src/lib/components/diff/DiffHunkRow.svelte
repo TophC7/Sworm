@@ -10,9 +10,7 @@
 <script lang="ts">
   import { type DiffFile, DiffMode, composeLen } from '$lib/diff/types'
   import { lineHeight } from '$lib/diff/layout'
-  import ChevronUp from '@lucide/svelte/icons/chevron-up'
-  import ChevronDown from '@lucide/svelte/icons/chevron-down'
-  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down'
+  import { ChevronUp, ChevronDown, ChevronsUpDown } from '$lib/icons/lucideExports'
 
   let {
     diffFile,

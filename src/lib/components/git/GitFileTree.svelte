@@ -11,12 +11,7 @@
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
   import { ButtonGroup } from '$lib/components/ui/button-group'
-  import FileDiff from '@lucide/svelte/icons/file-diff'
-  import MinusCircle from '@lucide/svelte/icons/minus-circle'
-  import PlusCircle from '@lucide/svelte/icons/plus-circle'
-  import Trash2 from '@lucide/svelte/icons/trash-2'
-  import PackageIcon from '@lucide/svelte/icons/package'
-  import ChevronDown from '@lucide/svelte/icons/chevron-down'
+  import { FileDiff, MinusCircle, PlusCircle, Trash2, PackageIcon, ChevronDown } from '$lib/icons/lucideExports'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
 
   let {

@@ -1,13 +1,10 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { CommitDetail } from '$lib/types/backend'
-  import DiffStack, { type DiffEntry } from '$lib/components/DiffStack.svelte'
-  import GitCommitIcon from '@lucide/svelte/icons/git-commit-horizontal'
-  import GitBranchIcon from '@lucide/svelte/icons/git-branch'
-  import UserIcon from '@lucide/svelte/icons/user'
-  import CalendarIcon from '@lucide/svelte/icons/calendar'
-  import CopyIcon from '@lucide/svelte/icons/copy'
-  import CheckIcon from '@lucide/svelte/icons/check'
+  import DiffStack, { type DiffEntry } from '$lib/components/diff/DiffStack.svelte'
+  import { GitCommitIcon, GitBranchIcon, UserIcon, CalendarIcon, CopyIcon, Check } from '$lib/icons/lucideExports'
+  // Alias for CheckIcon
+  const CheckIcon = Check
 
   let {
     commitHash,

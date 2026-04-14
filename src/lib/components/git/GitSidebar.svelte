@@ -1,6 +1,6 @@
 <script lang="ts">
-  import GitGraph from '$lib/components/GitGraph.svelte'
-  import GitFileTree from '$lib/components/GitFileTree.svelte'
+  import GitGraph from '$lib/components/git/GitGraph.svelte'
+  import GitFileTree from '$lib/components/git/GitFileTree.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { Button } from '$lib/components/ui/button'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
@@ -11,7 +11,7 @@
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
   import { PanelLeftClose } from '@lucide/svelte'
-  import RotateCw from '@lucide/svelte/icons/rotate-cw'
+  import { RotateCw } from '$lib/icons/lucideExports'
 
   let {
     summary,
