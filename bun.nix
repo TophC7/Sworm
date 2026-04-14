@@ -353,17 +353,17 @@
     url = "https://registry.npmjs.org/@ungap/structured-clone/-/structured-clone-1.3.0.tgz";
     hash = "sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==";
   };
-  "@xterm/addon-fit@0.11.0" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.11.0.tgz";
-    hash = "sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==";
+  "@xterm/addon-fit@0.12.0-beta.197" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.12.0-beta.197.tgz";
+    hash = "sha512-EoYQVIWp90XmNXBfrEocz5tk44JLMdHL9+Asd57Bj9DuERLLszA8pkF3wbuR5C7555g3sRTMTHlzYQ3gv9xbOw==";
   };
-  "@xterm/addon-web-links@0.12.0" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/addon-web-links/-/addon-web-links-0.12.0.tgz";
-    hash = "sha512-4Smom3RPyVp7ZMYOYDoC/9eGJJJqYhnPLGGqJ6wOBfB8VxPViJNSKdgRYb8NpaM6YSelEKbA2SStD7lGyqaobw==";
+  "@xterm/addon-web-links@0.13.0-beta.197" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-web-links/-/addon-web-links-0.13.0-beta.197.tgz";
+    hash = "sha512-8MgssTKGYJIgZpemu34KBIsmB0qh/XsQxugOhaYym8qSjn8KAMn9FN0j15W6XwEFQDAu1vtBh1jiKjQfyvHoqQ==";
   };
-  "@xterm/xterm@6.0.0" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.0.0.tgz";
-    hash = "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==";
+  "@xterm/xterm@6.1.0-beta.197" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.1.0-beta.197.tgz";
+    hash = "sha512-vzoc8sBcsvFpziSgeVGKZQDT1T/9MmEUKfUDpVqc3slDv7o0SiQCjvPeOF8y1++5vx2xmUn8lfcLnbfdtigtSQ==";
   };
   "acorn@8.16.0" = fetchurl {
     url = "https://registry.npmjs.org/acorn/-/acorn-8.16.0.tgz";

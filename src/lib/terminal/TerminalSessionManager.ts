@@ -12,6 +12,7 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
   fontFamily: "'Monocraft Nerd Font', monospace",
   scrollback: 10000,
   convertEol: true,
+  vtExtensions: { kittyKeyboard: true },
   theme: {
     background: '#131313',
     foreground: '#e2e2e2',
@@ -53,6 +54,7 @@ export class TerminalSessionManager {
   private container: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
   private inputDisposable: IDisposable | null = null
+  private oscDisposable: IDisposable | null = null
   private outputChannel: Channel<number[]> | null = null
   private eventsChannel: Channel<PtyEvent> | null = null
   private ptyActive = false
@@ -244,6 +246,8 @@ export class TerminalSessionManager {
 
     this.inputDisposable?.dispose()
     this.inputDisposable = null
+    this.oscDisposable?.dispose()
+    this.oscDisposable = null
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null
@@ -282,6 +286,36 @@ export class TerminalSessionManager {
     this.terminal.loadAddon(this.fitAddon)
     this.terminal.loadAddon(this.webLinksAddon)
     this.terminal.open(this.hostEl)
+
+    // With kitty keyboard protocol active, Ctrl+V/Ctrl+Shift+V get encoded
+    // as CSI u sequences and preventDefault() kills the browser paste event.
+    // Let clipboard shortcuts bypass xterm.js so the browser handles them.
+    this.terminal.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'v' || ev.key === 'V')) return false
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C') && ev.shiftKey) return false
+      return true
+    })
+
+    // Handle OSC 52 clipboard sequences from TUI apps (Fresh, helix, neovim).
+    // Format: \x1b]52;<target>;<base64-data>\x07
+    this.oscDisposable = this.terminal.parser.registerOscHandler(52, (data) => {
+      const sepIdx = data.indexOf(';')
+      if (sepIdx === -1) return false
+      const payload = data.slice(sepIdx + 1)
+      if (payload === '?') return false // clipboard query — not supported
+      try {
+        const raw = atob(payload)
+        const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
+        const text = new TextDecoder().decode(bytes)
+        navigator.clipboard.writeText(text).catch((err) => {
+          console.error('OSC 52 clipboard write failed:', err)
+        })
+      } catch {
+        // invalid base64
+      }
+      return true
+    })
 
     this.inputDisposable = this.terminal.onData((data) => {
       if (!this.ptyActive || !this.inputEnabled) {
