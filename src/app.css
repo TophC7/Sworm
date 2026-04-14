@@ -197,7 +197,7 @@
 
   /*
    * Shiki syntax highlighting tokens.
-   * Maps the ADE base16 palette to Shiki's CSS-variables theme.
+   * Maps the Sworm base16 palette to Shiki's CSS-variables theme.
    * Used via createCssVariablesTheme({ variablePrefix: '--shiki-' }).
    */
   --shiki-foreground: #e2e2e2; /* fg */

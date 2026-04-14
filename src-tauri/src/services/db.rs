@@ -66,7 +66,7 @@ pub fn resolve_db_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, anyhow:
         .path()
         .app_data_dir()
         .map_err(|e| anyhow::anyhow!("Failed to resolve app data dir: {}", e))?;
-    Ok(app_data.join("ade.db"))
+    Ok(app_data.join("sworm.db"))
 }
 
 // Import the path resolver trait

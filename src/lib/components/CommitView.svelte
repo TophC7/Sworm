@@ -11,10 +11,12 @@
 
   let {
     commitHash,
+    projectId,
     projectPath,
     initialFile = null
   }: {
     commitHash: string
+    projectId: string
     projectPath: string
     initialFile?: string | null
   } = $props()
@@ -126,6 +128,15 @@
       </div>
     </div>
 
-    <DiffStack files={detail.files} {diffs} loading={loadingDiffs} {initialFile} idPrefix="commit-file" />
+    <DiffStack
+      files={detail.files}
+      {diffs}
+      loading={loadingDiffs}
+      {initialFile}
+      idPrefix="commit-file"
+      {projectId}
+      {projectPath}
+      {commitHash}
+    />
   </div>
 {/if}

@@ -1,6 +1,6 @@
 ---
 name: new-component
-description: Scaffold a new Svelte component for ADE. Use when creating reusable UI or terminal/project-specific frontend components.
+description: Scaffold a new Svelte component for Sworm. Use when creating reusable UI or terminal/project-specific frontend components.
 disable-model-invocation: true
 argument-hint: "[component-name] [components|terminal|project|settings]"
 ---
@@ -27,7 +27,7 @@ If an existing component covers most of the need, extend it instead of creating 
 
 - Use Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`, `$bindable`)
 - Keep frontend components thin; privileged work belongs in Rust commands/services
-- Match the current ADE styling approach instead of inventing a new one:
+- Match the current Sworm styling approach instead of inventing a new one:
   - Tailwind v4 utilities first
   - tokens from `src/app.css`
   - avoid scoped `<style>` unless Tailwind cannot express the rule
@@ -35,7 +35,7 @@ If an existing component covers most of the need, extend it instead of creating 
 - Use the **comment-style** skill for all comments
 - Use the **svelte** MCP server to verify framework correctness
 
-## Current ADE Notes
+## Current Sworm Notes
 
 - Prefer extending an existing component in `src/lib/components/` before adding a new abstraction.
 - Check `src/lib/stores/*.svelte.ts` and `src/lib/api/backend.ts` before inventing new state or backend access patterns.

@@ -72,4 +72,6 @@
   {initialFile}
   label={staged ? 'Staged' : 'Changes'}
   idPrefix="changes-file"
+  {projectId}
+  {projectPath}
 />

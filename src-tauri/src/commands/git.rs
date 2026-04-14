@@ -4,7 +4,7 @@ use crate::services::git::{CommitDetail, DiffContext, GitSummary, GraphCommit};
 use std::path::{Path, PathBuf};
 
 /// Reject anything that isn't a hex commit hash (40-char full or 7+ short).
-fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
+pub(crate) fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
     if hash.len() >= 7 && hash.len() <= 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(())
     } else {

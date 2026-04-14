@@ -161,6 +161,15 @@ export const backend = {
     }
   },
 
+  editor: {
+    openFile(projectId: string, projectPath: string, filePath: string): Promise<void> {
+      return invoke('editor_open_file', { projectId, projectPath, filePath })
+    },
+    openAtCommit(projectId: string, projectPath: string, commitHash: string, filePath: string): Promise<void> {
+      return invoke('editor_open_at_commit', { projectId, projectPath, commitHash, filePath })
+    }
+  },
+
   nix: {
     detect(projectId: string): Promise<NixDetection> {
       return invoke<NixDetection>('nix_detect', { projectId })

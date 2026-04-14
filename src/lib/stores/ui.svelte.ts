@@ -21,7 +21,7 @@ export interface WindowControlsConfig {
   showClose: boolean
 }
 
-const WC_STORAGE_KEY = 'ade:windowControls'
+const WC_STORAGE_KEY = 'sworm:windowControls'
 
 function loadWindowControls(): WindowControlsConfig {
   const defaults: WindowControlsConfig = {

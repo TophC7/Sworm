@@ -1,4 +1,5 @@
 pub mod app;
+pub mod editor;
 pub mod git;
 pub mod nix;
 pub mod projects;

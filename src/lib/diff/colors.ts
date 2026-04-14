@@ -1,6 +1,6 @@
 /**
  * Maps DiffLineType values to Tailwind utility classes
- * using the existing ADE design tokens.
+ * using the existing Sworm design tokens.
  */
 
 import { DiffLineType } from './types'

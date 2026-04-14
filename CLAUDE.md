@@ -63,7 +63,7 @@ Do not claim lint/format/test commands exist if they are not defined in the curr
 - Frontend data flow should go through typed Tauri invoke/channel wrappers in `src/lib`, then into component state or shared rune modules.
 - Guard DOM-only or browser-only code with `onMount` or a narrowly scoped `$effect()`.
 - Prefer simple route components and app-shell state over web-centric patterns such as auth redirects, SEO metadata work, or server-first data loading.
-- Check existing ADE patterns before introducing a new component, state, or routing style.
+- Check existing Sworm patterns before introducing a new component, state, or routing style.
 
 ## Styling Rules
 

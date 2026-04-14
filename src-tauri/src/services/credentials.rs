@@ -6,7 +6,7 @@ use tracing::info;
 /// only references (service + account) so the app knows what exists.
 pub struct CredentialService;
 
-const SERVICE_NAME: &str = "dev.ade";
+const SERVICE_NAME: &str = "dev.sworm";
 
 impl CredentialService {
     pub fn new() -> Self {
@@ -16,7 +16,7 @@ impl CredentialService {
     /// Write a test secret, read it back, delete it, and return a status report.
     pub fn smoke_test(&self) -> Result<String, String> {
         let account = "smoke-test";
-        let test_value = "ade-keyring-test-value";
+        let test_value = "sworm-keyring-test-value";
 
         // Attempt to create a keyring entry
         let entry = keyring::Entry::new(SERVICE_NAME, account).map_err(|e| {

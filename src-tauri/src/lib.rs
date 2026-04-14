@@ -70,6 +70,9 @@ pub fn run() {
             commands::nix::nix_clear,
             commands::nix::nix_status,
             commands::nix::provider_list_for_project,
+            // Editor commands
+            commands::editor::editor_open_file,
+            commands::editor::editor_open_at_commit,
             // Git commands
             commands::git::git_get_summary,
             commands::git::git_get_file_diff,

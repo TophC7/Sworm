@@ -1,11 +1,11 @@
 ---
 name: i18n-workflow
-description: Lightweight i18n workflow guidance. Use only if ADE adopts an i18n system and you are adding or changing user-facing strings across locales.
+description: Lightweight i18n workflow guidance. Use only if Sworm adopts an i18n system and you are adding or changing user-facing strings across locales.
 ---
 
 # i18n Workflow
 
-ADE does not currently define an i18n stack in the core specs.
+Sworm does not currently define an i18n stack in the core specs.
 
 Use this skill only when:
 

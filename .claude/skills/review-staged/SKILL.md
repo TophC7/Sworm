@@ -1,6 +1,6 @@
 ---
 name: review-staged
-description: Review staged git changes against current ADE conventions. Invoke with /review-staged before committing. Focus on correctness, scope control, and alignment with the live codebase.
+description: Review staged git changes against current Sworm conventions. Invoke with /review-staged before committing. Focus on correctness, scope control, and alignment with the live codebase.
 ---
 
 # Review Staged Changes
@@ -58,7 +58,7 @@ Use judgment -- if narrowing a type requires refactoring the call sites, note it
 
 #### C. Svelte/SvelteKit compliance (FIX DIRECTLY)
 
-Check against **CLAUDE.md**, the live ADE code patterns, and the **svelte** MCP server to verify framework-specific correctness. Look for:
+Check against **CLAUDE.md**, the live Sworm code patterns, and the **svelte** MCP server to verify framework-specific correctness. Look for:
 
 - Template issues (missing keys, wrong directive usage, deprecated APIs)
 - Invalid component structure or misuse of runes
@@ -72,7 +72,7 @@ Look for structural problems that cross module boundaries or affect the app's de
 
 - Wrong boundary crossings (server/client imports, env var misuse)
 - Duplicated definitions that should be shared
-- Incomplete implementations or abstractions that drift from the current ADE architecture
+- Incomplete implementations or abstractions that drift from the current Sworm architecture
 
 These are presented in the results table for the user to decide on. Never fix these autonomously -- they often involve design decisions that need context beyond the diff.
 

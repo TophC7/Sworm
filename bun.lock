@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ade",
+      "name": "sworm",
       "dependencies": {
         "@git-diff-view/core": "^0.1.3",
         "@lucide/svelte": "^1.8.0",

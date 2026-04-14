@@ -18,11 +18,17 @@
   import { DiffMode } from '$lib/diff/types'
   import { setDiffScrollContext, type DiffScrollState } from '$lib/diff/scrollContext.svelte'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
+  import { backend } from '$lib/api/backend'
+  import { getAllTabs, addSessionTab } from '$lib/stores/workspace.svelte'
+  import { createSession } from '$lib/stores/sessions.svelte'
   import DiffViewer from '$lib/components/DiffViewer.svelte'
   import LazyRender from '$lib/components/LazyRender.svelte'
   import DiffControls from '$lib/components/DiffControls.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
+  import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right'
+  import Eye from '@lucide/svelte/icons/eye'
 
   const AUTO_EXPAND_LIMIT = 8
 
@@ -32,7 +38,10 @@
     loading = false,
     initialFile = null,
     label = '',
-    idPrefix = 'diff'
+    idPrefix = 'diff',
+    projectId = '',
+    projectPath = '',
+    commitHash = null
   }: {
     files: DiffFile[]
     diffs: Map<string, DiffEntry>
@@ -40,7 +49,50 @@
     initialFile?: string | null
     label?: string
     idPrefix?: string
+    projectId?: string
+    projectPath?: string
+    commitHash?: string | null
   } = $props()
+
+  /** Ensure a Fresh session tab exists for this project, creating one if needed. */
+  async function ensureFreshSession(): Promise<void> {
+    if (!projectId) return
+    const tabs = getAllTabs(projectId)
+    const hasFresh = tabs.some((t) => t.kind === 'session' && t.providerId === 'fresh')
+    if (hasFresh) return
+
+    const session = await createSession(projectId, 'fresh', 'Fresh')
+    addSessionTab(projectId, session.id, session.title, session.provider_id)
+    // Wait for Fresh to start and create its session socket
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+
+  // Capture reactive props before awaiting — they can change during the
+  // ensureFreshSession delay if the user navigates away.
+  async function openInEditor(filePath: string) {
+    const pid = projectId,
+      pp = projectPath
+    if (!pid || !pp) return
+    try {
+      await ensureFreshSession()
+      await backend.editor.openFile(pid, pp, filePath)
+    } catch (err) {
+      console.error('editor:', err)
+    }
+  }
+
+  async function viewAtCommit(filePath: string) {
+    const pid = projectId,
+      pp = projectPath,
+      ch = commitHash
+    if (!pid || !pp || !ch) return
+    try {
+      await ensureFreshSession()
+      await backend.editor.openAtCommit(pid, pp, ch, filePath)
+    } catch (err) {
+      console.error('editor:', err)
+    }
+  }
 
   let expandedFiles = $state<Set<string>>(new Set())
   let diffMode = $state(DiffMode.Split)
@@ -201,27 +253,50 @@
     </span>
   </div>
 
+  {#snippet headerAction(Icon: typeof Eye, label: string, onclick: () => void)}
+    <TooltipRoot delayDuration={300}>
+      <TooltipTrigger class="rounded p-1 text-muted transition-colors hover:bg-accent/15 hover:text-fg" {onclick}>
+        <Icon size={12} />
+      </TooltipTrigger>
+      <TooltipContent sideOffset={4}>{label}</TooltipContent>
+    </TooltipRoot>
+  {/snippet}
+
   <!-- Stacked diffs -->
   <div class="min-h-0 flex-1 overflow-y-auto" bind:this={scrollEl}>
     {#each files as file (file.path)}
       {@const entry = diffs.get(file.path)}
       {@const expanded = expandedFiles.has(file.path)}
       <div id="{idPrefix}-{file.path}" class="border-b border-edge">
-        <button
-          class="sticky top-0 z-20 flex w-full items-center gap-2 border-b border-edge/50 bg-raised/90 px-3 py-1.5 text-left backdrop-blur-sm transition-colors hover:bg-raised"
-          onclick={() => toggleFile(file.path)}
-        >
-          <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
-          <span class="text-[0.65rem] font-bold {gitStatusColor(file.status)}" title={gitStatusLabel(file.status)}
-            >{gitStatusDisplay(file.status)}</span
+        <div class="sticky top-0 z-20 flex w-full items-center border-b border-edge/50 bg-raised/90 backdrop-blur-sm">
+          <button
+            class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-raised"
+            onclick={() => toggleFile(file.path)}
           >
-          <FileIcon filename={file.path} size={13} />
-          <span class="min-w-0 truncate font-mono text-[0.72rem] text-fg">{file.path}</span>
-          <span class="ml-auto shrink-0 font-mono text-[0.62rem]">
-            {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
-            {#if file.deletions > 0}<span class="ml-1 text-danger">-{file.deletions}</span>{/if}
-          </span>
-        </button>
+            <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
+            <span class="text-[0.65rem] font-bold {gitStatusColor(file.status)}" title={gitStatusLabel(file.status)}
+              >{gitStatusDisplay(file.status)}</span
+            >
+            <FileIcon filename={file.path} size={13} />
+            <span class="min-w-0 truncate font-mono text-[0.72rem] text-fg">{file.path}</span>
+            <span class="ml-auto shrink-0 font-mono text-[0.62rem]">
+              {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
+              {#if file.deletions > 0}<span class="ml-1 text-danger">-{file.deletions}</span>{/if}
+            </span>
+          </button>
+          {#if projectId}
+            <div class="flex shrink-0 items-center gap-0.5 pr-2">
+              {#if commitHash}
+                {@render headerAction(Eye, 'View at commit', () => viewAtCommit(file.path))}
+                {#if file.status !== 'D'}
+                  {@render headerAction(SquareArrowOutUpRight, 'Open current file', () => openInEditor(file.path))}
+                {/if}
+              {:else}
+                {@render headerAction(SquareArrowOutUpRight, 'Open in editor', () => openInEditor(file.path))}
+              {/if}
+            </div>
+          {/if}
+        </div>
 
         {#if expanded}
           {#if loading}

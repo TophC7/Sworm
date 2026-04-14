@@ -7,7 +7,7 @@
  * highlights, then syntax coloring appears asynchronously.
  *
  * Uses a CSS-variables theme so syntax colors derive from the
- * ADE design tokens defined in app.css (--shiki-* custom properties).
+ * Sworm design tokens defined in app.css (--shiki-* custom properties).
  */
 
 import type { Highlighter } from 'shiki'
@@ -16,11 +16,11 @@ import { processAST, type DiffFile } from '@git-diff-view/core'
 import type { Root } from 'hast'
 
 const THEME = createCssVariablesTheme({
-  name: 'ade',
+  name: 'sworm',
   variablePrefix: '--shiki-',
   variableDefaults: {}
 })
-const THEME_NAME = 'ade'
+const THEME_NAME = 'sworm'
 
 /** Shiki singleton — created on first use. */
 let highlighterPromise: Promise<Highlighter> | null = null

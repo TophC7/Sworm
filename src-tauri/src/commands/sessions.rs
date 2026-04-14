@@ -343,6 +343,15 @@ pub fn session_start(
         None,
     );
     args.extend(provider_config.extra_args);
+
+    // Fresh: attach to a deterministic named session per project so multiple
+    // tabs share one editor and we can reliably send files to it.
+    if session.provider_id == "fresh" {
+        let name = crate::commands::editor::fresh_session_name(&session.project_id);
+        args.insert(0, name);
+        args.insert(0, "-a".to_string());
+    }
+
     let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
 
     // Build child env: merge Nix environment if available
