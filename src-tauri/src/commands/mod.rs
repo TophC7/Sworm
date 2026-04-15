@@ -1,6 +1,7 @@
 pub mod activity_map;
 pub mod app;
-pub mod editor;
+pub mod files;
+pub mod fresh;
 pub mod git;
 pub mod nix;
 pub mod projects;

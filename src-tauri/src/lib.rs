@@ -73,10 +73,14 @@ pub fn run() {
             commands::nix::nix_clear,
             commands::nix::nix_status,
             commands::nix::provider_list_for_project,
-            // Editor commands
-            commands::editor::editor_open_file,
-            commands::editor::editor_open_at_commit,
-            commands::editor::editor_open_at_stash,
+            // Fresh editor commands
+            commands::fresh::editor_open_file,
+            commands::fresh::editor_open_at_commit,
+            commands::fresh::editor_open_at_stash,
+            // File commands
+            commands::files::file_read,
+            commands::files::file_write,
+            commands::files::files_list_all,
             // Git commands
             commands::git::git_get_summary,
             commands::git::git_get_file_diff,
@@ -101,6 +105,8 @@ pub fn run() {
             commands::git::git_stash_pop,
             commands::git::git_stash_drop,
             commands::git::git_get_stash_diffs,
+            commands::git::git_init,
+            commands::git::git_clone_in_place,
             // PTY demo commands (kept for backwards compat)
             commands::pty::pty_demo_start,
             commands::pty::pty_demo_write,

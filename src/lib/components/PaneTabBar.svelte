@@ -16,6 +16,7 @@
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { FileDiff, GitCommitIcon, PackageIcon, Lock, Plus } from '$lib/icons/lucideExports'
+  import FileIcon from '$lib/icons/FileIcon.svelte'
   import { tick } from 'svelte'
 
   let {
@@ -94,6 +95,8 @@
         return tab.label
       case 'stash':
         return `stash@{${tab.stashIndex}}`
+      case 'markdown':
+        return tab.fileName
     }
   }
 
@@ -242,6 +245,8 @@
           <GitCommitIcon size={14} class="shrink-0 text-accent" />
         {:else if tab.kind === 'stash'}
           <PackageIcon size={14} class="shrink-0 text-accent" />
+        {:else if tab.kind === 'markdown'}
+          <FileIcon filename={tab.fileName} size={14} />
         {:else}
           {@const icon = providerIcon(tab)}
           {#if icon}

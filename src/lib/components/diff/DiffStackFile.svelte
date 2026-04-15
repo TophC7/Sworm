@@ -8,8 +8,7 @@
   import { DiffMode } from '$lib/diff/types'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import { backend } from '$lib/api/backend'
-  import { getAllTabs, addSessionTab } from '$lib/stores/workspace.svelte'
-  import { createSession } from '$lib/stores/sessions.svelte'
+  import { openFile, ensureFreshSession } from '$lib/utils/openFile'
   import DiffViewer from '$lib/components/diff/DiffViewer.svelte'
   import LazyRender from '$lib/components/LazyRender.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
@@ -48,25 +47,10 @@
     onToggle
   }: Props = $props()
 
-  /** Ensure a Fresh session tab exists for this project, creating one if needed. */
-  async function ensureFreshSession(): Promise<void> {
-    if (!projectId) return
-    const tabs = getAllTabs(projectId)
-    const hasFresh = tabs.some((t) => t.kind === 'session' && t.providerId === 'fresh')
-    if (hasFresh) return
-
-    const session = await createSession(projectId, 'fresh', 'Fresh')
-    addSessionTab(projectId, session.id, session.title, session.provider_id)
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-
   async function openInEditor(filePath: string) {
-    const pid = projectId,
-      pp = projectPath
-    if (!pid || !pp) return
+    if (!projectId || !projectPath) return
     try {
-      await ensureFreshSession()
-      await backend.editor.openFile(pid, pp, filePath)
+      await openFile(projectId, projectPath, filePath)
     } catch (err) {
       console.error('editor:', err)
     }
@@ -78,7 +62,7 @@
       ch = commitHash
     if (!pid || !pp || !ch) return
     try {
-      await ensureFreshSession()
+      await ensureFreshSession(pid)
       await backend.editor.openAtCommit(pid, pp, ch, filePath)
     } catch (err) {
       console.error('editor:', err)
@@ -91,7 +75,7 @@
       si = stashIndex
     if (!pid || !pp || si == null) return
     try {
-      await ensureFreshSession()
+      await ensureFreshSession(pid)
       await backend.editor.openAtStash(pid, pp, si, filePath)
     } catch (err) {
       console.error('editor:', err)

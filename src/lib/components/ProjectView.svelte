@@ -4,6 +4,7 @@
   import { startGitPolling, stopGitPolling, getGitSummary, refreshGit } from '$lib/stores/git.svelte'
   import ActivityBar from '$lib/components/ActivityBar.svelte'
   import GitSidebar from '$lib/components/git/GitSidebar.svelte'
+  import FilesSidebar from '$lib/components/files/FilesSidebar.svelte'
   import SessionHistoryView from '$lib/components/session/SessionHistoryView.svelte'
   import { getGitSidebarWidth, setGitSidebarWidth, isGitSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
   import PaneGrid from '$lib/components/PaneGrid.svelte'
@@ -98,6 +99,8 @@
           />
         {:else if sidebarView === 'sessions'}
           <SessionHistoryView projectId={project.id} />
+        {:else if sidebarView === 'files'}
+          <FilesSidebar projectId={project.id} projectPath={project.path} />
         {/if}
       </div>
 

@@ -285,3 +285,22 @@ pub fn git_get_stash_diffs(
 ) -> Result<std::collections::HashMap<String, String>, ApiError> {
     Ok(state.git.get_stash_diffs(Path::new(&path), index))
 }
+
+/// Initialize a new git repository in the given directory.
+#[tauri::command]
+pub fn git_init(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+    state.git.init(Path::new(&path)).map_err(ApiError::Internal)
+}
+
+/// Clone a repository into the given directory (in-place, no subfolder).
+#[tauri::command]
+pub fn git_clone_in_place(
+    path: String,
+    url: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .clone_in_place(Path::new(&path), &url)
+        .map_err(ApiError::Internal)
+}

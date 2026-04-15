@@ -3,6 +3,7 @@ use crate::services::{
     credentials::CredentialService,
     db::{self, DatabaseService},
     env::EnvironmentService,
+    files::FileService,
     git::GitService,
     projects::ProjectService,
     providers::ProviderService,
@@ -25,6 +26,7 @@ pub struct AppState {
     pub sessions: SessionService,
     pub pty: PtyService,
     pub git: GitService,
+    pub files: FileService,
     pub credentials: CredentialService,
     pub env: EnvironmentService,
     /// Tracks project IDs with Nix evaluations in progress to prevent concurrent runs.
@@ -55,6 +57,7 @@ impl AppState {
             sessions,
             pty: PtyService::new(),
             git: GitService::new(),
+            files: FileService::new(),
             credentials: CredentialService::new(),
             env: EnvironmentService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),

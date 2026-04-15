@@ -3,6 +3,7 @@ pub mod codex_state;
 pub mod credentials;
 pub mod db;
 pub mod env;
+pub mod files;
 pub mod git;
 pub mod nix;
 pub mod projects;

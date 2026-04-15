@@ -6,7 +6,7 @@
     setGitSidebarCollapsed,
     type SidebarView
   } from '$lib/stores/ui.svelte'
-  import { GitBranchIcon, History } from '$lib/icons/lucideExports'
+  import { GitBranchIcon, BotMessageSquare, FolderOpen } from '$lib/icons/lucideExports'
   import { cn } from '$lib/utils/cn'
 
   let activeView = $derived(getSidebarView())
@@ -25,7 +25,8 @@
 
   const views: { id: SidebarView; icon: typeof GitBranchIcon; label: string }[] = [
     { id: 'git', icon: GitBranchIcon, label: 'Git' },
-    { id: 'sessions', icon: History, label: 'Sessions' }
+    { id: 'files', icon: FolderOpen, label: 'Files' },
+    { id: 'sessions', icon: BotMessageSquare, label: 'Sessions' }
   ]
 </script>
 

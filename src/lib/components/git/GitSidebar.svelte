@@ -10,8 +10,8 @@
   import { refreshGit, runGitAction } from '$lib/stores/git.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
-  import { PanelLeftClose } from '@lucide/svelte'
-  import { RotateCw } from '$lib/icons/lucideExports'
+  import { PanelLeftClose } from '$lib/icons/lucideExports'
+  import { GitBranchIcon, RotateCw } from '$lib/icons/lucideExports'
 
   let {
     summary,
@@ -37,10 +37,44 @@
 
   let collapsed = $derived(isGitSidebarCollapsed())
   let hasCommits = $derived(!!summary?.branch)
+  let isRepo = $derived(summary?.is_repo ?? true)
 
   // Confirmation dialog state
   let showDiscardConfirm = $state(false)
   let showUndoCommitConfirm = $state(false)
+
+  // Init/clone state
+  let cloneUrl = $state('')
+  let initBusy = $state(false)
+  let initError = $state<string | null>(null)
+
+  async function handleInit() {
+    initBusy = true
+    initError = null
+    try {
+      await backend.git.init(projectPath)
+      await refreshGit(projectId, projectPath)
+    } catch (e) {
+      initError = e instanceof Error ? e.message : String(e)
+    } finally {
+      initBusy = false
+    }
+  }
+
+  async function handleClone() {
+    if (!cloneUrl.trim()) return
+    initBusy = true
+    initError = null
+    try {
+      await backend.git.cloneInPlace(projectPath, cloneUrl.trim())
+      cloneUrl = ''
+      await refreshGit(projectId, projectPath)
+    } catch (e) {
+      initError = e instanceof Error ? e.message : String(e)
+    } finally {
+      initBusy = false
+    }
+  }
 
   async function refresh() {
     await refreshGit(projectId, projectPath)
@@ -143,7 +177,50 @@
     </SidebarHeader>
 
     <SidebarContent>
-      {#if summary}
+      {#if !summary}
+        <div class="px-2.5 py-3 text-[0.75rem] text-subtle">Loading git info&hellip;</div>
+      {:else if !isRepo}
+        <!-- Not a git repository — offer init or clone -->
+        <div class="flex flex-col gap-4 px-3 py-4">
+          <div class="flex flex-col items-center gap-2 py-4 text-center">
+            <GitBranchIcon size={28} class="text-subtle" />
+            <p class="text-[0.75rem] text-muted">This folder is not a git repository.</p>
+          </div>
+
+          <button
+            class="w-full rounded border border-edge bg-raised px-3 py-1.5 text-[0.72rem] font-medium text-fg transition-colors hover:border-accent hover:text-bright disabled:cursor-not-allowed disabled:opacity-40"
+            onclick={handleInit}
+            disabled={initBusy}
+          >
+            Initialize Repository
+          </button>
+
+          <div class="flex flex-col gap-1.5">
+            <span class="text-[0.65rem] font-medium tracking-wider text-muted uppercase">Or clone</span>
+            <input
+              type="text"
+              class="w-full rounded border border-edge bg-surface px-2 py-1.5 text-[0.72rem] text-fg placeholder:text-subtle focus:border-accent/50 focus:outline-none"
+              placeholder="https://github.com/..."
+              bind:value={cloneUrl}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') handleClone()
+              }}
+              disabled={initBusy}
+            />
+            <button
+              class="w-full rounded border border-edge bg-raised px-3 py-1.5 text-[0.72rem] font-medium text-fg transition-colors hover:border-accent hover:text-bright disabled:cursor-not-allowed disabled:opacity-40"
+              onclick={handleClone}
+              disabled={!cloneUrl.trim() || initBusy}
+            >
+              Clone Repository
+            </button>
+          </div>
+
+          {#if initError}
+            <p class="text-[0.7rem] text-danger">{initError}</p>
+          {/if}
+        </div>
+      {:else}
         <ResizablePaneGroup direction="vertical">
           <ResizablePane defaultSize={60} minSize={15}>
             <div class="h-full overflow-y-auto">
@@ -180,8 +257,6 @@
             </div>
           </ResizablePane>
         </ResizablePaneGroup>
-      {:else}
-        <div class="px-2.5 py-3 text-[0.75rem] text-subtle">Loading git info&hellip;</div>
       {/if}
     </SidebarContent>
   </Sidebar>

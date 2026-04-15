@@ -216,6 +216,12 @@ export const backend = {
     },
     getStashDiffs(path: string, index: number): Promise<Record<string, string>> {
       return invoke<Record<string, string>>('git_get_stash_diffs', { path, index })
+    },
+    init(path: string): Promise<void> {
+      return invoke<void>('git_init', { path })
+    },
+    cloneInPlace(path: string, url: string): Promise<void> {
+      return invoke<void>('git_clone_in_place', { path, url })
     }
   },
 
@@ -228,6 +234,18 @@ export const backend = {
     },
     openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
       return invoke('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
+    }
+  },
+
+  files: {
+    listAll(projectPath: string): Promise<string[]> {
+      return invoke<string[]>('files_list_all', { projectPath })
+    },
+    read(projectPath: string, filePath: string): Promise<string> {
+      return invoke<string>('file_read', { projectPath, filePath })
+    },
+    write(projectPath: string, filePath: string, content: string): Promise<void> {
+      return invoke<void>('file_write', { projectPath, filePath, content })
     }
   },
 

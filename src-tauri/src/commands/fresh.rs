@@ -1,21 +1,7 @@
 use crate::commands::git::validated_git_ref;
 use crate::errors::ApiError;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-
-/// Reject file paths containing `..` components (path traversal).
-fn validated_file_path(file_path: &str) -> Result<(), ApiError> {
-    if Path::new(file_path)
-        .components()
-        .any(|c| matches!(c, Component::ParentDir))
-    {
-        return Err(ApiError::InvalidArgument(format!(
-            "Invalid file path: {}",
-            file_path
-        )));
-    }
-    Ok(())
-}
 
 /// Deterministic Fresh session name for a Sworm project.
 /// Used by both session startup (sessions.rs) and file opening.
@@ -96,7 +82,6 @@ pub fn editor_open_at_commit(
     file_path: String,
 ) -> Result<(), ApiError> {
     validated_git_ref(&commit_hash)?;
-    validated_file_path(&file_path)?;
 
     let repo = Path::new(&project_path);
 
@@ -122,8 +107,6 @@ pub fn editor_open_at_stash(
     stash_index: usize,
     file_path: String,
 ) -> Result<(), ApiError> {
-    validated_file_path(&file_path)?;
-
     let repo = Path::new(&project_path);
     let stash_ref = format!("stash@{{{}}}", stash_index);
 

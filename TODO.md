@@ -3,12 +3,26 @@
 ## UI
 
 - [ ] Add shadcn-svelte Tooltip primitive and apply to zoom buttons with shortcut hints (e.g. "Zoom in (Ctrl+=)"), window controls, and other icon-only actions
+- [ ] Stricter design system for sidebars and views — define shared layout components or documented patterns for sidebar headers (title + actions left, collapse right), content toolbars (unified style via `ContentToolbar`), and view chrome so new views match existing ones by construction, not by manual copying. Current pain points: file sidebar had refresh button misplaced vs git sidebar, markdown toolbar initially didn't match diff toolbar styling
 
 ## Git Stash UX
 
 - [ ] Stash operation error handling — `stash pop` can fail with merge conflicts leaving the working tree in a conflicted state, `stash drop` can also fail. Currently errors are silently caught and logged to console. Needs proper conflict detection, user-visible error states, and guided recovery (not just a toast — the UI should reflect the conflicted state and offer resolution paths)
 - [ ] Stash action button states — Pop/Drop/Apply buttons have no in-flight/disabled state during async operations. Rapid clicks can operate on shifted indices after a pop. Needs operation locking, optimistic UI updates, or at minimum disabling buttons while an operation is pending. Ties into the error handling above since both need a coherent "operation in progress" model
 
+## Markdown
+
+- [ ] Notes sidebar — new activity bar view for project markdown notes. Auto-discovers common repo files (README.md, TODO.md, CONTRIBUTING.md, CHANGELOG.md) and pins them at the top. Below that, lists all other .md/.mdx files in the repo. Clicking any file opens it in the built-in markdown editor
+- [ ] Richer editor — replace the plain textarea with CodeMirror (markdown mode) for syntax highlighting, bracket matching, undo history, and keybindings
+- [ ] Checklist support — render `- [ ]` / `- [x]` as interactive checkboxes in preview that toggle the source on click
+- [ ] Relative image preview — resolve relative image paths against the project root so images in markdown files render correctly in preview
+- [ ] Create new note — button in the notes sidebar to create a new .md file in the project
+
+## File Explorer
+
+- [ ] Vykar repo backups (beta opt-in) — integrate Vykar backup functionality into the file explorer view. Opt-in feature behind a beta flag so users can enable/disable it. Lives in the files sidebar as a backup management section
+
 ## Terminal / PTY
 
 - [ ] PTY output ring buffer — keep last N bytes of output per session in PtyService so webview reloads can replay terminal history and reconnect to the running PTY instead of restarting the session
+

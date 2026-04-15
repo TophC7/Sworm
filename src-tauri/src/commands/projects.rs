@@ -13,7 +13,7 @@ pub async fn project_select_directory(app: tauri::AppHandle) -> Result<Option<St
 }
 
 /// Add a project from a local directory path.
-/// Validates it's a git repo, detects branch/base.
+/// Detects branch/base if it's a git repo, but non-repo directories are allowed.
 #[tauri::command]
 pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
     let p = Path::new(&path);
@@ -25,16 +25,12 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
         )));
     }
 
-    // Validate git repo
-    if !state.git.is_git_repo(p) {
-        return Err(ApiError::InvalidArgument(format!(
-            "Not a git repository: {}",
-            path
-        )));
-    }
-
-    let branch = state.git.current_branch(p);
-    let base_ref = state.git.default_base_ref(p);
+    // Detect git info if available — not required
+    let (branch, base_ref) = if state.git.is_git_repo(p) {
+        (state.git.current_branch(p), state.git.default_base_ref(p))
+    } else {
+        (None, None)
+    };
 
     // Derive project name from directory
     let name = p

@@ -62,7 +62,16 @@ export interface StashTab {
   locked: boolean
 }
 
-export type Tab = SessionTab | CommitTab | ChangesTab | StashTab
+export interface MarkdownTab {
+  kind: 'markdown'
+  id: TabId
+  filePath: string
+  fileName: string
+  temporary: boolean
+  locked: boolean
+}
+
+export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | MarkdownTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -328,6 +337,8 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'changes' || a.staged !== b.staged || a.initialFile !== b.initialFile
     case 'stash':
       return b.kind !== 'stash' || a.stashIndex !== b.stashIndex || a.initialFile !== b.initialFile
+    case 'markdown':
+      return b.kind !== 'markdown' || a.filePath !== b.filePath
     default:
       return true
   }
@@ -450,6 +461,17 @@ export function addStashTab(
     temporary,
     (t) => t.kind === 'stash' && t.stashIndex === stashIndex && !t.temporary,
     (t) => (t.kind === 'stash' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
+  )
+}
+
+export function addMarkdownTab(projectId: string, filePath: string, temporary = true): TabId {
+  const fileName = filePath.split('/').pop() ?? filePath
+  return addContentTab(
+    projectId,
+    'markdown',
+    (id): MarkdownTab => ({ kind: 'markdown', id, filePath, fileName, temporary, locked: false }),
+    temporary,
+    (t) => t.kind === 'markdown' && t.filePath === filePath && !t.temporary
   )
 }
 

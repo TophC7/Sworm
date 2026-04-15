@@ -17,6 +17,7 @@
   import { untrack } from 'svelte'
   import { DiffMode } from '$lib/diff/types'
   import { setDiffScrollContext, type DiffScrollState } from '$lib/diff/scrollContext.svelte'
+  import ContentToolbar from '$lib/components/ContentToolbar.svelte'
   import DiffControls from '$lib/components/diff/DiffControls.svelte'
   import DiffStackFile from '$lib/components/diff/DiffStackFile.svelte'
 
@@ -175,35 +176,36 @@
 {#if files.length === 0 && !loading}
   <div class="flex h-full items-center justify-center text-[0.78rem] text-subtle">No changes.</div>
 {:else}
-  <!-- Stats bar -->
-  <div class="flex shrink-0 items-center gap-3 border-b border-edge bg-surface/50 px-4 py-1.5 text-[0.72rem]">
-    {#if label}
-      <span class="font-semibold text-fg">{label}</span>
-    {/if}
-    <span class="text-muted">
-      {files.length} file{files.length !== 1 ? 's' : ''}
-    </span>
-    {#if totalAdditions > 0}
-      <span class="font-mono text-success">+{totalAdditions}</span>
-    {/if}
-    {#if totalDeletions > 0}
-      <span class="font-mono text-danger">-{totalDeletions}</span>
-    {/if}
-    {#if totalAdditions + totalDeletions > 0}
-      {@const addPct = Math.round((totalAdditions / (totalAdditions + totalDeletions)) * 100)}
-      <div class="h-1.5 w-20 overflow-hidden rounded-full bg-raised">
-        <div class="h-full bg-success" style="width: {addPct}%"></div>
-      </div>
-    {/if}
-    <span class="ml-auto flex items-center gap-3">
+  <ContentToolbar>
+    {#snippet left()}
+      {#if label}
+        <span class="font-semibold text-fg">{label}</span>
+      {/if}
+      <span class="text-muted">
+        {files.length} file{files.length !== 1 ? 's' : ''}
+      </span>
+      {#if totalAdditions > 0}
+        <span class="font-mono text-success">+{totalAdditions}</span>
+      {/if}
+      {#if totalDeletions > 0}
+        <span class="font-mono text-danger">-{totalDeletions}</span>
+      {/if}
+      {#if totalAdditions + totalDeletions > 0}
+        {@const addPct = Math.round((totalAdditions / (totalAdditions + totalDeletions)) * 100)}
+        <div class="h-1.5 w-20 overflow-hidden rounded-full bg-raised">
+          <div class="h-full bg-success" style="width: {addPct}%"></div>
+        </div>
+      {/if}
+    {/snippet}
+    {#snippet right()}
       <span class="flex gap-1">
         <button class="text-muted hover:text-fg" onclick={expandAll}>Expand</button>
         <span class="text-subtle">/</span>
         <button class="text-muted hover:text-fg" onclick={collapseAll}>Collapse</button>
       </span>
       <DiffControls bind:mode={diffMode} bind:wrap={diffWrap} bind:fontSize={diffFontSize} />
-    </span>
-  </div>
+    {/snippet}
+  </ContentToolbar>
 
   <!-- Stacked diffs -->
   <div class="min-h-0 flex-1 overflow-y-auto" bind:this={scrollEl}>

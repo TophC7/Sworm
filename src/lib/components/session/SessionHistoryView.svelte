@@ -15,7 +15,7 @@
   import { getActivity } from '$lib/stores/activity.svelte'
   import { Button } from '$lib/components/ui/button'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
-  import { PanelLeftClose } from '@lucide/svelte'
+  import { PanelLeftClose } from '$lib/icons/lucideExports'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
 
   let {

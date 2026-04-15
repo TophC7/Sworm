@@ -3,7 +3,7 @@
 // Stores visual preferences that are NOT per-project:
 // sidebar dimensions, collapse state, zoom level, window controls.
 
-export type SidebarView = 'git' | 'sessions'
+export type SidebarView = 'git' | 'sessions' | 'files'
 
 let gitSidebarWidth = $state(280)
 let gitSidebarCollapsed = $state(false)

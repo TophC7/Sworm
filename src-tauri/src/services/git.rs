@@ -937,6 +937,87 @@ impl GitService {
 
         Self::split_diff_patch(&full)
     }
+
+    /// Initialize a new git repository.
+    pub fn init(&self, path: &Path) -> Result<(), String> {
+        let output = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| format!("git init failed: {}", e))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
+
+    /// Clone a repository into the given directory (in-place, no subfolder).
+    ///
+    /// Uses `git clone <url> .` for empty dirs, or init + remote + fetch + checkout
+    /// for dirs with existing content.
+    pub fn clone_in_place(&self, path: &Path, url: &str) -> Result<(), String> {
+        let has_content = path
+            .read_dir()
+            .map_err(|e| format!("Cannot read directory: {}", e))?
+            .any(|entry| {
+                entry
+                    .map(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .unwrap_or(false)
+            });
+
+        if !has_content {
+            return self.run_git_cmd(path, &["clone", url, "."]);
+        }
+
+        self.run_git_cmd(path, &["init"])?;
+        self.run_git_cmd(path, &["remote", "add", "origin", url])?;
+        self.run_git_cmd(path, &["fetch", "origin"])?;
+
+        let default_branch = self.detect_remote_default_branch(path);
+        self.run_git_cmd(
+            path,
+            &[
+                "checkout",
+                "-b",
+                &default_branch,
+                &format!("origin/{}", default_branch),
+            ],
+        )
+    }
+
+    fn run_git_cmd(&self, path: &Path, args: &[&str]) -> Result<(), String> {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .map_err(|e| format!("git {} failed: {}", args[0], e))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
+    }
+
+    /// Read the default branch from the local ref set by fetch, avoiding a network call.
+    fn detect_remote_default_branch(&self, path: &Path) -> String {
+        // After `git fetch origin`, the remote HEAD symref is available locally.
+        let output = std::process::Command::new("git")
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .current_dir(path)
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let refstr = String::from_utf8_lossy(&output.stdout);
+                if let Some(branch) = refstr.trim().strip_prefix("refs/remotes/origin/") {
+                    return branch.to_string();
+                }
+            }
+        }
+
+        "main".to_string()
+    }
 }
 
 /// Run a mutating git command, returning `Ok(())` on success or
