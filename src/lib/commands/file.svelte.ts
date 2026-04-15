@@ -1,11 +1,13 @@
 import type { Command, CommandGroup, FileCallbacks } from './types'
-import { getProjects } from '$lib/stores/projects.svelte'
+import { getActiveProject, getProjects } from '$lib/stores/projects.svelte'
 import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
-import { FolderOpenIcon, FolderClockIcon, SettingsIcon, XIcon } from '$lib/icons/lucideExports'
+import { FolderOpenIcon, FolderClockIcon, SettingsIcon, SquareArrowOutUpRight, XIcon } from '$lib/icons/lucideExports'
 
 export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
   const activeId = getActiveProjectId()
+  const activeProject = getActiveProject()
 
   const commands: Command[] = [
     {
@@ -32,6 +34,16 @@ export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
       icon: XIcon,
       keywords: ['remove', 'close'],
       onSelect: () => closeProject(activeId)
+    })
+  }
+
+  if (activeProject) {
+    commands.push({
+      id: 'reveal-in-file-manager',
+      label: 'Reveal in File Manager',
+      icon: SquareArrowOutUpRight,
+      keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
+      onSelect: () => revealItemInDir(activeProject.path)
     })
   }
 

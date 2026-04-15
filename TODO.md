@@ -2,8 +2,8 @@
 
 ## UI
 
-- [ ] Add shadcn-svelte Tooltip primitive and apply to zoom buttons with shortcut hints (e.g. "Zoom in (Ctrl+=)"), window controls, and other icon-only actions
-- [ ] Stricter design system for sidebars and views — define shared layout components or documented patterns for sidebar headers (title + actions left, collapse right), content toolbars (unified style via `ContentToolbar`), and view chrome so new views match existing ones by construction, not by manual copying. Current pain points: file sidebar had refresh button misplaced vs git sidebar, markdown toolbar initially didn't match diff toolbar styling
+- [x] Add shadcn-svelte Tooltip primitive and apply to zoom buttons with shortcut hints (e.g. "Zoom in (Ctrl+=)"), window controls, and other icon-only actions
+- [x] Stricter design system for sidebars and views — define shared layout components or documented patterns for sidebar headers (title + actions left, collapse right), content toolbars (unified style via `ContentToolbar`), and view chrome so new views match existing ones by construction, not by manual copying. Current pain points: file sidebar had refresh button misplaced vs git sidebar, markdown toolbar initially didn't match diff toolbar styling
 - [ ] **Ongoing: keep CommandCenter updated** — whenever new features, views, or actions are added to the app, register them as commands in CommandCenter so they're discoverable via the command palette and keyboard shortcuts. This includes file operations, git actions, workspace controls, etc.
 - [ ] Pane overscroll feature — when scrolling past the end of content in a pane, allow elastic overscroll that pushes content up so the end feels reachable. Should have configurable threshold, max overscroll amount, and spring animation on return. Blocked on: threshold definition (immediate vs amount), max distance cap, trigger input (wheel only vs keyboard/trackpad), return behavior (scroll up vs any scroll down), handling of edge cases (empty/short content, text selection at bottom, window resize while overscrolled, keyboard nav during overscroll, momentum scrolling). Start with single pane prototype, not all panes.
 

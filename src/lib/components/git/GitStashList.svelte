@@ -3,7 +3,7 @@
   import type { CommitFileChange, StashEntry } from '$lib/types/backend'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { parseStashMessage } from '$lib/utils/git'
-  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
+  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
@@ -221,12 +221,7 @@
                 >
                   {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
                     {#if node.change}
-                      <span
-                        class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
-                        title={gitStatusLabel(node.change.status)}
-                      >
-                        {gitStatusDisplay(node.change.status)}
-                      </span>
+                      <GitStatusBadge status={node.change.status} />
                     {/if}
                   {/snippet}
                 </FileTreeItems>

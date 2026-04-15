@@ -5,8 +5,11 @@
   import SidebarPanel from '$lib/components/SidebarPanel.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { backend } from '$lib/api/backend'
-  import { RotateCw } from '$lib/icons/lucideExports'
+  import { getGitSummary } from '$lib/stores/git.svelte'
+  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
+  import { RotateCw, SquareArrowOutUpRight } from '$lib/icons/lucideExports'
   import { openFile } from '$lib/utils/openFile'
+  import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
   let {
     projectId,
@@ -44,6 +47,19 @@
     openFile(projectId, projectPath, filePath).catch((e) => console.error('Failed to open file:', e))
   }
 
+  // Path → status letter lookup from git state (prefer unstaged over staged)
+  let gitSummary = $derived(getGitSummary(projectId))
+  let gitStatusMap = $derived.by(() => {
+    const map = new Map<string, string>()
+    if (!gitSummary?.changes) return map
+    for (const change of gitSummary.changes) {
+      if (!map.has(change.path) || !change.staged) {
+        map.set(change.path, change.status)
+      }
+    }
+    return map
+  })
+
   // Reload file list when project changes
   let prevProjectPath = ''
   $effect(() => {
@@ -59,6 +75,9 @@
   {#snippet headerActions()}
     <IconButton tooltip="Refresh files" onclick={loadFiles}>
       <RotateCw size={11} />
+    </IconButton>
+    <IconButton tooltip="Open in file manager" onclick={() => revealItemInDir(projectPath)}>
+      <SquareArrowOutUpRight size={11} />
     </IconButton>
   {/snippet}
 
@@ -77,7 +96,14 @@
         onFileClick={(node) => {
           if (node.change?.path) handleFileClick(node.change.path)
         }}
-      />
+      >
+        {#snippet fileTrailing(node)}
+          {@const status = gitStatusMap.get(node.path)}
+          {#if status}
+            <GitStatusBadge {status} />
+          {/if}
+        {/snippet}
+      </FileTreeItems>
     {/if}
   </div>
 </SidebarPanel>

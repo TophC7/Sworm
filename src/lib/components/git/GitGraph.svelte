@@ -4,7 +4,7 @@
   import { computeGraph, computeRowRender, SWIMLANE_HEIGHT, CIRCLE_RADIUS } from '$lib/utils/graph'
   import type { GraphRow } from '$lib/utils/graph'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
-  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
+  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
   import GitStashList from '$lib/components/git/GitStashList.svelte'
   import { refLabel, visibleRefs } from '$lib/utils/gitRefs'
@@ -258,12 +258,7 @@
                   >
                     {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
                       {#if node.change}
-                        <span
-                          class="shrink-0 pr-1 font-mono text-[0.62rem] font-bold {gitStatusColor(node.change.status)}"
-                          title={gitStatusLabel(node.change.status)}
-                        >
-                          {gitStatusDisplay(node.change.status)}
-                        </span>
+                        <GitStatusBadge status={node.change.status} />
                       {/if}
                     {/snippet}
                   </FileTreeItems>

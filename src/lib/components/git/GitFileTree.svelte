@@ -13,7 +13,7 @@
   import { ButtonGroup } from '$lib/components/ui/button-group'
   import { IconButton } from '$lib/components/ui/button'
   import { FileDiff, MinusCircle, PlusCircle, Trash2, PackageIcon, ChevronDown } from '$lib/icons/lucideExports'
-  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
+  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
 
   let {
     summary,
@@ -145,20 +145,14 @@
       {#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
         {@const net = (node.change.additions ?? 0) - (node.change.deletions ?? 0)}
         {#if net !== 0}
-          <span class="shrink-0 font-mono {net > 0 ? 'text-success' : 'text-danger'}">
+          <span class="shrink-0 pr-2 font-mono {net > 0 ? 'text-success' : 'text-danger'}">
             {net > 0 ? '+' : ''}{net}
           </span>
         {:else}
-          <span
-            class="w-3.5 shrink-0 text-center font-mono font-bold {gitStatusColor(node.change.status)}"
-            title={gitStatusLabel(node.change.status)}>{gitStatusDisplay(node.change.status)}</span
-          >
+          <GitStatusBadge status={node.change.status} />
         {/if}
       {:else}
-        <span
-          class="w-3.5 shrink-0 text-center font-mono font-bold {gitStatusColor(node.change.status)}"
-          title={gitStatusLabel(node.change.status)}>{gitStatusDisplay(node.change.status)}</span
-        >
+        <GitStatusBadge status={node.change.status} />
       {/if}
     {/if}
   {/snippet}
