@@ -9,7 +9,7 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { Play, Trash2 } from '$lib/icons/lucideExports'
-  import { GRAPH_COLORS } from '$lib/graph'
+  import { GRAPH_COLORS } from '$lib/utils/graph'
   import { SvelteSet } from 'svelte/reactivity'
 
   let {

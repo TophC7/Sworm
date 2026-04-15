@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import ActivityHeatmap from './ActivityHeatmap.svelte'
+  import { IconButton } from '$lib/components/ui/button'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { allProviders } from '$lib/data/providers'
@@ -66,14 +67,9 @@
           your device.
         </p>
       </InfoTooltip>
-      <button
-        class="flex cursor-pointer items-center border-none bg-transparent p-0 text-subtle transition-colors hover:text-bright"
-        onclick={() => refreshActivityMap()}
-        title="Rescan agent history"
-        disabled={loading}
-      >
+      <IconButton tooltip="Rescan agent history" onclick={() => refreshActivityMap()} disabled={loading}>
         <RefreshCw size={11} class={loading ? 'animate-spin' : ''} />
-      </button>
+      </IconButton>
     </div>
 
     <div class="scrollbar-none flex gap-2.5 overflow-x-auto pb-1">

@@ -10,6 +10,7 @@
 <script lang="ts">
   import { type DiffFile, DiffMode, composeLen } from '$lib/diff/types'
   import { lineHeight } from '$lib/diff/layout'
+  import { IconButton } from '$lib/components/ui/button'
   import { ChevronUp, ChevronDown, ChevronsUpDown } from '$lib/icons/lucideExports'
 
   let {
@@ -77,45 +78,50 @@
       <div class="flex h-full items-center justify-center gap-0.5 bg-accent/6 px-1">
         {#if canExpand}
           {#if isFirst}
-            <button
+            <IconButton
+              tooltip="Expand down"
+              tooltipSide="right"
               class="rounded p-0.5 text-muted transition-colors hover:bg-accent/15 hover:text-fg"
               onclick={() => expand('down')}
-              title="Expand down"
             >
               <ChevronDown size={12} />
-            </button>
+            </IconButton>
           {:else if isLast}
-            <button
+            <IconButton
+              tooltip="Expand up"
+              tooltipSide="right"
               class="rounded p-0.5 text-muted transition-colors hover:bg-accent/15 hover:text-fg"
               onclick={() => expand('up')}
-              title="Expand up"
             >
               <ChevronUp size={12} />
-            </button>
+            </IconButton>
           {:else if showExpandAll}
-            <button
+            <IconButton
+              tooltip="Expand all"
+              tooltipSide="right"
               class="rounded p-0.5 text-muted transition-colors hover:bg-accent/15 hover:text-fg"
               onclick={() => expand('all')}
-              title="Expand all"
             >
               <ChevronsUpDown size={12} />
-            </button>
+            </IconButton>
           {:else}
             <div class="flex flex-col">
-              <button
+              <IconButton
+                tooltip="Expand down"
+                tooltipSide="right"
                 class="rounded p-0.5 text-muted transition-colors hover:bg-accent/15 hover:text-fg"
                 onclick={() => expand('down')}
-                title="Expand down"
               >
                 <ChevronDown size={10} />
-              </button>
-              <button
+              </IconButton>
+              <IconButton
+                tooltip="Expand up"
+                tooltipSide="right"
                 class="rounded p-0.5 text-muted transition-colors hover:bg-accent/15 hover:text-fg"
                 onclick={() => expand('up')}
-                title="Expand up"
               >
                 <ChevronUp size={10} />
-              </button>
+              </IconButton>
             </div>
           {/if}
         {/if}

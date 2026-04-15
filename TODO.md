@@ -4,6 +4,8 @@
 
 - [ ] Add shadcn-svelte Tooltip primitive and apply to zoom buttons with shortcut hints (e.g. "Zoom in (Ctrl+=)"), window controls, and other icon-only actions
 - [ ] Stricter design system for sidebars and views — define shared layout components or documented patterns for sidebar headers (title + actions left, collapse right), content toolbars (unified style via `ContentToolbar`), and view chrome so new views match existing ones by construction, not by manual copying. Current pain points: file sidebar had refresh button misplaced vs git sidebar, markdown toolbar initially didn't match diff toolbar styling
+- [ ] **Ongoing: keep CommandCenter updated** — whenever new features, views, or actions are added to the app, register them as commands in CommandCenter so they're discoverable via the command palette and keyboard shortcuts. This includes file operations, git actions, workspace controls, etc.
+- [ ] Pane overscroll feature — when scrolling past the end of content in a pane, allow elastic overscroll that pushes content up so the end feels reachable. Should have configurable threshold, max overscroll amount, and spring animation on return. Blocked on: threshold definition (immediate vs amount), max distance cap, trigger input (wheel only vs keyboard/trackpad), return behavior (scroll up vs any scroll down), handling of edge cases (empty/short content, text selection at bottom, window resize while overscrolled, keyboard nav during overscroll, momentum scrolling). Start with single pane prototype, not all panes.
 
 ## Git Stash UX
 
@@ -18,9 +20,20 @@
 - [ ] Relative image preview — resolve relative image paths against the project root so images in markdown files render correctly in preview
 - [ ] Create new note — button in the notes sidebar to create a new .md file in the project
 
+## Project & Session Recovery
+
+- [ ] Persistent workspace state — save and restore pane layout, active tabs, and view state (sidebar view, collapsed dirs) per project so reopening a project restores what you were working on
+- [ ] App-level tab restoration — when Sworm exits with tabs open across any project, restore them on app relaunch. Currently inconsistent — some tabs persist, some don't
+- [ ] Non-blocking restoration — load last state asynchronously so the app doesn't freeze if a session fails to reconnect
+
 ## File Explorer
 
 - [ ] Vykar repo backups (beta opt-in) — integrate Vykar backup functionality into the file explorer view. Opt-in feature behind a beta flag so users can enable/disable it. Lives in the files sidebar as a backup management section
+- [ ] Git status colors in file tree — show file status (modified, staged, untracked, ignored) as inline badges or text color in the file explorer so you can see what's changed without switching to git view
+- [ ] Per-file git actions — right-click menu on files to stage, unstage, discard, or view changes for individual files. Quick actions without opening the full diff view
+- [ ] Branch controls in file view — show current branch and provide quick-access branch switcher in the files sidebar header (or dropdown)
+- [ ] File preview/viewer for common types — support previewing images (PNG, JPG, SVG), JSON, CSV, and other common file types inline in the editor pane, not just markdown
+- [ ] File operations — right-click menu to delete, rename, duplicate, or move files. Trash deleted files or permanent delete option. Should integrate with git if applicable
 
 ## Terminal / PTY
 

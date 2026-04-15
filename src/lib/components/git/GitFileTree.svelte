@@ -11,6 +11,7 @@
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
   import { ButtonGroup } from '$lib/components/ui/button-group'
+  import { IconButton } from '$lib/components/ui/button'
   import { FileDiff, MinusCircle, PlusCircle, Trash2, PackageIcon, ChevronDown } from '$lib/icons/lucideExports'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
 
@@ -171,41 +172,54 @@
           </span>
           <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
             {#if isStaged && onUnstageAll}
-              <button
+              <IconButton
+                tooltip="Unstage all"
+                tooltipSide="bottom"
                 class="rounded p-0.5 text-muted hover:text-fg"
                 onclick={() => onUnstageAll?.()}
-                title="Unstage all"
               >
                 <MinusCircle size={13} />
-              </button>
+              </IconButton>
             {/if}
             {#if !isStaged && onStageAll}
-              <button class="rounded p-0.5 text-muted hover:text-fg" onclick={() => onStageAll?.()} title="Stage all">
+              <IconButton
+                tooltip="Stage all"
+                tooltipSide="bottom"
+                class="rounded p-0.5 text-muted hover:text-fg"
+                onclick={() => onStageAll?.()}
+              >
                 <PlusCircle size={13} />
-              </button>
+              </IconButton>
             {/if}
             {#if !isStaged && onStashAll}
-              <button class="rounded p-0.5 text-muted hover:text-fg" onclick={() => onStashAll?.()} title="Stash all">
+              <IconButton
+                tooltip="Stash all"
+                tooltipSide="bottom"
+                class="rounded p-0.5 text-muted hover:text-fg"
+                onclick={() => onStashAll?.()}
+              >
                 <PackageIcon size={13} />
-              </button>
+              </IconButton>
             {/if}
             {#if !isStaged && onDiscardAll}
-              <button
+              <IconButton
+                tooltip="Discard all changes"
+                tooltipSide="bottom"
                 class="rounded p-0.5 text-muted hover:text-danger"
                 onclick={() => onDiscardAll?.()}
-                title="Discard all changes"
               >
                 <Trash2 size={13} />
-              </button>
+              </IconButton>
             {/if}
             {#if onViewAllChanges}
-              <button
+              <IconButton
+                tooltip="View all {label.toLowerCase()} diffs"
+                tooltipSide="bottom"
                 class="rounded p-0.5 text-muted hover:text-fg"
                 onclick={() => onViewAllChanges?.(isStaged)}
-                title="View all {label.toLowerCase()} diffs"
               >
                 <FileDiff size={13} />
-              </button>
+              </IconButton>
             {/if}
           </div>
         </div>

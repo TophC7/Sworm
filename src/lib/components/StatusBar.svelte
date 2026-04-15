@@ -3,7 +3,8 @@
   import { getGitSummary } from '$lib/stores/git.svelte'
   import { getActiveProjectId } from '$lib/stores/workspace.svelte'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
-  import { Button } from '$lib/components/ui/button'
+  import { IconButton } from '$lib/components/ui/button'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/components/NixEnvIndicator.svelte'
   import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
 
@@ -51,17 +52,21 @@
     {/if}
 
     <div class="flex items-center gap-0.5 text-muted">
-      <Button variant="ghost" size="icon-sm" onclick={zoomOut} title="Zoom out">
+      <IconButton tooltip="Zoom out" shortcut="Ctrl+-" onclick={zoomOut}>
         <Minus size={10} />
-      </Button>
-      <button
-        class="min-w-6 cursor-pointer border-none bg-transparent px-0.5 text-center text-[0.65rem] text-muted transition-colors hover:text-fg"
-        onclick={zoomReset}
-        title="Reset zoom">{Math.round(zoom * 100)}%</button
-      >
-      <Button variant="ghost" size="icon-sm" onclick={zoomIn} title="Zoom in">
+      </IconButton>
+      <TooltipRoot>
+        <TooltipTrigger
+          class="min-w-6 cursor-pointer border-none bg-transparent px-0.5 text-center text-[0.65rem] text-muted transition-colors hover:text-fg"
+          onclick={zoomReset}
+        >
+          {Math.round(zoom * 100)}%
+        </TooltipTrigger>
+        <TooltipContent>Reset zoom <kbd class="ml-2 font-mono text-[0.68rem] text-subtle">Ctrl+0</kbd></TooltipContent>
+      </TooltipRoot>
+      <IconButton tooltip="Zoom in" shortcut="Ctrl+=" onclick={zoomIn}>
         <Plus size={10} />
-      </Button>
+      </IconButton>
     </div>
   </div>
 </footer>

@@ -2,6 +2,7 @@
   import { backend } from '$lib/api/backend'
   import type { CommitDetail } from '$lib/types/backend'
   import DiffStack, { type DiffEntry } from '$lib/components/diff/DiffStack.svelte'
+  import { IconButton } from '$lib/components/ui/button'
   import { GitCommitIcon, GitBranchIcon, UserIcon, CalendarIcon, CopyIcon, Check } from '$lib/icons/lucideExports'
   // Alias for CheckIcon
   const CheckIcon = Check
@@ -101,17 +102,18 @@
         <span class="flex items-center gap-1">
           <GitCommitIcon size={12} />
           <code class="font-mono text-accent">{detail.short_hash}</code>
-          <button
+          <IconButton
+            tooltip="Copy full hash"
+            tooltipSide="bottom"
             class="rounded p-0.5 text-muted transition-colors hover:text-fg"
             onclick={copyHash}
-            title="Copy full hash"
           >
             {#if copied}
               <CheckIcon size={11} />
             {:else}
               <CopyIcon size={11} />
             {/if}
-          </button>
+          </IconButton>
         </span>
         {#if detail.parents.length > 0}
           <span class="flex items-center gap-1">

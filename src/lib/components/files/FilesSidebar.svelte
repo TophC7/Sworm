@@ -2,11 +2,10 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
-  import { Button } from '$lib/components/ui/button'
+  import SidebarPanel from '$lib/components/SidebarPanel.svelte'
+  import { IconButton } from '$lib/components/ui/button'
   import { backend } from '$lib/api/backend'
-  import { PanelLeftClose } from '$lib/icons/lucideExports'
   import { RotateCw } from '$lib/icons/lucideExports'
-  import { setGitSidebarCollapsed } from '$lib/stores/ui.svelte'
   import { openFile } from '$lib/utils/openFile'
 
   let {
@@ -56,22 +55,14 @@
   })
 </script>
 
-<div class="flex h-full flex-col bg-ground">
-  <!-- Header -->
-  <div class="flex h-8 min-h-8 shrink-0 items-center justify-between border-b border-edge bg-surface px-2.5">
-    <div class="flex items-center gap-1.5">
-      <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Files</span>
-      <Button variant="ghost" size="icon-sm" onclick={loadFiles} title="Refresh">
-        <RotateCw size={11} />
-      </Button>
-    </div>
-    <Button variant="ghost" size="icon-sm" onclick={() => setGitSidebarCollapsed(true)}>
-      <PanelLeftClose size={12} />
-    </Button>
-  </div>
+<SidebarPanel title="Files">
+  {#snippet headerActions()}
+    <IconButton tooltip="Refresh files" onclick={loadFiles}>
+      <RotateCw size={11} />
+    </IconButton>
+  {/snippet}
 
-  <!-- Content -->
-  <div class="flex-1 overflow-y-auto text-[0.78rem]">
+  <div class="h-full overflow-y-auto text-[0.78rem]">
     {#if loading}
       <div class="px-2.5 py-3 text-[0.75rem] text-subtle">Loading files&hellip;</div>
     {:else if error}
@@ -89,4 +80,4 @@
       />
     {/if}
   </div>
-</div>
+</SidebarPanel>

@@ -1,8 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import AppShell from '$lib/components/AppShell.svelte'
-  import { loadProjects } from '$lib/stores/projects.svelte'
+  import EmptyState from '$lib/components/EmptyState.svelte'
+  import ProjectView from '$lib/components/ProjectView.svelte'
+  import { getActiveProject, loadProjects } from '$lib/stores/projects.svelte'
   import { loadProviders } from '$lib/stores/providers.svelte'
+
+  let activeProject = $derived(getActiveProject())
 
   onMount(() => {
     loadProjects()
@@ -10,4 +13,8 @@
   })
 </script>
 
-<AppShell />
+{#if activeProject}
+  <ProjectView project={activeProject} />
+{:else}
+  <EmptyState />
+{/if}

@@ -15,6 +15,7 @@
     toggleTabLocked
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
+  import { IconButton } from '$lib/components/ui/button'
   import { FileDiff, GitCommitIcon, PackageIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { tick } from 'svelte'
@@ -264,13 +265,14 @@
   {/each}
 
   {#snippet trailing()}
-    <button
+    <IconButton
+      tooltip="New session"
+      tooltipSide="bottom"
       class="sticky right-0 ml-0.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center border-none bg-ground text-sm text-muted transition-colors hover:text-bright"
       onclick={onNewSession}
-      title="New session"
     >
       <Plus size={14} />
-    </button>
+    </IconButton>
   {/snippet}
 </TabStrip>
 

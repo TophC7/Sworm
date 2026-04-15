@@ -8,14 +8,12 @@
     removeSession
   } from '$lib/stores/sessions.svelte'
   import { addSessionTab, closeTabBySessionId, getAllTabs } from '$lib/stores/workspace.svelte'
-  import { setGitSidebarCollapsed } from '$lib/stores/ui.svelte'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import type { Session } from '$lib/types/backend'
   import { providerLabel } from '$lib/utils/session'
   import { getActivity } from '$lib/stores/activity.svelte'
-  import { Button } from '$lib/components/ui/button'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
-  import { PanelLeftClose } from '$lib/icons/lucideExports'
+  import SidebarPanel from '$lib/components/SidebarPanel.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
 
   let {
@@ -178,35 +176,27 @@
   {/each}
 {/snippet}
 
-<div class="flex h-full flex-col bg-ground">
-  <!-- Header -->
-  <div class="flex h-8 min-h-8 shrink-0 items-center justify-between border-b border-edge bg-surface px-2.5">
-    <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Sessions</span>
-    <div class="flex items-center gap-1">
-      <InfoTooltip ariaLabel="Explain session status dots" contentClass="w-64">
-        <div class="space-y-2">
-          <p class="font-medium text-bright">Session status dots</p>
-          <div class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5">
-            <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
-            <span>Open / completed</span>
-            <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-            <span>Agent working</span>
-            <span class="h-1.5 w-1.5 rounded-full bg-warning"></span>
-            <span>Waiting for input</span>
-            <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
-            <span>Failed</span>
-            <span class="h-1.5 w-1.5 rounded-full bg-muted"></span>
-            <span>Closed / exited</span>
-          </div>
+<SidebarPanel title="Sessions">
+  {#snippet headerExtra()}
+    <InfoTooltip ariaLabel="Explain session status dots" contentClass="w-64">
+      <div class="space-y-2">
+        <p class="font-medium text-bright">Session status dots</p>
+        <div class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5">
+          <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
+          <span>Open / completed</span>
+          <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
+          <span>Agent working</span>
+          <span class="h-1.5 w-1.5 rounded-full bg-warning"></span>
+          <span>Waiting for input</span>
+          <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
+          <span>Failed</span>
+          <span class="h-1.5 w-1.5 rounded-full bg-muted"></span>
+          <span>Closed / exited</span>
         </div>
-      </InfoTooltip>
-      <Button variant="ghost" size="icon-sm" onclick={() => setGitSidebarCollapsed(true)}>
-        <PanelLeftClose size={12} />
-      </Button>
-    </div>
-  </div>
+      </div>
+    </InfoTooltip>
+  {/snippet}
 
-  <!-- Resizable split: active sessions on top, archived below -->
   <div class="min-h-0 flex-1">
     <ResizablePaneGroup direction="vertical">
       <ResizablePane defaultSize={65} minSize={20}>
@@ -236,7 +226,7 @@
       </ResizablePane>
     </ResizablePaneGroup>
   </div>
-</div>
+</SidebarPanel>
 
 <!-- Context menu -->
 {#if ctxOpen && ctxSession}

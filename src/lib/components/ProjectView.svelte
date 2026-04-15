@@ -6,7 +6,7 @@
   import GitSidebar from '$lib/components/git/GitSidebar.svelte'
   import FilesSidebar from '$lib/components/files/FilesSidebar.svelte'
   import SessionHistoryView from '$lib/components/session/SessionHistoryView.svelte'
-  import { getGitSidebarWidth, setGitSidebarWidth, isGitSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
+  import { getSidebarWidth, setSidebarWidth, isSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
   import PaneGrid from '$lib/components/PaneGrid.svelte'
   import {
     addCommitTab,
@@ -23,8 +23,8 @@
   } = $props()
 
   let gitSummary = $derived(getGitSummary(project.id))
-  let sidebarCollapsed = $derived(isGitSidebarCollapsed())
-  let sidebarWidth = $derived(getGitSidebarWidth())
+  let sidebarCollapsed = $derived(isSidebarCollapsed())
+  let sidebarWidth = $derived(getSidebarWidth())
   let sidebarView = $derived(getSidebarView())
   let layoutEl = $state<HTMLDivElement | null>(null)
 
@@ -38,7 +38,7 @@
       function onMove(e: PointerEvent) {
         if (!layoutEl) return
         const w = e.clientX - layoutEl.getBoundingClientRect().left
-        setGitSidebarWidth(w)
+        setSidebarWidth(w)
       }
       function onUp() {
         document.body.style.cursor = ''

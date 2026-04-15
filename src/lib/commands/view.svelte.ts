@@ -1,12 +1,12 @@
 import type { CommandGroup } from './types'
 import { getActiveProjectId } from '$lib/stores/workspace.svelte'
-import { isGitSidebarCollapsed, toggleGitSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
+import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
 
 import { PanelLeftIcon, ZoomInIcon, ZoomOutIcon, RotateCcwIcon } from '$lib/icons/lucideExports'
 
 export function getViewCommands(): CommandGroup[] {
   const activeId = getActiveProjectId()
-  const collapsed = isGitSidebarCollapsed()
+  const collapsed = isSidebarCollapsed()
 
   return [
     {
@@ -15,11 +15,11 @@ export function getViewCommands(): CommandGroup[] {
         ...(activeId
           ? [
               {
-                id: 'toggle-git-sidebar',
-                label: `${collapsed ? 'Show' : 'Hide'} Git Sidebar`,
+                id: 'toggle-sidebar',
+                label: `${collapsed ? 'Show' : 'Hide'} Sidebar`,
                 icon: PanelLeftIcon,
-                keywords: ['sidebar', 'panel', 'git', 'show', 'hide'],
-                onSelect: toggleGitSidebar
+                keywords: ['sidebar', 'panel', 'show', 'hide'],
+                onSelect: toggleSidebar
               }
             ]
           : []),

@@ -4,6 +4,7 @@
   import { Button } from '$lib/components/ui/button'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import ContentToolbar from '$lib/components/ContentToolbar.svelte'
 
   type Mode = 'preview' | 'split'
@@ -233,9 +234,18 @@
       </TabsRoot>
 
       {#if dirty}
-        <Button variant="ghost" size="xs" onclick={save} disabled={saving} title="Save (Ctrl+S)">
-          {saving ? 'Saving...' : 'Save'}
-        </Button>
+        <TooltipRoot>
+          <TooltipTrigger>
+            {#snippet child({ props })}
+              <Button variant="ghost" size="xs" onclick={save} disabled={saving} {...props}>
+                {saving ? 'Saving...' : 'Save'}
+              </Button>
+            {/snippet}
+          </TooltipTrigger>
+          <TooltipContent>
+            Save <kbd class="ml-2 font-mono text-[0.68rem] text-subtle">Ctrl+S</kbd>
+          </TooltipContent>
+        </TooltipRoot>
       {/if}
     {/snippet}
   </ContentToolbar>

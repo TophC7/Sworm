@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getWindowControls } from '$lib/stores/ui.svelte'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import { Maximize, Minimize } from '@lucide/svelte'
   import { Minus, X } from '$lib/icons/lucideExports'
   import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -25,37 +26,46 @@
 {#if !config.useSystemDecorations}
   <div class="flex shrink-0 items-center pr-1">
     {#if config.showMinimize}
-      <button
-        class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-raised/70 hover:text-fg"
-        onclick={() => appWindow.minimize()}
-        title="Minimize"
-      >
-        <Minus size={12} strokeWidth={2} />
-      </button>
+      <TooltipRoot>
+        <TooltipTrigger
+          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-raised/70 hover:text-fg"
+          aria-label="Minimize"
+          onclick={() => appWindow.minimize()}
+        >
+          <Minus size={12} strokeWidth={2} />
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Minimize</TooltipContent>
+      </TooltipRoot>
     {/if}
 
     {#if config.showMaximize}
-      <button
-        class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-raised/70 hover:text-fg"
-        onclick={() => appWindow.toggleMaximize()}
-        title={maximized ? 'Restore' : 'Maximize'}
-      >
-        {#if maximized}
-          <Minimize size={10} strokeWidth={2} />
-        {:else}
-          <Maximize size={10} strokeWidth={2} />
-        {/if}
-      </button>
+      <TooltipRoot>
+        <TooltipTrigger
+          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-raised/70 hover:text-fg"
+          aria-label={maximized ? 'Restore' : 'Maximize'}
+          onclick={() => appWindow.toggleMaximize()}
+        >
+          {#if maximized}
+            <Minimize size={10} strokeWidth={2} />
+          {:else}
+            <Maximize size={10} strokeWidth={2} />
+          {/if}
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{maximized ? 'Restore' : 'Maximize'}</TooltipContent>
+      </TooltipRoot>
     {/if}
 
     {#if config.showClose}
-      <button
-        class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-danger-bg hover:text-bright"
-        onclick={() => appWindow.close()}
-        title="Close"
-      >
-        <X size={11} strokeWidth={2} />
-      </button>
+      <TooltipRoot>
+        <TooltipTrigger
+          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border-none bg-transparent text-muted transition-colors hover:bg-danger-bg hover:text-bright"
+          aria-label="Close"
+          onclick={() => appWindow.close()}
+        >
+          <X size={11} strokeWidth={2} />
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Close</TooltipContent>
+      </TooltipRoot>
     {/if}
   </div>
 {/if}

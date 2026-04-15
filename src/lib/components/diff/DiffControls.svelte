@@ -1,6 +1,7 @@
 <script lang="ts">
   import { DiffMode } from '$lib/diff/types'
   import { Button } from '$lib/components/ui/button'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
 
   let {
@@ -31,35 +32,44 @@
     </TabsList>
   </TabsRoot>
 
-  <Button
-    variant={wrap ? 'accent' : 'ghost'}
-    size="xs"
-    onclick={() => (wrap = !wrap)}
-    aria-pressed={wrap}
-    title="Toggle line wrapping"
-  >
-    Wrap
-  </Button>
+  <TooltipRoot>
+    <TooltipTrigger>
+      {#snippet child({ props })}
+        <Button
+          variant={wrap ? 'accent' : 'ghost'}
+          size="xs"
+          onclick={() => (wrap = !wrap)}
+          aria-pressed={wrap}
+          {...props}
+        >
+          Wrap
+        </Button>
+      {/snippet}
+    </TooltipTrigger>
+    <TooltipContent>Toggle line wrapping</TooltipContent>
+  </TooltipRoot>
 
   <div class="flex items-center gap-1">
-    <Button
-      variant="ghost"
-      size="xs"
-      onclick={() => adjustFontSize(-1)}
-      disabled={fontSize <= 10}
-      title="Decrease font size"
-    >
-      A-
-    </Button>
+    <TooltipRoot>
+      <TooltipTrigger disabled={fontSize <= 10}>
+        {#snippet child({ props })}
+          <Button variant="ghost" size="xs" onclick={() => adjustFontSize(-1)} disabled={fontSize <= 10} {...props}>
+            A-
+          </Button>
+        {/snippet}
+      </TooltipTrigger>
+      <TooltipContent>Decrease font size</TooltipContent>
+    </TooltipRoot>
     <span class="min-w-[2.8rem] text-center text-[0.68rem] text-muted tabular-nums">{fontSize}px</span>
-    <Button
-      variant="ghost"
-      size="xs"
-      onclick={() => adjustFontSize(1)}
-      disabled={fontSize >= 20}
-      title="Increase font size"
-    >
-      A+
-    </Button>
+    <TooltipRoot>
+      <TooltipTrigger disabled={fontSize >= 20}>
+        {#snippet child({ props })}
+          <Button variant="ghost" size="xs" onclick={() => adjustFontSize(1)} disabled={fontSize >= 20} {...props}>
+            A+
+          </Button>
+        {/snippet}
+      </TooltipTrigger>
+      <TooltipContent>Increase font size</TooltipContent>
+    </TooltipRoot>
   </div>
 </div>

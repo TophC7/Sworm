@@ -13,10 +13,12 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { cn } from '$lib/utils/cn'
   import { getCommandGroups, type CommandConfirm, type FileCallbacks } from '$lib/commands/index.svelte'
+  import { isCommandPaletteOpen, setCommandPaletteOpen } from '$lib/stores/ui.svelte'
 
   let { onNewProject, onSettings }: FileCallbacks = $props()
 
-  let open = $state(false)
+  // Open state lives in ui.svelte.ts, toggled by shortcuts.svelte.ts
+  let open = $derived(isCommandPaletteOpen())
   let search = $state('')
 
   let commandGroups = $derived(getCommandGroups({ onNewProject, onSettings }))
@@ -31,20 +33,8 @@
     )
   ])
 
-  // Global keyboard shortcut: Ctrl+Shift+P
-  $effect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && e.shiftKey && e.key === 'P') {
-        e.preventDefault()
-        open = !open
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  })
-
   function run(handler: () => void) {
-    open = false
+    setCommandPaletteOpen(false)
     search = ''
     // Tick delay so the dialog closes before the handler fires
     // (avoids focus conflicts with settings dialog, file picker, etc.)
@@ -53,8 +43,9 @@
 </script>
 
 <Dialog.Root
-  bind:open
+  {open}
   onOpenChange={(v) => {
+    setCommandPaletteOpen(v)
     if (!v) search = ''
   }}
 >

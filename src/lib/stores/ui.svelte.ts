@@ -5,8 +5,8 @@
 
 export type SidebarView = 'git' | 'sessions' | 'files'
 
-let gitSidebarWidth = $state(280)
-let gitSidebarCollapsed = $state(false)
+let sidebarWidth = $state(280)
+let sidebarCollapsed = $state(false)
 let sidebarView = $state<SidebarView>('git')
 let zoomLevel = $state(1.0)
 
@@ -57,27 +57,27 @@ export function setWindowControls(patch: Partial<WindowControlsConfig>) {
 }
 
 // ---------------------------------------------------------------------------
-// Git sidebar
+// Sidebar
 // ---------------------------------------------------------------------------
 
-export function getGitSidebarWidth(): number {
-  return gitSidebarWidth
+export function getSidebarWidth(): number {
+  return sidebarWidth
 }
 
-export function setGitSidebarWidth(width: number) {
-  gitSidebarWidth = Math.max(220, Math.min(520, width))
+export function setSidebarWidth(width: number) {
+  sidebarWidth = Math.max(220, Math.min(520, width))
 }
 
-export function isGitSidebarCollapsed(): boolean {
-  return gitSidebarCollapsed
+export function isSidebarCollapsed(): boolean {
+  return sidebarCollapsed
 }
 
-export function setGitSidebarCollapsed(collapsed: boolean) {
-  gitSidebarCollapsed = collapsed
+export function setSidebarCollapsed(collapsed: boolean) {
+  sidebarCollapsed = collapsed
 }
 
-export function toggleGitSidebar() {
-  gitSidebarCollapsed = !gitSidebarCollapsed
+export function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed
 }
 
 // ---------------------------------------------------------------------------
@@ -126,4 +126,22 @@ export function zoomOut() {
 
 export function zoomReset() {
   setZoomLevel(1.0)
+}
+
+// ---------------------------------------------------------------------------
+// Command palette
+// ---------------------------------------------------------------------------
+
+let commandPaletteOpen = $state(false)
+
+export function isCommandPaletteOpen(): boolean {
+  return commandPaletteOpen
+}
+
+export function setCommandPaletteOpen(open: boolean) {
+  commandPaletteOpen = open
+}
+
+export function toggleCommandPalette() {
+  commandPaletteOpen = !commandPaletteOpen
 }

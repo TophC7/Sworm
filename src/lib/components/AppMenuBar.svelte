@@ -11,7 +11,7 @@
     MenubarTrigger
   } from '$lib/components/ui/menubar'
   import { getProjects } from '$lib/stores/projects.svelte'
-  import { isGitSidebarCollapsed, toggleGitSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
+  import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
   import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
   import { ChevronRight } from '$lib/icons/lucideExports'
 
@@ -30,7 +30,7 @@
   let activeId = $derived(getActiveProjectId())
   let recentProjects = $derived(projects.filter((p) => !openIds.includes(p.id)))
   let hasActiveProject = $derived(activeId !== null)
-  let sidebarCollapsed = $derived(isGitSidebarCollapsed())
+  let sidebarCollapsed = $derived(isSidebarCollapsed())
 
   function handleCloseProject() {
     if (activeId) closeProject(activeId)
@@ -79,8 +79,8 @@
   <MenubarMenu>
     <MenubarTrigger>View</MenubarTrigger>
     <MenubarContent>
-      <MenubarItem onclick={toggleGitSidebar} disabled={!hasActiveProject}>
-        {sidebarCollapsed ? 'Show' : 'Hide'} Git Sidebar
+      <MenubarItem onclick={toggleSidebar} disabled={!hasActiveProject}>
+        {sidebarCollapsed ? 'Show' : 'Hide'} Sidebar
       </MenubarItem>
       <MenubarSeparator />
       <MenubarItem onclick={zoomIn}>

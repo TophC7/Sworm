@@ -1,8 +1,8 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { CommitDetail, CommitFileChange } from '$lib/types/backend'
-  import { computeGraph, computeRowRender, SWIMLANE_HEIGHT, CIRCLE_RADIUS } from '$lib/graph'
-  import type { GraphRow } from '$lib/graph'
+  import { computeGraph, computeRowRender, SWIMLANE_HEIGHT, CIRCLE_RADIUS } from '$lib/utils/graph'
+  import type { GraphRow } from '$lib/utils/graph'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
@@ -10,6 +10,7 @@
   import { refLabel, visibleRefs } from '$lib/utils/gitRefs'
   import CommitTooltip from '$lib/components/CommitTooltip.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import { IconButton } from '$lib/components/ui/button'
   import { GitGraphIcon, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
@@ -143,20 +144,22 @@
       {activeTab === 'graph' ? 'Graph' : 'Stashes'}{activeTab === 'stashes' && stashCount > 0 ? ` (${stashCount})` : ''}
     </span>
     <div class="flex items-center gap-0.5">
-      <button
+      <IconButton
+        tooltip="Commit graph"
+        tooltipSide="bottom"
         class="rounded p-0.5 transition-colors {activeTab === 'graph' ? 'text-fg' : 'text-muted hover:text-fg'}"
         onclick={() => (activeTab = 'graph')}
-        title="Commit graph"
       >
         <GitGraphIcon size={13} />
-      </button>
-      <button
+      </IconButton>
+      <IconButton
+        tooltip="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
+        tooltipSide="bottom"
         class="rounded p-0.5 transition-colors {activeTab === 'stashes' ? 'text-fg' : 'text-muted hover:text-fg'}"
         onclick={() => (activeTab = 'stashes')}
-        title="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
       >
         <PackageIcon size={13} />
-      </button>
+      </IconButton>
     </div>
   </div>
 
