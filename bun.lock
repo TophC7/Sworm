@@ -8,6 +8,7 @@
         "@git-diff-view/core": "^0.1.3",
         "@humanspeak/svelte-markdown": "^1.4.1",
         "@lucide/svelte": "^1.8.0",
+        "@shikijs/monaco": "^4.0.2",
         "@tauri-apps/api": "^2.10.1",
         "@tauri-apps/plugin-opener": "^2.5.3",
         "@xterm/addon-fit": "0.12.0-beta.197",
@@ -120,6 +121,8 @@
     "@shikijs/engine-oniguruma": ["@shikijs/engine-oniguruma@4.0.2", "", { "dependencies": { "@shikijs/types": "4.0.2", "@shikijs/vscode-textmate": "^10.0.2" } }, "sha512-UpCB9Y2sUKlS9z8juFSKz7ZtysmeXCgnRF0dlhXBkmQnek7lAToPte8DkxmEYGNTMii72zU/lyXiCB6StuZeJg=="],
 
     "@shikijs/langs": ["@shikijs/langs@4.0.2", "", { "dependencies": { "@shikijs/types": "4.0.2" } }, "sha512-KaXby5dvoeuZzN0rYQiPMjFoUrz4hgwIE+D6Du9owcHcl6/g16/yT5BQxSW5cGt2MZBz6Hl0YuRqf12omRfUUg=="],
+
+    "@shikijs/monaco": ["@shikijs/monaco@4.0.2", "", { "dependencies": { "@shikijs/core": "4.0.2", "@shikijs/types": "4.0.2", "@shikijs/vscode-textmate": "^10.0.2" } }, "sha512-yA49DPAjDyj9D8yxyr1S7qjcT1TVv6BqhZ+sXccwqcdp83RuncYOCUkJ1rjqAu3NA8YDc2wdesD+/js5pHJdqg=="],
 
     "@shikijs/primitive": ["@shikijs/primitive@4.0.2", "", { "dependencies": { "@shikijs/types": "4.0.2", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.4" } }, "sha512-M6UMPrSa3fN5ayeJwFVl9qWofl273wtK1VG8ySDZ1mQBfhCpdd8nEx7nPZ/tk7k+TYcpqBZzj/AnwxT9lO+HJw=="],
 

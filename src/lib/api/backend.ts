@@ -14,6 +14,7 @@ import type {
   GraphCommit,
   GeneralSettings,
   NixDetection,
+  NixDiagnostic,
   NixEnvRecord,
   Project,
   ProviderStatus,
@@ -268,6 +269,12 @@ export const backend = {
     },
     status(projectId: string): Promise<NixEnvRecord | null> {
       return invoke<NixEnvRecord | null>('nix_status', { projectId })
+    },
+    format(content: string): Promise<string> {
+      return invoke<string>('nix_format', { content })
+    },
+    lint(projectPath: string, filePath: string): Promise<NixDiagnostic[]> {
+      return invoke<NixDiagnostic[]>('nix_lint', { projectPath, filePath })
     }
   },
 

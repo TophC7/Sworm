@@ -94,7 +94,7 @@ const EXT_TO_LANG: Record<string, string> = {
   sh: 'shell',
   bash: 'shell',
   zsh: 'shell',
-  fish: 'shell', // closest match — no dedicated Fish tokenizer
+  fish: 'fish', // Shiki TextMate grammar via @shikijs/monaco
   ksh: 'shell',
 
   // -- Data / query --
@@ -110,7 +110,7 @@ const EXT_TO_LANG: Record<string, string> = {
   cmake: 'cmake',
 
   // -- Svelte / Vue / frameworks --
-  svelte: 'html', // Monarch doesn't have Svelte; HTML is the closest
+  svelte: 'svelte', // Shiki TextMate grammar via @shikijs/monaco
   vue: 'html',
 
   // -- Misc --
@@ -124,7 +124,7 @@ const EXT_TO_LANG: Record<string, string> = {
   log: 'log',
   txt: 'plaintext',
   lock: 'plaintext',
-  nix: 'plaintext' // no built-in Monarch grammar
+  nix: 'nix' // Shiki TextMate grammar via @shikijs/monaco
 }
 
 // Exact filenames that map to a language (no extension needed).
@@ -142,7 +142,7 @@ const FILENAME_TO_LANG: Record<string, string> = {
   '.env.example': 'ini',
   'tsconfig.json': 'json',
   'package.json': 'json',
-  'flake.nix': 'plaintext',
+  'flake.nix': 'nix',
   'flake.lock': 'json'
 }
 

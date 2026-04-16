@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::nix_env::{NixDetection, NixEnvRecord, NixEnvStatus};
 use crate::models::provider::ProviderStatus;
-use crate::services::nix::NixService;
+use crate::services::nix::{NixDiagnostic, NixService};
 use crate::services::settings::SettingsService;
 
 /// Detect Nix files in a project directory and return current selection.
@@ -159,6 +159,32 @@ pub fn nix_status(
 ) -> Result<Option<NixEnvRecord>, ApiError> {
     let db = state.db.lock();
     NixService::get(db.conn(), &project_id).map_err(ApiError::Database)
+}
+
+/// Format Nix source code via nixfmt.
+#[tauri::command]
+pub async fn nix_format(content: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || NixService::format_nix(&content))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map_err(ApiError::Internal)
+}
+
+/// Parse-check a Nix file and return diagnostics.
+/// Joins project_path + file_path server-side to avoid frontend path construction.
+#[tauri::command]
+pub async fn nix_lint(
+    project_path: String,
+    file_path: String,
+) -> Result<Vec<NixDiagnostic>, ApiError> {
+    let abs_path = std::path::Path::new(&project_path)
+        .join(&file_path)
+        .to_string_lossy()
+        .to_string();
+    tokio::task::spawn_blocking(move || NixService::lint_nix(&abs_path))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map_err(ApiError::Internal)
 }
 
 /// Detect providers using the project's Nix-augmented PATH.

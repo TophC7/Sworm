@@ -72,6 +72,8 @@ pub fn run() {
             commands::nix::nix_evaluate,
             commands::nix::nix_clear,
             commands::nix::nix_status,
+            commands::nix::nix_format,
+            commands::nix::nix_lint,
             commands::nix::provider_list_for_project,
             // Fresh editor commands
             commands::fresh::editor_open_file,

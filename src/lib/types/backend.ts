@@ -173,6 +173,12 @@ export interface DiscoveredProject {
 
 export type NixEnvStatus = 'pending' | 'evaluating' | 'ready' | 'error' | 'timeout'
 
+export interface NixDiagnostic {
+  message: string
+  line: number
+  column: number
+}
+
 export interface NixEnvRecord {
   project_id: string
   nix_file: string

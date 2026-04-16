@@ -42,6 +42,7 @@
   let isMarkdown = $derived(isMarkdownFile(filePath))
   let isBinary = $derived(isBinaryFile(filePath))
   let language = $derived(filePathToLanguage(filePath))
+  let isNix = $derived(language === 'nix')
   let mode = $state<Mode>('split')
 
   // Debounce preview updates in split mode so the markdown parser doesn't
@@ -85,6 +86,8 @@
     }
   }
 
+  let lintDiagnostics = $state<{ message: string; line: number; column: number }[]>([])
+
   async function save() {
     if (!dirty || isReadonly) return
     saving = true
@@ -92,10 +95,23 @@
     try {
       await backend.files.write(projectPath, filePath, editContent)
       content = editContent
+      if (isNix) lintNix()
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
     } finally {
       saving = false
+    }
+  }
+
+  async function lintNix() {
+    const target = filePath
+    try {
+      const diagnostics = await backend.nix.lint(projectPath, target)
+      if (filePath !== target) return
+      lintDiagnostics = diagnostics
+    } catch (e) {
+      console.warn('nix-lint:', e)
+      if (filePath === target) lintDiagnostics = []
     }
   }
 
@@ -125,6 +141,7 @@
     void gitRef
     untrack(() => {
       mode = isMarkdownFile(filePath) ? 'split' : 'edit'
+      lintDiagnostics = []
       load()
     })
   })
@@ -188,6 +205,13 @@
 
   {#if error}
     <div class="px-3 py-2 text-[0.75rem] text-danger">{error}</div>
+  {/if}
+  {#if lintDiagnostics.length > 0}
+    <div class="flex flex-col gap-0.5 px-3 py-1.5 text-[0.7rem] text-warning">
+      {#each lintDiagnostics as d}
+        <span>Line {d.line}:{d.column} — {d.message}</span>
+      {/each}
+    </div>
   {/if}
 
   <!-- Content -->

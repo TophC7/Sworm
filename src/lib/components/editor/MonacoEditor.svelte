@@ -34,7 +34,7 @@
       if (disposed || !containerEl) return
 
       monaco = m
-      initMonaco(m)
+      await initMonaco(m)
 
       editor = m.editor.create(containerEl, {
         value,

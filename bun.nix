@@ -173,6 +173,10 @@
     url = "https://registry.npmjs.org/@shikijs/langs/-/langs-4.0.2.tgz";
     hash = "sha512-KaXby5dvoeuZzN0rYQiPMjFoUrz4hgwIE+D6Du9owcHcl6/g16/yT5BQxSW5cGt2MZBz6Hl0YuRqf12omRfUUg==";
   };
+  "@shikijs/monaco@4.0.2" = fetchurl {
+    url = "https://registry.npmjs.org/@shikijs/monaco/-/monaco-4.0.2.tgz";
+    hash = "sha512-yA49DPAjDyj9D8yxyr1S7qjcT1TVv6BqhZ+sXccwqcdp83RuncYOCUkJ1rjqAu3NA8YDc2wdesD+/js5pHJdqg==";
+  };
   "@shikijs/primitive@4.0.2" = fetchurl {
     url = "https://registry.npmjs.org/@shikijs/primitive/-/primitive-4.0.2.tgz";
     hash = "sha512-M6UMPrSa3fN5ayeJwFVl9qWofl273wtK1VG8ySDZ1mQBfhCpdd8nEx7nPZ/tk7k+TYcpqBZzj/AnwxT9lO+HJw==";
