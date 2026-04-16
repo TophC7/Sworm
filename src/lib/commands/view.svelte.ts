@@ -1,8 +1,16 @@
-import type { CommandGroup } from './types'
-import { getActiveProjectId } from '$lib/stores/workspace.svelte'
 import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
+import { getActiveProjectId } from '$lib/stores/workspace.svelte'
+import type { CommandGroup } from './types'
 
-import { PanelLeftIcon, ZoomInIcon, ZoomOutIcon, RotateCcwIcon, RefreshCwIcon } from '$lib/icons/lucideExports'
+import { isIndentRainbowEnabled, toggleIndentRainbow } from '$lib/editor/extensions/indentRainbow.svelte'
+import {
+  PaintbrushIcon,
+  PanelLeftIcon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  ZoomInIcon,
+  ZoomOutIcon
+} from '$lib/icons/lucideExports'
 
 export function getViewCommands(): CommandGroup[] {
   const activeId = getActiveProjectId()
@@ -23,6 +31,13 @@ export function getViewCommands(): CommandGroup[] {
               }
             ]
           : []),
+        {
+          id: 'toggle-indent-rainbow',
+          label: `${isIndentRainbowEnabled() ? 'Disable' : 'Enable'} Indent Rainbow`,
+          icon: PaintbrushIcon,
+          keywords: ['indent', 'rainbow', 'color', 'whitespace', 'toggle'],
+          onSelect: toggleIndentRainbow
+        },
         {
           id: 'reload-view',
           label: 'Reload View',

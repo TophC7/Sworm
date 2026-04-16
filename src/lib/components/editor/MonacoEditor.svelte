@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { registerEditor, onEditorFocus, onEditorBlur, onEditorDestroy } from '$lib/editor/editorActions.svelte'
+  import { onEditorBlur, onEditorDestroy, onEditorFocus, registerEditor } from '$lib/editor/editorActions.svelte'
+  import { attachIndentRainbow, isIndentRainbowEnabled } from '$lib/editor/extensions/indentRainbow.svelte'
   import { SWORM_THEME_NAME } from '$lib/editor/monacoTheme'
+  import { onMount } from 'svelte'
 
   let {
     value = '',
@@ -20,6 +21,7 @@
   let containerEl = $state<HTMLDivElement | null>(null)
   let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
   let monaco: typeof import('monaco-editor') | null = null
+  let indentRainbow: import('$lib/editor/extensions/indentRainbow.svelte').IndentRainbowHandle | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
   let lastReportedValue = ''
@@ -27,7 +29,6 @@
   onMount(() => {
     let disposed = false
     let resizeObserver: ResizeObserver | null = null
-
     async function init() {
       const { initMonaco } = await import('$lib/editor/monacoEnv')
       const m = await import('monaco-editor')
@@ -47,7 +48,7 @@
         fontFamily: "'Monocraft Nerd Font', monospace",
         fontLigatures: false,
         lineNumbers: 'on',
-        renderWhitespace: 'selection',
+        renderWhitespace: 'all',
         scrollBeyondLastLine: false,
         wordWrap: wordWrap ? 'on' : 'off',
         tabSize: 2,
@@ -87,6 +88,8 @@
       editor.onDidFocusEditorText(() => onEditorFocus(editor!))
       editor.onDidBlurEditorText(() => onEditorBlur())
 
+      indentRainbow = attachIndentRainbow(editor)
+
       // Observe after creation so the first layout() is correct
       resizeObserver = new ResizeObserver(() => editor?.layout())
       resizeObserver.observe(containerEl)
@@ -98,6 +101,7 @@
       disposed = true
       if (editor) {
         onEditorDestroy(editor)
+        indentRainbow?.dispose()
         const model = editor.getModel()
         editor.dispose()
         model?.dispose()
@@ -127,6 +131,11 @@
 
   $effect(() => {
     editor?.updateOptions({ wordWrap: wordWrap ? 'on' : 'off' })
+  })
+
+  $effect(() => {
+    isIndentRainbowEnabled()
+    indentRainbow?.scheduleUpdate()
   })
 </script>
 
