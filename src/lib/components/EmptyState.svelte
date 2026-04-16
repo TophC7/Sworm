@@ -4,8 +4,10 @@
   import StageView from '$lib/components/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
+  import { notify } from '$lib/stores/notifications.svelte'
   import { openProject } from '$lib/stores/workspace.svelte'
   import { parentPath } from '$lib/utils/path'
+  import { getErrorMessage } from '$lib/utils/notifiedTask'
   import { FolderOpen, Worm } from '$lib/icons/lucideExports'
 
   let projects = $derived([...getProjects()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)))
@@ -18,7 +20,7 @@
         openProject(project.id)
       }
     } catch (e) {
-      alert(`Failed to add project: ${e}`)
+      notify.error('Open project failed', getErrorMessage(e))
     }
   }
 

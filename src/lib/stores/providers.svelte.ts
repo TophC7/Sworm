@@ -31,6 +31,7 @@ export async function refreshProviders() {
     providers = await backend.providers.refresh()
   } catch (e) {
     console.error('Failed to refresh providers:', e)
+    throw e
   } finally {
     loading = false
   }

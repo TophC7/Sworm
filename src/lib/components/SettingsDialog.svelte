@@ -16,6 +16,8 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area'
   import { Separator } from '$lib/components/ui/separator'
   import { X } from '$lib/icons/lucideExports'
+  import { notify } from '$lib/stores/notifications.svelte'
+  import { getErrorMessage } from '$lib/utils/notifiedTask'
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 
@@ -62,6 +64,9 @@
         terminal_font_size: Number(generalDraft.terminal_font_size)
       })
       flashMessage = 'General settings saved.'
+      notify.success('General settings saved')
+    } catch (error) {
+      notify.error('Save settings failed', getErrorMessage(error))
     } finally {
       savingGeneral = false
     }
@@ -87,6 +92,9 @@
       await loadSettings()
       await refreshProviders()
       flashMessage = `Saved ${providerId} settings.`
+      notify.success('Provider settings saved', providerId)
+    } catch (error) {
+      notify.error(`Save ${providerId} settings failed`, getErrorMessage(error))
     } finally {
       savingProviders = { ...savingProviders, [providerId]: false }
     }

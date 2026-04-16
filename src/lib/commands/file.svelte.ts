@@ -2,6 +2,8 @@ import type { Command, CommandGroup, FileCallbacks } from './types'
 import { getActiveProject, getProjects } from '$lib/stores/projects.svelte'
 import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { notify } from '$lib/stores/notifications.svelte'
+import { getErrorMessage } from '$lib/utils/notifiedTask'
 
 import { FolderOpenIcon, FolderClockIcon, SettingsIcon, SquareArrowOutUpRight, XIcon } from '$lib/icons/lucideExports'
 
@@ -43,7 +45,11 @@ export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
       label: 'Reveal in File Manager',
       icon: SquareArrowOutUpRight,
       keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
-      onSelect: () => revealItemInDir(activeProject.path)
+      onSelect: () => {
+        void revealItemInDir(activeProject.path).catch((error) => {
+          notify.error('Reveal in file manager failed', getErrorMessage(error))
+        })
+      }
     })
   }
 

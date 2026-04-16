@@ -1,7 +1,7 @@
 // Per-project Nix environment state using Svelte 5 runes.
 
 import { backend } from '$lib/api/backend'
-import type { NixDetection } from '$lib/types/backend'
+import type { NixDetection, NixEnvRecord } from '$lib/types/backend'
 
 let nixState = $state<Map<string, NixDetection>>(new Map())
 let evaluating = $state<Set<string>>(new Set())
@@ -21,16 +21,17 @@ export async function detectNix(projectId: string): Promise<NixDetection> {
   return detection
 }
 
-export async function selectNixFile(projectId: string, nixFile: string): Promise<void> {
+export async function selectNixFile(projectId: string, nixFile: string): Promise<NixEnvRecord> {
   const record = await backend.nix.select(projectId, nixFile)
   const current = nixState.get(projectId)
   if (current) {
     nixState.set(projectId, { ...current, selected: record })
     nixState = new Map(nixState)
   }
+  return record
 }
 
-export async function evaluateNix(projectId: string): Promise<void> {
+export async function evaluateNix(projectId: string): Promise<NixEnvRecord> {
   evaluating.add(projectId)
   evaluating = new Set(evaluating)
   try {
@@ -40,6 +41,7 @@ export async function evaluateNix(projectId: string): Promise<void> {
       nixState.set(projectId, { ...current, selected: record })
       nixState = new Map(nixState)
     }
+    return record
   } finally {
     evaluating.delete(projectId)
     evaluating = new Set(evaluating)

@@ -17,6 +17,8 @@
   import { parentPath } from '$lib/utils/path'
   import { RefreshCw } from '$lib/icons/lucideExports'
   import type { DiscoveredProject } from '$lib/types/backend'
+  import { notify } from '$lib/stores/notifications.svelte'
+  import { getErrorMessage } from '$lib/utils/notifiedTask'
 
   // Provider icon lookup
   const providerMap = new Map(allProviders.map((p) => [p.id, p]))
@@ -41,7 +43,15 @@
       const added = await addProject(project.path)
       openProject(added.id)
     } catch (e) {
-      console.error('Failed to open discovered project:', e)
+      notify.error('Open project failed', getErrorMessage(e))
+    }
+  }
+
+  async function handleRefresh() {
+    try {
+      await refreshActivityMap()
+    } catch (error) {
+      notify.error('Rescan activity failed', getErrorMessage(error))
     }
   }
 
@@ -67,7 +77,7 @@
           your device.
         </p>
       </InfoTooltip>
-      <IconButton tooltip="Rescan agent history" onclick={() => refreshActivityMap()} disabled={loading}>
+      <IconButton tooltip="Rescan agent history" onclick={handleRefresh} disabled={loading}>
         <RefreshCw size={11} class={loading ? 'animate-spin' : ''} />
       </IconButton>
     </div>

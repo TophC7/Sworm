@@ -11,6 +11,7 @@
   import { filePathToLanguage, isBinaryFile, isMarkdownFile } from '$lib/editor/languageMap'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import { ensureFreshSession } from '$lib/utils/openFile'
+  import { runNotifiedTask } from '$lib/utils/notifiedTask'
 
   type Mode = 'edit' | 'preview' | 'split'
 
@@ -116,12 +117,16 @@
   }
 
   async function openInFresh() {
-    try {
-      await ensureFreshSession(projectId)
-      await backend.editor.openFile(projectId, projectPath, filePath)
-    } catch (e) {
-      console.error('Failed to open in Fresh:', e)
-    }
+    await runNotifiedTask(
+      async () => {
+        await ensureFreshSession(projectId)
+        await backend.editor.openFile(projectId, projectPath, filePath)
+      },
+      {
+        loading: { title: 'Opening in Fresh', description: filePath },
+        error: { title: 'Open in Fresh failed' }
+      }
+    )
   }
 
   function handleKeydown(e: KeyboardEvent) {

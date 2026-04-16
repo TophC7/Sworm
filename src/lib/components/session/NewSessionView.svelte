@@ -9,6 +9,7 @@
   import { getConnectedProviders } from '$lib/stores/providers.svelte'
   import { createAndOpenSession, hasRunningSessions } from '$lib/stores/sessions.svelte'
   import type { ProviderStatus } from '$lib/types/backend'
+  import { getErrorMessage, runNotifiedTask } from '$lib/utils/notifiedTask'
 
   let { onCreated }: { onCreated?: () => void } = $props()
 
@@ -17,7 +18,6 @@
   // Pre-compute Map for O(1) provider status lookups
   let providerMap = $derived(new Map(connectedProviders.map((p) => [p.id, p])))
 
-  let error = $state<string | null>(null)
   let sharedWarningOpen = $state(false)
   let pendingProvider = $state<ProviderStatus | null>(null)
 
@@ -37,12 +37,17 @@
 
   async function doCreateSession(provider: ProviderStatus) {
     if (!activeProjectId) return
-    try {
-      await createAndOpenSession(activeProjectId, provider.id, `${provider.label} session`)
-      onCreated?.()
-    } catch (e) {
-      error = `Failed to create session:\n${e}`
-    }
+    const created = await runNotifiedTask(
+      () => createAndOpenSession(activeProjectId, provider.id, `${provider.label} session`),
+      {
+        loading: { title: `Starting ${provider.label} session` },
+        error: {
+          title: `Failed to start ${provider.label} session`,
+          description: (error) => getErrorMessage(error)
+        }
+      }
+    )
+    if (created) onCreated?.()
   }
 </script>
 
@@ -151,15 +156,3 @@
     }
   }}
 />
-
-{#if error}
-  <ConfirmDialog
-    open={true}
-    title="Session Error"
-    message={error}
-    confirmLabel="Close"
-    showCancel={false}
-    onCancel={() => (error = null)}
-    onConfirm={() => (error = null)}
-  />
-{/if}

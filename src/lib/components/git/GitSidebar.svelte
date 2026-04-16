@@ -10,6 +10,12 @@
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
   import { GitBranchIcon, RotateCw } from '$lib/icons/lucideExports'
+  import {
+    getGitActionNotifications,
+    gitCommitNotifications,
+    type GitActionKind
+  } from '$lib/utils/gitActionNotifications'
+  import { getErrorMessage, runNotifiedTask } from '$lib/utils/notifiedTask'
 
   let {
     summary,
@@ -48,83 +54,107 @@
   async function handleInit() {
     initBusy = true
     initError = null
-    try {
-      await backend.git.init(projectPath)
-      await refreshGit(projectId, projectPath)
-    } catch (e) {
-      initError = e instanceof Error ? e.message : String(e)
-    } finally {
-      initBusy = false
-    }
+    await runNotifiedTask(
+      async () => {
+        await backend.git.init(projectPath)
+        await refreshGit(projectId, projectPath)
+      },
+      {
+        loading: { title: 'Initializing repository' },
+        success: { title: 'Repository initialized' },
+        error: {
+          title: 'Initialize repository failed',
+          description: (error) => {
+            const message = getErrorMessage(error)
+            initError = message
+            return message
+          }
+        }
+      }
+    )
+    initBusy = false
   }
 
   async function handleClone() {
     if (!cloneUrl.trim()) return
     initBusy = true
     initError = null
-    try {
-      await backend.git.cloneInPlace(projectPath, cloneUrl.trim())
-      cloneUrl = ''
-      await refreshGit(projectId, projectPath)
-    } catch (e) {
-      initError = e instanceof Error ? e.message : String(e)
-    } finally {
-      initBusy = false
-    }
+    const targetUrl = cloneUrl.trim()
+    let cloneSucceeded = false
+    await runNotifiedTask(
+      async () => {
+        await backend.git.cloneInPlace(projectPath, targetUrl)
+        await refreshGit(projectId, projectPath)
+        cloneSucceeded = true
+      },
+      {
+        loading: { title: 'Cloning repository', description: targetUrl },
+        success: { title: 'Repository cloned', description: targetUrl },
+        error: {
+          title: 'Clone failed',
+          description: (error) => {
+            const message = getErrorMessage(error)
+            initError = message
+            return message
+          }
+        }
+      }
+    )
+    if (cloneSucceeded) cloneUrl = ''
+    initBusy = false
   }
 
   async function refresh() {
     await refreshGit(projectId, projectPath)
   }
 
-  async function handleGitAction(fn: (path: string) => Promise<unknown>, label: string) {
-    try {
-      await runGitAction(projectId, projectPath, fn)
-    } catch (e) {
-      console.error(`${label} failed:`, e)
-    }
+  async function handleGitAction(kind: GitActionKind, fn: (path: string) => Promise<void>) {
+    await runNotifiedTask(() => runGitAction(projectId, projectPath, fn), getGitActionNotifications(kind))
   }
 
   async function handleCommit(message: string) {
-    await handleGitAction((path) => backend.git.commit(path, message), 'Commit')
+    await runNotifiedTask(
+      () => runGitAction(projectId, projectPath, (path) => backend.git.commit(path, message)),
+      gitCommitNotifications
+    )
   }
 
   async function handleStageAll() {
-    await handleGitAction((path) => backend.git.stageAll(path), 'Stage all')
+    await handleGitAction('stageAll', (path) => backend.git.stageAll(path))
   }
 
   async function handleUnstageAll() {
-    await handleGitAction((path) => backend.git.unstageAll(path), 'Unstage all')
+    await handleGitAction('unstageAll', (path) => backend.git.unstageAll(path))
   }
 
   async function handleDiscardAll() {
     showDiscardConfirm = false
-    await handleGitAction((path) => backend.git.discardAll(path), 'Discard all')
+    await handleGitAction('discardAll', (path) => backend.git.discardAll(path))
   }
 
   async function handleStashAll() {
-    await handleGitAction((path) => backend.git.stashAll(path), 'Stash all')
+    await handleGitAction('stashAll', (path) => backend.git.stashAll(path))
   }
 
   async function handleUndoLastCommit() {
     showUndoCommitConfirm = false
-    await handleGitAction((path) => backend.git.undoLastCommit(path), 'Undo commit')
+    await handleGitAction('undoLastCommit', (path) => backend.git.undoLastCommit(path))
   }
 
   async function handlePush() {
-    await handleGitAction((path) => backend.git.push(path), 'Push')
+    await handleGitAction('push', (path) => backend.git.push(path))
   }
 
   async function handlePushForceWithLease() {
-    await handleGitAction((path) => backend.git.pushForceWithLease(path), 'Force push')
+    await handleGitAction('forcePush', (path) => backend.git.pushForceWithLease(path))
   }
 
   async function handlePull() {
-    await handleGitAction((path) => backend.git.pull(path), 'Pull')
+    await handleGitAction('pull', (path) => backend.git.pull(path))
   }
 
   async function handleFetch() {
-    await handleGitAction((path) => backend.git.fetch(path), 'Fetch')
+    await handleGitAction('fetch', (path) => backend.git.fetch(path))
   }
 </script>
 

@@ -19,6 +19,8 @@
   import { FileDiff, GitCommitIcon, PackageIcon, BellIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { tick } from 'svelte'
+  import { notify } from '$lib/stores/notifications.svelte'
+  import { getErrorMessage, runNotifiedTask } from '$lib/utils/notifiedTask'
 
   let {
     tabs,
@@ -65,7 +67,7 @@
           await backend.sessions.stop(tab.sessionId)
           updateSessionInList(tab.sessionId, { status: 'stopped' })
         } catch (err) {
-          console.error('Failed to stop session on tab close:', err)
+          notify.error('Stop session failed', getErrorMessage(err))
         }
       }
     }
@@ -148,19 +150,23 @@
     const tab = getTabById(tabId)
     if (!tab || tab.kind !== 'session') return
 
-    try {
-      const manager = sessionRegistry.get(tab.sessionId)
-      if (manager) {
-        await manager.stopPty()
-      } else {
-        await backend.sessions.stop(tab.sessionId)
+    await runNotifiedTask(
+      async () => {
+        const manager = sessionRegistry.get(tab.sessionId)
+        if (manager) {
+          await manager.stopPty()
+        } else {
+          await backend.sessions.stop(tab.sessionId)
+        }
+        updateSessionInList(tab.sessionId, { status: 'stopped' })
+      },
+      {
+        loading: { title: 'Stopping session', description: tabLabel(tab) },
+        success: { title: 'Session stopped', description: tabLabel(tab) },
+        error: { title: 'Stop session failed' }
       }
-      updateSessionInList(tab.sessionId, { status: 'stopped' })
-    } catch (error) {
-      console.error('Failed to stop session:', error)
-    } finally {
-      closeContextMenu()
-    }
+    )
+    closeContextMenu()
   }
 
   async function restartSessionNow(tabId: TabId) {
@@ -172,20 +178,29 @@
     onTabSelected?.()
     await tick()
 
-    try {
-      const manager = sessionRegistry.getOrCreate(session.id)
-      if (manager.isPtyActive()) {
-        await manager.stopPty()
-        updateSessionInList(session.id, { status: 'stopped' })
+    await runNotifiedTask(
+      async () => {
+        const manager = sessionRegistry.getOrCreate(session.id)
+        if (manager.isPtyActive()) {
+          await manager.stopPty()
+          updateSessionInList(session.id, { status: 'stopped' })
+        }
+        await manager.startPty(session)
+        updateSessionInList(session.id, { status: 'running' })
+      },
+      {
+        loading: { title: 'Restarting session', description: tabLabel(tab) },
+        success: { title: 'Session restarted', description: tabLabel(tab) },
+        error: {
+          title: 'Restart session failed',
+          description: (error) => {
+            updateSessionInList(session.id, { status: 'failed' })
+            return getErrorMessage(error)
+          }
+        }
       }
-      await manager.startPty(session)
-      updateSessionInList(session.id, { status: 'running' })
-    } catch (error) {
-      console.error('Failed to restart session:', error)
-      updateSessionInList(session.id, { status: 'failed' })
-    } finally {
-      closeContextMenu()
-    }
+    )
+    closeContextMenu()
   }
 
   function handleRestartFromMenu(tabId: TabId) {

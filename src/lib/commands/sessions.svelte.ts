@@ -3,6 +3,7 @@ import { allProviders, directOptions } from '$lib/data/providers'
 import { getConnectedProviders } from '$lib/stores/providers.svelte'
 import { createAndOpenSession, hasRunningSessions } from '$lib/stores/sessions.svelte'
 import { focusTab, getAllTabs, getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { runNotifiedTask } from '$lib/utils/notifiedTask'
 
 const freshIcon = directOptions.find((p) => p.id === 'fresh')?.icon ?? ''
 const terminalIcon = directOptions.find((p) => p.id === 'terminal')?.icon ?? ''
@@ -46,11 +47,10 @@ function startSession(providerId: string, label: string) {
 async function doCreate(providerId: string, label: string) {
   const projectId = getActiveProjectId()
   if (!projectId) return
-  try {
-    await createAndOpenSession(projectId, providerId, `${label} session`)
-  } catch (e) {
-    console.error('Failed to create session:', e)
-  }
+  await runNotifiedTask(() => createAndOpenSession(projectId, providerId, `${label} session`), {
+    loading: { title: `Starting ${label} session` },
+    error: { title: `Failed to start ${label} session` }
+  })
 }
 
 function openFresh() {

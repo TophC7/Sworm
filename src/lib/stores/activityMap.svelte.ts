@@ -38,6 +38,7 @@ export async function refreshActivityMap() {
     loaded = true
   } catch (e) {
     console.error('Failed to refresh activity map:', e)
+    throw e
   } finally {
     loading = false
   }

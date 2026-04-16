@@ -15,6 +15,7 @@
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import SidebarPanel from '$lib/components/SidebarPanel.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
+  import { runNotifiedTask } from '$lib/utils/notifiedTask'
 
   let {
     projectId
@@ -113,13 +114,23 @@
   async function handleArchive(session: Session) {
     if (isSessionTabLocked(session.id)) return
     closeContextMenu()
-    closeTabBySessionId(projectId, session.id)
-    await archiveSession(session.id, projectId)
+    const archived = await runNotifiedTask(() => archiveSession(session.id, projectId), {
+      loading: { title: 'Archiving session', description: session.id.slice(0, 8) },
+      success: { title: 'Session archived', description: session.id.slice(0, 8) },
+      error: { title: 'Archive session failed' }
+    })
+    if (archived) {
+      closeTabBySessionId(projectId, session.id)
+    }
   }
 
   async function handleUnarchive(session: Session) {
     closeContextMenu()
-    await unarchiveSession(session.id, projectId)
+    await runNotifiedTask(() => unarchiveSession(session.id, projectId), {
+      loading: { title: 'Restoring session', description: session.id.slice(0, 8) },
+      success: { title: 'Session restored', description: session.id.slice(0, 8) },
+      error: { title: 'Restore session failed' }
+    })
   }
 
   function handleDeleteRequest(session: Session) {
@@ -130,7 +141,12 @@
 
   async function confirmDelete() {
     if (pendingDeleteId) {
-      await removeSession(pendingDeleteId, projectId)
+      const sessionId = pendingDeleteId
+      await runNotifiedTask(() => removeSession(sessionId, projectId), {
+        loading: { title: 'Deleting session', description: sessionId.slice(0, 8) },
+        success: { title: 'Session deleted', description: sessionId.slice(0, 8) },
+        error: { title: 'Delete session failed' }
+      })
     }
     deleteConfirmOpen = false
     pendingDeleteId = null

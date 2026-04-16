@@ -10,6 +10,7 @@
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/utils/graph'
+  import { runNotifiedTask } from '$lib/utils/notifiedTask'
   import { SvelteSet } from 'svelte/reactivity'
 
   let {
@@ -87,28 +88,38 @@
   }
 
   async function handlePop(index: number) {
-    try {
-      await backend.git.stashPop(projectPath, index)
-      expandedIndex = null
-      await loadStashes(projectPath)
-      onMutate?.()
-    } catch (e) {
-      console.error('Stash pop failed:', e)
-    }
+    await runNotifiedTask(
+      async () => {
+        await backend.git.stashPop(projectPath, index)
+        expandedIndex = null
+        await loadStashes(projectPath)
+        onMutate?.()
+      },
+      {
+        loading: { title: 'Applying stash', description: `stash@{${index}}` },
+        success: { title: 'Stash applied', description: `stash@{${index}}` },
+        error: { title: 'Apply stash failed' }
+      }
+    )
   }
 
   async function handleDrop() {
     if (dropIndex === null) return
     const idx = dropIndex
     dropIndex = null
-    try {
-      await backend.git.stashDrop(projectPath, idx)
-      if (expandedIndex === idx) expandedIndex = null
-      await loadStashes(projectPath)
-      onMutate?.()
-    } catch (e) {
-      console.error('Stash drop failed:', e)
-    }
+    await runNotifiedTask(
+      async () => {
+        await backend.git.stashDrop(projectPath, idx)
+        if (expandedIndex === idx) expandedIndex = null
+        await loadStashes(projectPath)
+        onMutate?.()
+      },
+      {
+        loading: { title: 'Dropping stash', description: `stash@{${idx}}` },
+        success: { title: 'Stash dropped', description: `stash@{${idx}}` },
+        error: { title: 'Drop stash failed' }
+      }
+    )
   }
 </script>
 

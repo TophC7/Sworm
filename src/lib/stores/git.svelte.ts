@@ -72,13 +72,14 @@ export function stopGitPolling(projectId: string) {
  * Run a git operation against a project, then refresh git state.
  * Errors propagate to the caller.
  */
-export async function runGitAction(
+export async function runGitAction<T>(
   projectId: string,
   projectPath: string,
-  fn: (path: string) => Promise<unknown>
-): Promise<void> {
-  await fn(projectPath)
+  fn: (path: string) => Promise<T>
+): Promise<T> {
+  const result = await fn(projectPath)
   await refreshGit(projectId, projectPath)
+  return result
 }
 
 export function clearGitState(projectId: string) {

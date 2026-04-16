@@ -3,6 +3,8 @@ import { getActiveProject } from '$lib/stores/projects.svelte'
 import { getGitSummary, runGitAction } from '$lib/stores/git.svelte'
 import { getActiveProjectId } from '$lib/stores/workspace.svelte'
 import { backend } from '$lib/api/backend'
+import { getGitActionNotifications, type GitActionKind } from '$lib/utils/gitActionNotifications'
+import { runNotifiedTask } from '$lib/utils/notifiedTask'
 
 import {
   ArrowDownToLineIcon,
@@ -21,21 +23,17 @@ const undoConfirm: CommandConfirm = {
   isOpen: () => undoConfirmOpen,
   onConfirm: () => {
     undoConfirmOpen = false
-    void doGitAction((path) => backend.git.undoLastCommit(path))
+    void doGitAction('undoLastCommit', (path) => backend.git.undoLastCommit(path))
   },
   onCancel: () => {
     undoConfirmOpen = false
   }
 }
 
-async function doGitAction(fn: (path: string) => Promise<unknown>) {
+async function doGitAction(kind: GitActionKind, fn: (path: string) => Promise<void>) {
   const project = getActiveProject()
   if (!project) return
-  try {
-    await runGitAction(project.id, project.path, fn)
-  } catch (e) {
-    console.error('Git action failed:', e)
-  }
+  await runNotifiedTask(() => runGitAction(project.id, project.path, fn), getGitActionNotifications(kind))
 }
 
 export function getGitCommands(): CommandGroup[] {
@@ -54,28 +52,28 @@ export function getGitCommands(): CommandGroup[] {
           label: 'Pull',
           icon: ArrowDownToLineIcon,
           keywords: ['git', 'pull', 'download', 'sync'],
-          onSelect: () => void doGitAction((path) => backend.git.pull(path))
+          onSelect: () => void doGitAction('pull', (path) => backend.git.pull(path))
         },
         {
           id: 'git-push',
           label: 'Push',
           icon: ArrowUpFromLineIcon,
           keywords: ['git', 'push', 'upload', 'sync'],
-          onSelect: () => void doGitAction((path) => backend.git.push(path))
+          onSelect: () => void doGitAction('push', (path) => backend.git.push(path))
         },
         {
           id: 'git-fetch',
           label: 'Fetch',
           icon: RefreshCwIcon,
           keywords: ['git', 'fetch', 'remote', 'update'],
-          onSelect: () => void doGitAction((path) => backend.git.fetch(path))
+          onSelect: () => void doGitAction('fetch', (path) => backend.git.fetch(path))
         },
         {
           id: 'git-force-push',
           label: 'Force Push (with lease)',
           icon: ShieldAlertIcon,
           keywords: ['git', 'force', 'push', 'lease'],
-          onSelect: () => void doGitAction((path) => backend.git.pushForceWithLease(path))
+          onSelect: () => void doGitAction('forcePush', (path) => backend.git.pushForceWithLease(path))
         },
         ...(hasCommits
           ? [

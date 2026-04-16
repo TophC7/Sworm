@@ -60,6 +60,7 @@
 ### Notifications & Feedback
 
 - [x] Status-bar notification system — `src/lib/stores/notifications.svelte.ts` + `NotificationsButton` in the status bar with a bell icon, unread badge, and popover listing all notifications as Alerts
+- [ ] Notification update API should allow clearing descriptions — `NotificationUpdate.description` can replace a description but cannot explicitly remove one once set. Add a clearable contract for updates so loading/success/error transitions can drop stale body copy without replacing the whole notification
 - [ ] Progress notifications with cancel — extend the notification store to support in-progress items (spinner + % complete + cancel action) for long-running operations like paste, clone, push. Currently notifications are one-shot info/success/warning/error only
 - [ ] Progress feedback for long file operations — visual indicator (spinner in sidebar, progress in status bar) during paste/copy of large trees. Today there's no feedback between click and completion
 - [ ] Branch controls in file view — show current branch and provide quick-access branch switcher in the files sidebar header (or dropdown)

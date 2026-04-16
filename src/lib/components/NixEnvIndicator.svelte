@@ -19,6 +19,8 @@
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
   import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
+  import { notify } from '$lib/stores/notifications.svelte'
+  import { getErrorMessage } from '$lib/utils/notifiedTask'
 
   let project = $derived(getActiveProject())
   let detection = $derived(project ? getNixDetection(project.id) : undefined)
@@ -47,21 +49,57 @@
 
   async function handleSelect(nixFile: string) {
     if (!project) return
-    await selectNixFile(project.id, nixFile)
+    try {
+      await selectNixFile(project.id, nixFile)
+      notify.success('Selected Nix file', nixFile)
+    } catch (error) {
+      notify.error('Select Nix file failed', getErrorMessage(error))
+    }
   }
 
   async function handleEvaluate() {
     if (!project) return
-    await evaluateNix(project.id)
-    // Re-detect providers with Nix-augmented PATH
-    await loadProvidersForProject(project.id)
+    const notificationId = notify.loading('Evaluating Nix environment')
+
+    try {
+      const record = await evaluateNix(project.id)
+      await loadProvidersForProject(project.id)
+
+      if (record.status === 'ready') {
+        notify.update(notificationId, {
+          title: 'Nix environment ready',
+          description: record.nix_file,
+          tone: 'success',
+          loading: false
+        })
+        return
+      }
+
+      notify.update(notificationId, {
+        title: record.status === 'timeout' ? 'Nix evaluation timed out' : 'Nix evaluation failed',
+        description: record.error_message ?? record.nix_file,
+        tone: 'error',
+        loading: false
+      })
+    } catch (error) {
+      notify.update(notificationId, {
+        title: 'Nix evaluation failed',
+        description: getErrorMessage(error),
+        tone: 'error',
+        loading: false
+      })
+    }
   }
 
   async function handleClear() {
     if (!project) return
-    await clearNix(project.id)
-    // Reload providers without Nix env
-    await loadProvidersForProject(project.id)
+    try {
+      await clearNix(project.id)
+      await loadProvidersForProject(project.id)
+      notify.success('Cleared Nix environment')
+    } catch (error) {
+      notify.error('Clear Nix environment failed', getErrorMessage(error))
+    }
   }
 
   function statusColor(): string {
