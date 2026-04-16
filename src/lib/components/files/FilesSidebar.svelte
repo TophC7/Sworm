@@ -16,7 +16,12 @@
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { getFocusedTab } from '$lib/stores/workspace.svelte'
   import { copyToClipboard } from '$lib/utils/clipboard'
+  import { notify } from '$lib/stores/notifications.svelte'
   import { join } from '@tauri-apps/api/path'
+
+  function errMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e)
+  }
 
   let {
     projectId,
@@ -144,7 +149,7 @@
     try {
       await backend.app.clipboardCopyFiles([absPath], 'cut')
     } catch (e) {
-      console.error('Cut file failed:', e)
+      notify.error('Cut failed', errMessage(e))
     }
   }
 
@@ -154,7 +159,7 @@
     try {
       await backend.app.clipboardCopyFiles([absPath], 'copy')
     } catch (e) {
-      console.error('Copy file failed:', e)
+      notify.error('Copy failed', errMessage(e))
     }
   }
 
@@ -162,11 +167,16 @@
     const targetDir = contextTargetType === 'directory' && contextFilePath ? contextFilePath : '.'
     try {
       const clip = await backend.app.clipboardReadFiles()
-      if (!clip || clip.paths.length === 0) return
-      await backend.files.paste(projectPath, targetDir, clip.op, clip.paths)
+      if (!clip || clip.paths.length === 0) {
+        notify.info('Nothing to paste', 'No files on the clipboard.')
+        return
+      }
+      const created = await backend.files.paste(projectPath, targetDir, clip.op, clip.paths)
       await loadFiles()
+      const verb = clip.op === 'cut' ? 'Moved' : 'Pasted'
+      notify.success(`${verb} ${created.length} file${created.length === 1 ? '' : 's'}`)
     } catch (e) {
-      console.error('Paste failed:', e)
+      notify.error('Paste failed', errMessage(e))
     }
   }
 
@@ -196,7 +206,7 @@
       await backend.files.rename(projectPath, renameFilePath, renameValue)
       await loadFiles()
     } catch (e) {
-      console.error('Rename failed:', e)
+      notify.error('Rename failed', errMessage(e))
     } finally {
       renameFilePath = null
     }
@@ -214,7 +224,7 @@
       await backend.files.delete(projectPath, deleteFilePath)
       await loadFiles()
     } catch (e) {
-      console.error('Delete failed:', e)
+      notify.error('Delete failed', errMessage(e))
     } finally {
       deleteConfirmOpen = false
       deleteFilePath = null
@@ -236,17 +246,18 @@
       newItemKind = null
       return
     }
+    const kind = newItemKind
     try {
-      if (newItemKind === 'file') {
+      if (kind === 'file') {
         await backend.files.write(projectPath, newItemName.trim(), '')
         await loadFiles()
         openFile(projectId, projectPath, newItemName.trim())
-      } else if (newItemKind === 'folder') {
+      } else if (kind === 'folder') {
         await backend.files.createDir(projectPath, newItemName.trim())
         await loadFiles()
       }
     } catch (e) {
-      console.error(`Failed to create ${newItemKind}:`, e)
+      notify.error(`Failed to create ${kind ?? 'item'}`, errMessage(e))
     } finally {
       newItemKind = null
       newItemName = ''

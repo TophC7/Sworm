@@ -6,6 +6,7 @@
   import { backend } from '$lib/api/backend'
   import CommandCenter from '$lib/components/CommandCenter.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
+  import NotificationsSurface from '$lib/components/notifications/NotificationsSurface.svelte'
   import SettingsDialog from '$lib/components/SettingsDialog.svelte'
   import StatusBar from '$lib/components/StatusBar.svelte'
   import TitleBar from '$lib/components/TitleBar.svelte'
@@ -69,6 +70,7 @@
 
 <CommandCenter onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
 <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
+<NotificationsSurface />
 
 {#if projectError}
   <ConfirmDialog

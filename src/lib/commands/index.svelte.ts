@@ -3,6 +3,7 @@ import { getFileCommands } from './file.svelte'
 import { getSessionCommands } from './sessions.svelte'
 import { getGitCommands } from './git.svelte'
 import { getViewCommands } from './view.svelte'
+import { getNotificationCommands } from './notifications.svelte'
 import { getEditorCommands } from './editor.svelte'
 
 export type { Command, CommandConfirm, CommandGroup, FileCallbacks } from './types'
@@ -12,9 +13,13 @@ export type { Command, CommandConfirm, CommandGroup, FileCallbacks } from './typ
  * Called inside $derived so reactive reads in each module are tracked.
  */
 export function getAppCommandGroups(callbacks: FileCallbacks): CommandGroup[] {
-  return [...getFileCommands(callbacks), ...getSessionCommands(), ...getGitCommands(), ...getViewCommands()].filter(
-    (g) => g.commands.length > 0
-  )
+  return [
+    ...getFileCommands(callbacks),
+    ...getSessionCommands(),
+    ...getGitCommands(),
+    ...getViewCommands(),
+    ...getNotificationCommands()
+  ].filter((g) => g.commands.length > 0)
 }
 
 /**

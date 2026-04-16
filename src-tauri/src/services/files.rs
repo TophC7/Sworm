@@ -1,8 +1,12 @@
 use crate::errors::ApiError;
-use std::path::{Component, Path};
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-/// Directories to skip when walking a non-git project.
+/// Directories always skipped during the walk, regardless of git status.
+/// `.git` and build/cache dirs without a universally-agreed gitignore entry
+/// are listed here so non-git projects (and git projects with a stale index)
+/// still get a clean tree.
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -193,49 +197,42 @@ impl FileService {
     }
 
     /// List all files in the project.
-    /// Uses git ls-files when in a git repo, falls back to filesystem walk otherwise.
+    ///
+    /// Filesystem-first: walks the real directory tree so the explorer reflects
+    /// disk state (deleted files don't linger, newly created files appear
+    /// immediately). In a git repo we additionally query `.gitignore` once and
+    /// prune matching paths during the walk — but git's index is never the
+    /// source of truth for what exists.
     pub fn list_all(&self, project_path: &Path) -> Result<Vec<String>, ApiError> {
-        if let Some(paths) = self.list_via_git(project_path) {
-            return Ok(paths);
-        }
-
-        let mut paths = Vec::new();
-        self.walk_dir(project_path, project_path, &mut paths, 0)?;
-        paths.sort();
-        Ok(paths)
+        let ignored = collect_ignored(project_path);
+        let mut out = Vec::new();
+        let mut visited = HashSet::new();
+        self.walk_dir(project_path, "", &ignored, &mut out, &mut visited, 0)?;
+        out.sort();
+        Ok(out)
     }
 
-    /// Try listing files via git ls-files. Returns None if not a git repo.
-    fn list_via_git(&self, project_path: &Path) -> Option<Vec<String>> {
-        let output = Command::new("git")
-            .args([
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "--full-name",
-            ])
-            .current_dir(project_path)
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        Some(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|s| s.to_owned())
-                .collect(),
-        )
-    }
-
+    /// Walk `dir` and push project-relative paths (prefixed with `rel_prefix`)
+    /// into `out`. `rel_prefix` is the path of `dir` relative to the project
+    /// root — "" when `dir` is the root itself. An explicit prefix (rather
+    /// than `strip_prefix(root)`) lets us descend through a symlink whose
+    /// target lives outside the project.
+    ///
+    /// Skip rules, in order:
+    ///   1. `SKIP_DIRS`  — always-hidden junk (`.git`, `node_modules`, …)
+    ///   2. `ignored`    — paths matched by the project's `.gitignore`
+    ///
+    /// Dotted entries that pass both rules (`.github`, `.vscode`, `.agents`)
+    /// are shown — matching how VS Code and other real file explorers behave.
+    /// Symlinks to directories are followed; `visited` tracks canonical
+    /// targets so symlink cycles can't cause infinite recursion.
     fn walk_dir(
         &self,
-        root: &Path,
         dir: &Path,
+        rel_prefix: &str,
+        ignored: &HashSet<String>,
         out: &mut Vec<String>,
+        visited: &mut HashSet<PathBuf>,
         depth: usize,
     ) -> Result<(), ApiError> {
         if depth > MAX_DEPTH || out.len() >= MAX_FILES {
@@ -253,22 +250,76 @@ impl FileService {
             let entry = entry.map_err(|e| ApiError::Io(e.to_string()))?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-
+            let path = entry.path();
             let ft = entry.file_type().map_err(|e| ApiError::Io(e.to_string()))?;
 
-            if ft.is_dir() {
-                if SKIP_DIRS.contains(&&*name_str) || name_str.starts_with('.') {
-                    continue;
+            if SKIP_DIRS.contains(&&*name_str) {
+                continue;
+            }
+
+            let rel_child = if rel_prefix.is_empty() {
+                name_str.to_string()
+            } else {
+                format!("{}/{}", rel_prefix, name_str)
+            };
+
+            if ignored.contains(&rel_child) {
+                continue;
+            }
+
+            // `file_type()` is lstat-based — for symlinks we need stat
+            // (`metadata`) to see what the link actually points to.
+            let target_is_dir = if ft.is_symlink() {
+                std::fs::metadata(&path)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+            } else {
+                ft.is_dir()
+            };
+
+            if target_is_dir {
+                if ft.is_symlink() {
+                    if let Ok(canonical) = std::fs::canonicalize(&path) {
+                        if !visited.insert(canonical) {
+                            continue;
+                        }
+                    }
                 }
-                self.walk_dir(root, &entry.path(), out, depth + 1)?;
+                self.walk_dir(&path, &rel_child, ignored, out, visited, depth + 1)?;
             } else if ft.is_file() || ft.is_symlink() {
-                if let Ok(rel) = entry.path().strip_prefix(root) {
-                    out.push(rel.to_string_lossy().into_owned());
-                }
+                out.push(rel_child);
             }
         }
         Ok(())
     }
+}
+
+/// Ask git which paths it would ignore in this project. Returns an empty set
+/// when the project isn't a git repo or git isn't available. `--directory`
+/// collapses a wholly-ignored directory (e.g. `target/`, `dist/`) into one
+/// entry so the walker can prune it instead of descending and filtering.
+fn collect_ignored(project_path: &Path) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Ok(output) = Command::new("git")
+        .args([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ])
+        .current_dir(project_path)
+        .output()
+    else {
+        return set;
+    };
+    if !output.status.success() {
+        return set;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        set.insert(line.trim_end_matches('/').to_string());
+    }
+    set
 }
 
 // ── Paste helpers ─────────────────────────────────────────────────

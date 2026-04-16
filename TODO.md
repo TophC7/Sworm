@@ -54,12 +54,13 @@
 - [ ] Paste collision UX — currently auto-renames to `foo (copy).txt` without asking. Should prompt (Replace / Skip / Rename) like Nautilus. Ties in with drag-and-drop target behavior — same collision semantics apply when dropping a same-named file onto a folder
 - [ ] Drag-and-drop files in/out of the file explorer — move/copy within the tree, copy out to external file managers, accept drops from external sources. Shares collision UX with paste
 - [ ] Symlink support in file operations — `copy_recursive` currently follows symlinks instead of preserving them, and Monaco errors with "Is a directory" when opening symlinks-to-directories. Need `std::os::unix::fs::symlink` in the copy path and Monaco-side detection before open
-- [ ] Surface file-op errors to the user — paste/rename/delete/cut/copy all `console.error` on failure with no UI indicator. Ties into the notification system (below)
+- [x] Surface file-op errors to the user — paste/rename/delete/cut/copy/new-item and git copy-patch/discard now route failures through `notify.error()`
 - [ ] Incremental file tree updates — every paste/rename/delete/new currently triggers a full `backend.files.listAll(projectPath)` re-walk (git ls-files or filesystem scan up to 25k files). For large repos this will eventually feel sluggish. `file_paste` already returns the list of created project-relative paths; extend rename/delete/create to do the same, then mutate the in-memory `fileTree` directly instead of reloading
 
 ### Notifications & Feedback
 
-- [ ] Status-bar notification system — a notification primitive that lives in the status bar (not blocking toasts). Used for: git operation results ("discarded 3 of 5 files"), file operation failures, paste progress, long-running operations with cancel. Replace scattered `console.error` calls with `notify.error(...)` and similar. Should support progress notifications (with cancel) for long operations like paste, clone, push
+- [x] Status-bar notification system — `src/lib/stores/notifications.svelte.ts` + `NotificationsButton` in the status bar with a bell icon, unread badge, and popover listing all notifications as Alerts
+- [ ] Progress notifications with cancel — extend the notification store to support in-progress items (spinner + % complete + cancel action) for long-running operations like paste, clone, push. Currently notifications are one-shot info/success/warning/error only
 - [ ] Progress feedback for long file operations — visual indicator (spinner in sidebar, progress in status bar) during paste/copy of large trees. Today there's no feedback between click and completion
 - [ ] Branch controls in file view — show current branch and provide quick-access branch switcher in the files sidebar header (or dropdown)
 - [ ] File preview/viewer for common types — support previewing images (PNG, JPG, SVG), JSON, CSV, and other common file types inline in the editor pane, not just markdown

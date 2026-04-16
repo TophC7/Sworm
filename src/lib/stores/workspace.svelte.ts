@@ -75,7 +75,15 @@ export interface EditorTab {
   refLabel?: string
 }
 
-export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | EditorTab
+export interface NotificationTestTab {
+  kind: 'notification-test'
+  id: TabId
+  label: string
+  temporary: boolean
+  locked: boolean
+}
+
+export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | EditorTab | NotificationTestTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -343,6 +351,8 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'stash' || a.stashIndex !== b.stashIndex || a.initialFile !== b.initialFile
     case 'editor':
       return b.kind !== 'editor' || a.filePath !== b.filePath || a.gitRef !== b.gitRef
+    case 'notification-test':
+      return b.kind !== 'notification-test' || a.label !== b.label
     default:
       return true
   }
@@ -494,6 +504,22 @@ export function addReadonlyEditorTab(
     (id): EditorTab => ({ kind: 'editor', id, filePath, fileName, temporary, locked: false, gitRef, refLabel }),
     temporary,
     (t) => t.kind === 'editor' && t.filePath === filePath && t.gitRef === gitRef && !t.temporary
+  )
+}
+
+export function addNotificationTestTab(projectId: string, temporary = false): TabId {
+  return addContentTab(
+    projectId,
+    'notification-test',
+    (id): NotificationTestTab => ({
+      kind: 'notification-test',
+      id,
+      label: 'Notification Tester',
+      temporary,
+      locked: false
+    }),
+    temporary,
+    (t) => t.kind === 'notification-test' && !t.temporary
   )
 }
 

@@ -16,7 +16,7 @@
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { IconButton } from '$lib/components/ui/button'
-  import { FileDiff, GitCommitIcon, PackageIcon, Lock, Plus } from '$lib/icons/lucideExports'
+  import { FileDiff, GitCommitIcon, PackageIcon, BellIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { tick } from 'svelte'
 
@@ -98,6 +98,8 @@
         return `stash@{${tab.stashIndex}}`
       case 'editor':
         return tab.refLabel ? `${tab.fileName} (${tab.refLabel})` : tab.fileName
+      case 'notification-test':
+        return tab.label
     }
   }
 
@@ -246,6 +248,8 @@
           <GitCommitIcon size={14} class="shrink-0 text-accent" />
         {:else if tab.kind === 'stash'}
           <PackageIcon size={14} class="shrink-0 text-accent" />
+        {:else if tab.kind === 'notification-test'}
+          <BellIcon size={14} class="shrink-0 text-accent" />
         {:else if tab.kind === 'editor'}
           <FileIcon filename={tab.fileName} size={14} />
         {:else}

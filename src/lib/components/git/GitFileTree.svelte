@@ -19,6 +19,11 @@
   import { addEditorTab, addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
   import type { GitChange, GitSummary } from '$lib/types/backend'
   import { copyToClipboard } from '$lib/utils/clipboard'
+  import { notify } from '$lib/stores/notifications.svelte'
+
+  function errMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e)
+  }
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
   import { join } from '@tauri-apps/api/path'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -165,7 +170,7 @@
     try {
       await runGitAction(projectId, projectPath, (path) => backend.git.discardFiles(path, files))
     } catch (e) {
-      console.error('Discard failed:', e)
+      notify.error('Discard failed', errMessage(e))
     } finally {
       discardConfirmOpen = false
       discardTarget = null
@@ -195,8 +200,10 @@
     try {
       const patch = await backend.git.getPathPatch(projectPath, [contextFilePath], contextIsStaged)
       if (patch) await copyToClipboard(patch)
+      else
+        notify.info('No diff to copy', `${contextFilePath} has no ${contextIsStaged ? 'staged' : 'unstaged'} changes.`)
     } catch (e) {
-      console.error('Copy patch failed:', e)
+      notify.error('Copy patch failed', errMessage(e))
     }
   }
 
@@ -208,7 +215,7 @@
       const patch = await backend.git.getPathPatch(projectPath, files, contextIsStaged)
       if (patch) await copyToClipboard(patch)
     } catch (e) {
-      console.error('Copy folder patch failed:', e)
+      notify.error('Copy folder patch failed', errMessage(e))
     }
   }
 
@@ -216,9 +223,9 @@
     try {
       const patch = await backend.git.getFullPatch(projectPath)
       if (patch) await copyToClipboard(patch)
-      else console.warn('Copy full patch: no diff output')
+      else notify.info('No diff to copy', 'No changes in the working tree.')
     } catch (e) {
-      console.error('Copy full patch failed:', e)
+      notify.error('Copy patch failed', errMessage(e))
     }
   }
 </script>

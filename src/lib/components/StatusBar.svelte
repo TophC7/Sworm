@@ -6,6 +6,7 @@
   import { IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/components/NixEnvIndicator.svelte'
+  import NotificationsButton from '$lib/components/notifications/NotificationsButton.svelte'
   import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
 
   let sessions = $derived(getSessions())
@@ -68,5 +69,7 @@
         <Plus size={10} />
       </IconButton>
     </div>
+
+    <NotificationsButton />
   </div>
 </footer>

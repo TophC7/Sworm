@@ -16,6 +16,7 @@
   import CommitView from '$lib/components/CommitView.svelte'
   import StashView from '$lib/components/StashView.svelte'
   import FileEditor from '$lib/components/editor/FileEditor.svelte'
+  import NotificationTestView from '$lib/components/notifications/NotificationTestView.svelte'
   import NewSessionView from '$lib/components/session/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
@@ -178,6 +179,8 @@
         gitRef={activeTab.gitRef}
         refLabel={activeTab.refLabel}
       />
+    {:else if activeTab.kind === 'notification-test'}
+      <NotificationTestView />
     {/if}
 
     {#if showLockedOverlay}
