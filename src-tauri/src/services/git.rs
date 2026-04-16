@@ -300,6 +300,57 @@ impl GitService {
         (None, None)
     }
 
+    /// Get the combined patch for all working-tree changes (staged + unstaged).
+    pub fn get_full_patch(&self, path: &Path) -> Option<String> {
+        // Run staged and unstaged diffs in parallel — both are independent reads.
+        let (staged, unstaged) = std::thread::scope(|s| {
+            let sh = s.spawn(|| run_diff(path, &["diff", "--cached"]));
+            let uh = s.spawn(|| run_diff(path, &["diff"]));
+            (sh.join().ok().flatten(), uh.join().ok().flatten())
+        });
+        combine_patches(staged, unstaged)
+    }
+
+    /// Get patch for specific paths, scoped to one side.
+    /// - `staged: Some(true)`: staged (index) diff only
+    /// - `staged: Some(false)`: unstaged (working tree) diff only
+    /// - `staged: None`: both combined
+    pub fn get_path_patch(
+        &self,
+        path: &Path,
+        files: &[String],
+        staged: Option<bool>,
+    ) -> Option<String> {
+        if files.is_empty() {
+            return None;
+        }
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        let diff_args = |cached: bool| -> Vec<&str> {
+            let mut args = vec!["diff"];
+            if cached {
+                args.push("--cached");
+            }
+            args.push("--");
+            args.extend(refs.iter().copied());
+            args
+        };
+
+        match staged {
+            Some(true) => run_diff(path, &diff_args(true)),
+            Some(false) => run_diff(path, &diff_args(false)),
+            None => {
+                let a = diff_args(true);
+                let b = diff_args(false);
+                let (s, u) = std::thread::scope(|sc| {
+                    let sh = sc.spawn(|| run_diff(path, &a));
+                    let uh = sc.spawn(|| run_diff(path, &b));
+                    (sh.join().ok().flatten(), uh.join().ok().flatten())
+                });
+                combine_patches(s, u)
+            }
+        }
+    }
+
     /// Get diff for a specific file.
     pub fn get_file_diff(&self, path: &Path, file_path: &str, staged: bool) -> Option<String> {
         let mut args = vec!["diff"];
@@ -725,9 +776,31 @@ impl GitService {
         run_git_mutate(path, &["add", "-A"])
     }
 
+    /// Stage specific files or directories.
+    pub fn stage_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["add", "--"];
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        args.extend(refs);
+        run_git_mutate(path, &args)
+    }
+
     /// Unstage all staged changes back to the working tree.
     pub fn unstage_all(&self, path: &Path) -> Result<(), String> {
         run_git_mutate(path, &["reset", "HEAD"])
+    }
+
+    /// Unstage specific files or directories.
+    pub fn unstage_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["reset", "HEAD", "--"];
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        args.extend(refs);
+        run_git_mutate(path, &args)
     }
 
     /// Discard all unstaged changes and remove untracked files.
@@ -736,6 +809,28 @@ impl GitService {
         run_git_mutate(path, &["checkout", "--", "."])?;
         // Remove untracked files and directories (but not ignored ones)
         run_git_mutate(path, &["clean", "-fd"])
+    }
+
+    /// Discard changes for specific files or directories.
+    /// Handles both tracked (checkout) and untracked (clean) files in one
+    /// invocation each. Errors are ignored because a mixed set of paths
+    /// will always fail one of the two commands — e.g. checkout rejects
+    /// untracked paths, clean is a no-op for tracked ones.
+    pub fn discard_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+
+        let mut checkout_args = vec!["checkout", "--"];
+        checkout_args.extend(refs.iter().copied());
+        let _ = run_git_mutate(path, &checkout_args);
+
+        let mut clean_args = vec!["clean", "-fd", "--"];
+        clean_args.extend(refs.iter().copied());
+        let _ = run_git_mutate(path, &clean_args);
+
+        Ok(())
     }
 
     /// Create a commit with the given message. Returns the new short hash.
@@ -1017,6 +1112,31 @@ impl GitService {
         }
 
         "main".to_string()
+    }
+}
+
+/// Run a `git diff` variant and return stdout as a String, or `None` if empty.
+fn run_diff(path: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .ok()?;
+    let body = String::from_utf8_lossy(&output.stdout).into_owned();
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+/// Concatenate two optional patch bodies with a blank line separator.
+fn combine_patches(staged: Option<String>, unstaged: Option<String>) -> Option<String> {
+    match (staged, unstaged) {
+        (None, None) => None,
+        (Some(s), None) => Some(s),
+        (None, Some(u)) => Some(u),
+        (Some(s), Some(u)) => Some(format!("{}\n{}", s, u)),
     }
 }
 

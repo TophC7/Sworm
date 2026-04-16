@@ -215,6 +215,7 @@
         <div class="h-full overflow-y-auto">
           <GitFileTree
             {summary}
+            {projectId}
             {projectPath}
             {hasCommits}
             {onFileClick}

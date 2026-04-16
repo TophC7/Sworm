@@ -12,6 +12,7 @@
     onToggleDir,
     onFileClick,
     onFileDblClick,
+    onFileContextMenu,
     fileTrailing
   }: {
     nodes: FileTreeNode<T>[]
@@ -21,6 +22,7 @@
     onToggleDir: (path: string) => void
     onFileClick?: (node: FileTreeNode<T>) => void
     onFileDblClick?: (node: FileTreeNode<T>) => void
+    onFileContextMenu?: (e: MouseEvent, node: FileTreeNode<T>) => void
     fileTrailing?: Snippet<[FileTreeNode<T>]>
   } = $props()
 </script>
@@ -39,6 +41,11 @@
           class="relative flex w-full cursor-pointer items-center gap-1 border-none bg-transparent py-0.5 text-left text-[0.72rem] text-muted hover:bg-surface"
           style="padding-left: {depth * 12 + 10}px"
           onclick={() => onToggleDir(node.path)}
+          oncontextmenu={(e) => {
+            if (onFileContextMenu) {
+              onFileContextMenu(e, node)
+            }
+          }}
         >
           {@render indentGuides(depth)}
           <FileIcon filename={node.name} folder expanded={!isCollapsed(node.path)} size={14} />
@@ -61,6 +68,11 @@
       style="padding-left: {depth * 12 + 10}px"
       onclick={() => onFileClick?.(node)}
       ondblclick={() => onFileDblClick?.(node)}
+      oncontextmenu={(e) => {
+        if (onFileContextMenu) {
+          onFileContextMenu(e, node)
+        }
+      }}
     >
       {@render indentGuides(depth)}
       <FileIcon filename={node.name} size={14} />

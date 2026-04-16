@@ -23,6 +23,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             app.manage(state);
@@ -40,6 +41,8 @@ pub fn run() {
             commands::app::db_smoke_test,
             commands::app::keyring_smoke_test,
             commands::app::env_probe,
+            commands::app::clipboard_copy_files,
+            commands::app::clipboard_read_files,
             // Project commands
             commands::projects::project_select_directory,
             commands::projects::project_add,
@@ -82,6 +85,10 @@ pub fn run() {
             // File commands
             commands::files::file_read,
             commands::files::file_write,
+            commands::files::file_create_dir,
+            commands::files::file_rename,
+            commands::files::file_delete,
+            commands::files::file_paste,
             commands::files::files_list_all,
             // Git commands
             commands::git::git_get_summary,
@@ -93,8 +100,13 @@ pub fn run() {
             commands::git::git_get_working_diffs,
             // Git write commands
             commands::git::git_stage_all,
+            commands::git::git_stage_files,
             commands::git::git_unstage_all,
+            commands::git::git_unstage_files,
             commands::git::git_discard_all,
+            commands::git::git_discard_files,
+            commands::git::git_get_full_patch,
+            commands::git::git_get_path_patch,
             commands::git::git_commit,
             commands::git::git_undo_last_commit,
             commands::git::git_push,

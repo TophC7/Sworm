@@ -1,22 +1,32 @@
 <script lang="ts">
-  import { SvelteSet } from 'svelte/reactivity'
-  import type { GitChange, GitSummary } from '$lib/types/backend'
-  import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
+  import { backend } from '$lib/api/backend'
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
+  import GitContextMenu from '$lib/components/git/GitContextMenu.svelte'
+  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
+  import { Button, IconButton } from '$lib/components/ui/button'
+  import { ButtonGroup } from '$lib/components/ui/button-group'
   import {
-    DropdownMenuRoot,
-    DropdownMenuTrigger,
     DropdownMenuContent,
     DropdownMenuItem,
-    DropdownMenuSeparator
+    DropdownMenuRoot,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
-  import { ButtonGroup } from '$lib/components/ui/button-group'
-  import { IconButton } from '$lib/components/ui/button'
-  import { FileDiff, MinusCircle, PlusCircle, Trash2, PackageIcon, ChevronDown } from '$lib/icons/lucideExports'
-  import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
+  import { Textarea } from '$lib/components/ui/input'
+  import { ChevronDown, FileDiff, MinusCircle, PackageIcon, PlusCircle, Trash2 } from '$lib/icons/lucideExports'
+  import { runGitAction } from '$lib/stores/git.svelte'
+  import { addEditorTab, addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
+  import type { GitChange, GitSummary } from '$lib/types/backend'
+  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
+  import { join } from '@tauri-apps/api/path'
+  import { revealItemInDir } from '@tauri-apps/plugin-opener'
+  import { SvelteSet } from 'svelte/reactivity'
 
   let {
     summary,
+    projectId,
     projectPath,
     hasCommits = false,
     onFileClick,
@@ -34,6 +44,7 @@
     onFetch
   }: {
     summary: GitSummary
+    projectId: string
     projectPath: string
     hasCommits?: boolean
     onFileClick?: (filePath: string, staged: boolean) => void
@@ -54,6 +65,14 @@
   let collapsedDirs = new SvelteSet<string>()
   let commitMessage = $state('')
   let committing = $state(false)
+
+  let contextFilePath = $state<string | null>(null)
+  let contextTargetType = $state<'file' | 'directory' | null>(null)
+  let contextIsStaged = $state(false)
+
+  let discardConfirmOpen = $state(false)
+  let discardTarget = $state<string | null>(null)
+  let discardTargetType = $state<'file' | 'directory' | null>(null)
 
   $effect(() => {
     projectPath
@@ -92,27 +111,126 @@
       handleCommit()
     }
   }
+
+  function handleContextMenu(_e: MouseEvent, node: FileTreeNode<GitChange>, staged: boolean) {
+    contextFilePath = node.change?.path ?? node.path
+    contextTargetType = node.type
+    contextIsStaged = staged
+  }
+
+  function resetContextTarget() {
+    contextFilePath = null
+    contextTargetType = null
+    contextIsStaged = false
+  }
+
+  function getFilesUnderPath(dirPath: string, staged: boolean): string[] {
+    const changes = staged ? stagedFiles : unstagedFiles
+    return changes.filter((c) => c.path.startsWith(dirPath + '/')).map((c) => c.path)
+  }
+
+  function handleCtxOpenFile() {
+    if (!contextFilePath) return
+    addEditorTab(projectId, contextFilePath)
+  }
+
+  function handleCtxOpenFileHead() {
+    if (!contextFilePath) return
+    addReadonlyEditorTab(projectId, contextFilePath, 'HEAD', 'HEAD')
+  }
+
+  function handleCtxStage() {
+    if (!contextFilePath) return
+    const files = contextTargetType === 'directory' ? getFilesUnderPath(contextFilePath, false) : [contextFilePath]
+    void runGitAction(projectId, projectPath, (path) => backend.git.stageFiles(path, files))
+  }
+
+  function handleCtxUnstage() {
+    if (!contextFilePath) return
+    const files = contextTargetType === 'directory' ? getFilesUnderPath(contextFilePath, true) : [contextFilePath]
+    void runGitAction(projectId, projectPath, (path) => backend.git.unstageFiles(path, files))
+  }
+
+  function handleCtxDiscard() {
+    if (!contextFilePath) return
+    discardTarget = contextFilePath
+    discardTargetType = contextTargetType
+    discardConfirmOpen = true
+  }
+
+  async function confirmDiscard() {
+    if (!discardTarget) return
+    const files =
+      discardTargetType === 'directory' ? getFilesUnderPath(discardTarget, contextIsStaged) : [discardTarget]
+    try {
+      await runGitAction(projectId, projectPath, (path) => backend.git.discardFiles(path, files))
+    } catch (e) {
+      console.error('Discard failed:', e)
+    } finally {
+      discardConfirmOpen = false
+      discardTarget = null
+      discardTargetType = null
+    }
+  }
+
+  async function handleCtxReveal() {
+    if (!contextFilePath) return
+    const absPath = await join(projectPath, contextFilePath)
+    await revealItemInDir(absPath)
+  }
+
+  async function handleCtxCopyPath() {
+    if (!contextFilePath) return
+    const absPath = await join(projectPath, contextFilePath)
+    await copyToClipboard(absPath)
+  }
+
+  async function handleCtxCopyRelativePath() {
+    if (!contextFilePath) return
+    await copyToClipboard(contextFilePath)
+  }
+
+  async function handleCtxCopyPatch() {
+    if (!contextFilePath) return
+    try {
+      const patch = await backend.git.getPathPatch(projectPath, [contextFilePath], contextIsStaged)
+      if (patch) await copyToClipboard(patch)
+    } catch (e) {
+      console.error('Copy patch failed:', e)
+    }
+  }
+
+  async function handleCtxCopyFolderPatch() {
+    if (!contextFilePath) return
+    const files = getFilesUnderPath(contextFilePath, contextIsStaged)
+    if (files.length === 0) return
+    try {
+      const patch = await backend.git.getPathPatch(projectPath, files, contextIsStaged)
+      if (patch) await copyToClipboard(patch)
+    } catch (e) {
+      console.error('Copy folder patch failed:', e)
+    }
+  }
+
+  async function handleCtxCopyFullPatch() {
+    try {
+      const patch = await backend.git.getFullPatch(projectPath)
+      if (patch) await copyToClipboard(patch)
+      else console.warn('Copy full patch: no diff output')
+    } catch (e) {
+      console.error('Copy full patch failed:', e)
+    }
+  }
 </script>
 
-<div class="text-[0.78rem]">
+<div class="flex min-h-full flex-col text-[0.78rem]">
   <div class="border-b border-edge px-2.5 py-2">
-    <textarea
-      class="w-full resize-none rounded border border-edge bg-surface px-2 py-1.5 text-[0.75rem] text-fg placeholder:text-subtle focus:border-accent/50 focus:outline-none"
-      rows={2}
-      placeholder="Commit message..."
-      bind:value={commitMessage}
-      onkeydown={handleKeydown}
-    ></textarea>
+    <Textarea rows={2} placeholder="Commit message..." bind:value={commitMessage} onkeydown={handleKeydown} />
     <div class="mt-1.5">
       <ButtonGroup class="w-full">
-        <button
-          data-slot="button"
-          class="flex-1 rounded border border-edge bg-raised px-2.5 py-1 text-[0.68rem] font-medium text-fg transition-colors hover:border-accent hover:text-bright disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={!canCommit}
-          onclick={handleCommit}
-        >
+        <Button variant="default" size="sm" class="flex-1 rounded" disabled={!canCommit} onclick={handleCommit}>
           Commit{stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}
-        </button>
+        </Button>
         <DropdownMenuRoot>
           <DropdownMenuTrigger
             data-slot="button"
@@ -135,10 +253,6 @@
       </ButtonGroup>
     </div>
   </div>
-
-  {#if stagedTree.length === 0 && unstagedTree.length === 0}
-    <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No changes.</div>
-  {/if}
 
   {#snippet fileTrailing(node: FileTreeNode<GitChange>)}
     {#if node.change}
@@ -223,12 +337,50 @@
           onToggleDir={(path) => toggleDir(keySuffix, path)}
           onFileClick={(node) => node.change && onFileClick?.(node.change.path, node.change.staged)}
           onFileDblClick={() => onPersistTab?.()}
+          onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
           {fileTrailing}
         />
       </div>
     {/if}
   {/snippet}
 
-  {@render fileGroup('Staged', stagedTree, 'staged', true)}
-  {@render fileGroup('Changes', unstagedTree, 'unstaged', false)}
+  <GitContextMenu
+    filePath={contextFilePath}
+    targetType={contextTargetType}
+    isStaged={contextIsStaged}
+    onOpenFile={handleCtxOpenFile}
+    onOpenFileHead={handleCtxOpenFileHead}
+    onStage={handleCtxStage}
+    onUnstage={handleCtxUnstage}
+    onDiscard={handleCtxDiscard}
+    onRevealInFolder={handleCtxReveal}
+    onCopyPath={handleCtxCopyPath}
+    onCopyRelativePath={handleCtxCopyRelativePath}
+    onCopyPatch={handleCtxCopyPatch}
+    onCopyFolderPatch={handleCtxCopyFolderPatch}
+    onPush={() => onPush?.()}
+    onPull={() => onPull?.()}
+    onFetch={() => onFetch?.()}
+    onCopyFullPatch={handleCtxCopyFullPatch}
+    onResetTarget={resetContextTarget}
+  >
+    {#if stagedTree.length === 0 && unstagedTree.length === 0}
+      <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No changes.</div>
+    {/if}
+
+    {@render fileGroup('Staged', stagedTree, 'staged', true)}
+    {@render fileGroup('Changes', unstagedTree, 'unstaged', false)}
+  </GitContextMenu>
 </div>
+
+<ConfirmDialog
+  open={discardConfirmOpen}
+  title="Discard Changes?"
+  message="This will permanently discard changes for {discardTarget}. This cannot be undone."
+  confirmLabel="Discard"
+  onConfirm={confirmDiscard}
+  onCancel={() => {
+    discardConfirmOpen = false
+    discardTarget = null
+  }}
+/>

@@ -16,6 +16,7 @@ export { default as ChevronsUpDown } from '@lucide/svelte/icons/chevrons-up-down
 export { default as Circle } from '@lucide/svelte/icons/circle'
 export { default as CircleAlert } from '@lucide/svelte/icons/circle-alert'
 export { default as ClipboardIcon } from '@lucide/svelte/icons/clipboard'
+export { default as ClipboardPasteIcon } from '@lucide/svelte/icons/clipboard-paste'
 export { default as CopyIcon } from '@lucide/svelte/icons/copy'
 export { default as Eye } from '@lucide/svelte/icons/eye'
 export { default as ExternalLinkIcon } from '@lucide/svelte/icons/external-link'

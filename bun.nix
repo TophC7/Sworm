@@ -329,6 +329,10 @@
     url = "https://registry.npmjs.org/@tauri-apps/cli/-/cli-2.10.1.tgz";
     hash = "sha512-jQNGF/5quwORdZSSLtTluyKQ+o6SMa/AUICfhf4egCGFdMHqWssApVgYSbg+jmrZoc8e1DscNvjTnXtlHLS11g==";
   };
+  "@tauri-apps/plugin-clipboard-manager@2.3.2" = fetchurl {
+    url = "https://registry.npmjs.org/@tauri-apps/plugin-clipboard-manager/-/plugin-clipboard-manager-2.3.2.tgz";
+    hash = "sha512-CUlb5Hqi2oZbcZf4VUyUH53XWPPdtpw43EUpCza5HWZJwxEoDowFzNUDt1tRUXA8Uq+XPn17Ysfptip33sG4eQ==";
+  };
   "@tauri-apps/plugin-opener@2.5.3" = fetchurl {
     url = "https://registry.npmjs.org/@tauri-apps/plugin-opener/-/plugin-opener-2.5.3.tgz";
     hash = "sha512-CCcUltXMOfUEArbf3db3kCE7Ggy1ExBEBl51Ko2ODJ6GDYHRp1nSNlQm5uNCFY5k7/ufaK5Ib3Du/Zir19IYQQ==";

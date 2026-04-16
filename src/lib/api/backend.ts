@@ -50,6 +50,14 @@ export const backend = {
     },
     envProbe(): Promise<EnvProbeResult> {
       return invoke<EnvProbeResult>('env_probe')
+    },
+    /** Copy file paths to the system clipboard in file-manager format. */
+    clipboardCopyFiles(paths: string[], op: 'copy' | 'cut'): Promise<void> {
+      return invoke<void>('clipboard_copy_files', { paths, op })
+    },
+    /** Read file URIs from the system clipboard. Returns null if none. */
+    clipboardReadFiles(): Promise<{ op: 'copy' | 'cut'; paths: string[] } | null> {
+      return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
     }
   },
 
@@ -176,11 +184,26 @@ export const backend = {
     stageAll(path: string): Promise<void> {
       return invoke<void>('git_stage_all', { path })
     },
+    stageFiles(path: string, files: string[]): Promise<void> {
+      return invoke<void>('git_stage_files', { path, files })
+    },
     unstageAll(path: string): Promise<void> {
       return invoke<void>('git_unstage_all', { path })
     },
+    unstageFiles(path: string, files: string[]): Promise<void> {
+      return invoke<void>('git_unstage_files', { path, files })
+    },
     discardAll(path: string): Promise<void> {
       return invoke<void>('git_discard_all', { path })
+    },
+    discardFiles(path: string, files: string[]): Promise<void> {
+      return invoke<void>('git_discard_files', { path, files })
+    },
+    getFullPatch(path: string): Promise<string | null> {
+      return invoke<string | null>('git_get_full_patch', { path })
+    },
+    getPathPatch(path: string, files: string[], staged: boolean | null = null): Promise<string | null> {
+      return invoke<string | null>('git_get_path_patch', { path, files, staged })
     },
     commit(path: string, message: string): Promise<string> {
       return invoke<string>('git_commit', { path, message })
@@ -251,6 +274,18 @@ export const backend = {
     },
     write(projectPath: string, filePath: string, content: string): Promise<void> {
       return invoke<void>('file_write', { projectPath, filePath, content })
+    },
+    createDir(projectPath: string, dirPath: string): Promise<void> {
+      return invoke<void>('file_create_dir', { projectPath, dirPath })
+    },
+    rename(projectPath: string, oldPath: string, newPath: string): Promise<void> {
+      return invoke<void>('file_rename', { projectPath, oldPath, newPath })
+    },
+    delete(projectPath: string, filePath: string): Promise<void> {
+      return invoke<void>('file_delete', { projectPath, filePath })
+    },
+    paste(projectPath: string, targetDir: string, op: 'copy' | 'cut', sources: string[]): Promise<string[]> {
+      return invoke<string[]>('file_paste', { projectPath, targetDir, op, sources })
     }
   },
 

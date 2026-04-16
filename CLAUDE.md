@@ -65,6 +65,13 @@ Do not claim lint/format/test commands exist if they are not defined in the curr
 - Prefer simple route components and app-shell state over web-centric patterns such as auth redirects, SEO metadata work, or server-first data loading.
 - Check existing Sworm patterns before introducing a new component, state, or routing style.
 
+## Component Reuse
+
+- Import UI primitives from the project wrappers in `src/lib/components/ui/*`, never from `bits-ui` directly. The wrappers apply project styling tokens and establish consistent surface behavior.
+- Before writing a styled `<button>`, `<input>`, `<textarea>`, or modal scaffolding (`<div class="fixed inset-0 ...">`), check `src/lib/components/ui/` for an existing primitive. Common ones: `Button`, `IconButton`, `Input`, `Textarea`, `DialogRoot` + `DialogContent`, `DropdownMenu*`, `ContextMenu*`, `Tooltip`.
+- If a Bits UI primitive is needed and no wrapper exists for it yet, add the wrapper under `src/lib/components/ui/*` first (mirroring the sibling wrappers' pattern), then consume it from feature code.
+- If the same markup/class string appears twice across components, extract a primitive before it appears a third time.
+
 ## Styling Rules
 
 - Use Tailwind utility classes for all styling. Do not add scoped `<style>` blocks unless Tailwind cannot express the rule (e.g. pseudo-elements, complex child selectors).

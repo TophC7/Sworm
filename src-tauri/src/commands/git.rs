@@ -158,12 +158,38 @@ pub fn git_stage_all(path: String, state: tauri::State<'_, AppState>) -> Result<
         .map_err(ApiError::Internal)
 }
 
+/// Stage specific files or directories.
+#[tauri::command]
+pub fn git_stage_files(
+    path: String,
+    files: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .stage_files(Path::new(&path), &files)
+        .map_err(ApiError::Internal)
+}
+
 /// Unstage all staged changes.
 #[tauri::command]
 pub fn git_unstage_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state
         .git
         .unstage_all(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Unstage specific files or directories.
+#[tauri::command]
+pub fn git_unstage_files(
+    path: String,
+    files: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .unstage_files(Path::new(&path), &files)
         .map_err(ApiError::Internal)
 }
 
@@ -174,6 +200,39 @@ pub fn git_discard_all(path: String, state: tauri::State<'_, AppState>) -> Resul
         .git
         .discard_all(Path::new(&path))
         .map_err(ApiError::Internal)
+}
+
+/// Discard changes for specific files or directories.
+#[tauri::command]
+pub fn git_discard_files(
+    path: String,
+    files: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .discard_files(Path::new(&path), &files)
+        .map_err(ApiError::Internal)
+}
+
+/// Get the combined patch for all working-tree changes.
+#[tauri::command]
+pub fn git_get_full_patch(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    Ok(state.git.get_full_patch(Path::new(&path)))
+}
+
+/// Get patch for specific paths, optionally scoped to staged or unstaged only.
+#[tauri::command]
+pub fn git_get_path_patch(
+    path: String,
+    files: Vec<String>,
+    staged: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    Ok(state.git.get_path_patch(Path::new(&path), &files, staged))
 }
 
 /// Create a commit with the given message.
