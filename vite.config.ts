@@ -20,6 +20,28 @@ export default defineConfig({
   // Prevent vite from obscuring Rust errors
   clearScreen: false,
 
+  // Pre-bundle Monaco worker entry points so dev doesn't re-scan them on each load.
+  optimizeDeps: {
+    include: [
+      'monaco-editor/esm/vs/editor/editor.worker',
+      'monaco-editor/esm/vs/language/typescript/ts.worker',
+      'monaco-editor/esm/vs/language/json/json.worker',
+      'monaco-editor/esm/vs/language/css/css.worker',
+      'monaco-editor/esm/vs/language/html/html.worker'
+    ]
+  },
+
+  build: {
+    rollupOptions: {
+      output: {
+        // Isolate Monaco into its own chunk — loaded lazily on first editor tab.
+        manualChunks(id) {
+          if (id.includes('monaco-editor')) return 'monaco'
+        }
+      }
+    }
+  },
+
   server: {
     port: 1420,
     strictPort: true,

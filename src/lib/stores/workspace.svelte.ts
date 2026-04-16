@@ -62,16 +62,20 @@ export interface StashTab {
   locked: boolean
 }
 
-export interface MarkdownTab {
-  kind: 'markdown'
+export interface EditorTab {
+  kind: 'editor'
   id: TabId
   filePath: string
   fileName: string
   temporary: boolean
   locked: boolean
+  /** Git ref for read-only snapshots (e.g. "abc1234" or "stash@{0}"). */
+  gitRef?: string
+  /** Display label for the snapshot (e.g. "abc1234" or "stash-0"). */
+  refLabel?: string
 }
 
-export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | MarkdownTab
+export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | EditorTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -337,8 +341,8 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'changes' || a.staged !== b.staged || a.initialFile !== b.initialFile
     case 'stash':
       return b.kind !== 'stash' || a.stashIndex !== b.stashIndex || a.initialFile !== b.initialFile
-    case 'markdown':
-      return b.kind !== 'markdown' || a.filePath !== b.filePath
+    case 'editor':
+      return b.kind !== 'editor' || a.filePath !== b.filePath || a.gitRef !== b.gitRef
     default:
       return true
   }
@@ -464,14 +468,32 @@ export function addStashTab(
   )
 }
 
-export function addMarkdownTab(projectId: string, filePath: string, temporary = true): TabId {
+export function addEditorTab(projectId: string, filePath: string, temporary = true): TabId {
   const fileName = filePath.split('/').pop() ?? filePath
   return addContentTab(
     projectId,
-    'markdown',
-    (id): MarkdownTab => ({ kind: 'markdown', id, filePath, fileName, temporary, locked: false }),
+    'editor',
+    (id): EditorTab => ({ kind: 'editor', id, filePath, fileName, temporary, locked: false }),
     temporary,
-    (t) => t.kind === 'markdown' && t.filePath === filePath && !t.temporary
+    (t) => t.kind === 'editor' && t.filePath === filePath && !t.gitRef && !t.temporary
+  )
+}
+
+/** Open a read-only editor tab showing a file at a specific git revision. */
+export function addReadonlyEditorTab(
+  projectId: string,
+  filePath: string,
+  gitRef: string,
+  refLabel: string,
+  temporary = true
+): TabId {
+  const fileName = filePath.split('/').pop() ?? filePath
+  return addContentTab(
+    projectId,
+    'editor',
+    (id): EditorTab => ({ kind: 'editor', id, filePath, fileName, temporary, locked: false, gitRef, refLabel }),
+    temporary,
+    (t) => t.kind === 'editor' && t.filePath === filePath && t.gitRef === gitRef && !t.temporary
   )
 }
 

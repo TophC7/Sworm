@@ -15,7 +15,7 @@
   import ChangesView from '$lib/components/ChangesView.svelte'
   import CommitView from '$lib/components/CommitView.svelte'
   import StashView from '$lib/components/StashView.svelte'
-  import MarkdownView from '$lib/components/markdown/MarkdownView.svelte'
+  import FileEditor from '$lib/components/editor/FileEditor.svelte'
   import NewSessionView from '$lib/components/session/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
@@ -170,8 +170,14 @@
       <ChangesView {projectId} {projectPath} staged={activeTab.staged} initialFile={activeTab.initialFile} />
     {:else if activeTab.kind === 'stash'}
       <StashView stashIndex={activeTab.stashIndex} {projectId} {projectPath} initialFile={activeTab.initialFile} />
-    {:else if activeTab.kind === 'markdown'}
-      <MarkdownView filePath={activeTab.filePath} {projectPath} />
+    {:else if activeTab.kind === 'editor'}
+      <FileEditor
+        filePath={activeTab.filePath}
+        {projectPath}
+        {projectId}
+        gitRef={activeTab.gitRef}
+        refLabel={activeTab.refLabel}
+      />
     {/if}
 
     {#if showLockedOverlay}

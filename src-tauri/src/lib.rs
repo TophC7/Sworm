@@ -105,6 +105,7 @@ pub fn run() {
             commands::git::git_stash_pop,
             commands::git::git_stash_drop,
             commands::git::git_get_stash_diffs,
+            commands::git::git_show_file,
             commands::git::git_init,
             commands::git::git_clone_in_place,
             // PTY demo commands (kept for backwards compat)

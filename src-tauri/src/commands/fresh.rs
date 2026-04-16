@@ -127,7 +127,7 @@ pub fn editor_open_at_stash(
     write_readonly_snapshot(&project_id, &label, &file_path, &content)
 }
 
-fn git_show(repo_path: &Path, rev_spec: &str) -> Option<String> {
+pub(crate) fn git_show(repo_path: &Path, rev_spec: &str) -> Option<String> {
     let output = Command::new("git")
         .args(["--no-optional-locks", "show", rev_spec])
         .current_dir(repo_path)

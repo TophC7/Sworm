@@ -10,6 +10,7 @@
   import { RotateCw, SquareArrowOutUpRight } from '$lib/icons/lucideExports'
   import { openFile } from '$lib/utils/openFile'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
+  import { getFocusedTab } from '$lib/stores/workspace.svelte'
 
   let {
     projectId,
@@ -44,8 +45,12 @@
   }
 
   function handleFileClick(filePath: string) {
-    openFile(projectId, projectPath, filePath).catch((e) => console.error('Failed to open file:', e))
+    openFile(projectId, projectPath, filePath)
   }
+
+  // Active file from the focused editor tab
+  let focusedTab = $derived(getFocusedTab(projectId))
+  let activeFilePath = $derived(focusedTab?.kind === 'editor' ? focusedTab.filePath : null)
 
   // Path → status letter lookup from git state (prefer unstaged over staged)
   let gitSummary = $derived(getGitSummary(projectId))
@@ -58,6 +63,19 @@
       }
     }
     return map
+  })
+
+  // Directories that contain changed files (any ancestor of a changed path).
+  let dirsWithChanges = $derived.by(() => {
+    const dirs = new Set<string>()
+    for (const filePath of gitStatusMap.keys()) {
+      const parts = filePath.split('/')
+      // Walk each ancestor: "a" → "a/b" → "a/b/c" (skip the filename)
+      for (let i = 1; i < parts.length; i++) {
+        dirs.add(parts.slice(0, i).join('/'))
+      }
+    }
+    return dirs
   })
 
   // Reload file list when project changes
@@ -92,6 +110,8 @@
       <FileTreeItems
         nodes={fileTree}
         isCollapsed={(path) => !expandedDirs.has(path)}
+        isActive={(path) => path === activeFilePath}
+        hasDirChanges={(path) => dirsWithChanges.has(path)}
         onToggleDir={toggleDir}
         onFileClick={(node) => {
           if (node.change?.path) handleFileClick(node.change.path)

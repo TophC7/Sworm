@@ -7,6 +7,8 @@
   let {
     nodes,
     isCollapsed,
+    isActive,
+    hasDirChanges,
     onToggleDir,
     onFileClick,
     onFileDblClick,
@@ -14,6 +16,8 @@
   }: {
     nodes: FileTreeNode<T>[]
     isCollapsed: (path: string) => boolean
+    isActive?: (path: string) => boolean
+    hasDirChanges?: (dirPath: string) => boolean
     onToggleDir: (path: string) => void
     onFileClick?: (node: FileTreeNode<T>) => void
     onFileDblClick?: (node: FileTreeNode<T>) => void
@@ -39,6 +43,9 @@
           {@render indentGuides(depth)}
           <FileIcon filename={node.name} folder expanded={!isCollapsed(node.path)} size={14} />
           <span class="truncate">{node.name}</span>
+          {#if hasDirChanges?.(node.path)}
+            <span class="mr-2 ml-auto size-1.5 shrink-0 rounded-full bg-accent"></span>
+          {/if}
         </button>
       {/snippet}
       {#each node.children as child (child.path)}
@@ -46,8 +53,11 @@
       {/each}
     </TreeNode>
   {:else if node.change}
+    {@const active = isActive?.(node.change.path) ?? false}
     <button
-      class="relative flex w-full cursor-pointer items-center gap-1.5 border-none bg-transparent py-0.5 text-left text-[0.75rem] text-fg hover:bg-surface"
+      class="relative flex w-full cursor-pointer items-center gap-1.5 border-none py-0.5 text-left text-[0.75rem] hover:bg-surface {active
+        ? 'bg-accent/10 text-bright'
+        : 'bg-transparent text-fg'}"
       style="padding-left: {depth * 12 + 10}px"
       onclick={() => onFileClick?.(node)}
       ondblclick={() => onFileDblClick?.(node)}

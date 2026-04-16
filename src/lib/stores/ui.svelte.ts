@@ -7,7 +7,7 @@ export type SidebarView = 'git' | 'sessions' | 'files'
 
 let sidebarWidth = $state(280)
 let sidebarCollapsed = $state(false)
-let sidebarView = $state<SidebarView>('git')
+let sidebarView = $state<SidebarView>('files')
 let zoomLevel = $state(1.0)
 
 // ---------------------------------------------------------------------------

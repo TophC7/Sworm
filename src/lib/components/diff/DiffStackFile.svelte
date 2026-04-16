@@ -7,8 +7,8 @@
 <script lang="ts">
   import { DiffMode } from '$lib/diff/types'
   import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
-  import { backend } from '$lib/api/backend'
-  import { openFile, ensureFreshSession } from '$lib/utils/openFile'
+  import { openFile } from '$lib/utils/openFile'
+  import { addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
   import DiffViewer from '$lib/components/diff/DiffViewer.svelte'
   import LazyRender from '$lib/components/LazyRender.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
@@ -47,39 +47,21 @@
     onToggle
   }: Props = $props()
 
-  async function openInEditor(filePath: string) {
+  function openInEditor(filePath: string) {
     if (!projectId || !projectPath) return
-    try {
-      await openFile(projectId, projectPath, filePath)
-    } catch (err) {
-      console.error('editor:', err)
-    }
+    openFile(projectId, projectPath, filePath)
   }
 
-  async function viewAtCommit(filePath: string) {
-    const pid = projectId,
-      pp = projectPath,
-      ch = commitHash
-    if (!pid || !pp || !ch) return
-    try {
-      await ensureFreshSession(pid)
-      await backend.editor.openAtCommit(pid, pp, ch, filePath)
-    } catch (err) {
-      console.error('editor:', err)
-    }
+  function viewAtCommit(filePath: string) {
+    if (!projectId || !commitHash) return
+    const short = commitHash.slice(0, 7)
+    addReadonlyEditorTab(projectId, filePath, commitHash, short)
   }
 
-  async function viewAtStash(filePath: string) {
-    const pid = projectId,
-      pp = projectPath,
-      si = stashIndex
-    if (!pid || !pp || si == null) return
-    try {
-      await ensureFreshSession(pid)
-      await backend.editor.openAtStash(pid, pp, si, filePath)
-    } catch (err) {
-      console.error('editor:', err)
-    }
+  function viewAtStash(filePath: string) {
+    if (!projectId || stashIndex == null) return
+    const stashRef = `stash@{${stashIndex}}`
+    addReadonlyEditorTab(projectId, filePath, stashRef, `stash-${stashIndex}`)
   }
 </script>
 

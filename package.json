@@ -38,6 +38,7 @@
     "@xterm/xterm": "6.1.0-beta.197",
     "bits-ui": "^2.17.3",
     "clsx": "^2.1.1",
+    "monaco-editor": "^0.55.1",
     "motion-sv": "^0.1.12",
     "paneforge": "^1.0.2",
     "shiki": "^4.0.2",

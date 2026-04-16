@@ -234,6 +234,10 @@ export const backend = {
     },
     openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
       return invoke('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
+    },
+    /** Return file content at a git revision (ref and path validated server-side). */
+    showFile(projectPath: string, gitRef: string, filePath: string): Promise<string> {
+      return invoke<string>('git_show_file', { projectPath, gitRef, filePath })
     }
   },
 

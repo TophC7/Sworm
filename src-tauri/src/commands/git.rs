@@ -15,6 +15,27 @@ pub(crate) fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
     }
 }
 
+/// Accept hex commit hashes OR `stash@{N}` references.
+pub(crate) fn validated_git_rev(rev: &str) -> Result<(), ApiError> {
+    // Hex commit hash (7–40 chars)
+    if rev.len() >= 7 && rev.len() <= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    // stash@{N} format
+    if let Some(inner) = rev
+        .strip_prefix("stash@{")
+        .and_then(|s| s.strip_suffix('}'))
+    {
+        if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(());
+        }
+    }
+    Err(ApiError::InvalidArgument(format!(
+        "Invalid git revision: {}",
+        rev
+    )))
+}
+
 /// Validate that `file_path` stays within `project_path` after canonicalization.
 ///
 /// Returns `Ok(())` on success — callers pass the original paths to the
@@ -284,6 +305,23 @@ pub fn git_get_stash_diffs(
     state: tauri::State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, String>, ApiError> {
     Ok(state.git.get_stash_diffs(Path::new(&path), index))
+}
+
+/// Return file content at a specific git revision.
+/// Validates both the ref and file path before executing.
+#[tauri::command]
+pub fn git_show_file(
+    project_path: String,
+    git_ref: String,
+    file_path: String,
+) -> Result<String, ApiError> {
+    validated_git_rev(&git_ref)?;
+    validated_project_file(&project_path, &file_path)?;
+
+    let repo = Path::new(&project_path);
+    let rev_spec = format!("{}:{}", git_ref, file_path);
+    super::fresh::git_show(repo, &rev_spec)
+        .ok_or_else(|| ApiError::NotFound(format!("Could not resolve {}:{}", git_ref, file_path)))
 }
 
 /// Initialize a new git repository in the given directory.

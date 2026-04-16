@@ -1,17 +1,12 @@
 // Unified file-open logic.
 //
-// Routes files to the appropriate handler: built-in viewers for
-// supported types (markdown), Fresh editor for everything else.
+// All text files open in the built-in Monaco editor tab.
+// Fresh sessions remain available for agent CLIs but no longer
+// participate in file opening.
 
 import { backend } from '$lib/api/backend'
-import { getAllTabs, addSessionTab, addMarkdownTab } from '$lib/stores/workspace.svelte'
+import { getAllTabs, addSessionTab, addEditorTab } from '$lib/stores/workspace.svelte'
 import { createSession } from '$lib/stores/sessions.svelte'
-
-const BUILTIN_EXTENSIONS = ['.md', '.mdx']
-
-function isBuiltinFile(filePath: string): boolean {
-  return BUILTIN_EXTENSIONS.some((ext) => filePath.endsWith(ext))
-}
 
 /** Ensure a Fresh session tab exists for a project, creating one if needed. */
 export async function ensureFreshSession(projectId: string): Promise<void> {
@@ -42,16 +37,7 @@ async function waitForSessionReady(sessionId: string, timeoutMs = 8000): Promise
   }
 }
 
-/**
- * Open a file from the project — routes to the built-in viewer
- * for supported types, or to the Fresh editor for everything else.
- */
-export async function openFile(projectId: string, projectPath: string, filePath: string): Promise<void> {
-  if (isBuiltinFile(filePath)) {
-    addMarkdownTab(projectId, filePath)
-    return
-  }
-
-  await ensureFreshSession(projectId)
-  await backend.editor.openFile(projectId, projectPath, filePath)
+/** Open a file in the built-in editor tab. */
+export function openFile(projectId: string, _projectPath: string, filePath: string): void {
+  addEditorTab(projectId, filePath)
 }

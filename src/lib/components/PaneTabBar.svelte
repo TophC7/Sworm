@@ -96,8 +96,8 @@
         return tab.label
       case 'stash':
         return `stash@{${tab.stashIndex}}`
-      case 'markdown':
-        return tab.fileName
+      case 'editor':
+        return tab.refLabel ? `${tab.fileName} (${tab.refLabel})` : tab.fileName
     }
   }
 
@@ -246,7 +246,7 @@
           <GitCommitIcon size={14} class="shrink-0 text-accent" />
         {:else if tab.kind === 'stash'}
           <PackageIcon size={14} class="shrink-0 text-accent" />
-        {:else if tab.kind === 'markdown'}
+        {:else if tab.kind === 'editor'}
           <FileIcon filename={tab.fileName} size={14} />
         {:else}
           {@const icon = providerIcon(tab)}
