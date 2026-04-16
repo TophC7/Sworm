@@ -1,10 +1,11 @@
 <script lang="ts">
   import SvelteMarkdown from '@humanspeak/svelte-markdown'
+  import CodeBlock from './CodeBlock.svelte'
 
   let { source }: { source: string } = $props()
 </script>
 
-<div class="px-6 py-4 text-[0.82rem] leading-relaxed text-fg">
+<div class="markdown-preview px-6 py-4 text-[0.82rem] leading-relaxed text-fg">
   <SvelteMarkdown {source}>
     {#snippet heading({ depth, children })}
       {#if depth === 1}
@@ -42,10 +43,8 @@
       <code class="rounded bg-raised px-1 py-0.5 font-mono text-[0.78em] text-accent">{raw}</code>
     {/snippet}
 
-    {#snippet code({ text })}
-      <pre class="my-3 overflow-x-auto rounded-md border border-edge bg-surface p-3"><code
-          class="font-mono text-[0.78rem] text-fg">{text}</code
-        ></pre>
+    {#snippet code({ text, lang })}
+      <CodeBlock {text} {lang} />
     {/snippet}
 
     {#snippet blockquote({ children })}
@@ -60,12 +59,19 @@
       {/if}
     {/snippet}
 
-    {#snippet listitem({ children }: { children?: any })}
-      <li class="mb-1">{@render children?.()}</li>
+    {#snippet listitem({ children, task, checked }: { children?: any; task?: boolean; checked?: boolean })}
+      {#if task}
+        <li class="mb-1 list-none">
+          <input type="checkbox" {checked} disabled class="mr-2 align-middle accent-accent" />
+          {@render children?.()}
+        </li>
+      {:else}
+        <li class="mb-1">{@render children?.()}</li>
+      {/if}
     {/snippet}
 
     {#snippet hr()}
-      <hr class="my-6 border-edge" />
+      <hr class="my-6 h-[0.25em] border-0 bg-edge" />
     {/snippet}
 
     {#snippet table({ children })}
@@ -83,7 +89,7 @@
     {/snippet}
 
     {#snippet tablerow({ children }: { children?: any })}
-      <tr>{@render children?.()}</tr>
+      <tr class="even:bg-surface/30">{@render children?.()}</tr>
     {/snippet}
 
     {#snippet tablecell({ header, children }: { header: boolean; children?: any })}
