@@ -308,14 +308,25 @@ pub fn session_start(
     };
     let (resume_token, session_app_id) = match session.provider_id.as_str() {
         "claude_code" => {
-            // Always use --session-id for Claude Code. It's idempotent:
-            // creates the conversation if missing, resumes if it exists.
-            // --resume errors with "No conversation found" when the
-            // conversation data has been cleaned up or never completed.
+            // Claude CLI is NOT idempotent here:
+            //   `claude --session-id <uuid>` creates a new session and
+            //   errors with "Session ID <uuid> is already in use." if the
+            //   transcript file already exists.
+            //   `claude --resume <uuid>` resumes an existing session and
+            //   errors with "No conversation found" if it doesn't.
+            // So we must pick the right flag based on whether Claude has
+            // already written a transcript for this UUID.
             let token = session.provider_resume_token.clone().unwrap_or_else(|| {
                 SessionService::deterministic_session_uuid("claude", &session_id)
             });
-            (None, Some(token))
+            if crate::services::providers::claude_session_transcript_exists(
+                &session.cwd,
+                &token,
+            ) {
+                (Some(token), None)
+            } else {
+                (None, Some(token))
+            }
         }
         "copilot" => {
             // Copilot uses --resume for both new and existing sessions

@@ -2,7 +2,39 @@ use crate::models::provider::{
     PromptMode, ProviderConnectionStatus, ProviderId, ProviderStatus, ResumeMode, SessionIdMode,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::{info, warn};
+
+/// Encode a working directory the same way Claude Code does for its
+/// `~/.claude/projects/<dir>/<uuid>.jsonl` transcript layout: every `/`
+/// and `.` becomes `-`. Hyphens pass through unchanged.
+pub fn claude_project_dir_name(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
+/// Path to the Claude Code transcript file for a given cwd + session UUID.
+/// Returns None if `$HOME` is unset.
+pub fn claude_transcript_path(cwd: &str, session_uuid: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = claude_project_dir_name(cwd);
+    Some(
+        PathBuf::from(home)
+            .join(".claude")
+            .join("projects")
+            .join(dir)
+            .join(format!("{}.jsonl", session_uuid)),
+    )
+}
+
+/// Whether a Claude Code session transcript already exists on disk.
+/// Used to choose between `--session-id` (new) and `--resume` (existing).
+pub fn claude_session_transcript_exists(cwd: &str, session_uuid: &str) -> bool {
+    claude_transcript_path(cwd, session_uuid)
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
 
 /// Static provider definitions for Phase 1.
 #[allow(dead_code)]
@@ -390,5 +422,49 @@ fn detect_provider(
             message: None,
             install_hint: definition.install_hint.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Encoding observed in real ~/.claude/projects/* dirs.
+    #[test]
+    fn claude_project_dir_simple_path() {
+        assert_eq!(
+            claude_project_dir_name("/home/toph/Development/ADE"),
+            "-home-toph-Development-ADE"
+        );
+    }
+
+    #[test]
+    fn claude_project_dir_dot_in_segment() {
+        // `/home/toph/.catnip/workspace/KwahsCore/fluffy` was observed
+        // on disk as `-home-toph--catnip-workspace-KwahsCore-fluffy`.
+        assert_eq!(
+            claude_project_dir_name("/home/toph/.catnip/workspace/KwahsCore/fluffy"),
+            "-home-toph--catnip-workspace-KwahsCore-fluffy"
+        );
+    }
+
+    #[test]
+    fn claude_project_dir_hyphens_pass_through() {
+        // `/home/toph/Development/nerf-this` was observed on disk as
+        // `-home-toph-Development-nerf-this` (existing hyphens stay).
+        assert_eq!(
+            claude_project_dir_name("/home/toph/Development/nerf-this"),
+            "-home-toph-Development-nerf-this"
+        );
+    }
+
+    #[test]
+    fn claude_transcript_path_shape() {
+        std::env::set_var("HOME", "/tmp/fakehome");
+        let path = claude_transcript_path("/repo/x", "abc-123").unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/fakehome/.claude/projects/-repo-x/abc-123.jsonl")
+        );
     }
 }
