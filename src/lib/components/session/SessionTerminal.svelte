@@ -1,6 +1,6 @@
 <script lang="ts">
   import '@xterm/xterm/css/xterm.css'
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import type { Session, SessionStatus } from '$lib/types/backend'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import type { TerminalSessionManager } from '$lib/terminal/TerminalSessionManager'
@@ -18,9 +18,13 @@
   let containerEl: HTMLDivElement | undefined = $state(undefined)
   let manager: TerminalSessionManager | null = $state(null)
   let error = $state<string | null>(null)
+  let isHistorical = $state(false)
 
-  let mounted = false
   let attachedSessionId: string | null = null
+  // Generation counter invalidates stale awaits. Rapid A→B→A tab
+  // switches would otherwise have two attach calls in flight; the
+  // slower one would overwrite state the newer one already set.
+  let attachGen = 0
   let cleanupEventListener: (() => void) | null = null
   let cleanupErrorListener: (() => void) | null = null
 
@@ -41,10 +45,12 @@
     cleanupEventListener = nextManager.registerEventListener((event) => {
       if (event.type === 'started') {
         error = null
+        isHistorical = false
         onStatusChange?.('running')
       }
 
       if (event.type === 'exit') {
+        isHistorical = true
         onStatusChange?.('exited')
       }
     })
@@ -54,12 +60,13 @@
     })
   }
 
+  // loadTranscript must complete before attachLive so live bytes can't
+  // reorder ahead of history. Auto-start is reserved for genuinely
+  // fresh sessions — restored tabs stay historical until the user
+  // explicitly resumes.
   async function attachSession(nextSession: Session) {
-    if (!mounted || !containerEl) {
-      return
-    }
-
-    const switchingSessions = attachedSessionId !== nextSession.id
+    if (!containerEl) return
+    const gen = ++attachGen
 
     if (attachedSessionId && attachedSessionId !== nextSession.id) {
       sessionRegistry.detach(attachedSessionId)
@@ -67,27 +74,48 @@
     }
 
     const nextManager = await sessionRegistry.attach(nextSession.id, containerEl)
+    if (gen !== attachGen) return
     attachedSessionId = nextSession.id
     bindManager(nextManager)
 
-    // Auto-start when switching to a session whose PTY isn't active.
-    // Covers both webview-reload reconnection (status running/starting)
-    // and opening historical sessions from the sidebar (status stopped/exited/idle).
-    // Skip failed sessions so the user sees the error before retrying.
-    const shouldAutoStart = switchingSessions && !nextManager.isPtyActive() && nextSession.status !== 'failed'
+    if (nextManager.isPtyActive()) {
+      isHistorical = false
+      return
+    }
 
-    if (shouldAutoStart) {
-      try {
-        await nextManager.startPty(nextSession)
-      } catch (startError) {
-        error = String(startError)
-        onStatusChange?.('failed')
-      }
+    await nextManager.loadTranscript()
+    if (gen !== attachGen) return
+
+    let resumed = false
+    try {
+      resumed = await nextManager.attachLive(nextSession)
+    } catch (resumeError) {
+      error = String(resumeError)
+    }
+    if (gen !== attachGen) return
+
+    if (resumed) {
+      isHistorical = false
+      return
+    }
+
+    const isFreshlyCreated = nextSession.status === 'idle' && !nextManager.hasHistory()
+    if (!isFreshlyCreated) {
+      isHistorical = true
+      return
+    }
+
+    isHistorical = false
+    try {
+      await nextManager.startPty(nextSession)
+    } catch (startError) {
+      if (gen !== attachGen) return
+      error = String(startError)
+      onStatusChange?.('failed')
     }
   }
 
   onMount(() => {
-    mounted = true
     void attachSession(session)
 
     return () => {
@@ -98,23 +126,58 @@
     }
   })
 
+  // Re-attach only when the session *id* changes. Pane.svelte derives
+  // `session` from `sessions.find(...)`, and every status update in the
+  // sessions array yields a new object reference — tracking identity
+  // here would re-run attach on every status tick and storm the PTY
+  // with resizes.
   $effect(() => {
-    if (!mounted || !containerEl) {
-      return
+    const id = session.id
+    if (!containerEl) return
+    if (id === attachedSessionId) return
+    untrack(() => void attachSession(session))
+  })
+
+  // Effective input lock: disabled when the user has locked the tab
+  // OR when there is no live PTY (historical mode). Without this the
+  // user could type into a dead transcript and the keys would silently
+  // disappear.
+  $effect(() => {
+    manager?.setInputEnabled(!locked && !isHistorical)
+  })
+
+  async function resumeSession() {
+    if (!manager) return
+    error = null
+    try {
+      await manager.startPty(session)
+      isHistorical = false
+    } catch (startError) {
+      error = String(startError)
+      onStatusChange?.('failed')
     }
-
-    void attachSession(session)
-  })
-
-  $effect(() => {
-    manager?.setInputEnabled(!locked)
-  })
+  }
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col bg-ground">
   {#if error}
     <div class="border-b border-danger-border bg-danger-bg px-2.5 py-1.5 text-[0.8rem] text-danger">
       {error}
+    </div>
+  {/if}
+
+  {#if isHistorical && !error}
+    <div
+      class="flex items-center justify-between gap-2 border-b border-edge bg-raised px-2.5 py-1.5 text-[0.8rem] text-muted"
+    >
+      <span>Session exited. Showing restored terminal history.</span>
+      <button
+        type="button"
+        class="text-foreground rounded border border-edge bg-surface px-2 py-0.5 text-[0.75rem] transition-colors hover:bg-overlay"
+        onclick={resumeSession}
+      >
+        Resume
+      </button>
     </div>
   {/if}
 

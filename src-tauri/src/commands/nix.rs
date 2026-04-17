@@ -91,8 +91,8 @@ pub async fn nix_evaluate(
         project_id: project_id.clone(),
     };
 
-    // Load project path and nix_file from DB
-    let (project_path, nix_file) = {
+    // Load project path, nix_file, and user-configured timeout from DB
+    let (project_path, nix_file, timeout_secs) = {
         let db = state.db.lock();
         let project = state
             .projects
@@ -108,17 +108,24 @@ pub async fn nix_evaluate(
                 )
             })?;
 
+        let general =
+            SettingsService::get_general_settings(db.conn()).map_err(ApiError::Database)?;
+        // Clamp to a sane range so a bad DB value can't hang the app forever or
+        // fire a timeout before nix has even finished spawning.
+        let timeout_secs = general.nix_eval_timeout_secs.clamp(30, 3600);
+
         NixService::set_status(db.conn(), &project_id, NixEnvStatus::Evaluating)
             .map_err(ApiError::Database)?;
 
-        (project.path.clone(), record.nix_file.clone())
+        (project.path.clone(), record.nix_file.clone(), timeout_secs)
     };
 
-    // Run evaluation on a blocking thread (can take 30+ seconds)
+    // Run evaluation on a blocking thread (can take 30+ seconds on a warm store,
+    // many minutes on a cold one).
     let eval_project_path = project_path.clone();
     let eval_nix_file = nix_file.clone();
     let eval_result = tokio::task::spawn_blocking(move || {
-        NixService::evaluate(&eval_project_path, &eval_nix_file, 120)
+        NixService::evaluate(&eval_project_path, &eval_nix_file, timeout_secs)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Evaluation task panicked: {}", e)))?;

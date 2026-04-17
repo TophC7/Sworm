@@ -69,6 +69,14 @@ pub fn run() {
             commands::sessions::session_archive,
             commands::sessions::session_unarchive,
             commands::sessions::session_list_archived,
+            // Transcript / liveness commands (recovery)
+            commands::transcript::session_transcript_get,
+            commands::transcript::session_is_alive,
+            // Workspace persistence commands
+            commands::workspace::workspace_state_get,
+            commands::workspace::workspace_state_put,
+            commands::workspace::app_state_get,
+            commands::workspace::app_state_put,
             // Nix environment commands
             commands::nix::nix_detect,
             commands::nix::nix_select,
@@ -133,7 +141,15 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            let cleaned = app_handle.state::<AppState>().pty.kill_all();
+            let state = app_handle.state::<AppState>();
+            // Drain batched PTY bytes into the writer queue, then kill
+            // PTYs, then wait for the writer thread to finish persisting
+            // everything before we let the process exit. Doing this in
+            // order guarantees "a crash can lose at most the most recent
+            // unflushed tail" holds on clean shutdown as well.
+            state.transcript_batcher.flush_all();
+            let cleaned = state.pty.kill_all();
+            state.transcript.shutdown_and_join();
             tracing::info!("App exit cleanup finished, killed {} PTY sessions", cleaned);
         }
     });

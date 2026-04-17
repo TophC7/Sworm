@@ -154,6 +154,40 @@ export const backend = {
     },
     listArchived(projectId: string): Promise<Session[]> {
       return invoke<Session[]>('session_list_archived', { projectId })
+    },
+    /**
+     * Return whether the backend currently holds a live PTY for this
+     * session. Distinct from `status` — survives the truth even after
+     * a crash/restart that left a stale "running" row.
+     */
+    isAlive(sessionId: string): Promise<boolean> {
+      return invoke<boolean>('session_is_alive', { sessionId })
+    },
+    /**
+     * Fetch the persisted terminal transcript as base64-encoded bytes.
+     * Used by the terminal mount path to replay history before any
+     * live attach.
+     */
+    getTranscript(sessionId: string, limitBytes?: number): Promise<string> {
+      return invoke<string>('session_transcript_get', {
+        sessionId,
+        limitBytes: limitBytes ?? null
+      })
+    }
+  },
+
+  workspace: {
+    getState(projectId: string): Promise<string | null> {
+      return invoke<string | null>('workspace_state_get', { projectId })
+    },
+    putState(projectId: string, stateJson: string): Promise<void> {
+      return invoke<void>('workspace_state_put', { projectId, stateJson })
+    },
+    appStateGet(key: string): Promise<string | null> {
+      return invoke<string | null>('app_state_get', { key })
+    },
+    appStatePut(key: string, valueJson: string): Promise<void> {
+      return invoke<void>('app_state_put', { key, valueJson })
     }
   },
 

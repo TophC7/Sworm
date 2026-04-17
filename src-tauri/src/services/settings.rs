@@ -21,11 +21,23 @@ impl ProviderConfigRecord {
     }
 }
 
+/// Default timeout for `nix develop --command env -0` evaluations, in seconds.
+/// 120s was too aggressive for cold stores pulling GUI deps (webkitgtk, gtk3,
+/// rust toolchain); 600s leaves headroom while still catching true hangs.
+pub const DEFAULT_NIX_EVAL_TIMEOUT_SECS: u64 = 600;
+
+fn default_nix_eval_timeout_secs() -> u64 {
+    DEFAULT_NIX_EVAL_TIMEOUT_SECS
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralSettings {
     pub theme: String,
     pub terminal_font_family: String,
     pub terminal_font_size: u16,
+    // Backward-compat: older stored JSON won't have this key -- fall back to default.
+    #[serde(default = "default_nix_eval_timeout_secs")]
+    pub nix_eval_timeout_secs: u64,
 }
 
 impl Default for GeneralSettings {
@@ -34,6 +46,7 @@ impl Default for GeneralSettings {
             theme: "system".to_string(),
             terminal_font_family: "JetBrains Mono".to_string(),
             terminal_font_size: 13,
+            nix_eval_timeout_secs: DEFAULT_NIX_EVAL_TIMEOUT_SECS,
         }
     }
 }

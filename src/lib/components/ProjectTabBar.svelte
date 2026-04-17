@@ -39,7 +39,7 @@
 
   function doClose() {
     if (confirmClose) {
-      closeProject(confirmClose)
+      void closeProject(confirmClose)
       confirmClose = null
     }
   }

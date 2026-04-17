@@ -5,7 +5,7 @@
 
 import { backend } from '$lib/api/backend'
 import { removeSession as removeActivityEntry } from '$lib/stores/activity.svelte'
-import { addSessionTab, syncSessionTabs } from '$lib/stores/workspace.svelte'
+import { addSessionTab, restoreWorkspaceFromDisk, syncSessionTabs } from '$lib/stores/workspace.svelte'
 import type { Session } from '$lib/types/backend'
 
 let sessions = $state<Session[]>([])
@@ -27,6 +27,12 @@ export function hasRunningSessions(): boolean {
 
 export async function loadSessions(projectId: string) {
   try {
+    // Hydrate the persisted workspace before reconciling — otherwise
+    // the bootstrap heuristic in syncSessionTabs would race with the
+    // restore and create duplicate session tabs. restoreWorkspaceFromDisk
+    // is idempotent, so the eager-open path (already restored) just
+    // returns immediately.
+    await restoreWorkspaceFromDisk(projectId)
     sessions = await backend.sessions.list(projectId)
     syncSessionTabs(projectId, sessions)
   } catch (e) {

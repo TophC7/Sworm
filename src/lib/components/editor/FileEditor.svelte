@@ -12,6 +12,7 @@
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import { ensureFreshSession } from '$lib/utils/openFile'
   import { runNotifiedTask } from '$lib/utils/notifiedTask'
+  import { clearEditorDirty, setEditorDirty } from '$lib/stores/dirtyEditors.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
 
@@ -90,6 +91,10 @@
   let lintDiagnostics = $state<{ message: string; line: number; column: number }[]>([])
 
   async function save() {
+    // Re-entry guard: Ctrl+S held down or clicked twice could fire two
+    // concurrent writes. The second would race the first's state
+    // updates and could flip `dirty` back to true against stale state.
+    if (saving) return
     if (!dirty || isReadonly) return
     saving = true
     error = null
@@ -132,7 +137,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault()
-      save()
+      void save()
     }
   }
 
@@ -149,6 +154,25 @@
       lintDiagnostics = []
       load()
     })
+  })
+
+  // Mirror local dirty state into the workspace-level registry so the
+  // reload / close paths can warn the user about unsaved buffers.
+  //
+  // Split into two effects on purpose: a single effect that captured
+  // (project, path) and also depended on `dirty` would run its cleanup
+  // on every keystroke — clearing then re-setting the dirty entry —
+  // and any $derived reader of the registry would see it flicker off
+  // and back on every character typed.
+  $effect(() => {
+    const project = projectId
+    const path = filePath
+    // Cleanup only runs at unmount or when (project, path) identity
+    // changes, which matches when the registration itself should drop.
+    return () => clearEditorDirty(project, path)
+  })
+  $effect(() => {
+    setEditorDirty(projectId, filePath, dirty)
   })
 </script>
 

@@ -27,7 +27,8 @@
   let generalDraft = $state({
     theme: 'dark',
     terminal_font_family: 'Monocraft',
-    terminal_font_size: 13
+    terminal_font_size: 13,
+    nix_eval_timeout_secs: 600
   })
   let providerDrafts = $state<Record<string, { enabled: boolean; binaryPath: string; extraArgs: string }>>({})
   let savingGeneral = $state(false)
@@ -61,7 +62,8 @@
       await saveGeneralSettings({
         theme: generalDraft.theme,
         terminal_font_family: generalDraft.terminal_font_family,
-        terminal_font_size: Number(generalDraft.terminal_font_size)
+        terminal_font_size: Number(generalDraft.terminal_font_size),
+        nix_eval_timeout_secs: Number(generalDraft.nix_eval_timeout_secs)
       })
       flashMessage = 'General settings saved.'
       notify.success('General settings saved')
@@ -227,6 +229,33 @@
                 max="24"
                 bind:value={generalDraft.terminal_font_size}
               />
+            </label>
+          </div>
+        </div>
+
+        <!-- Nix settings -->
+        <div class="border-b border-edge">
+          <div class="flex items-center justify-between px-5 py-2">
+            <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Nix</span>
+            <Button size="sm" onclick={handleSaveGeneral} disabled={savingGeneral}>
+              {savingGeneral ? 'Saving\u2026' : 'Save'}
+            </Button>
+          </div>
+
+          <div class="flex flex-col gap-3 px-5 pb-3">
+            <label class="flex items-center gap-3 text-[0.82rem]">
+              <span class="w-28 shrink-0 text-muted">Eval timeout</span>
+              <input
+                class="field-input w-24"
+                type="number"
+                min="30"
+                max="3600"
+                step="30"
+                bind:value={generalDraft.nix_eval_timeout_secs}
+              />
+              <span class="text-[0.75rem] text-subtle">
+                seconds. Cold stores need 300s+; first flake build may take minutes.
+              </span>
             </label>
           </div>
         </div>

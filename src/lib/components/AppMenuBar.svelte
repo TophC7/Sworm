@@ -33,7 +33,7 @@
   let sidebarCollapsed = $derived(isSidebarCollapsed())
 
   function handleCloseProject() {
-    if (activeId) closeProject(activeId)
+    if (activeId) void closeProject(activeId)
   }
 </script>
 

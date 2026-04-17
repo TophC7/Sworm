@@ -41,8 +41,23 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
 
 const textEncoder = new TextEncoder()
 
+function decodeBase64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
 type EventListener = (event: PtyEvent) => void
 type ErrorListener = (message: string) => void
+
+/**
+ * Whether a terminal is currently bound to a live PTY in the backend
+ * process, or only displaying historical transcript (input disabled).
+ */
+export type TerminalMode = 'historical' | 'live'
 
 export class TerminalSessionManager {
   readonly sessionId: string
@@ -63,6 +78,10 @@ export class TerminalSessionManager {
   private viewportPosition = 0
   private lastError: string | null = null
   private providerId: string | null = null
+  private transcriptLoaded = false
+  private transcriptByteCount = 0
+  // Dedup concurrent attach() calls so we fetch the transcript once.
+  private transcriptPromise: Promise<void> | null = null
   private readonly textDecoder = new TextDecoder()
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
@@ -77,6 +96,24 @@ export class TerminalSessionManager {
 
   isAttached(): boolean {
     return this.container !== null
+  }
+
+  getMode(): TerminalMode {
+    return this.ptyActive ? 'live' : 'historical'
+  }
+
+  hasTranscriptLoaded(): boolean {
+    return this.transcriptLoaded
+  }
+
+  /**
+   * Whether the loaded transcript contained any bytes. Used by the
+   * mount path to decide whether a session is genuinely "fresh" (and
+   * should auto-spawn) or has prior history (and should be treated
+   * as historical until the user explicitly resumes).
+   */
+  hasHistory(): boolean {
+    return this.transcriptByteCount > 0
   }
 
   getLastError(): string | null {
@@ -155,6 +192,84 @@ export class TerminalSessionManager {
     this.container = null
   }
 
+  /**
+   * Replay the persisted transcript into xterm exactly once per
+   * manager lifetime. Awaits xterm's write-callback so subsequent
+   * live-attach output is guaranteed to land after the history.
+   *
+   * Safe to call multiple times — concurrent calls dedupe on a
+   * single in-flight promise, and after success this is a no-op.
+   */
+  async loadTranscript(): Promise<void> {
+    if (this.transcriptLoaded || this.disposed) {
+      return
+    }
+    if (this.transcriptPromise) {
+      return this.transcriptPromise
+    }
+
+    this.transcriptPromise = (async () => {
+      await this.ensureTerminal()
+      const terminal = this.terminal
+      if (!terminal) return
+
+      let b64: string
+      try {
+        b64 = await backend.sessions.getTranscript(this.sessionId)
+      } catch (error) {
+        // Log but do not throw — a missing transcript is not fatal.
+        // This typically happens for sessions that pre-date the
+        // transcript table or were freshly reset.
+        console.warn(`Transcript fetch failed for ${this.sessionId}:`, error)
+        this.transcriptLoaded = true
+        return
+      }
+
+      if (b64.length > 0) {
+        const bytes = decodeBase64ToBytes(b64)
+        this.transcriptByteCount = bytes.byteLength
+        await new Promise<void>((resolve) => {
+          terminal.write(bytes, () => resolve())
+        })
+      }
+      this.transcriptLoaded = true
+    })()
+
+    try {
+      await this.transcriptPromise
+    } finally {
+      this.transcriptPromise = null
+    }
+  }
+
+  /**
+   * Reattach to a live PTY that already exists in the backend.
+   *
+   * Used after a webview reload where the backend process kept
+   * running. Ordering matters: callers must `loadTranscript()` first
+   * so the historical write completes before live bytes start
+   * streaming, otherwise we'd get reordered output.
+   */
+  async attachLive(session: Session): Promise<boolean> {
+    if (this.disposed || this.ptyActive) {
+      return this.ptyActive
+    }
+
+    let alive = false
+    try {
+      alive = await backend.sessions.isAlive(session.id)
+    } catch (error) {
+      console.warn(`isAlive failed for ${session.id}:`, error)
+      return false
+    }
+    if (!alive) {
+      return false
+    }
+
+    await this.startPty(session)
+    return true
+  }
+
   async startPty(session: Session): Promise<void> {
     if (this.disposed || this.ptyActive) {
       return
@@ -212,6 +327,10 @@ export class TerminalSessionManager {
         events
       )
       this.ptyActive = true
+      // After a successful startPty the PTY is the live source of
+      // truth; transcript replay (if any) already happened, so flag
+      // it loaded to prevent double-rendering on later attach.
+      this.transcriptLoaded = true
     } catch (error) {
       this.ptyActive = false
       this.releaseChannels()

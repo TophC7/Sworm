@@ -71,6 +71,7 @@ export interface GeneralSettings {
   theme: string
   terminal_font_family: string
   terminal_font_size: number
+  nix_eval_timeout_secs: number
 }
 
 export interface ProviderConfig {

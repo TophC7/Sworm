@@ -35,7 +35,7 @@ export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
       label: 'Close Project',
       icon: XIcon,
       keywords: ['remove', 'close'],
-      onSelect: () => closeProject(activeId)
+      onSelect: () => void closeProject(activeId)
     })
   }
 

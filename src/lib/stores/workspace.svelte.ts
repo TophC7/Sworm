@@ -8,11 +8,23 @@
 import type { Session } from '$lib/types/backend'
 import * as sessionRegistry from '$lib/terminal/sessionRegistry'
 import { clearGitState } from '$lib/stores/git.svelte'
+import {
+  deserializeWorkspace,
+  flushAllWorkspaces,
+  flushWorkspace,
+  loadPersistedAppShell,
+  loadPersistedWorkspace,
+  schedulePersistAppShell,
+  schedulePersistWorkspace,
+  serializeWorkspace
+} from '$lib/stores/workspacePersistence'
 
-// Statuses that warrant auto-creating a tab when syncing sessions.
-// Historical sessions (stopped/exited/failed) stay in the DB for the
-// session history view but don't reappear as tabs automatically.
-const ACTIVE_STATUSES = new Set(['idle', 'starting', 'running'])
+// Statuses that warrant a legacy bootstrap tab — used only when no
+// persisted workspace blob exists for the project (i.e. first-time
+// open after upgrading from a pre-recovery build). Once a workspace
+// has been restored we trust the saved layout and let the user
+// re-open historical sessions explicitly.
+const BOOTSTRAP_STATUSES = new Set(['idle', 'starting', 'running'])
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,11 +112,68 @@ export interface ProjectWorkspace {
   panes: PaneState[]
   splitMode: SplitMode
   quadLayout: QuadLayout
+  // Per-project pane focus. Lived on the global scope in earlier
+  // versions, which meant switching projects silently applied the
+  // other project's focus slot to layouts that didn't have that slot.
+  focusedPaneSlot: PaneSlot
 }
 
 export interface DraggedTab {
   projectId: string
   tabId: TabId
+}
+
+// ---------------------------------------------------------------------------
+// Persisted shapes (versioned)
+// ---------------------------------------------------------------------------
+
+export type PersistedTab =
+  | { kind: 'session'; sessionId: string; title: string; providerId: string; locked: boolean }
+  | {
+      kind: 'editor'
+      filePath: string
+      gitRef?: string
+      refLabel?: string
+      temporary: boolean
+      locked: boolean
+    }
+  | {
+      kind: 'commit'
+      commitHash: string
+      shortHash: string
+      message: string
+      initialFile: string | null
+      temporary: boolean
+      locked: boolean
+    }
+  | {
+      kind: 'changes'
+      staged: boolean
+      initialFile: string | null
+      temporary: boolean
+      locked: boolean
+    }
+  | {
+      kind: 'stash'
+      stashIndex: number
+      message: string
+      initialFile: string | null
+      temporary: boolean
+      locked: boolean
+    }
+  | { kind: 'notification-test'; label: string; temporary: boolean; locked: boolean }
+
+export interface PersistedWorkspaceV1 {
+  version: 1
+  focusedPaneSlot: PaneSlot
+  splitMode: SplitMode
+  quadLayout: QuadLayout
+  panes: Array<{
+    slot: PaneSlot
+    activeTabIndex: number
+    tabIndices: number[]
+  }>
+  tabs: PersistedTab[]
 }
 
 // ---------------------------------------------------------------------------
@@ -114,8 +183,24 @@ export interface DraggedTab {
 let openProjectIds = $state<string[]>([])
 let activeProjectId = $state<string | null>(null)
 let workspaces = $state<Map<string, ProjectWorkspace>>(new Map())
-let focusedPaneSlot = $state<PaneSlot>('sole')
 let draggedTab = $state<DraggedTab | null>(null)
+
+// Active project's focused pane slot — derived so reads stay reactive
+// and per-project focus is preserved when switching projects.
+function activeFocusedSlot(): PaneSlot {
+  const ws = activeProjectId ? workspaces.get(activeProjectId) : undefined
+  return ws?.focusedPaneSlot ?? 'sole'
+}
+
+// Restore state per project. `null` = restored (no promise pending);
+// `Promise` = in-flight. Absence from the map = never started.
+// Until a project is restored we suppress persistence and the legacy
+// session-tab bootstrap so we don't clobber state mid-restore.
+const restoreState = new Map<string, Promise<void> | null>()
+
+function isProjectRestored(projectId: string): boolean {
+  return restoreState.get(projectId) === null
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,12 +232,34 @@ function getWorkspace(projectId: string): ProjectWorkspace | undefined {
  * Creates a shallow clone and replaces the Map entry so Svelte
  * sees a new reference. Call this once at the end of any function
  * that mutates workspace state.
+ *
+ * After committing, schedules a debounced workspace persist. This is
+ * the single choke point for layout mutation, so persisting here is
+ * the cheapest way to keep disk in sync with memory.
  */
 function commitWorkspace(ws: ProjectWorkspace) {
   workspaces = new Map(workspaces).set(ws.projectId, {
     ...ws,
     tabs: [...ws.tabs],
     panes: ws.panes.map(clonePane)
+  })
+  if (isProjectRestored(ws.projectId)) {
+    const projectId = ws.projectId
+    schedulePersistWorkspace(projectId, () => {
+      // Skip writes for projects that were closed between the schedule
+      // and the debounce flush — the project row may be gone, and even
+      // if it were still present, resurrecting its old layout is wrong.
+      const latest = workspaces.get(projectId)
+      if (!latest) return null
+      return serializeWorkspace(latest, latest.focusedPaneSlot)
+    })
+  }
+}
+
+function persistAppShellSnapshot() {
+  schedulePersistAppShell({
+    openProjectIds: [...openProjectIds],
+    activeProjectId
   })
 }
 
@@ -164,7 +271,8 @@ function ensureWorkspace(projectId: string): ProjectWorkspace {
       tabs: [],
       panes: [createPane('sole')],
       splitMode: 'single',
-      quadLayout: null
+      quadLayout: null,
+      focusedPaneSlot: 'sole'
     }
     commitWorkspace(ws)
     // Re-read the committed (cloned) version from the map.
@@ -180,7 +288,7 @@ function findPaneForTab(ws: ProjectWorkspace, tabId: TabId): PaneState | undefin
 
 /** Get the pane the user is focused on, or the first pane. */
 function activePaneOf(ws: ProjectWorkspace): PaneState {
-  return ws.panes.find((p) => p.slot === focusedPaneSlot) ?? ws.panes[0]
+  return ws.panes.find((p) => p.slot === ws.focusedPaneSlot) ?? ws.panes[0]
 }
 
 function ensureActiveTab(pane: PaneState) {
@@ -218,7 +326,7 @@ function resetToSinglePane(ws: ProjectWorkspace) {
   ws.panes[0].activeTabId = allTabIds[allTabIds.length - 1] ?? null
   ws.splitMode = 'single'
   ws.quadLayout = null
-  focusedPaneSlot = 'sole'
+  ws.focusedPaneSlot = 'sole'
 }
 
 function removeTabIds(ws: ProjectWorkspace, tabIds: Set<TabId>) {
@@ -259,10 +367,19 @@ export function openProject(projectId: string) {
   }
   ensureWorkspace(projectId)
   activeProjectId = projectId
+  persistAppShellSnapshot()
+  // Restore in the background. Failures are swallowed inside loader
+  // so the UI never blocks waiting on disk.
+  void restoreWorkspaceFromDisk(projectId)
 }
 
-export function closeProject(projectId: string) {
-  // Dispose all session PTYs for this project
+export async function closeProject(projectId: string): Promise<void> {
+  // Persist any pending mutations before we tear down — closing a
+  // project mid-typing would otherwise lose the last debounce window.
+  // Awaited so the producer runs against a still-live workspace entry;
+  // otherwise it'd skip the write when it saw an already-deleted map.
+  await flushWorkspace(projectId)
+
   const ws = getWorkspace(projectId)
   if (ws) {
     for (const tab of ws.tabs) {
@@ -275,14 +392,15 @@ export function closeProject(projectId: string) {
     workspaces = next
   }
 
-  // Stop git polling and clear cached summary
   clearGitState(projectId)
 
   openProjectIds = openProjectIds.filter((id) => id !== projectId)
+  restoreState.delete(projectId)
 
   if (activeProjectId === projectId) {
     activeProjectId = openProjectIds.length > 0 ? openProjectIds[openProjectIds.length - 1] : null
   }
+  persistAppShellSnapshot()
 }
 
 export function selectProject(projectId: string | null) {
@@ -291,6 +409,7 @@ export function selectProject(projectId: string | null) {
   } else if (projectId === null) {
     activeProjectId = null
   }
+  persistAppShellSnapshot()
 }
 
 export function reorderProjects(fromIndex: number, toIndex: number) {
@@ -301,6 +420,94 @@ export function reorderProjects(fromIndex: number, toIndex: number) {
   const [moved] = next.splice(fromIndex, 1)
   next.splice(toIndex, 0, moved)
   openProjectIds = next
+  persistAppShellSnapshot()
+}
+
+// Idempotent per project: the first caller does the work and marks
+// the project restored; concurrent callers share the in-flight
+// promise; later callers return immediately. Once restored, commits
+// start persisting and the legacy bootstrap heuristic is suppressed.
+export async function restoreWorkspaceFromDisk(projectId: string): Promise<void> {
+  const existing = restoreState.get(projectId)
+  if (existing === null) return
+  if (existing) return existing
+
+  // IIFE catches its own errors: the outer promise resolves cleanly
+  // so `void restoreWorkspaceFromDisk(...)` callers never produce an
+  // unhandled rejection, and a malformed blob falls back to an empty
+  // workspace instead of poisoning `restoreState`.
+  const promise = (async () => {
+    try {
+      const persisted = await loadPersistedWorkspace(projectId)
+      if (!persisted) return
+
+      const hydrated = deserializeWorkspace(persisted, generateTabId)
+      workspaces = new Map(workspaces).set(projectId, {
+        projectId,
+        tabs: hydrated.tabs,
+        panes: hydrated.panes,
+        splitMode: hydrated.splitMode,
+        quadLayout: hydrated.quadLayout,
+        focusedPaneSlot: hydrated.focusedPaneSlot
+      })
+    } catch (error) {
+      console.warn(`Workspace restore failed for ${projectId}, falling back to empty layout:`, error)
+    }
+  })()
+
+  restoreState.set(projectId, promise)
+  try {
+    await promise
+  } finally {
+    restoreState.set(projectId, null)
+  }
+}
+
+/**
+ * Read the persisted app-shell state and reopen the projects that
+ * were open last session. Validates each project id against the
+ * current project list so deleted projects don't resurrect.
+ *
+ * Workspace hydration runs *before* the active project is selected
+ * so ProjectView never mounts against an empty workspace. If we
+ * exposed an active project mid-restore the legacy bootstrap
+ * heuristic would fire and duplicate the persisted tabs.
+ */
+export async function restoreAppShellState(validProjectIds: Set<string>): Promise<void> {
+  const { openProjectIds: savedOpen, activeProjectId: savedActive } = await loadPersistedAppShell()
+  const filteredOpen = savedOpen.filter((id) => validProjectIds.has(id))
+
+  if (filteredOpen.length === 0) {
+    // Saved state pointed at only-deleted projects. Persist an empty
+    // snapshot so the next launch doesn't replay the same dead ids.
+    if (savedOpen.length > 0 || savedActive !== null) {
+      persistAppShellSnapshot()
+    }
+    return
+  }
+
+  openProjectIds = filteredOpen
+  for (const id of filteredOpen) {
+    ensureWorkspace(id)
+  }
+
+  // Hydrate every workspace before flipping the active project so
+  // ProjectView never mounts against empty state and triggers the
+  // legacy bootstrap heuristic.
+  await Promise.all(filteredOpen.map((id) => restoreWorkspaceFromDisk(id)))
+
+  const desiredActive = savedActive && filteredOpen.includes(savedActive) ? savedActive : (filteredOpen[0] ?? null)
+  activeProjectId = desiredActive
+  persistAppShellSnapshot()
+}
+
+/**
+ * Force an immediate write of every pending workspace + app-shell
+ * mutation. Intended for the managed reload path so a Cmd+R doesn't
+ * race the debounce window.
+ */
+export async function flushPersistencePending(): Promise<void> {
+  await flushAllWorkspaces()
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +522,7 @@ export function addSessionTab(projectId: string, sessionId: string, title: strin
     // Activate it instead of creating a duplicate
     const pane = findPaneForTab(ws, existing.id) ?? activePaneOf(ws)
     pane.activeTabId = existing.id
-    focusedPaneSlot = pane.slot
+    ws.focusedPaneSlot = pane.slot
     commitWorkspace(ws)
     return existing.id
   }
@@ -333,7 +540,7 @@ export function addSessionTab(projectId: string, sessionId: string, title: strin
   const pane = activePaneOf(ws)
   pane.tabs = [...pane.tabs, tab.id]
   pane.activeTabId = tab.id
-  focusedPaneSlot = pane.slot
+  ws.focusedPaneSlot = pane.slot
   commitWorkspace(ws)
 
   return tab.id
@@ -409,7 +616,7 @@ function addContentTab(
       }
       const existingPane = findPaneForTab(ws, existing.id) ?? pane
       existingPane.activeTabId = existing.id
-      focusedPaneSlot = existingPane.slot
+      ws.focusedPaneSlot = existingPane.slot
       commitWorkspace(ws)
       return existing.id
     }
@@ -420,7 +627,7 @@ function addContentTab(
   ws.tabs = [...ws.tabs, tab]
   pane.tabs = [...pane.tabs, tab.id]
   pane.activeTabId = tab.id
-  focusedPaneSlot = pane.slot
+  ws.focusedPaneSlot = pane.slot
   commitWorkspace(ws)
 
   return tab.id
@@ -578,7 +785,7 @@ export function setActiveTab(projectId: string, paneSlot: PaneSlot, tabId: TabId
   const pane = ws.panes.find((p) => p.slot === paneSlot)
   if (pane && pane.tabs.includes(tabId)) {
     pane.activeTabId = tabId
-    focusedPaneSlot = pane.slot
+    ws.focusedPaneSlot = pane.slot
     commitWorkspace(ws)
   }
 }
@@ -591,7 +798,7 @@ export function focusTab(projectId: string, tabId: TabId) {
   if (!pane) return
 
   pane.activeTabId = tabId
-  focusedPaneSlot = pane.slot
+  ws.focusedPaneSlot = pane.slot
   commitWorkspace(ws)
 }
 
@@ -614,18 +821,25 @@ export function getAllTabs(projectId: string): Tab[] {
 // ---------------------------------------------------------------------------
 
 export function getFocusedPaneSlot(): PaneSlot {
-  return focusedPaneSlot
+  return activeFocusedSlot()
 }
 
 export function setFocusedPane(slot: PaneSlot) {
-  focusedPaneSlot = slot
+  const ws = activeProjectId ? workspaces.get(activeProjectId) : undefined
+  if (!ws) return
+  if (ws.focusedPaneSlot === slot) return
+  ws.focusedPaneSlot = slot
+  // A focus change is a commit-worthy mutation on its own: persistence
+  // captures focus from ws, so without committing here the next tab
+  // mutation would ship the stale slot.
+  commitWorkspace(ws)
 }
 
 export function getFocusedTab(projectId: string): Tab | null {
   const ws = getWorkspace(projectId)
   if (!ws) return null
 
-  const pane = ws.panes.find((candidate) => candidate.slot === focusedPaneSlot) ?? ws.panes[0]
+  const pane = ws.panes.find((candidate) => candidate.slot === ws.focusedPaneSlot) ?? ws.panes[0]
   if (!pane?.activeTabId) return null
 
   return findTab(ws, pane.activeTabId) ?? null
@@ -705,7 +919,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.splitMode = direction === 'right' ? 'horizontal' : 'vertical'
     ws.quadLayout = null
     newSlot = 'right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -721,7 +935,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.splitMode = 'quad'
     ws.quadLayout = paneSlot === 'left' ? 'right' : 'left'
     newSlot = paneSlot === 'left' ? 'bottom-left' : 'bottom-right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -737,7 +951,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.splitMode = 'quad'
     ws.quadLayout = paneSlot === 'left' ? 'bottom' : 'top'
     newSlot = paneSlot === 'left' ? 'top-right' : 'bottom-right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -746,7 +960,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.panes = [...ws.panes, createPane('top-right')]
     ws.quadLayout = null
     newSlot = 'top-right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -755,7 +969,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.panes = [...ws.panes, createPane('bottom-right')]
     ws.quadLayout = null
     newSlot = 'bottom-right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -764,7 +978,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.panes = [...ws.panes, createPane('bottom-left')]
     ws.quadLayout = null
     newSlot = 'bottom-left'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -773,7 +987,7 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     ws.panes = [...ws.panes, createPane('bottom-right')]
     ws.quadLayout = null
     newSlot = 'bottom-right'
-    focusedPaneSlot = newSlot
+    ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
@@ -846,7 +1060,7 @@ export function collapsePaneIfEmpty(projectId: string) {
     nonEmpty[0].slot = 'sole'
     ws.splitMode = 'single'
     ws.quadLayout = null
-    focusedPaneSlot = 'sole'
+    ws.focusedPaneSlot = 'sole'
   } else if (nonEmpty.length === 2) {
     const slots = new Set(nonEmpty.map((pane) => pane.slot))
     const genericPair = slots.has('left') && slots.has('right')
@@ -866,8 +1080,8 @@ export function collapsePaneIfEmpty(projectId: string) {
     nonEmpty[1].slot = 'right'
     ws.splitMode = nextSplitMode
     ws.quadLayout = null
-    if (focusedPaneSlot !== 'left' && focusedPaneSlot !== 'right') {
-      focusedPaneSlot = 'left'
+    if (ws.focusedPaneSlot !== 'left' && ws.focusedPaneSlot !== 'right') {
+      ws.focusedPaneSlot = 'left'
     }
   } else if (nonEmpty.length === 3) {
     ws.splitMode = 'quad'
@@ -892,6 +1106,15 @@ export function getQuadLayout(projectId: string): QuadLayout {
   return getWorkspace(projectId)?.quadLayout ?? null
 }
 
+/**
+ * Reconcile session tabs against the live sessions DB.
+ *
+ * Removes tabs whose sessions no longer exist and updates titles for
+ * tabs whose sessions were renamed. The auto-create heuristic — adding
+ * tabs for any active session — only fires when no persisted workspace
+ * exists yet (legacy bootstrap), so we never silently re-spawn dead
+ * tab layouts on top of a restored workspace.
+ */
 export function syncSessionTabs(projectId: string, sessions: Session[]) {
   const ws = ensureWorkspace(projectId)
   const nextSessionIds = new Set(sessions.map((session) => session.id))
@@ -913,28 +1136,37 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
     }
   })
 
+  // Bootstrap heuristic: only fire when this project has *no* persisted
+  // workspace blob (legacy upgrade path). Once we've consulted disk for
+  // this project — whether the blob existed or not — restored tabs are
+  // the source of truth. In particular, a user who intentionally closed
+  // every tab must not have session tabs silently re-created on the
+  // next sessions reload.
+  const shouldBootstrap = !isProjectRestored(projectId)
   const existingSessionIds = new Set(ws.tabs.filter((tab) => tab.kind === 'session').map((tab) => tab.sessionId))
   const targetPane = activePaneOf(ws)
   let activated = ws.panes.some((pane) => pane.activeTabId !== null)
 
-  for (const session of sessions) {
-    if (existingSessionIds.has(session.id)) continue
-    if (!ACTIVE_STATUSES.has(session.status)) continue
+  if (shouldBootstrap) {
+    for (const session of sessions) {
+      if (existingSessionIds.has(session.id)) continue
+      if (!BOOTSTRAP_STATUSES.has(session.status)) continue
 
-    const tab: SessionTab = {
-      kind: 'session',
-      id: generateTabId(),
-      sessionId: session.id,
-      title: session.title,
-      providerId: session.provider_id,
-      locked: false
-    }
+      const tab: SessionTab = {
+        kind: 'session',
+        id: generateTabId(),
+        sessionId: session.id,
+        title: session.title,
+        providerId: session.provider_id,
+        locked: false
+      }
 
-    ws.tabs = [...ws.tabs, tab]
-    targetPane.tabs = [...targetPane.tabs, tab.id]
-    if (!activated) {
-      targetPane.activeTabId = tab.id
-      activated = true
+      ws.tabs = [...ws.tabs, tab]
+      targetPane.tabs = [...targetPane.tabs, tab.id]
+      if (!activated) {
+        targetPane.activeTabId = tab.id
+        activated = true
+      }
     }
   }
 
@@ -982,7 +1214,7 @@ export function getActiveSessionId(): string | null {
   const ws = activeProjectId ? getWorkspace(activeProjectId) : undefined
   if (!ws) return null
 
-  const pane = ws.panes.find((p) => p.slot === focusedPaneSlot) ?? ws.panes[0]
+  const pane = ws.panes.find((p) => p.slot === ws.focusedPaneSlot) ?? ws.panes[0]
   if (!pane?.activeTabId) return null
 
   const tab = ws.tabs.find((t) => t.id === pane.activeTabId)

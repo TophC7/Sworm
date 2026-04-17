@@ -42,7 +42,10 @@ const HOST_AUTHORITATIVE: &[&str] = &[
 /// Errors that can occur during Nix evaluation.
 #[derive(Debug)]
 pub enum NixEvalError {
-    Timeout,
+    Timeout {
+        timeout_secs: u64,
+        stderr: String,
+    },
     NixNotFound,
     CommandFailed {
         stderr: String,
@@ -53,10 +56,32 @@ pub enum NixEvalError {
 
 impl std::error::Error for NixEvalError {}
 
+/// Keep the tail of stderr short enough to fit in a notification toast.
+fn tail_lines(text: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
+}
+
 impl std::fmt::Display for NixEvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Timeout => write!(f, "Nix evaluation timed out (120s)"),
+            Self::Timeout {
+                timeout_secs,
+                stderr,
+            } => {
+                let trimmed = stderr.trim();
+                if trimmed.is_empty() {
+                    write!(f, "Nix evaluation timed out after {}s", timeout_secs)
+                } else {
+                    write!(
+                        f,
+                        "Nix evaluation timed out after {}s. Last output:\n{}",
+                        timeout_secs,
+                        tail_lines(trimmed, 8)
+                    )
+                }
+            }
             Self::NixNotFound => write!(f, "nix is not installed or not on PATH"),
             Self::CommandFailed { stderr, exit_code } => {
                 write!(
@@ -196,7 +221,7 @@ impl NixService {
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
         let status = match error {
-            NixEvalError::Timeout => "timeout",
+            NixEvalError::Timeout { .. } => "timeout",
             _ => "error",
         };
         conn.execute(
@@ -257,33 +282,63 @@ impl NixService {
             exit_code: None,
         })?;
 
-        // Wait with timeout
+        // Drain stdout/stderr on background threads. Otherwise nix's stderr pipe
+        // fills (~64KB on Linux) during a cold store resolve/build and nix blocks
+        // waiting for someone to read it -- appearing as a hang until we time out.
+        let stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| NixEvalError::CommandFailed {
+                stderr: "child stdout pipe missing".to_string(),
+                exit_code: None,
+            })?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| NixEvalError::CommandFailed {
+                stderr: "child stderr pipe missing".to_string(),
+                exit_code: None,
+            })?;
+
+        let stdout_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut { stdout_pipe }, &mut buf);
+            buf
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut { stderr_pipe }, &mut buf);
+            buf
+        });
+
         let start = std::time::Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let output =
-                        child
-                            .wait_with_output()
-                            .map_err(|e| NixEvalError::CommandFailed {
-                                stderr: e.to_string(),
-                                exit_code: None,
-                            })?;
+                    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+                    let stderr_bytes = stderr_handle.join().unwrap_or_default();
 
                     if !status.success() {
                         return Err(NixEvalError::CommandFailed {
-                            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                            stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
                             exit_code: status.code(),
                         });
                     }
 
-                    return parse_env_output(&output.stdout);
+                    return parse_env_output(&stdout_bytes);
                 }
                 Ok(None) => {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(NixEvalError::Timeout);
+                        // Drain whatever nix wrote before we killed it -- this is
+                        // the user's only clue about *why* it was slow.
+                        let stderr_bytes = stderr_handle.join().unwrap_or_default();
+                        let _ = stdout_handle.join();
+                        return Err(NixEvalError::Timeout {
+                            timeout_secs,
+                            stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
+                        });
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }

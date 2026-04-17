@@ -1,5 +1,7 @@
 import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
-import { getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { flushPersistencePending, getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { getDirtyEditorsCount, hasAnyDirtyEditors } from '$lib/stores/dirtyEditors.svelte'
+import { confirmAsync } from '$lib/stores/confirmService.svelte'
 import type { CommandGroup } from './types'
 
 import { isIndentRainbowEnabled, toggleIndentRainbow } from '$lib/editor/extensions/indentRainbow.svelte'
@@ -11,6 +13,34 @@ import {
   ZoomInIcon,
   ZoomOutIcon
 } from '$lib/icons/lucideExports'
+
+/**
+ * Managed reload: confirms unsaved buffers, force-flushes any pending
+ * workspace persistence, then triggers the browser reload.
+ *
+ * Skipping this path (e.g. raw `window.location.reload()`) drops the
+ * debounce window of workspace state and the user's unsaved buffers,
+ * which is exactly the surprise the recovery spec calls out.
+ */
+async function reloadView() {
+  if (hasAnyDirtyEditors()) {
+    const count = getDirtyEditorsCount()
+    const noun = count === 1 ? 'file' : 'files'
+    const proceed = await confirmAsync({
+      title: 'Unsaved changes',
+      message: `You have ${count} unsaved ${noun}. Reload and lose changes?`,
+      confirmLabel: 'Reload',
+      cancelLabel: 'Keep editing'
+    })
+    if (!proceed) return
+  }
+  try {
+    await flushPersistencePending()
+  } catch (error) {
+    console.warn('Reload flush failed:', error)
+  }
+  window.location.reload()
+}
 
 export function getViewCommands(): CommandGroup[] {
   const activeId = getActiveProjectId()
@@ -44,7 +74,7 @@ export function getViewCommands(): CommandGroup[] {
           icon: RefreshCwIcon,
           keywords: ['reload', 'refresh', 'hard', 'browser', 'force'],
           shortcut: 'Ctrl+Shift+R',
-          onSelect: () => window.location.reload()
+          onSelect: () => void reloadView()
         },
         {
           id: 'zoom-in',

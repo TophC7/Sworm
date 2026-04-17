@@ -172,13 +172,19 @@
     {:else if activeTab.kind === 'stash'}
       <StashView stashIndex={activeTab.stashIndex} {projectId} {projectPath} initialFile={activeTab.initialFile} />
     {:else if activeTab.kind === 'editor'}
-      <FileEditor
-        filePath={activeTab.filePath}
-        {projectPath}
-        {projectId}
-        gitRef={activeTab.gitRef}
-        refLabel={activeTab.refLabel}
-      />
+      <!-- Key per tab id so Monaco gets a fresh instance per tab.
+           Without this, switching between editor tabs in-place can
+           leave the editor with stale model state (the value $effect
+           in MonacoEditor races with the async load()). -->
+      {#key activeTab.id}
+        <FileEditor
+          filePath={activeTab.filePath}
+          {projectPath}
+          {projectId}
+          gitRef={activeTab.gitRef}
+          refLabel={activeTab.refLabel}
+        />
+      {/key}
     {:else if activeTab.kind === 'notification-test'}
       <NotificationTestView />
     {/if}

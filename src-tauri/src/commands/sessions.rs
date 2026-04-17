@@ -360,23 +360,30 @@ pub fn session_start(
         None => state.env.child_env.clone(),
     };
 
+    // Flush the transcript batcher first so the final bytes before exit
+    // reach disk; otherwise the last ~500 ms of output would be dropped
+    // when the child dies.
+    let batcher_for_exit = Arc::clone(&state.transcript_batcher);
     let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> = Box::new(
-        move |sid: &str, exit_code: Option<i32>| match rusqlite::Connection::open(&db_path) {
-            Ok(conn) => {
-                let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-                let now = chrono::Utc::now().to_rfc3339();
-                let _ = conn.execute(
-                    "UPDATE sessions SET status = 'exited', updated_at = ?1, last_stopped_at = ?2 WHERE id = ?3",
-                    rusqlite::params![now, now, sid],
-                );
-                tracing::info!(
-                    "Backend marked session {} as exited with code {:?}",
-                    sid,
-                    exit_code
-                );
-            }
-            Err(error) => {
-                tracing::error!("Failed to open DB for exit callback: {}", error);
+        move |sid: &str, exit_code: Option<i32>| {
+            batcher_for_exit.flush(sid);
+            match rusqlite::Connection::open(&db_path) {
+                Ok(conn) => {
+                    let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = conn.execute(
+                        "UPDATE sessions SET status = 'exited', updated_at = ?1, last_stopped_at = ?2 WHERE id = ?3",
+                        rusqlite::params![now, now, sid],
+                    );
+                    tracing::info!(
+                        "Backend marked session {} as exited with code {:?}",
+                        sid,
+                        exit_code
+                    );
+                }
+                Err(error) => {
+                    tracing::error!("Failed to open DB for exit callback: {}", error);
+                }
             }
         },
     );
@@ -460,6 +467,9 @@ pub fn session_resize(
 #[tauri::command]
 pub fn session_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
+    // Persist whatever transcript bytes were still in-flight. Safe to
+    // call even when the session was never live — the batcher no-ops.
+    state.transcript_batcher.flush(&session_id);
 
     let db = state.db.lock();
     state
@@ -508,12 +518,20 @@ pub fn session_reset(
 }
 
 /// Delete a session.
+///
+/// Cleans up every related resource: the live PTY (if any), pending
+/// transcript batch, and all durable transcript rows. The row-level
+/// delete also happens via `ON DELETE CASCADE` on the session row,
+/// but clearing here first avoids ferrying dead entries through the
+/// foreign-key path.
 #[tauri::command]
 pub fn session_remove(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
+    state.transcript_batcher.forget(&session_id);
+    state.transcript.clear(&session_id);
 
     let db = state.db.lock();
     state

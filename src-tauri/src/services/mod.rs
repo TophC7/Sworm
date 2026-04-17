@@ -11,4 +11,6 @@ pub mod providers;
 pub mod pty;
 pub mod sessions;
 pub mod settings;
+pub mod transcript;
 pub mod workspace;
+pub mod workspace_state;
