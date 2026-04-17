@@ -8,6 +8,7 @@
 import type { Session } from '$lib/types/backend'
 import * as sessionRegistry from '$lib/terminal/sessionRegistry'
 import { clearGitState } from '$lib/stores/git.svelte'
+import { hideProjectPicker } from '$lib/stores/ui.svelte'
 import {
   deserializeWorkspace,
   flushAllWorkspaces,
@@ -16,7 +17,8 @@ import {
   loadPersistedWorkspace,
   schedulePersistAppShell,
   schedulePersistWorkspace,
-  serializeWorkspace
+  serializeWorkspace,
+  tabToPersisted
 } from '$lib/stores/workspacePersistence'
 
 // Statuses that warrant a legacy bootstrap tab — used only when no
@@ -77,7 +79,9 @@ export interface StashTab {
 export interface EditorTab {
   kind: 'editor'
   id: TabId
-  filePath: string
+  /** Absolute-in-project path. `null` means an unsaved "new file" buffer
+   *  that must go through a save-as before it can be persisted. */
+  filePath: string | null
   fileName: string
   temporary: boolean
   locked: boolean
@@ -184,6 +188,18 @@ let openProjectIds = $state<string[]>([])
 let activeProjectId = $state<string | null>(null)
 let workspaces = $state<Map<string, ProjectWorkspace>>(new Map())
 let draggedTab = $state<DraggedTab | null>(null)
+
+// LIFO per-project stack of recently closed tabs for Ctrl+Shift+T. Not
+// persisted — a fresh app launch has nothing to reopen beyond what
+// workspace restore already hydrates. Capped at 10 so a long session of
+// tab churn doesn't balloon.
+const MAX_CLOSED_TABS = 10
+let closedTabs = $state<Map<string, PersistedTab[]>>(new Map())
+
+// Monotonic counter for "Untitled-N" labels on new-empty editor tabs.
+// Per process only; resets across reloads which is fine — there's no
+// user-meaningful numbering to preserve.
+let untitledCounter = 0
 
 // Active project's focused pane slot — derived so reads stay reactive
 // and per-project focus is preserved when switching projects.
@@ -367,6 +383,7 @@ export function openProject(projectId: string) {
   }
   ensureWorkspace(projectId)
   activeProjectId = projectId
+  hideProjectPicker()
   persistAppShellSnapshot()
   // Restore in the background. Failures are swallowed inside loader
   // so the UI never blocks waiting on disk.
@@ -406,6 +423,10 @@ export async function closeProject(projectId: string): Promise<void> {
 export function selectProject(projectId: string | null) {
   if (projectId && openProjectIds.includes(projectId)) {
     activeProjectId = projectId
+    // Selecting an already-open project tab is an implicit "I'm done
+    // with the picker" — otherwise the override keeps EmptyState up
+    // even after the user pinned a real tab.
+    hideProjectPicker()
   } else if (projectId === null) {
     activeProjectId = null
   }
@@ -696,6 +717,50 @@ export function addEditorTab(projectId: string, filePath: string, temporary = tr
   )
 }
 
+/**
+ * Open a new unsaved editor tab ("Untitled-N"). Always creates a fresh
+ * tab — multiple Ctrl+N presses intentionally stack rather than
+ * deduplicating, since each is a distinct scratch buffer.
+ *
+ * The tab promotes to a real file path on first save via
+ * `renameEditorTab`.
+ */
+export function addNewEmptyEditorTab(projectId: string): TabId {
+  const ws = ensureWorkspace(projectId)
+  untitledCounter += 1
+  const tab: EditorTab = {
+    kind: 'editor',
+    id: generateTabId(),
+    filePath: null,
+    fileName: `Untitled-${untitledCounter}`,
+    temporary: false,
+    locked: false
+  }
+  ws.tabs = [...ws.tabs, tab]
+  const pane = activePaneOf(ws)
+  pane.tabs = [...pane.tabs, tab.id]
+  pane.activeTabId = tab.id
+  ws.focusedPaneSlot = pane.slot
+  commitWorkspace(ws)
+  return tab.id
+}
+
+/**
+ * Promote an unsaved editor tab (filePath=null) to a real path after
+ * save-as, or rename an existing editor tab's target. Used by the
+ * save-dialog flow in FileEditor.
+ */
+export function renameEditorTab(projectId: string, tabId: TabId, newFilePath: string) {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  const fileName = newFilePath.split('/').pop() ?? newFilePath
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.id !== tabId || t.kind !== 'editor') return t
+    return { ...t, filePath: newFilePath, fileName }
+  })
+  commitWorkspace(ws)
+}
+
 /** Open a read-only editor tab showing a file at a specific git revision. */
 export function addReadonlyEditorTab(
   projectId: string,
@@ -750,6 +815,18 @@ export function closeTab(projectId: string, tabId: TabId) {
   if (!tab) return
   if (tab.locked) return
 
+  // Push a restorable snapshot before teardown. `tabToPersisted` returns
+  // null for tabs that can't be meaningfully reopened (unsaved new-file
+  // buffers, notification-test tabs) — those simply don't enter the
+  // reopen stack.
+  const snapshot = tabToPersisted(tab)
+  if (snapshot) {
+    const list = closedTabs.get(projectId) ?? []
+    const next = new Map(closedTabs)
+    next.set(projectId, [snapshot, ...list].slice(0, MAX_CLOSED_TABS))
+    closedTabs = next
+  }
+
   // Dispose the frontend terminal manager. The PTY should already be
   // stopped by the caller (PaneTabBar.handleTabClose), but dispose
   // ensures the xterm instance and channels are cleaned up.
@@ -768,6 +845,45 @@ export function closeTab(projectId: string, tabId: TabId) {
   // Remove from workspace tabs
   ws.tabs = ws.tabs.filter((t) => t.id !== tabId)
   commitWorkspace(ws)
+}
+
+/**
+ * Pop the most recently closed tab off the per-project stack and re-add
+ * it via the normal add* function for that kind. Returns the new tab id,
+ * or null when the stack is empty. Mirrors VSCode's Ctrl+Shift+T.
+ */
+export function reopenLastClosedTab(projectId: string): TabId | null {
+  const list = closedTabs.get(projectId)
+  if (!list || list.length === 0) return null
+  const [head, ...rest] = list
+  const next = new Map(closedTabs)
+  next.set(projectId, rest)
+  closedTabs = next
+
+  switch (head.kind) {
+    case 'session':
+      return addSessionTab(projectId, head.sessionId, head.title, head.providerId)
+    case 'editor':
+      return head.gitRef
+        ? addReadonlyEditorTab(projectId, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)
+        : addEditorTab(projectId, head.filePath, false)
+    case 'commit':
+      return addCommitTab(projectId, head.commitHash, head.shortHash, head.message, head.initialFile, false)
+    case 'changes':
+      return addChangesTab(projectId, head.staged, head.initialFile, false)
+    case 'stash':
+      return addStashTab(projectId, head.stashIndex, head.message, head.initialFile, false)
+    case 'notification-test':
+      return null
+    default: {
+      const _exhaustive: never = head
+      return _exhaustive
+    }
+  }
+}
+
+export function hasClosedTabs(projectId: string): boolean {
+  return (closedTabs.get(projectId)?.length ?? 0) > 0
 }
 
 /** Close a tab by its sessionId (used when archiving). Skips locked tabs. */

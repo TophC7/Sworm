@@ -178,6 +178,7 @@
            in MonacoEditor races with the async load()). -->
       {#key activeTab.id}
         <FileEditor
+          tabId={activeTab.id}
           filePath={activeTab.filePath}
           {projectPath}
           {projectId}

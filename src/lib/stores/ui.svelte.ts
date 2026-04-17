@@ -145,3 +145,22 @@ export function setCommandPaletteOpen(open: boolean) {
 export function toggleCommandPalette() {
   commandPaletteOpen = !commandPaletteOpen
 }
+
+// ---------------------------------------------------------------------------
+// Ephemeral project-picker override — forces EmptyState to render without
+// closing any projects. Cleared on opening a project. Not persisted.
+// ---------------------------------------------------------------------------
+
+let projectPickerOverride = $state(false)
+
+export function isProjectPickerOverride(): boolean {
+  return projectPickerOverride
+}
+
+export function showProjectPicker() {
+  projectPickerOverride = true
+}
+
+export function hideProjectPicker() {
+  projectPickerOverride = false
+}

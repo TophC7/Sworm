@@ -4,8 +4,17 @@ import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { notify } from '$lib/stores/notifications.svelte'
 import { getErrorMessage } from '$lib/utils/notifiedTask'
+import { newEmptyFile, openProjectPicker } from './actions.svelte'
 
-import { FolderOpenIcon, FolderClockIcon, SettingsIcon, SquareArrowOutUpRight, XIcon } from '$lib/icons/lucideExports'
+import {
+  FilePlusIcon,
+  FolderOpenIcon,
+  FolderClockIcon,
+  HomeIcon,
+  SettingsIcon,
+  SquareArrowOutUpRight,
+  XIcon
+} from '$lib/icons/lucideExports'
 
 export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
   const activeId = getActiveProjectId()
@@ -13,12 +22,28 @@ export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
 
   const commands: Command[] = [
     {
+      id: 'new-file',
+      label: 'New File',
+      icon: FilePlusIcon,
+      keywords: ['new', 'empty', 'untitled', 'file', 'create'],
+      shortcut: 'Ctrl+N',
+      onSelect: newEmptyFile
+    },
+    {
       id: 'open-project',
       label: 'Open Project',
       icon: FolderOpenIcon,
       keywords: ['new', 'add', 'folder', 'directory'],
       shortcut: 'Ctrl+O',
       onSelect: callbacks.onNewProject
+    },
+    {
+      id: 'show-project-picker',
+      label: 'Show Project Picker',
+      icon: HomeIcon,
+      keywords: ['home', 'picker', 'projects', 'empty', 'start'],
+      shortcut: 'Ctrl+Shift+N',
+      onSelect: openProjectPicker
     },
     {
       id: 'settings',

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
+  import { save as saveDialog } from '@tauri-apps/plugin-dialog'
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { IconButton } from '$lib/components/ui/button'
@@ -13,17 +14,21 @@
   import { ensureFreshSession } from '$lib/utils/openFile'
   import { runNotifiedTask } from '$lib/utils/notifiedTask'
   import { clearEditorDirty, setEditorDirty } from '$lib/stores/dirtyEditors.svelte'
+  import { renameEditorTab } from '$lib/stores/workspace.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
 
   let {
+    tabId,
     filePath,
     projectPath,
     projectId,
     gitRef,
     refLabel
   }: {
-    filePath: string
+    tabId: string
+    /** `null` = unsaved "Untitled" buffer. First save triggers save-as. */
+    filePath: string | null
     projectPath: string
     projectId: string
     /** If set, load content from this git ref (read-only). */
@@ -33,17 +38,23 @@
   } = $props()
 
   let isReadonly = $derived(!!gitRef)
+  let isUntitled = $derived(filePath == null)
 
   let content = $state('')
   let editContent = $state('')
   let loading = $state(true)
   let saving = $state(false)
   let error = $state<string | null>(null)
-  let dirty = $derived(!isReadonly && editContent !== content)
+  // Untitled buffers are dirty as soon as they contain any text; without
+  // this we'd treat "empty unsaved file" as clean and silently drop it
+  // on tab close.
+  let dirty = $derived(!isReadonly && (isUntitled ? editContent.length > 0 : editContent !== content))
 
-  let isMarkdown = $derived(isMarkdownFile(filePath))
-  let isBinary = $derived(isBinaryFile(filePath))
-  let language = $derived(filePathToLanguage(filePath))
+  // Language/markdown detection keys off filePath. For untitled buffers
+  // there's no extension yet, so `plaintext` is the honest default.
+  let isMarkdown = $derived(filePath != null && isMarkdownFile(filePath))
+  let isBinary = $derived(filePath != null && isBinaryFile(filePath))
+  let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
   let mode = $state<Mode>('split')
 
@@ -68,7 +79,12 @@
     loading = true
     error = null
     try {
-      if (isBinaryFile(filePath)) {
+      if (filePath == null) {
+        // Untitled buffer: start empty, skip backend read entirely.
+        content = ''
+        editContent = ''
+        debouncedEdit = ''
+      } else if (isBinaryFile(filePath)) {
         content = ''
         editContent = ''
         debouncedEdit = ''
@@ -96,11 +112,51 @@
     // updates and could flip `dirty` back to true against stale state.
     if (saving) return
     if (!dirty || isReadonly) return
-    saving = true
+
+    // Untitled buffers: prompt for a path via the OS save dialog before
+    // writing. On success we rebind the tab to the chosen path — the
+    // filePath $effect below will re-run load(), which will read back
+    // the just-written file and reconcile content == editContent,
+    // flipping dirty=false naturally.
+    let targetRel: string
+    if (filePath == null) {
+      saving = true
+      try {
+        const chosen = await saveDialog({ title: 'Save file', defaultPath: projectPath })
+        if (!chosen) {
+          saving = false
+          return
+        }
+        // Guard against sibling directories whose path happens to share
+        // the project root as a prefix (`/home/a/proj-backup/...` vs
+        // `/home/a/proj`). Require an exact match OR a `/` boundary.
+        const inside = chosen === projectPath || chosen.startsWith(projectPath + '/')
+        if (!inside) {
+          error = 'File must be saved inside the project directory.'
+          saving = false
+          return
+        }
+        // backend.files.write takes a project-relative path.
+        targetRel = chosen.slice(projectPath.length).replace(/^\/+/, '')
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e)
+        saving = false
+        return
+      }
+    } else {
+      targetRel = filePath
+      saving = true
+    }
+
     error = null
     try {
-      await backend.files.write(projectPath, filePath, editContent)
+      await backend.files.write(projectPath, targetRel, editContent)
       content = editContent
+      if (filePath == null) {
+        // Promote the tab to the real path. The filePath effect will
+        // reload, but editContent already matches so no flash.
+        renameEditorTab(projectId, tabId, targetRel)
+      }
       if (isNix) lintNix()
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -111,6 +167,7 @@
 
   async function lintNix() {
     const target = filePath
+    if (target == null) return
     try {
       const diagnostics = await backend.nix.lint(projectPath, target)
       if (filePath !== target) return
@@ -122,13 +179,15 @@
   }
 
   async function openInFresh() {
+    const path = filePath
+    if (path == null) return
     await runNotifiedTask(
       async () => {
         await ensureFreshSession(projectId)
-        await backend.editor.openFile(projectId, projectPath, filePath)
+        await backend.editor.openFile(projectId, projectPath, path)
       },
       {
-        loading: { title: 'Opening in Fresh', description: filePath },
+        loading: { title: 'Opening in Fresh', description: path },
         error: { title: 'Open in Fresh failed' }
       }
     )
@@ -150,7 +209,7 @@
     void filePath
     void gitRef
     untrack(() => {
-      mode = isMarkdownFile(filePath) ? 'split' : 'edit'
+      mode = filePath != null && isMarkdownFile(filePath) ? 'split' : 'edit'
       lintDiagnostics = []
       load()
     })
@@ -159,20 +218,22 @@
   // Mirror local dirty state into the workspace-level registry so the
   // reload / close paths can warn the user about unsaved buffers.
   //
+  // Keyed by tabId (not filePath) so untitled buffers — which have no
+  // filePath yet — still participate, and so promoting an untitled to
+  // a real path doesn't orphan its dirty entry under the stale key.
+  //
   // Split into two effects on purpose: a single effect that captured
-  // (project, path) and also depended on `dirty` would run its cleanup
-  // on every keystroke — clearing then re-setting the dirty entry —
-  // and any $derived reader of the registry would see it flicker off
-  // and back on every character typed.
+  // tabId and also depended on `dirty` would run its cleanup on every
+  // keystroke — clearing then re-setting the dirty entry — and any
+  // $derived reader of the registry would see it flicker off and back
+  // on every character typed.
   $effect(() => {
     const project = projectId
-    const path = filePath
-    // Cleanup only runs at unmount or when (project, path) identity
-    // changes, which matches when the registration itself should drop.
-    return () => clearEditorDirty(project, path)
+    const id = tabId
+    return () => clearEditorDirty(project, id)
   })
   $effect(() => {
-    setEditorDirty(projectId, filePath, dirty)
+    setEditorDirty(projectId, tabId, dirty)
   })
 </script>
 
@@ -181,12 +242,15 @@
   <ContentToolbar>
     {#snippet left()}
       <span class="truncate text-muted">
-        {filePath}
+        {filePath ?? 'Untitled'}
         {#if refLabel}
           <span class="ml-1 text-accent">({refLabel})</span>
         {/if}
         {#if isReadonly}
           <span class="ml-1 text-subtle">read-only</span>
+        {/if}
+        {#if isUntitled}
+          <span class="ml-1 text-subtle">(unsaved)</span>
         {/if}
       </span>
     {/snippet}
@@ -224,7 +288,7 @@
         </TooltipRoot>
       {/if}
 
-      {#if !isReadonly}
+      {#if !isReadonly && !isUntitled}
         <IconButton tooltip="Open in Fresh" onclick={openInFresh}>
           <img src="/svg/fresh.svg" alt="Fresh" width={14} height={14} class="opacity-60" />
         </IconButton>

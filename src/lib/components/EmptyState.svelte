@@ -5,7 +5,8 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
   import { notify } from '$lib/stores/notifications.svelte'
-  import { openProject } from '$lib/stores/workspace.svelte'
+  import { getActiveProjectId, openProject } from '$lib/stores/workspace.svelte'
+  import { hideProjectPicker, isProjectPickerOverride } from '$lib/stores/ui.svelte'
   import { parentPath } from '$lib/utils/path'
   import { getErrorMessage } from '$lib/utils/notifiedTask'
   import { FolderOpen, Worm } from '$lib/icons/lucideExports'
@@ -27,7 +28,20 @@
   function dirName(path: string): string {
     return path.split('/').pop() ?? path
   }
+
+  // Esc dismisses the picker only when it's an override on top of a
+  // real active project. Without an active project there's nowhere to
+  // go back to, so we let the key fall through.
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (!isProjectPickerOverride()) return
+    if (!getActiveProjectId()) return
+    e.preventDefault()
+    hideProjectPicker()
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <StageView>
   <div class="mx-auto w-full max-w-md">

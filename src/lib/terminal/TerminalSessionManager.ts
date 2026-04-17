@@ -406,13 +406,30 @@ export class TerminalSessionManager {
     this.terminal.loadAddon(this.webLinksAddon)
     this.terminal.open(this.hostEl)
 
-    // With kitty keyboard protocol active, Ctrl+V/Ctrl+Shift+V get encoded
-    // as CSI u sequences and preventDefault() kills the browser paste event.
-    // Let clipboard shortcuts bypass xterm.js so the browser handles them.
+    // Ctrl+Shift+C / Cmd+C-with-Shift: let the browser handle copy so
+    // the user's selection lands on the OS clipboard. Everything else
+    // — including plain Ctrl+V — is forwarded to xterm, which encodes
+    // Ctrl+V as a CSI u sequence under the kitty keyboard protocol
+    // (enabled in TERMINAL_OPTIONS). TUI agents like Claude Code that
+    // understand kitty-mode Ctrl+V then read the OS clipboard
+    // themselves, so *images* (not just text paths) get attached. If
+    // we intercepted the event here or let the browser's text-only
+    // paste fire, the image would silently downgrade to nothing.
     this.terminal.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true
-      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'v' || ev.key === 'V')) return false
+
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C') && ev.shiftKey) return false
+
+      // Webviews run default focus traversal on Shift+Tab before xterm's
+      // own keyboard handler gets the event, which yanks focus out of
+      // the terminal mid-keystroke. Plain Tab doesn't have this problem
+      // (xterm handles it cleanly and TUI autocomplete still works);
+      // narrowing to Shift+Tab avoids shadowing Ctrl+Tab or any future
+      // app-level Tab-based shortcut.
+      if (ev.key === 'Tab' && ev.shiftKey) {
+        ev.preventDefault()
+        return true
+      }
       return true
     })
 

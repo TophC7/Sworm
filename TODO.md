@@ -20,6 +20,11 @@
 
 - [ ] Pane overscroll feature — when scrolling past the end of content in a pane, allow elastic overscroll that pushes content up so the end feels reachable. Should have configurable threshold, max overscroll amount, and spring animation on return. Blocked on: threshold definition (immediate vs amount), max distance cap, trigger input (wheel only vs keyboard/trackpad), return behavior (scroll up vs any scroll down), handling of edge cases (empty/short content, text selection at bottom, window resize while overscrolled, keyboard nav during overscroll, momentum scrolling). Start with single pane prototype, not all panes.
 
+### Keyboard Shortcuts
+
+- [ ] Allow binding a shortcut to commands that don't have one by default — Command Center's pencil icon currently only renders for rows that already have a default shortcut (`{#if effectiveShortcut || cmd.shortcut}` gate in CommandCenter.svelte). Widen so any rebindable command surfaces the pencil, letting users assign a shortcut to e.g. Toggle Sidebar or any future commandless action.
+- [ ] Palette row for `toggle-command-palette` itself — it's registered as a rebindable id in shortcuts.svelte.ts but has no Command Center entry, so the rebind UI can't reach it. Either add a palette row (recursive but harmless — opening the palette to toggle the palette) or surface the palette's own shortcut in a settings view.
+
 ### Git Stash UX
 
 - [ ] Stash operation error handling — `stash pop` can fail with merge conflicts leaving the working tree in a conflicted state, `stash drop` can also fail. Currently errors are silently caught and logged to console. Needs proper conflict detection, user-visible error states, and guided recovery (not just a toast — the UI should reflect the conflicted state and offer resolution paths)
@@ -70,3 +75,4 @@
 ### Terminal / PTY
 
 - [ ] PTY output ring buffer — keep last N bytes of output per session in PtyService so webview reloads can replay terminal history and reconnect to the running PTY instead of restarting the session
+- [ ] Drag-and-drop image attach into terminal — dropping an image file (or clipboard image payload) onto a session pane should save it to a temp file and paste the path into the PTY so Claude Code can attach it. Needs: a Tauri command that writes bytes to a temp file and returns the path, the `clipboard-manager:allow-read-image` capability, a DnD target on SessionTerminal with MIME sniffing (image/*), and the write-to-temp + type-path flow. Ctrl+V itself is already handled natively by Claude Code on kitty-encoded Ctrl+V — this is for the drag-drop path only

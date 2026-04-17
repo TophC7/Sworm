@@ -30,7 +30,7 @@ const APP_SHELL_DEBOUNCE_MS = 250
 // Serialization
 // ---------------------------------------------------------------------------
 
-function tabToPersisted(tab: Tab): PersistedTab | null {
+export function tabToPersisted(tab: Tab): PersistedTab | null {
   switch (tab.kind) {
     case 'session':
       return {
@@ -41,6 +41,10 @@ function tabToPersisted(tab: Tab): PersistedTab | null {
         locked: tab.locked
       }
     case 'editor':
+      // Untitled / new-empty buffers have no filePath yet and can't be
+      // round-tripped to disk — drop them from persistence and the
+      // closed-tab stack.
+      if (tab.filePath == null) return null
       return {
         kind: 'editor',
         filePath: tab.filePath,

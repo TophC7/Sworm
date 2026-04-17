@@ -8,21 +8,43 @@
     CommandInput,
     CommandItem,
     CommandList,
-    CommandSeparator,
-    CommandShortcut
+    CommandSeparator
   } from '$lib/components/ui/command'
+  import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
+  import RebindDialog from '$lib/components/RebindDialog.svelte'
+  import { PencilIcon } from '$lib/icons/lucideExports'
   import { cn } from '$lib/utils/cn'
   import {
     getAppCommandGroups,
     getEditorCommandGroups,
+    type Command as CommandType,
     type CommandConfirm,
     type FileCallbacks
   } from '$lib/commands/index.svelte'
   import { isCommandPaletteOpen, setCommandPaletteOpen } from '$lib/stores/ui.svelte'
   import { isEditorFocused } from '$lib/editor/editorActions.svelte'
+  import { getEffectiveSpec } from '$lib/stores/shortcutOverrides.svelte'
+  import { splitShortcut } from '$lib/utils/keybindings.svelte'
 
   let { onNewProject, onSettings }: FileCallbacks = $props()
+
+  // Rebind flow — when the user clicks the pencil icon next to a row's
+  // shortcut, we close the palette and open this dialog. Keeping them
+  // mutually exclusive avoids stacked modal focus weirdness and lets the
+  // rebind dialog fully own keyboard capture.
+  let rebindTarget = $state<{ id: string; label: string; defaultSpec: string | undefined } | null>(null)
+
+  function openRebind(cmd: CommandType, event: Event) {
+    event.preventDefault()
+    event.stopPropagation()
+    setCommandPaletteOpen(false)
+    rebindTarget = { id: cmd.id, label: cmd.label, defaultSpec: cmd.shortcut }
+  }
+
+  function closeRebind() {
+    rebindTarget = null
+  }
 
   let open = $derived(isCommandPaletteOpen())
   let search = $state('')
@@ -106,7 +128,8 @@
               <CommandGroup heading={group.heading}>
                 {#each group.commands as cmd (cmd.id)}
                   {@const Icon = cmd.icon}
-                  <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd.onSelect)}>
+                  {@const effectiveShortcut = getEffectiveSpec(cmd.id, cmd.shortcut)}
+                  <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd.onSelect)} class="group">
                     {#if Icon}
                       <Icon />
                     {:else if cmd.iconSrc}
@@ -118,8 +141,29 @@
                     {:else}
                       {cmd.label}
                     {/if}
-                    {#if cmd.shortcut}
-                      <CommandShortcut>{cmd.shortcut}</CommandShortcut>
+                    {#if effectiveShortcut || cmd.shortcut}
+                      {@const parts = splitShortcut(effectiveShortcut)}
+                      <span class="ml-auto flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          aria-label="Rebind shortcut"
+                          title="Rebind shortcut"
+                          onpointerdown={(e) => openRebind(cmd, e)}
+                          class="rounded p-1 text-muted opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-raised/70 hover:text-fg focus-visible:opacity-100"
+                        >
+                          <PencilIcon class="size-3" />
+                        </button>
+                        {#if parts.length > 0}
+                          <KbdGroup>
+                            {#each parts as part, i (i)}
+                              {#if i > 0}<span class="text-subtle">+</span>{/if}
+                              <Kbd>{part}</Kbd>
+                            {/each}
+                          </KbdGroup>
+                        {:else}
+                          <span class="text-xs text-subtle italic">unbound</span>
+                        {/if}
+                      </span>
                     {/if}
                   </CommandItem>
                 {/each}
@@ -142,3 +186,13 @@
     onCancel={confirm.onCancel}
   />
 {/each}
+
+{#if rebindTarget}
+  <RebindDialog
+    open={true}
+    commandId={rebindTarget.id}
+    commandLabel={rebindTarget.label}
+    defaultSpec={rebindTarget.defaultSpec}
+    onClose={closeRebind}
+  />
+{/if}

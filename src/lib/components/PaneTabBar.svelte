@@ -7,7 +7,6 @@
   import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
   import {
     closeTab,
-    collapsePaneIfEmpty,
     endTabDrag,
     promoteTemporaryTab,
     setActiveTab,
@@ -15,13 +14,11 @@
     toggleTabLocked
   } from '$lib/stores/workspace.svelte'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
-  import { isEditorDirty } from '$lib/stores/dirtyEditors.svelte'
-  import { confirmAsync } from '$lib/stores/confirmService.svelte'
+  import { closeTabWithChecks } from '$lib/utils/tabActions.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { FileDiff, GitCommitIcon, PackageIcon, BellIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { tick } from 'svelte'
-  import { notify } from '$lib/stores/notifications.svelte'
   import { getErrorMessage, runNotifiedTask } from '$lib/utils/notifiedTask'
 
   let {
@@ -56,45 +53,7 @@
 
   async function handleTabClose(e: Event, tabId: TabId) {
     e.stopPropagation()
-
-    const tab = tabs.find((candidate) => candidate.id === tabId)
-    if (!tab) return
-
-    // Editor tabs with unsaved buffer content require explicit confirmation
-    // — the buffer is not persisted, so closing discards it. Read-only
-    // ref tabs (gitRef set) can never be dirty, so isEditorDirty is false.
-    if (tab.kind === 'editor' && isEditorDirty(projectId, tab.filePath)) {
-      const proceed = await confirmAsync({
-        title: 'Unsaved changes',
-        message: `${tab.fileName} has unsaved changes. Close and lose them?`,
-        confirmLabel: 'Close',
-        cancelLabel: 'Keep editing'
-      })
-      if (!proceed) return
-    }
-
-    if (tab.kind === 'session') {
-      // Stop the PTY if actively running, but keep the session record in DB
-      // so it appears in the session history view.
-      //
-      // If the stop *fails* we must not proceed with closeTab — the tab
-      // vanishing with the PTY still alive would orphan the process
-      // until app-quit, which shows up in logs but is invisible to the
-      // user. Surface the error and let them retry.
-      const session = sessions.find((s) => s.id === tab.sessionId)
-      if (session && (session.status === 'running' || session.status === 'starting')) {
-        try {
-          await backend.sessions.stop(tab.sessionId)
-          updateSessionInList(tab.sessionId, { status: 'stopped' })
-        } catch (err) {
-          notify.error('Stop session failed', getErrorMessage(err))
-          return
-        }
-      }
-    }
-
-    closeTab(projectId, tabId)
-    collapsePaneIfEmpty(projectId)
+    await closeTabWithChecks(projectId, tabId)
   }
 
   function handleContextMenu(e: MouseEvent, tabId: TabId) {

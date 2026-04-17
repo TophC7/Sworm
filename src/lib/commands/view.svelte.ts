@@ -1,8 +1,7 @@
 import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
-import { flushPersistencePending, getActiveProjectId } from '$lib/stores/workspace.svelte'
-import { getDirtyEditorsCount, hasAnyDirtyEditors } from '$lib/stores/dirtyEditors.svelte'
-import { confirmAsync } from '$lib/stores/confirmService.svelte'
+import { getActiveProjectId, hasClosedTabs } from '$lib/stores/workspace.svelte'
 import type { CommandGroup } from './types'
+import { closeActiveTab, reloadView, reopenTab } from './actions.svelte'
 
 import { isIndentRainbowEnabled, toggleIndentRainbow } from '$lib/editor/extensions/indentRainbow.svelte'
 import {
@@ -10,37 +9,11 @@ import {
   PanelLeftIcon,
   RefreshCwIcon,
   RotateCcwIcon,
+  Undo2Icon,
+  XIcon,
   ZoomInIcon,
   ZoomOutIcon
 } from '$lib/icons/lucideExports'
-
-/**
- * Managed reload: confirms unsaved buffers, force-flushes any pending
- * workspace persistence, then triggers the browser reload.
- *
- * Skipping this path (e.g. raw `window.location.reload()`) drops the
- * debounce window of workspace state and the user's unsaved buffers,
- * which is exactly the surprise the recovery spec calls out.
- */
-async function reloadView() {
-  if (hasAnyDirtyEditors()) {
-    const count = getDirtyEditorsCount()
-    const noun = count === 1 ? 'file' : 'files'
-    const proceed = await confirmAsync({
-      title: 'Unsaved changes',
-      message: `You have ${count} unsaved ${noun}. Reload and lose changes?`,
-      confirmLabel: 'Reload',
-      cancelLabel: 'Keep editing'
-    })
-    if (!proceed) return
-  }
-  try {
-    await flushPersistencePending()
-  } catch (error) {
-    console.warn('Reload flush failed:', error)
-  }
-  window.location.reload()
-}
 
 export function getViewCommands(): CommandGroup[] {
   const activeId = getActiveProjectId()
@@ -58,7 +31,27 @@ export function getViewCommands(): CommandGroup[] {
                 icon: PanelLeftIcon,
                 keywords: ['sidebar', 'panel', 'show', 'hide'],
                 onSelect: toggleSidebar
-              }
+              },
+              {
+                id: 'close-tab',
+                label: 'Close Tab',
+                icon: XIcon,
+                keywords: ['close', 'tab', 'dismiss'],
+                shortcut: 'Ctrl+W',
+                onSelect: () => void closeActiveTab()
+              },
+              ...(hasClosedTabs(activeId)
+                ? [
+                    {
+                      id: 'reopen-closed-tab',
+                      label: 'Reopen Closed Tab',
+                      icon: Undo2Icon,
+                      keywords: ['reopen', 'undo', 'restore', 'tab'],
+                      shortcut: 'Ctrl+Shift+T',
+                      onSelect: reopenTab
+                    }
+                  ]
+                : [])
             ]
           : []),
         {

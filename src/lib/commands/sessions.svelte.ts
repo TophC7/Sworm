@@ -99,6 +99,7 @@ export function getSessionCommands(): CommandGroup[] {
       label: 'New Terminal',
       iconSrc: terminalIcon,
       keywords: ['terminal', 'shell', 'console'],
+      shortcut: 'Ctrl+T',
       onSelect: () => startSession('terminal', 'Terminal')
     })
   }

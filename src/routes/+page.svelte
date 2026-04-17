@@ -5,8 +5,10 @@
   import { getActiveProject, getProjects, loadProjects } from '$lib/stores/projects.svelte'
   import { loadProviders } from '$lib/stores/providers.svelte'
   import { restoreAppShellState } from '$lib/stores/workspace.svelte'
+  import { isProjectPickerOverride } from '$lib/stores/ui.svelte'
 
   let activeProject = $derived(getActiveProject())
+  let showEmpty = $derived(isProjectPickerOverride() || !activeProject)
 
   // Order matters: projects must be loaded before app-shell restore so
   // we can validate persisted ids against the live project list and
@@ -19,8 +21,8 @@
   })
 </script>
 
-{#if activeProject}
-  <ProjectView project={activeProject} />
-{:else}
+{#if showEmpty}
   <EmptyState />
+{:else if activeProject}
+  <ProjectView project={activeProject} />
 {/if}
