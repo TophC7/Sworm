@@ -21,6 +21,19 @@ pub fn run() {
     tracing::info!("Sworm starting up");
 
     let app = tauri::Builder::default()
+        // Single-instance lock: second launch focuses the existing window
+        // instead of spinning up a parallel process. The plugin keys its
+        // lock off the bundle identifier, so dev and prod builds (which
+        // use different identifiers) each get their own lock — allowing
+        // dogfooding Sworm-in-Sworm without the two instances fighting
+        // over the same SQLite DB.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())

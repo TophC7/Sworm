@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
+    "app:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "app:build": "tauri build",
     "postinstall": "svelte-kit sync || true; bun2nix -o bun.nix || true"
   },
   "devDependencies": {

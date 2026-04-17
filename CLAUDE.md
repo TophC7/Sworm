@@ -39,7 +39,7 @@ Use the narrowest relevant checks that exist today:
 - `bun run build`
 - `cargo check`
 - `cargo test`
-- `bun tauri build --debug`
+- `bun run app:build -- --debug`
 
 Do not claim lint/format/test commands exist if they are not defined in the current repo.
 
