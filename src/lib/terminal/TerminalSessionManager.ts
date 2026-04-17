@@ -420,16 +420,24 @@ export class TerminalSessionManager {
 
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C') && ev.shiftKey) return false
 
-      // Webviews run default focus traversal on Shift+Tab before xterm's
-      // own keyboard handler gets the event, which yanks focus out of
-      // the terminal mid-keystroke. Plain Tab doesn't have this problem
-      // (xterm handles it cleanly and TUI autocomplete still works);
-      // narrowing to Shift+Tab avoids shadowing Ctrl+Tab or any future
-      // app-level Tab-based shortcut.
-      if (ev.key === 'Tab' && ev.shiftKey) {
+      // Kitty keyboard protocol (enabled in TERMINAL_OPTIONS) encodes
+      // Shift+Tab as \x1b[9;2u and Shift+Enter as \x1b[13;2u. Most TUI
+      // agents (Claude Code, Codex) only know the classic sequences, so
+      // those keystrokes silently no-op. Translate to the legacy bytes
+      // ourselves and tell xterm to stay out of it. preventDefault also
+      // blocks the webview's default focus-traversal on Shift+Tab.
+      if (ev.key === 'Tab' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
         ev.preventDefault()
-        return true
+        this.writeToPty('\x1b[Z')
+        return false
       }
+
+      if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+        ev.preventDefault()
+        this.writeToPty('\x1b\r')
+        return false
+      }
+
       return true
     })
 
@@ -454,14 +462,15 @@ export class TerminalSessionManager {
     })
 
     this.inputDisposable = this.terminal.onData((data) => {
-      if (!this.ptyActive || !this.inputEnabled) {
-        return
-      }
+      this.writeToPty(data)
+    })
+  }
 
-      const encoded = textEncoder.encode(data)
-      backend.sessions.write(this.sessionId, encoded).catch((error) => {
-        console.error('Session write error:', error)
-      })
+  private writeToPty(data: string): void {
+    if (!this.ptyActive || !this.inputEnabled) return
+    const encoded = textEncoder.encode(data)
+    backend.sessions.write(this.sessionId, encoded).catch((error) => {
+      console.error('Session write error:', error)
     })
   }
 
