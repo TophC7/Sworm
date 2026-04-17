@@ -213,35 +213,33 @@
     </InfoTooltip>
   {/snippet}
 
-  <div class="min-h-0 flex-1">
-    <ResizablePaneGroup direction="vertical">
-      <ResizablePane defaultSize={65} minSize={20}>
-        <div class="h-full overflow-y-auto">
-          {#if agentSessions.length === 0}
-            <div class="px-2.5 py-3 text-[0.75rem] text-subtle">No agent sessions yet.</div>
-          {:else}
-            {@render sessionList(grouped, false)}
+  <ResizablePaneGroup direction="vertical">
+    <ResizablePane defaultSize={65} minSize={20}>
+      <div class="h-full overflow-y-auto">
+        {#if agentSessions.length === 0}
+          <div class="px-2.5 py-3 text-[0.75rem] text-subtle">No agent sessions yet.</div>
+        {:else}
+          {@render sessionList(grouped, false)}
+        {/if}
+      </div>
+    </ResizablePane>
+    <ResizableHandle />
+    <ResizablePane defaultSize={35} minSize={10}>
+      <div class="h-full overflow-y-auto">
+        <div class="px-2.5 py-1.5 text-[0.65rem] font-semibold tracking-wider text-subtle uppercase">
+          Archived
+          {#if agentArchived.length > 0}
+            <span class="text-[0.6rem] font-normal text-subtle">({agentArchived.length})</span>
           {/if}
         </div>
-      </ResizablePane>
-      <ResizableHandle />
-      <ResizablePane defaultSize={35} minSize={10}>
-        <div class="h-full overflow-y-auto">
-          <div class="px-2.5 py-1.5 text-[0.65rem] font-semibold tracking-wider text-subtle uppercase">
-            Archived
-            {#if agentArchived.length > 0}
-              <span class="text-[0.6rem] font-normal text-subtle">({agentArchived.length})</span>
-            {/if}
-          </div>
-          {#if agentArchived.length === 0}
-            <div class="px-2.5 py-1.5 text-[0.7rem] text-subtle">None</div>
-          {:else}
-            {@render sessionList(archivedGrouped, true)}
-          {/if}
-        </div>
-      </ResizablePane>
-    </ResizablePaneGroup>
-  </div>
+        {#if agentArchived.length === 0}
+          <div class="px-2.5 py-1.5 text-[0.7rem] text-subtle">None</div>
+        {:else}
+          {@render sessionList(archivedGrouped, true)}
+        {/if}
+      </div>
+    </ResizablePane>
+  </ResizablePaneGroup>
 </SidebarPanel>
 
 <!-- Context menu -->
