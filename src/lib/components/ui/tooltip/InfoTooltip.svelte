@@ -11,8 +11,9 @@
 -->
 
 <script lang="ts">
-  import { buttonVariants } from '$lib/components/ui/button'
-  import { TooltipContent, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import { Tooltip } from 'bits-ui'
+  import { buttonVariants } from '../button/button.svelte'
+  import TooltipContent from './tooltip-content.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
 
@@ -31,8 +32,8 @@
   } = $props()
 </script>
 
-<TooltipRoot {delayDuration}>
-  <TooltipTrigger
+<Tooltip.Root {delayDuration}>
+  <Tooltip.Trigger
     type="button"
     aria-label={ariaLabel}
     class={cn(
@@ -42,8 +43,8 @@
     )}
   >
     ?
-  </TooltipTrigger>
+  </Tooltip.Trigger>
   <TooltipContent class={contentClass}>
     {#if children}{@render children()}{/if}
   </TooltipContent>
-</TooltipRoot>
+</Tooltip.Root>

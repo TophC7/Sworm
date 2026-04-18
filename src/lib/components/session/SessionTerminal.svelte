@@ -1,16 +1,21 @@
 <script lang="ts">
   import '@xterm/xterm/css/xterm.css'
   import { onMount, untrack } from 'svelte'
+  import { isTerminalDropActive, terminalDropObserver } from '$lib/dnd/adapters/terminal.svelte'
   import type { Session, SessionStatus } from '$lib/types/backend'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import type { TerminalSessionManager } from '$lib/terminal/TerminalSessionManager'
 
   let {
     session,
+    projectId,
+    projectPath,
     locked = false,
     onStatusChange
   }: {
     session: Session
+    projectId: string
+    projectPath: string
     locked?: boolean
     onStatusChange?: (status: SessionStatus) => void
   } = $props()
@@ -19,6 +24,11 @@
   let manager: TerminalSessionManager | null = $state(null)
   let error = $state<string | null>(null)
   let isHistorical = $state(false)
+  let canAcceptDrop = $derived.by(() => {
+    if (locked || isHistorical || !manager) return false
+    return manager.isPtyActive()
+  })
+  let dropActive = $derived(canAcceptDrop && isTerminalDropActive(session.id))
 
   let attachedSessionId: string | null = null
   // Generation counter invalidates stale awaits. Rapid A→B→A tab
@@ -181,5 +191,27 @@
     </div>
   {/if}
 
-  <div class="min-h-0 flex-1" bind:this={containerEl}></div>
+  <div
+    class="relative min-h-0 flex-1"
+    bind:this={containerEl}
+    {@attach terminalDropObserver({
+      sessionId: session.id,
+      projectId,
+      projectPath,
+      canAcceptDrop: () => canAcceptDrop,
+      onInsertText: (text) => manager?.sendText(text)
+    })}
+  >
+    {#if dropActive}
+      <div class="pointer-events-none absolute inset-1 z-20 rounded-lg border border-accent/60 bg-accent/10">
+        <div class="absolute inset-0 flex items-center justify-center">
+          <span
+            class="rounded border border-edge-strong/70 bg-raised/90 px-2 py-0.5 text-[0.68rem] font-medium tracking-wide text-bright uppercase"
+          >
+            Insert Path
+          </span>
+        </div>
+      </div>
+    {/if}
+  </div>
 </div>

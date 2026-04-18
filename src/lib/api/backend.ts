@@ -10,6 +10,8 @@ import type {
   DiscoveredProject,
   DiffContext,
   EnvProbeResult,
+  FileEntryStat,
+  FilePasteCollision,
   GitSummary,
   GraphCommit,
   GeneralSettings,
@@ -58,6 +60,12 @@ export const backend = {
     /** Read file URIs from the system clipboard. Returns null if none. */
     clipboardReadFiles(): Promise<{ op: 'copy' | 'cut'; paths: string[] } | null> {
       return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
+    }
+  },
+
+  dnd: {
+    saveDroppedBytes(bytes: Uint8Array, suggestedName: string): Promise<string> {
+      return invoke<string>('dnd_save_dropped_bytes', { bytes: Array.from(bytes), suggestedName })
     }
   },
 
@@ -315,11 +323,31 @@ export const backend = {
     rename(projectPath: string, oldPath: string, newPath: string): Promise<void> {
       return invoke<void>('file_rename', { projectPath, oldPath, newPath })
     },
+    stat(projectPath: string, filePath: string): Promise<FileEntryStat | null> {
+      return invoke<FileEntryStat | null>('file_stat', { projectPath, filePath })
+    },
     delete(projectPath: string, filePath: string): Promise<void> {
       return invoke<void>('file_delete', { projectPath, filePath })
     },
-    paste(projectPath: string, targetDir: string, op: 'copy' | 'cut', sources: string[]): Promise<string[]> {
-      return invoke<string[]>('file_paste', { projectPath, targetDir, op, sources })
+    paste(
+      projectPath: string,
+      targetDir: string,
+      op: 'copy' | 'cut',
+      sources: string[],
+      collisionPolicy: 'auto_rename' | 'replace' | 'skip' | 'rename' | 'error' = 'auto_rename',
+      renameMap?: Record<string, string>
+    ): Promise<string[]> {
+      return invoke<string[]>('file_paste', {
+        projectPath,
+        targetDir,
+        op,
+        sources,
+        collisionPolicy,
+        renameMap: renameMap ?? null
+      })
+    },
+    pasteCollisions(projectPath: string, targetDir: string, sources: string[]): Promise<FilePasteCollision[]> {
+      return invoke<FilePasteCollision[]>('file_paste_collisions', { projectPath, targetDir, sources })
     }
   },
 

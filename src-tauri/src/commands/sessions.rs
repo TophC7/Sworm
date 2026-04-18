@@ -319,10 +319,7 @@ pub fn session_start(
             let token = session.provider_resume_token.clone().unwrap_or_else(|| {
                 SessionService::deterministic_session_uuid("claude", &session_id)
             });
-            if crate::services::providers::claude_session_transcript_exists(
-                &session.cwd,
-                &token,
-            ) {
+            if crate::services::providers::claude_session_transcript_exists(&session.cwd, &token) {
                 (Some(token), None)
             } else {
                 (None, Some(token))

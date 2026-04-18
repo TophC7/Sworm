@@ -5,14 +5,8 @@
   import { allProviders, directOptions } from '$lib/data/providers'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
-  import {
-    closeTab,
-    endTabDrag,
-    promoteTemporaryTab,
-    setActiveTab,
-    startTabDrag,
-    toggleTabLocked
-  } from '$lib/stores/workspace.svelte'
+  import { closeTab, promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/stores/workspace.svelte'
+  import { tabDragSource } from '$lib/dnd/adapters/tab-strip'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { closeTabWithChecks } from '$lib/utils/tabActions.svelte'
   import { IconButton } from '$lib/components/ui/button'
@@ -90,24 +84,6 @@
     const provider =
       allProviders.find((p) => p.id === tab.providerId) ?? directOptions.find((p) => p.id === tab.providerId)
     return provider?.icon ?? null
-  }
-
-  function handleDragStart(e: DragEvent, tabId: TabId) {
-    const tab = tabs.find((candidate) => candidate.id === tabId)
-    if (!tab || tab.locked) {
-      e.preventDefault()
-      return
-    }
-
-    startTabDrag(projectId, tabId)
-    e.dataTransfer?.setData('text/plain', tabId)
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move'
-    }
-  }
-
-  function handleDragEnd() {
-    endTabDrag()
   }
 
   function handleAuxClick(e: MouseEvent, tabId: TabId) {
@@ -222,45 +198,45 @@
 
 <TabStrip variant="pane" ariaLabel="Pane tabs" class={isFocused ? 'border-edge' : 'border-edge/50'}>
   {#each tabs as tab (tab.id)}
-    <TabButton
-      variant="pane"
-      active={activeTabId === tab.id}
-      draggable={!tab.locked}
-      onclick={() => handleTabClick(tab.id)}
-      ondblclick={() => {
-        if (tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
-      }}
-      oncontextmenu={(e) => handleContextMenu(e, tab.id)}
-      onauxclick={(e) => handleAuxClick(e, tab.id)}
-      ondragstart={(e) => handleDragStart(e, tab.id)}
-      ondragend={handleDragEnd}
-      onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
-    >
-      {#snippet leading()}
-        {#if tab.kind === 'changes'}
-          <FileDiff size={14} class="shrink-0 text-accent" />
-        {:else if tab.kind === 'commit'}
-          <GitCommitIcon size={14} class="shrink-0 text-accent" />
-        {:else if tab.kind === 'stash'}
-          <PackageIcon size={14} class="shrink-0 text-accent" />
-        {:else if tab.kind === 'notification-test'}
-          <BellIcon size={14} class="shrink-0 text-accent" />
-        {:else if tab.kind === 'editor'}
-          <FileIcon filename={tab.fileName} size={14} />
-        {:else}
-          {@const icon = providerIcon(tab)}
-          {#if icon}
-            <img src={icon} alt="" width={14} height={14} class="shrink-0" />
+    <div class="contents" draggable={!tab.locked} {@attach tabDragSource({ tab, paneSlot, projectId })}>
+      <TabButton
+        variant="pane"
+        active={activeTabId === tab.id}
+        draggable={!tab.locked}
+        onclick={() => handleTabClick(tab.id)}
+        ondblclick={() => {
+          if (tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
+        }}
+        oncontextmenu={(e) => handleContextMenu(e, tab.id)}
+        onauxclick={(e) => handleAuxClick(e, tab.id)}
+        onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
+      >
+        {#snippet leading()}
+          {#if tab.kind === 'changes'}
+            <FileDiff size={14} class="shrink-0 text-accent" />
+          {:else if tab.kind === 'commit'}
+            <GitCommitIcon size={14} class="shrink-0 text-accent" />
+          {:else if tab.kind === 'stash'}
+            <PackageIcon size={14} class="shrink-0 text-accent" />
+          {:else if tab.kind === 'notification-test'}
+            <BellIcon size={14} class="shrink-0 text-accent" />
+          {:else if tab.kind === 'editor'}
+            <FileIcon filename={tab.fileName} size={14} />
+          {:else}
+            {@const icon = providerIcon(tab)}
+            {#if icon}
+              <img src={icon} alt="" width={14} height={14} class="shrink-0" />
+            {/if}
           {/if}
-        {/if}
-        {#if tab.locked}
-          <Lock size={11} class="shrink-0 text-muted" />
-        {/if}
-      {/snippet}
-      <span class="max-w-[120px] truncate {tab.kind !== 'session' && tab.temporary ? 'italic' : ''}">
-        {tabLabel(tab)}
-      </span>
-    </TabButton>
+          {#if tab.locked}
+            <Lock size={11} class="shrink-0 text-muted" />
+          {/if}
+        {/snippet}
+        <span class="max-w-[120px] truncate {tab.kind !== 'session' && tab.temporary ? 'italic' : ''}">
+          {tabLabel(tab)}
+        </span>
+      </TabButton>
+    </div>
   {/each}
 
   {#snippet trailing()}

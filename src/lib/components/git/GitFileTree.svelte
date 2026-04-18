@@ -4,6 +4,8 @@
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
   import GitContextMenu from '$lib/components/git/GitContextMenu.svelte'
   import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
+  import DropOverlay from '$lib/dnd/DropOverlay.svelte'
+  import { gitChangeDragSource, gitDropZone, isGitDropZoneActive } from '$lib/dnd/adapters/git.svelte'
   import { Button, IconButton } from '$lib/components/ui/button'
   import { ButtonGroup } from '$lib/components/ui/button-group'
   import {
@@ -78,10 +80,14 @@
   let discardConfirmOpen = $state(false)
   let discardTarget = $state<string | null>(null)
   let discardTargetType = $state<'file' | 'directory' | null>(null)
+  const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
+  const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
 
   $effect(() => {
     projectPath
     collapsedDirs.clear()
+    gitSourceAttachmentCache.clear()
+    gitZoneAttachmentCache.clear()
   })
 
   function getDirKey(section: string, path: string): string {
@@ -228,6 +234,41 @@
       notify.error('Copy patch failed', errMessage(e))
     }
   }
+
+  function gitSourceAttachment(node: FileTreeNode<GitChange>) {
+    if (!node.change) return null
+    const key = `${projectId}:${node.change.path}:${node.change.staged}`
+    const cached = gitSourceAttachmentCache.get(key)
+    if (cached) return cached
+    const attachment = gitChangeDragSource({ projectId, change: node.change })
+    gitSourceAttachmentCache.set(key, attachment)
+    return attachment
+  }
+
+  function gitZoneAttachment(staged: boolean) {
+    const key = `${projectId}:${staged ? 'staged' : 'unstaged'}`
+    const cached = gitZoneAttachmentCache.get(key)
+    if (cached) return cached
+    const attachment = gitDropZone({
+      projectId,
+      staged,
+      onDropFiles: async (files, targetStaged) => {
+        try {
+          await runGitAction(projectId, projectPath, (path) =>
+            targetStaged ? backend.git.stageFiles(path, files) : backend.git.unstageFiles(path, files)
+          )
+          notify.success(
+            targetStaged ? 'Files staged' : 'Files unstaged',
+            `${files.length} file${files.length === 1 ? '' : 's'}`
+          )
+        } catch (error) {
+          notify.error('Git drop failed', errMessage(error))
+        }
+      }
+    })
+    gitZoneAttachmentCache.set(key, attachment)
+    return attachment
+  }
 </script>
 
 <div class="flex min-h-full flex-col text-[0.78rem]">
@@ -281,7 +322,7 @@
   {#snippet fileGroup(label: string, tree: FileTreeNode<GitChange>[], keySuffix: string, isStaged: boolean)}
     {#if tree.length > 0}
       <div class="py-1">
-        <div class="group/hdr flex items-center px-2.5 py-1">
+        <div class="group/hdr relative flex items-center px-2.5 py-1" {@attach gitZoneAttachment(isStaged)}>
           <span class="text-[0.68rem] font-medium tracking-wide text-muted uppercase">
             {label} ({countFiles(tree)})
           </span>
@@ -337,6 +378,11 @@
               </IconButton>
             {/if}
           </div>
+          <DropOverlay
+            visible={isGitDropZoneActive(projectId, isStaged)}
+            zone="merge"
+            label={isStaged ? 'Stage' : 'Unstage'}
+          />
         </div>
         <FileTreeItems
           nodes={tree}
@@ -346,6 +392,8 @@
           onFileDblClick={() => onPersistTab?.()}
           onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
           {fileTrailing}
+          dndEnabled={true}
+          dndSourceAttachment={gitSourceAttachment}
         />
       </div>
     {/if}

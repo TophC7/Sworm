@@ -4,6 +4,75 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sworm</title>
+    <script>
+      ;(() => {
+        const render = (label, detail) => {
+          console.error(`[sworm] ${label}`, detail)
+          window.__SWORM_LAST_CLIENT_ERROR__ = { label, ...detail }
+
+          let pre = document.getElementById('sworm-startup-error')
+          if (!(pre instanceof HTMLPreElement)) {
+            pre = document.createElement('pre')
+            pre.id = 'sworm-startup-error'
+            pre.style.position = 'fixed'
+            pre.style.inset = '16px'
+            pre.style.zIndex = '999999'
+            pre.style.margin = '0'
+            pre.style.padding = '16px'
+            pre.style.overflow = 'auto'
+            pre.style.whiteSpace = 'pre-wrap'
+            pre.style.font = '12px/1.45 monospace'
+            pre.style.color = '#fff3ef'
+            pre.style.background = 'rgba(54, 19, 19, 0.96)'
+            pre.style.border = '1px solid rgba(255, 118, 114, 0.55)'
+            pre.style.borderRadius = '12px'
+            pre.style.boxSizing = 'border-box'
+            if (document.body) {
+              document.body.appendChild(pre)
+            } else {
+              document.addEventListener(
+                'DOMContentLoaded',
+                () => {
+                  document.body.appendChild(pre)
+                },
+                { once: true }
+              )
+            }
+          }
+
+          const lines = [
+            `${label}`,
+            '',
+            detail.message || '',
+            detail.filename ? `file: ${detail.filename}:${detail.lineno || 0}:${detail.colno || 0}` : '',
+            detail.stack || '',
+            detail.reasonStack || '',
+            detail.reasonText || ''
+          ].filter(Boolean)
+
+          pre.textContent = lines.join('\n')
+        }
+
+        window.addEventListener('error', (event) => {
+          render('window error', {
+            message: event.message,
+            filename: event.filename,
+            lineno: event.lineno,
+            colno: event.colno,
+            stack: event.error && event.error.stack ? String(event.error.stack) : ''
+          })
+        })
+
+        window.addEventListener('unhandledrejection', (event) => {
+          const reason = event.reason
+          render('unhandled rejection', {
+            message: reason && reason.message ? String(reason.message) : 'Unhandled promise rejection',
+            reasonText: typeof reason === 'string' ? reason : '',
+            reasonStack: reason && reason.stack ? String(reason.stack) : ''
+          })
+        })
+      })()
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

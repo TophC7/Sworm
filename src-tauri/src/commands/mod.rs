@@ -1,5 +1,6 @@
 pub mod activity_map;
 pub mod app;
+pub mod dnd;
 pub mod files;
 pub mod fresh;
 pub mod git;

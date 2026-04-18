@@ -1,5 +1,7 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
+use crate::services::files::{FileEntryStat, FilePasteCollision};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Read the contents of a file inside a project.
@@ -48,6 +50,16 @@ pub fn file_rename(
         .rename(Path::new(&project_path), &old_path, &new_path)
 }
 
+/// Return project-relative file metadata, or null if the path does not exist.
+#[tauri::command]
+pub fn file_stat(
+    project_path: String,
+    file_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<FileEntryStat>, ApiError> {
+    state.files.stat(Path::new(&project_path), &file_path)
+}
+
 /// Paste files into a target directory inside the project.
 /// `op` is "copy" or "cut". Sources are absolute paths from the clipboard.
 /// Returns the list of new project-relative paths.
@@ -57,11 +69,31 @@ pub fn file_paste(
     target_dir: String,
     op: String,
     sources: Vec<String>,
+    collision_policy: String,
+    rename_map: Option<HashMap<String, String>>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
+    let rename_map = rename_map.unwrap_or_default();
+    state.files.paste(
+        Path::new(&project_path),
+        &target_dir,
+        &op,
+        &sources,
+        &collision_policy,
+        &rename_map,
+    )
+}
+
+#[tauri::command]
+pub fn file_paste_collisions(
+    project_path: String,
+    target_dir: String,
+    sources: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FilePasteCollision>, ApiError> {
     state
         .files
-        .paste(Path::new(&project_path), &target_dir, &op, &sources)
+        .paste_collisions(Path::new(&project_path), &target_dir, &sources)
 }
 
 /// Delete a file or directory inside a project.

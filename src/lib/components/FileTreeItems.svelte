@@ -4,6 +4,9 @@
   import type { FileTreeNode } from '$lib/utils/fileTree'
   import type { Snippet } from 'svelte'
 
+  type NodeAttachment = (element: HTMLElement) => void | (() => void)
+  const noopAttachment: NodeAttachment = () => () => {}
+
   let {
     nodes,
     isCollapsed,
@@ -13,7 +16,11 @@
     onFileClick,
     onFileDblClick,
     onFileContextMenu,
-    fileTrailing
+    fileTrailing,
+    dndEnabled = false,
+    dndSourceAttachment,
+    dndDirectoryAttachment,
+    dndIsDropActive
   }: {
     nodes: FileTreeNode<T>[]
     isCollapsed: (path: string) => boolean
@@ -24,6 +31,10 @@
     onFileDblClick?: (node: FileTreeNode<T>) => void
     onFileContextMenu?: (e: MouseEvent, node: FileTreeNode<T>) => void
     fileTrailing?: Snippet<[FileTreeNode<T>]>
+    dndEnabled?: boolean
+    dndSourceAttachment?: (node: FileTreeNode<T>) => NodeAttachment | null
+    dndDirectoryAttachment?: (node: FileTreeNode<T>) => NodeAttachment | null
+    dndIsDropActive?: (path: string) => boolean
   } = $props()
 </script>
 
@@ -35,11 +46,19 @@
 
 {#snippet renderNode(node: FileTreeNode<T>, depth: number)}
   {#if node.type === 'directory'}
+    {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
+    {@const targetAttachment = dndEnabled ? (dndDirectoryAttachment?.(node) ?? null) : null}
+    {@const dropActive = dndEnabled ? (dndIsDropActive?.(node.path) ?? false) : false}
     <TreeNode expanded={!isCollapsed(node.path)} {depth}>
       {#snippet label()}
         <button
-          class="relative flex w-full cursor-pointer items-center gap-1 border-none bg-transparent py-0.5 text-left text-[0.72rem] text-muted hover:bg-surface"
+          class="relative flex w-full cursor-pointer items-center gap-1 border-none py-0.5 text-left text-[0.72rem] text-muted hover:bg-surface {dropActive
+            ? 'bg-accent/14 text-bright'
+            : 'bg-transparent'}"
           style="padding-left: {depth * 12 + 10}px"
+          draggable={sourceAttachment !== null}
+          {@attach sourceAttachment ?? noopAttachment}
+          {@attach targetAttachment ?? noopAttachment}
           onclick={() => onToggleDir(node.path)}
           oncontextmenu={(e) => {
             if (onFileContextMenu) {
@@ -60,12 +79,15 @@
       {/each}
     </TreeNode>
   {:else if node.change}
+    {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
     {@const active = isActive?.(node.change.path) ?? false}
     <button
       class="relative flex w-full cursor-pointer items-center gap-1.5 border-none py-0.5 text-left text-[0.75rem] hover:bg-surface {active
         ? 'bg-accent/10 text-bright'
         : 'bg-transparent text-fg'}"
       style="padding-left: {depth * 12 + 10}px"
+      draggable={sourceAttachment !== null}
+      {@attach sourceAttachment ?? noopAttachment}
       onclick={() => onFileClick?.(node)}
       ondblclick={() => onFileDblClick?.(node)}
       oncontextmenu={(e) => {

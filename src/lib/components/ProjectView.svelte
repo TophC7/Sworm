@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import type { Project } from '$lib/types/backend'
+  import { disposeTauriOsDrop, initTauriOsDrop } from '$lib/dnd'
   import { loadSessions } from '$lib/stores/sessions.svelte'
   import { startGitPolling, stopGitPolling, getGitSummary, refreshGit } from '$lib/stores/git.svelte'
   import ActivityBar from '$lib/components/ActivityBar.svelte'
@@ -69,6 +71,13 @@
   function handleRefreshGit() {
     void refreshGit(project.id, project.path)
   }
+
+  onMount(() => {
+    void initTauriOsDrop()
+    return () => {
+      disposeTauriOsDrop()
+    }
+  })
 </script>
 
 <!-- Horizontal layout: activity-bar | sidebar-content | resize | panes -->

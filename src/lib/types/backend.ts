@@ -145,6 +145,15 @@ export interface DiffContext {
   new_content: string | null
 }
 
+export interface FilePasteCollision {
+  source: string
+  destination: string
+}
+
+export interface FileEntryStat {
+  isDir: boolean
+}
+
 export interface StashEntry {
   index: number
   message: string

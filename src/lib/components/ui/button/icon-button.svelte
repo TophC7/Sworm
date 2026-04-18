@@ -7,8 +7,9 @@
 -->
 
 <script lang="ts">
-  import { buttonVariants } from '$lib/components/ui/button'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import { Tooltip } from 'bits-ui'
+  import { buttonVariants } from './button.svelte'
+  import TooltipContent from '../tooltip/tooltip-content.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
 
@@ -31,19 +32,19 @@
   } = $props()
 </script>
 
-<TooltipRoot>
-  <TooltipTrigger
+<Tooltip.Root>
+  <Tooltip.Trigger
     class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), className)}
     aria-label={tooltip}
     {onclick}
     {disabled}
   >
     {#if children}{@render children()}{/if}
-  </TooltipTrigger>
+  </Tooltip.Trigger>
   <TooltipContent side={tooltipSide}>
     <span>{tooltip}</span>
     {#if shortcut}
       <kbd class="ml-2 font-mono text-[0.68rem] text-subtle">{shortcut}</kbd>
     {/if}
   </TooltipContent>
-</TooltipRoot>
+</Tooltip.Root>

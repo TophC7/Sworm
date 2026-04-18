@@ -35,6 +35,7 @@ const BOOTSTRAP_STATUSES = new Set(['idle', 'starting', 'running'])
 export type TabId = string
 
 export type PaneSlot = 'sole' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+export type SplitDirection = 'left' | 'right' | 'up' | 'down'
 
 export interface SessionTab {
   kind: 'session'
@@ -122,11 +123,6 @@ export interface ProjectWorkspace {
   focusedPaneSlot: PaneSlot
 }
 
-export interface DraggedTab {
-  projectId: string
-  tabId: TabId
-}
-
 // ---------------------------------------------------------------------------
 // Persisted shapes (versioned)
 // ---------------------------------------------------------------------------
@@ -187,7 +183,6 @@ export interface PersistedWorkspaceV1 {
 let openProjectIds = $state<string[]>([])
 let activeProjectId = $state<string | null>(null)
 let workspaces = $state<Map<string, ProjectWorkspace>>(new Map())
-let draggedTab = $state<DraggedTab | null>(null)
 
 // LIFO per-project stack of recently closed tabs for Ctrl+Shift+T. Not
 // persisted — a fresh app launch has nothing to reopen beyond what
@@ -993,36 +988,40 @@ function deriveQuadLayout(ws: ProjectWorkspace): QuadLayout {
  * Split the current focused pane in a direction.
  * Returns the slot of the new pane, or null if already at max.
  *
- * single → horizontal (Split Right) or vertical (Split Down)
+ * single → horizontal or vertical
  * horizontal/vertical → quad
  * quad → null (max 4 panes)
  */
-export function canSplitPane(projectId: string, paneSlot: PaneSlot, direction: 'right' | 'down'): boolean {
+export function canSplitPane(projectId: string, paneSlot: PaneSlot, direction: SplitDirection): boolean {
   const ws = getWorkspace(projectId)
   if (!ws) return false
 
   if (ws.splitMode === 'single') return true
-  if (ws.splitMode === 'horizontal') return direction === 'down' && (paneSlot === 'left' || paneSlot === 'right')
-  if (ws.splitMode === 'vertical') return direction === 'right' && (paneSlot === 'left' || paneSlot === 'right')
+  if (ws.splitMode === 'horizontal') {
+    return (direction === 'up' || direction === 'down') && (paneSlot === 'left' || paneSlot === 'right')
+  }
+  if (ws.splitMode === 'vertical') {
+    return (direction === 'left' || direction === 'right') && (paneSlot === 'left' || paneSlot === 'right')
+  }
   if (ws.splitMode !== 'quad' || ws.panes.length >= 4) return false
 
   if (ws.quadLayout === 'top') {
-    return paneSlot === 'top-left' && direction === 'right'
+    return paneSlot === 'top-left' && (direction === 'left' || direction === 'right')
   }
   if (ws.quadLayout === 'bottom') {
-    return paneSlot === 'bottom-left' && direction === 'right'
+    return paneSlot === 'bottom-left' && (direction === 'left' || direction === 'right')
   }
   if (ws.quadLayout === 'left') {
-    return paneSlot === 'top-left' && direction === 'down'
+    return paneSlot === 'top-left' && (direction === 'up' || direction === 'down')
   }
   if (ws.quadLayout === 'right') {
-    return paneSlot === 'top-right' && direction === 'down'
+    return paneSlot === 'top-right' && (direction === 'up' || direction === 'down')
   }
 
   return false
 }
 
-export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'right' | 'down'): PaneSlot | null {
+export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: SplitDirection): PaneSlot | null {
   const ws = getWorkspace(projectId)
   if (!ws) return null
   if (!canSplitPane(projectId, paneSlot, direction)) return null
@@ -1030,11 +1029,35 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
   let newSlot: PaneSlot
 
   if (ws.splitMode === 'single') {
-    ws.panes[0].slot = 'left'
-    ws.panes = [ws.panes[0], createPane('right')]
-    ws.splitMode = direction === 'right' ? 'horizontal' : 'vertical'
-    ws.quadLayout = null
-    newSlot = 'right'
+    const sole = ws.panes[0]
+    if (!sole) return null
+
+    if (direction === 'left' || direction === 'right') {
+      ws.splitMode = 'horizontal'
+      ws.quadLayout = null
+      if (direction === 'right') {
+        sole.slot = 'left'
+        ws.panes = [sole, createPane('right')]
+        newSlot = 'right'
+      } else {
+        sole.slot = 'right'
+        ws.panes = [createPane('left'), sole]
+        newSlot = 'left'
+      }
+    } else {
+      ws.splitMode = 'vertical'
+      ws.quadLayout = null
+      if (direction === 'down') {
+        sole.slot = 'left'
+        ws.panes = [sole, createPane('right')]
+        newSlot = 'right'
+      } else {
+        sole.slot = 'right'
+        ws.panes = [createPane('left'), sole]
+        newSlot = 'left'
+      }
+    }
+
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
@@ -1045,12 +1068,36 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     const right = ws.panes.find((pane) => pane.slot === 'right')
     if (!left || !right) return null
 
-    left.slot = 'top-left'
-    right.slot = 'top-right'
-    ws.panes = [left, right, createPane(paneSlot === 'left' ? 'bottom-left' : 'bottom-right')]
-    ws.splitMode = 'quad'
-    ws.quadLayout = paneSlot === 'left' ? 'right' : 'left'
-    newSlot = paneSlot === 'left' ? 'bottom-left' : 'bottom-right'
+    if (paneSlot === 'left') {
+      right.slot = 'top-right'
+      ws.splitMode = 'quad'
+      ws.quadLayout = 'right'
+
+      if (direction === 'down') {
+        left.slot = 'top-left'
+        ws.panes = [left, right, createPane('bottom-left')]
+        newSlot = 'bottom-left'
+      } else {
+        left.slot = 'bottom-left'
+        ws.panes = [createPane('top-left'), right, left]
+        newSlot = 'top-left'
+      }
+    } else {
+      left.slot = 'top-left'
+      ws.splitMode = 'quad'
+      ws.quadLayout = 'left'
+
+      if (direction === 'down') {
+        right.slot = 'top-right'
+        ws.panes = [left, right, createPane('bottom-right')]
+        newSlot = 'bottom-right'
+      } else {
+        right.slot = 'bottom-right'
+        ws.panes = [left, createPane('top-right'), right]
+        newSlot = 'top-right'
+      }
+    }
+
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
@@ -1061,48 +1108,108 @@ export function splitPaneAt(projectId: string, paneSlot: PaneSlot, direction: 'r
     const bottom = ws.panes.find((pane) => pane.slot === 'right')
     if (!top || !bottom) return null
 
-    top.slot = 'top-left'
-    bottom.slot = 'bottom-left'
-    ws.panes = [top, bottom, createPane(paneSlot === 'left' ? 'top-right' : 'bottom-right')]
-    ws.splitMode = 'quad'
-    ws.quadLayout = paneSlot === 'left' ? 'bottom' : 'top'
-    newSlot = paneSlot === 'left' ? 'top-right' : 'bottom-right'
+    if (paneSlot === 'left') {
+      bottom.slot = 'bottom-left'
+      ws.splitMode = 'quad'
+      ws.quadLayout = 'bottom'
+
+      if (direction === 'right') {
+        top.slot = 'top-left'
+        ws.panes = [top, bottom, createPane('top-right')]
+        newSlot = 'top-right'
+      } else {
+        top.slot = 'top-right'
+        ws.panes = [createPane('top-left'), top, bottom]
+        newSlot = 'top-left'
+      }
+    } else {
+      top.slot = 'top-left'
+      ws.splitMode = 'quad'
+      ws.quadLayout = 'top'
+
+      if (direction === 'right') {
+        bottom.slot = 'bottom-left'
+        ws.panes = [top, bottom, createPane('bottom-right')]
+        newSlot = 'bottom-right'
+      } else {
+        bottom.slot = 'bottom-right'
+        ws.panes = [top, createPane('bottom-left'), bottom]
+        newSlot = 'bottom-left'
+      }
+    }
+
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
 
-  if (ws.quadLayout === 'top' && paneSlot === 'top-left' && direction === 'right') {
-    ws.panes = [...ws.panes, createPane('top-right')]
+  if (ws.quadLayout === 'top' && paneSlot === 'top-left' && (direction === 'left' || direction === 'right')) {
+    if (direction === 'right') {
+      ws.panes = [...ws.panes, createPane('top-right')]
+      newSlot = 'top-right'
+    } else {
+      const top = ws.panes.find((pane) => pane.slot === 'top-left')
+      if (!top) return null
+      top.slot = 'top-right'
+      ws.panes = [...ws.panes.filter((pane) => pane !== top), createPane('top-left'), top]
+      newSlot = 'top-left'
+    }
+
     ws.quadLayout = null
-    newSlot = 'top-right'
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
 
-  if (ws.quadLayout === 'bottom' && paneSlot === 'bottom-left' && direction === 'right') {
-    ws.panes = [...ws.panes, createPane('bottom-right')]
+  if (ws.quadLayout === 'bottom' && paneSlot === 'bottom-left' && (direction === 'left' || direction === 'right')) {
+    if (direction === 'right') {
+      ws.panes = [...ws.panes, createPane('bottom-right')]
+      newSlot = 'bottom-right'
+    } else {
+      const bottom = ws.panes.find((pane) => pane.slot === 'bottom-left')
+      if (!bottom) return null
+      bottom.slot = 'bottom-right'
+      ws.panes = [...ws.panes.filter((pane) => pane !== bottom), createPane('bottom-left'), bottom]
+      newSlot = 'bottom-left'
+    }
+
     ws.quadLayout = null
-    newSlot = 'bottom-right'
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
 
-  if (ws.quadLayout === 'left' && paneSlot === 'top-left' && direction === 'down') {
-    ws.panes = [...ws.panes, createPane('bottom-left')]
+  if (ws.quadLayout === 'left' && paneSlot === 'top-left' && (direction === 'up' || direction === 'down')) {
+    if (direction === 'down') {
+      ws.panes = [...ws.panes, createPane('bottom-left')]
+      newSlot = 'bottom-left'
+    } else {
+      const left = ws.panes.find((pane) => pane.slot === 'top-left')
+      if (!left) return null
+      left.slot = 'bottom-left'
+      ws.panes = [...ws.panes.filter((pane) => pane !== left), createPane('top-left'), left]
+      newSlot = 'top-left'
+    }
+
     ws.quadLayout = null
-    newSlot = 'bottom-left'
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
   }
 
-  if (ws.quadLayout === 'right' && paneSlot === 'top-right' && direction === 'down') {
-    ws.panes = [...ws.panes, createPane('bottom-right')]
+  if (ws.quadLayout === 'right' && paneSlot === 'top-right' && (direction === 'up' || direction === 'down')) {
+    if (direction === 'down') {
+      ws.panes = [...ws.panes, createPane('bottom-right')]
+      newSlot = 'bottom-right'
+    } else {
+      const right = ws.panes.find((pane) => pane.slot === 'top-right')
+      if (!right) return null
+      right.slot = 'bottom-right'
+      ws.panes = [...ws.panes.filter((pane) => pane !== right), createPane('top-right'), right]
+      newSlot = 'top-right'
+    }
+
     ws.quadLayout = null
-    newSlot = 'bottom-right'
     ws.focusedPaneSlot = newSlot
     commitWorkspace(ws)
     return newSlot
@@ -1297,20 +1404,6 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
   if (hasEmptyPanes) {
     collapsePaneIfEmpty(projectId)
   }
-}
-
-export function startTabDrag(projectId: string, tabId: TabId) {
-  const ws = getWorkspace(projectId)
-  if (!ws || isLockedTab(ws, tabId)) return
-  draggedTab = { projectId, tabId }
-}
-
-export function getDraggedTab(): DraggedTab | null {
-  return draggedTab
-}
-
-export function endTabDrag() {
-  draggedTab = null
 }
 
 export function toggleTabLocked(projectId: string, tabId: TabId) {

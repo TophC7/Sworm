@@ -1,15 +1,9 @@
 <script lang="ts">
   import type { Tab, PaneState } from '$lib/stores/workspace.svelte'
-  import {
-    setFocusedPane,
-    getFocusedPaneSlot,
-    getDraggedTab,
-    canSplitPane,
-    moveTabToPane,
-    splitPaneAt,
-    setActiveTab,
-    endTabDrag
-  } from '$lib/stores/workspace.svelte'
+  import { setFocusedPane, getFocusedPaneSlot } from '$lib/stores/workspace.svelte'
+  import { paneDndUi, paneDropObserver } from '$lib/dnd/adapters/pane.svelte'
+  import DropOverlay from '$lib/dnd/DropOverlay.svelte'
+  import { LocalTransfer } from '$lib/dnd'
   import PaneTabBar from '$lib/components/PaneTabBar.svelte'
   import SessionTerminal from '$lib/components/session/SessionTerminal.svelte'
   import ChangesView from '$lib/components/ChangesView.svelte'
@@ -20,8 +14,6 @@
   import NewSessionView from '$lib/components/session/NewSessionView.svelte'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import { refreshGit } from '$lib/stores/git.svelte'
-
-  type DropIntent = 'move' | 'right' | 'down' | null
 
   let {
     pane,
@@ -36,9 +28,6 @@
   } = $props()
 
   let isFocused = $derived(getFocusedPaneSlot() === pane.slot)
-  let draggedTab = $derived(getDraggedTab())
-  let canSplitRight = $derived(canSplitPane(projectId, pane.slot, 'right'))
-  let canSplitDown = $derived(canSplitPane(projectId, pane.slot, 'down'))
 
   let sessions = $derived(getSessions())
   let activeTab = $derived(pane.activeTabId ? (tabs.find((tab) => tab.id === pane.activeTabId) ?? null) : null)
@@ -48,8 +37,20 @@
 
   let showNewSession = $state(false)
   let showLockedOverlay = $derived(!showNewSession && activeTab !== null && activeTab.locked)
-  let dropIntent = $state<DropIntent>(null)
-  let dropActive = $state(false)
+  let dropVisible = $derived(paneDndUi.visible(projectId, pane.slot))
+  let dropZone = $derived(paneDndUi.zone(projectId, pane.slot))
+  let dropLabel = $derived(paneDndUi.label(projectId, pane.slot))
+
+  // Shields the pane content area during an internal drag so Monaco / xterm
+  // can't swallow the drop. Session panes keep the shield off for file-like
+  // drags so the terminal can still insert paths at the prompt.
+  let activeDrag = $derived(LocalTransfer.peek())
+  let dragHasTab = $derived(activeDrag?.items.some((item) => item.kind === 'tab') ?? false)
+  let contentShielded = $derived.by(() => {
+    if (!activeDrag) return false
+    if (activeTab?.kind === 'session') return dragHasTab
+    return true
+  })
 
   function handleFocus() {
     setFocusedPane(pane.slot)
@@ -59,75 +60,6 @@
     handleFocus()
     showNewSession = true
   }
-
-  function dragTabId(): string | null {
-    if (!draggedTab || draggedTab.projectId !== projectId) return null
-    return draggedTab.tabId
-  }
-
-  function computeDropIntent(event: DragEvent): DropIntent {
-    if (!dragTabId()) return null
-
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-    const x = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
-    const y = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0
-
-    if (canSplitRight && x >= 0.72) return 'right'
-    if (canSplitDown && y >= 0.72) return 'down'
-    return 'move'
-  }
-
-  function handleDragOver(event: DragEvent) {
-    if (!dragTabId()) return
-
-    event.preventDefault()
-    handleFocus()
-    dropActive = true
-    dropIntent = computeDropIntent(event)
-
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move'
-    }
-  }
-
-  function handleDragLeave(event: DragEvent) {
-    const next = event.relatedTarget as Node | null
-    if (next && (event.currentTarget as HTMLElement).contains(next)) return
-    dropActive = false
-    dropIntent = null
-  }
-
-  function handleDrop(event: DragEvent) {
-    const tabId = dragTabId()
-    if (!tabId) return
-
-    event.preventDefault()
-    handleFocus()
-    showNewSession = false
-
-    const intent = computeDropIntent(event)
-    if (intent === 'move') {
-      moveTabToPane(projectId, tabId, pane.slot)
-      setActiveTab(projectId, pane.slot, tabId)
-    } else if (intent) {
-      const newSlot = splitPaneAt(projectId, pane.slot, intent)
-      if (newSlot) {
-        moveTabToPane(projectId, tabId, newSlot)
-        setActiveTab(projectId, newSlot, tabId)
-      }
-    }
-
-    dropActive = false
-    dropIntent = null
-    endTabDrag()
-  }
-
-  $effect(() => {
-    if (!draggedTab) {
-      dropActive = false
-      dropIntent = null
-    }
-  })
 </script>
 
 <div
@@ -136,9 +68,15 @@
     : ''}"
   onfocusin={handleFocus}
   onpointerdown={handleFocus}
-  ondragover={handleDragOver}
-  ondragleave={handleDragLeave}
-  ondrop={handleDrop}
+  {@attach paneDropObserver({
+    pane,
+    projectId,
+    projectPath,
+    locked: showLockedOverlay,
+    onDropHandled: () => {
+      showNewSession = false
+    }
+  })}
   role="region"
 >
   <PaneTabBar
@@ -157,6 +95,8 @@
     {:else if activeTab.kind === 'session' && paneSession}
       <SessionTerminal
         session={paneSession}
+        {projectId}
+        {projectPath}
         locked={activeTab.locked}
         onStatusChange={(status) => {
           updateSessionInList(paneSession.id, { status })
@@ -191,7 +131,9 @@
     {/if}
 
     {#if showLockedOverlay}
-      <div class="absolute inset-0 z-10 flex items-center justify-center bg-ground/72 backdrop-blur-[1px]">
+      <div
+        class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-ground/72 backdrop-blur-[1px]"
+      >
         <div
           class="rounded-lg border border-edge bg-surface/95 px-3 py-2 text-center text-[0.78rem] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)]"
         >
@@ -200,35 +142,13 @@
         </div>
       </div>
     {/if}
+
+    {#if contentShielded}
+      <!-- Transparent shield so drag events hit the pane observer instead
+           of being absorbed by Monaco's or xterm's own DOM handlers. -->
+      <div class="absolute inset-0 z-20" aria-hidden="true"></div>
+    {/if}
   </div>
 
-  {#if draggedTab?.projectId === projectId && dropActive}
-    <div class="pointer-events-none absolute inset-0 z-20 p-2">
-      <div class="absolute inset-2 rounded-xl border border-edge/70 bg-ground/55"></div>
-      <div
-        class="absolute inset-4 flex items-center justify-center rounded-lg border text-[0.72rem] tracking-wide uppercase
-					{dropIntent === 'move' ? 'border-accent bg-accent/12 text-accent' : 'border-edge/70 bg-surface/45 text-muted'}"
-      >
-        Move Here
-      </div>
-
-      {#if canSplitRight}
-        <div
-          class="absolute top-4 right-4 bottom-4 flex w-[28%] items-center justify-center rounded-lg border text-[0.72rem] tracking-wide uppercase
-						{dropIntent === 'right' ? 'border-accent bg-accent/14 text-accent' : 'border-edge/70 bg-surface/55 text-muted'}"
-        >
-          Split Right
-        </div>
-      {/if}
-
-      {#if canSplitDown}
-        <div
-          class="absolute right-4 bottom-4 left-4 flex h-[28%] items-center justify-center rounded-lg border text-[0.72rem] tracking-wide uppercase
-						{dropIntent === 'down' ? 'border-accent bg-accent/14 text-accent' : 'border-edge/70 bg-surface/55 text-muted'}"
-        >
-          Split Down
-        </div>
-      {/if}
-    </div>
-  {/if}
+  <DropOverlay visible={dropVisible} zone={dropZone} label={dropLabel} />
 </div>

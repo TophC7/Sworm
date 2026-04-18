@@ -1,5 +1,6 @@
 use crate::errors::ApiError;
-use std::collections::HashSet;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -23,6 +24,18 @@ const SKIP_DIRS: &[&str] = &[
 
 const MAX_FILES: usize = 25_000;
 const MAX_DEPTH: usize = 50;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePasteCollision {
+    pub source: String,
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntryStat {
+    pub is_dir: bool,
+}
 
 pub struct FileService;
 
@@ -121,6 +134,30 @@ impl FileService {
         })
     }
 
+    /// Return whether a project-relative path exists and is a directory.
+    pub fn stat(
+        &self,
+        project_path: &Path,
+        file_path: &str,
+    ) -> Result<Option<FileEntryStat>, ApiError> {
+        self.validate_path(file_path)?;
+        let abs = project_path.join(file_path);
+        let metadata = match std::fs::metadata(&abs) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(ApiError::Io(format!(
+                    "Failed to stat {}: {}",
+                    file_path, err
+                )))
+            }
+        };
+
+        Ok(Some(FileEntryStat {
+            is_dir: metadata.is_dir(),
+        }))
+    }
+
     /// Paste files/directories into a target directory inside the project.
     /// `op` is "copy" or "cut". Sources are absolute paths (from clipboard).
     /// Returns the list of created relative paths (project-rooted).
@@ -130,9 +167,20 @@ impl FileService {
         target_dir: &str,
         op: &str,
         sources: &[String],
+        collision_policy: &str,
+        rename_map: &HashMap<String, String>,
     ) -> Result<Vec<String>, ApiError> {
         if op != "copy" && op != "cut" {
             return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op)));
+        }
+        if !matches!(
+            collision_policy,
+            "auto_rename" | "replace" | "skip" | "rename" | "error"
+        ) {
+            return Err(ApiError::InvalidArgument(format!(
+                "Invalid collision policy: {}",
+                collision_policy
+            )));
         }
         self.validate_path(target_dir)?;
         let abs_target_dir = project_path.join(target_dir);
@@ -157,8 +205,31 @@ impl FileService {
                 ApiError::InvalidArgument(format!("Invalid source path: {}", source))
             })?;
 
-            // Auto-rename if destination already exists.
-            let dest_path = unique_path(&abs_target_dir.join(name));
+            // For explicit rename resolution, allow the caller to choose
+            // a different basename for this source.
+            let mut desired_dest = abs_target_dir.join(name);
+            if collision_policy == "rename" {
+                if let Some(rename_to) = rename_map.get(source) {
+                    validate_basename(rename_to)?;
+                    desired_dest = abs_target_dir.join(rename_to);
+                }
+            }
+
+            let dest_path = resolve_destination(
+                project_path,
+                src_path,
+                source,
+                &desired_dest,
+                collision_policy,
+                rename_map,
+            )?;
+            let Some(dest_path) = dest_path else {
+                continue;
+            };
+
+            if op == "cut" && src_path == dest_path {
+                continue;
+            }
 
             if op == "cut" {
                 // Try fast rename; fall back to copy+delete if it fails
@@ -178,6 +249,52 @@ impl FileService {
         }
 
         Ok(created)
+    }
+
+    /// Return collisions for a paste/drop operation before transfer.
+    pub fn paste_collisions(
+        &self,
+        project_path: &Path,
+        target_dir: &str,
+        sources: &[String],
+    ) -> Result<Vec<FilePasteCollision>, ApiError> {
+        self.validate_path(target_dir)?;
+        let abs_target_dir = project_path.join(target_dir);
+        if !abs_target_dir.exists() {
+            return Err(ApiError::NotFound(format!(
+                "Target directory not found: {}",
+                target_dir
+            )));
+        }
+        if !abs_target_dir.is_dir() {
+            return Err(ApiError::InvalidArgument(format!(
+                "Target is not a directory: {}",
+                target_dir
+            )));
+        }
+
+        let mut collisions = Vec::new();
+        for source in sources {
+            let src_path = Path::new(source);
+            let name = src_path.file_name().ok_or_else(|| {
+                ApiError::InvalidArgument(format!("Invalid source path: {}", source))
+            })?;
+            let dest_path = abs_target_dir.join(name);
+            if !dest_path.exists() {
+                continue;
+            }
+
+            let destination = match dest_path.strip_prefix(project_path) {
+                Ok(rel) => rel.to_string_lossy().into_owned(),
+                Err(_) => dest_path.to_string_lossy().into_owned(),
+            };
+            collisions.push(FilePasteCollision {
+                source: source.clone(),
+                destination,
+            });
+        }
+
+        Ok(collisions)
     }
 
     /// Delete a file within a project.
@@ -323,6 +440,75 @@ fn collect_ignored(project_path: &Path) -> HashSet<String> {
 }
 
 // ── Paste helpers ─────────────────────────────────────────────────
+
+fn resolve_destination(
+    project_path: &Path,
+    src_path: &Path,
+    source_key: &str,
+    desired_dest: &Path,
+    collision_policy: &str,
+    rename_map: &HashMap<String, String>,
+) -> Result<Option<PathBuf>, ApiError> {
+    if !desired_dest.exists() {
+        return Ok(Some(desired_dest.to_path_buf()));
+    }
+
+    match collision_policy {
+        "auto_rename" => Ok(Some(unique_path(desired_dest))),
+        "replace" => {
+            if desired_dest == src_path {
+                return Ok(Some(desired_dest.to_path_buf()));
+            }
+            remove_recursive(desired_dest)?;
+            Ok(Some(desired_dest.to_path_buf()))
+        }
+        "skip" => Ok(None),
+        "rename" => {
+            let rename_to = rename_map.get(source_key).ok_or_else(|| {
+                ApiError::InvalidArgument(format!(
+                    "Rename policy requires rename_map entry for source: {}",
+                    source_key
+                ))
+            })?;
+            validate_basename(rename_to)?;
+            let parent = desired_dest.parent().unwrap_or(project_path);
+            let candidate = parent.join(rename_to);
+            if candidate == src_path {
+                return Ok(Some(candidate));
+            }
+            if candidate.exists() {
+                return Err(ApiError::InvalidArgument(format!(
+                    "Destination already exists: {}",
+                    candidate.display()
+                )));
+            }
+            Ok(Some(candidate))
+        }
+        "error" => Err(ApiError::InvalidArgument(format!(
+            "Destination already exists: {}",
+            desired_dest.display()
+        ))),
+        other => Err(ApiError::InvalidArgument(format!(
+            "Invalid collision policy: {}",
+            other
+        ))),
+    }
+}
+
+fn validate_basename(value: &str) -> Result<(), ApiError> {
+    if value.trim().is_empty() {
+        return Err(ApiError::InvalidArgument(
+            "Rename value cannot be empty".into(),
+        ));
+    }
+    if value == "." || value == ".." || value.contains('/') || value.contains('\\') {
+        return Err(ApiError::InvalidArgument(format!(
+            "Invalid rename value: {}",
+            value
+        )));
+    }
+    Ok(())
+}
 
 /// Return a non-colliding path by appending " (copy)", " (copy 2)", etc.
 fn unique_path(desired: &Path) -> std::path::PathBuf {

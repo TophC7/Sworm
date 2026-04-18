@@ -56,6 +56,8 @@ pub fn run() {
             commands::app::env_probe,
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
+            // Drag and drop commands
+            commands::dnd::dnd_save_dropped_bytes,
             // Project commands
             commands::projects::project_select_directory,
             commands::projects::project_add,
@@ -108,8 +110,10 @@ pub fn run() {
             commands::files::file_write,
             commands::files::file_create_dir,
             commands::files::file_rename,
+            commands::files::file_stat,
             commands::files::file_delete,
             commands::files::file_paste,
+            commands::files::file_paste_collisions,
             commands::files::files_list_all,
             // Git commands
             commands::git::git_get_summary,

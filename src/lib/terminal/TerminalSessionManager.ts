@@ -376,6 +376,10 @@ export class TerminalSessionManager {
     this.errorListeners.clear()
   }
 
+  sendText(text: string): void {
+    this.writeToPty(text)
+  }
+
   private async ensureTerminal(): Promise<void> {
     if (this.terminal) {
       return
