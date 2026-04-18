@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::path::Path;
+use tracing::warn;
 
 /// Git change entry from `git status --porcelain=v2`.
 #[derive(Debug, Clone, Serialize)]
@@ -845,9 +846,34 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Soft-reset the last commit, preserving changes as staged.
-    pub fn undo_last_commit(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["reset", "--soft", "HEAD~1"])
+    /// Soft-reset the last commit, preserving changes as staged, and
+    /// return the message that was on that commit so the UI can restore
+    /// it into the commit textarea for easy editing or re-use.
+    pub fn undo_last_commit(&self, path: &Path) -> Result<String, String> {
+        // Snapshot the message BEFORE resetting. `%B` is the full raw
+        // body (subject + body), which matches what the user originally
+        // typed into the textarea. `trim_end` removes both `\n` and
+        // `\r\n` so the textarea doesn't inherit a stray CR on
+        // CRLF-flavoured repos.
+        let output = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%B", "HEAD"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| format!("Failed to read last commit message: {}", e))?;
+        let message = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string()
+        } else {
+            warn!(
+                "git log for undo_last_commit exited non-zero ({}), proceeding with empty restore",
+                output.status
+            );
+            String::new()
+        };
+
+        run_git_mutate(path, &["reset", "--soft", "HEAD~1"])?;
+        Ok(message)
     }
 
     /// Push current branch to its upstream remote.

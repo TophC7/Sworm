@@ -36,6 +36,7 @@
     projectId,
     projectPath,
     hasCommits = false,
+    commitMessage = $bindable(''),
     onFileClick,
     onPersistTab,
     onViewAllChanges,
@@ -54,6 +55,7 @@
     projectId: string
     projectPath: string
     hasCommits?: boolean
+    commitMessage?: string
     onFileClick?: (filePath: string, staged: boolean) => void
     onPersistTab?: () => void
     onViewAllChanges?: (staged: boolean) => void
@@ -70,7 +72,6 @@
   } = $props()
 
   let collapsedDirs = new SvelteSet<string>()
-  let commitMessage = $state('')
   let committing = $state(false)
 
   let contextFilePath = $state<string | null>(null)

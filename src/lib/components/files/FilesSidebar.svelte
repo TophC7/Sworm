@@ -318,6 +318,25 @@
   let focusedTab = $derived(getFocusedTab(projectId))
   let activeFilePath = $derived(focusedTab?.kind === 'editor' ? focusedTab.filePath : null)
 
+  // Reveal the active file in the tree by expanding every ancestor
+  // directory. The effect deliberately depends on `loading` so that on
+  // mount we re-expand AFTER the project effect has cleared the set
+  // and loadFiles() finished — otherwise the user opens a tab from
+  // (say) the git diff sidebar, switches back to Files, and finds the
+  // tree collapsed despite a file being focused. Adding to a set is
+  // idempotent; user-collapsed dirs only re-expand when the active
+  // path itself changes, which mirrors VS Code's "reveal in explorer"
+  // behaviour.
+  $effect(() => {
+    loading
+    const path = activeFilePath
+    if (!path) return
+    const parts = path.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      expandedDirs.add(parts.slice(0, i).join('/'))
+    }
+  })
+
   // Path -> status letter lookup from git state (prefer unstaged over staged)
   let gitSummary = $derived(getGitSummary(projectId))
   let gitStatusMap = $derived.by(() => {

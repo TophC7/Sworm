@@ -250,8 +250,8 @@ export const backend = {
     commit(path: string, message: string): Promise<string> {
       return invoke<string>('git_commit', { path, message })
     },
-    undoLastCommit(path: string): Promise<void> {
-      return invoke<void>('git_undo_last_commit', { path })
+    undoLastCommit(path: string): Promise<string> {
+      return invoke<string>('git_undo_last_commit', { path })
     },
     push(path: string): Promise<void> {
       return invoke<void>('git_push', { path })

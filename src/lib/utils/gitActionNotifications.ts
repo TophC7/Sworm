@@ -1,3 +1,4 @@
+import type { NotificationTone } from '$lib/stores/notifications.svelte'
 import type { RunNotifiedTaskOptions } from '$lib/utils/notifiedTask'
 
 export type GitActionKind =
@@ -11,7 +12,19 @@ export type GitActionKind =
   | 'discardAll'
   | 'stashAll'
 
-const GIT_ACTION_NOTIFICATIONS: Record<GitActionKind, RunNotifiedTaskOptions<void>> = {
+// Plain-string notification shape — no `(value) => string` callbacks.
+// Constraining the registry this way means widening to any
+// `RunNotifiedTaskOptions<T>` at the helper boundary is sound: the
+// per-stage objects have no T-dependent fields to misbehave under
+// contravariance. If a future action needs a value-derived title,
+// declare it separately like `gitCommitNotifications` below.
+type StaticNotifications = {
+  loading: { title: string; description?: string }
+  success?: { title: string; description?: string; tone?: NotificationTone }
+  error?: { title: string; description?: string; tone?: NotificationTone }
+}
+
+const GIT_ACTION_NOTIFICATIONS: Record<GitActionKind, StaticNotifications> = {
   pull: {
     loading: { title: 'Pulling changes' },
     success: { title: 'Pull complete' },
@@ -68,6 +81,8 @@ export const gitCommitNotifications: RunNotifiedTaskOptions<string> = {
   error: { title: 'Commit failed' }
 }
 
-export function getGitActionNotifications(kind: GitActionKind): RunNotifiedTaskOptions<void> {
-  return GIT_ACTION_NOTIFICATIONS[kind]
+export function getGitActionNotifications<T = unknown>(kind: GitActionKind): RunNotifiedTaskOptions<T> {
+  // Cast is safe because StaticNotifications has no value-dependent
+  // callbacks; widening to <T> never introduces a contravariant misuse.
+  return GIT_ACTION_NOTIFICATIONS[kind] as RunNotifiedTaskOptions<T>
 }

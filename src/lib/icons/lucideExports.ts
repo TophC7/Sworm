@@ -2,6 +2,8 @@
 // Reduces import duplication across components
 
 export { default as AlertTriangle } from '@lucide/svelte/icons/alert-triangle'
+export { default as ArchiveIcon } from '@lucide/svelte/icons/archive'
+export { default as ArchiveRestoreIcon } from '@lucide/svelte/icons/archive-restore'
 export { default as ArrowDown } from '@lucide/svelte/icons/arrow-down'
 export { default as ArrowDownToLineIcon } from '@lucide/svelte/icons/arrow-down-to-line'
 export { default as ArrowUp } from '@lucide/svelte/icons/arrow-up'

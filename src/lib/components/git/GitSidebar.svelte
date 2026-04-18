@@ -46,6 +46,11 @@
   let showDiscardConfirm = $state(false)
   let showUndoCommitConfirm = $state(false)
 
+  // Commit-message textarea content, owned here so an undo-commit can
+  // push the previous commit message back into the editor without
+  // losing child component state.
+  let commitMessage = $state('')
+
   // Init/clone state
   let cloneUrl = $state('')
   let initBusy = $state(false)
@@ -108,8 +113,11 @@
     await refreshGit(projectId, projectPath)
   }
 
-  async function handleGitAction(kind: GitActionKind, fn: (path: string) => Promise<void>) {
-    await runNotifiedTask(() => runGitAction(projectId, projectPath, fn), getGitActionNotifications(kind))
+  async function handleGitAction<T = void>(
+    kind: GitActionKind,
+    fn: (path: string) => Promise<T>
+  ): Promise<T | undefined> {
+    return runNotifiedTask(() => runGitAction(projectId, projectPath, fn), getGitActionNotifications<T>(kind))
   }
 
   async function handleCommit(message: string) {
@@ -138,7 +146,13 @@
 
   async function handleUndoLastCommit() {
     showUndoCommitConfirm = false
-    await handleGitAction('undoLastCommit', (path) => backend.git.undoLastCommit(path))
+    // Thread the returned commit message back into the textarea so the
+    // user can edit or re-commit. Undefined means the task threw, in
+    // which case the notification already explained the failure.
+    const message = await handleGitAction('undoLastCommit', (path) => backend.git.undoLastCommit(path))
+    if (typeof message === 'string' && message.length > 0) {
+      commitMessage = message
+    }
   }
 
   async function handlePush() {
@@ -251,6 +265,7 @@
             {onFileClick}
             {onPersistTab}
             {onViewAllChanges}
+            bind:commitMessage
             onCommit={handleCommit}
             onStageAll={handleStageAll}
             onUnstageAll={handleUnstageAll}

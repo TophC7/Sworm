@@ -254,12 +254,13 @@ pub fn git_commit(
         .map_err(ApiError::Internal)
 }
 
-/// Undo the last commit (soft reset to HEAD~1).
+/// Undo the last commit (soft reset to HEAD~1). Returns the commit
+/// message so the frontend can restore it into the commit textarea.
 #[tauri::command]
 pub fn git_undo_last_commit(
     path: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
     state
         .git
         .undo_last_commit(Path::new(&path))

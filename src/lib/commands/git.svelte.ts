@@ -30,7 +30,7 @@ const undoConfirm: CommandConfirm = {
   }
 }
 
-async function doGitAction(kind: GitActionKind, fn: (path: string) => Promise<void>) {
+async function doGitAction(kind: GitActionKind, fn: (path: string) => Promise<unknown>) {
   const project = getActiveProject()
   if (!project) return
   await runNotifiedTask(() => runGitAction(project.id, project.path, fn), getGitActionNotifications(kind))

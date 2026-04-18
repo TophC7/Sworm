@@ -1,7 +1,9 @@
 import { backend } from '$lib/api/backend'
 import { feedOutput, markCompleted } from '$lib/stores/activity.svelte'
+import { resolveTerminalKey } from '$lib/terminal/terminalKeymap'
 import type { PtyEvent, Session } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
+import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
@@ -410,39 +412,39 @@ export class TerminalSessionManager {
     this.terminal.loadAddon(this.webLinksAddon)
     this.terminal.open(this.hostEl)
 
-    // Ctrl+Shift+C / Cmd+C-with-Shift: let the browser handle copy so
-    // the user's selection lands on the OS clipboard. Everything else
-    // — including plain Ctrl+V — is forwarded to xterm, which encodes
-    // Ctrl+V as a CSI u sequence under the kitty keyboard protocol
-    // (enabled in TERMINAL_OPTIONS). TUI agents like Claude Code that
-    // understand kitty-mode Ctrl+V then read the OS clipboard
-    // themselves, so *images* (not just text paths) get attached. If
-    // we intercepted the event here or let the browser's text-only
-    // paste fire, the image would silently downgrade to nothing.
+    // All key-by-key policy lives in terminalKeymap.ts. This handler
+    // is a dumb dispatcher over the resolved KeyAction so adding a new
+    // provider quirk or paste mode is a one-file change.
     this.terminal.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== 'keydown') return true
-
-      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C') && ev.shiftKey) return false
-
-      // Kitty keyboard protocol (enabled in TERMINAL_OPTIONS) encodes
-      // Shift+Tab as \x1b[9;2u and Shift+Enter as \x1b[13;2u. Most TUI
-      // agents (Claude Code, Codex) only know the classic sequences, so
-      // those keystrokes silently no-op. Translate to the legacy bytes
-      // ourselves and tell xterm to stay out of it. preventDefault also
-      // blocks the webview's default focus-traversal on Shift+Tab.
-      if (ev.key === 'Tab' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-        ev.preventDefault()
-        this.writeToPty('\x1b[Z')
-        return false
+      const action = resolveTerminalKey(ev, this.providerId)
+      switch (action.kind) {
+        case 'pass':
+          return true
+        case 'browser':
+          return false
+        case 'send-pty':
+          ev.preventDefault()
+          this.writeToPty(action.bytes)
+          return false
+        case 'paste-text-or-image':
+          ev.preventDefault()
+          void this.handlePasteKey(false)
+          return false
+        case 'paste-text-only':
+          ev.preventDefault()
+          void this.handlePasteKey(true)
+          return false
+        default: {
+          // Forces a compile error if a new KeyAction kind is added
+          // to terminalKeymap.ts without a case here. Default returns
+          // true (pass-through) so a forgotten variant degrades to
+          // xterm's native handling rather than silently swallowing
+          // the keypress.
+          const _exhaustive: never = action
+          void _exhaustive
+          return true
+        }
       }
-
-      if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-        ev.preventDefault()
-        this.writeToPty('\x1b\r')
-        return false
-      }
-
-      return true
     })
 
     // Handle OSC 52 clipboard sequences from TUI apps (Fresh, helix, neovim).
@@ -468,6 +470,42 @@ export class TerminalSessionManager {
     this.inputDisposable = this.terminal.onData((data) => {
       this.writeToPty(data)
     })
+  }
+
+  /**
+   * Handle Ctrl+V or Ctrl+Shift+V: read the OS clipboard and deliver
+   * text as a bracketed paste. If the clipboard has no text (e.g.
+   * image-only), emit the kitty-mode Ctrl+V sequence so image-aware
+   * agents (Claude Code, Codex) can still attach the image.
+   *
+   * Ctrl+Shift+V always ends after the text-paste attempt — the
+   * Shift modifier signals "terminal paste" and must not fall back
+   * into the agent's image-paste path, which would surprise users
+   * expecting classic terminal semantics.
+   */
+  private async handlePasteKey(shiftHeld: boolean): Promise<void> {
+    let text = ''
+    try {
+      text = (await readText()) ?? ''
+    } catch (error) {
+      console.warn('clipboard read failed:', error)
+    }
+
+    if (text.length > 0) {
+      // Strip any embedded paste-end sequence so a hostile clipboard
+      // payload can't break out of the bracketed-paste envelope and
+      // inject commands into the agent's interpreter. Real terminals
+      // do the same filtering.
+      const safe = text.replaceAll('\x1b[201~', '')
+      this.writeToPty(`\x1b[200~${safe}\x1b[201~`)
+      return
+    }
+
+    if (shiftHeld) return
+
+    // No text on the clipboard — let image-aware TUIs grab whatever
+    // is there by forwarding the kitty-encoded Ctrl+V byte sequence.
+    this.writeToPty('\x1b[118;5u')
   }
 
   private writeToPty(data: string): void {

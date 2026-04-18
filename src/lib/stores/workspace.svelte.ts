@@ -837,9 +837,15 @@ export function closeTab(projectId: string, tabId: TabId) {
     }
   }
 
-  // Remove from workspace tabs
+  // Remove from workspace tabs. Collapse-empty also commits, so skip
+  // the redundant commit here — collapsePaneIfEmpty will pick up the
+  // mutated `ws` and persist a single coherent snapshot.
   ws.tabs = ws.tabs.filter((t) => t.id !== tabId)
-  commitWorkspace(ws)
+
+  // Collapse splits that are now empty — otherwise closing the last tab
+  // in a split pane leaves an orphan "New Session" surface the user has
+  // to close manually.
+  collapsePaneIfEmpty(projectId)
 }
 
 /**

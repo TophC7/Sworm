@@ -9,6 +9,8 @@
   } from '$lib/stores/sessions.svelte'
   import { addSessionTab, closeTabBySessionId, getAllTabs } from '$lib/stores/workspace.svelte'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
+  import { IconButton } from '$lib/components/ui/button'
+  import { ArchiveIcon, ArchiveRestoreIcon, Trash2 } from '$lib/icons/lucideExports'
   import type { Session } from '$lib/types/backend'
   import { providerLabel } from '$lib/utils/session'
   import { getActivity } from '$lib/stores/activity.svelte'
@@ -25,12 +27,6 @@
 
   let sessions = $derived(getSessions())
   let archivedSessions = $derived(getArchivedSessions())
-
-  // Context menu state
-  let ctxOpen = $state(false)
-  let ctxSession = $state<Session | null>(null)
-  let ctxIsArchived = $state(false)
-  let ctxPos = $state({ x: 0, y: 0 })
 
   // Delete confirmation
   let deleteConfirmOpen = $state(false)
@@ -88,32 +84,23 @@
   let grouped = $derived(groupByProvider(agentSessions))
   let archivedGrouped = $derived(groupByProvider(agentArchived))
 
+  // Set of session ids whose tabs are pinned/locked. Derived once per
+  // tab change so the per-row archive button can read O(1) instead of
+  // scanning all tabs N times during render.
+  let lockedSessionIds = $derived.by(() => {
+    const ids = new Set<string>()
+    for (const t of getAllTabs(projectId)) {
+      if (t.kind === 'session' && t.locked) ids.add(t.sessionId)
+    }
+    return ids
+  })
+
   function handleSessionClick(session: Session) {
     addSessionTab(projectId, session.id, session.title, session.provider_id)
   }
 
-  function handleContextMenu(e: MouseEvent, session: Session, archived: boolean) {
-    e.preventDefault()
-    ctxSession = session
-    ctxIsArchived = archived
-    ctxPos = { x: e.clientX, y: e.clientY }
-    ctxOpen = true
-  }
-
-  function closeContextMenu() {
-    ctxOpen = false
-    ctxSession = null
-  }
-
-  function isSessionTabLocked(sessionId: string): boolean {
-    const tabs = getAllTabs(projectId)
-    const tab = tabs.find((t) => t.kind === 'session' && t.sessionId === sessionId)
-    return tab?.locked ?? false
-  }
-
   async function handleArchive(session: Session) {
-    if (isSessionTabLocked(session.id)) return
-    closeContextMenu()
+    if (lockedSessionIds.has(session.id)) return
     const archived = await runNotifiedTask(() => archiveSession(session.id, projectId), {
       loading: { title: 'Archiving session', description: session.id.slice(0, 8) },
       success: { title: 'Session archived', description: session.id.slice(0, 8) },
@@ -125,7 +112,6 @@
   }
 
   async function handleUnarchive(session: Session) {
-    closeContextMenu()
     await runNotifiedTask(() => unarchiveSession(session.id, projectId), {
       loading: { title: 'Restoring session', description: session.id.slice(0, 8) },
       success: { title: 'Session restored', description: session.id.slice(0, 8) },
@@ -134,7 +120,6 @@
   }
 
   function handleDeleteRequest(session: Session) {
-    closeContextMenu()
     pendingDeleteId = session.id
     deleteConfirmOpen = true
   }
@@ -151,23 +136,6 @@
     deleteConfirmOpen = false
     pendingDeleteId = null
   }
-
-  // Close context menu on outside events
-  $effect(() => {
-    if (!ctxOpen) return
-    const close = () => closeContextMenu()
-    const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('blur', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKeydown)
-    return () => {
-      window.removeEventListener('blur', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKeydown)
-    }
-  })
 </script>
 
 {#snippet sessionList(list: Map<string, Session[]>, archived: boolean)}
@@ -177,16 +145,69 @@
         {providerLabel(providerId)}
       </div>
       {#each providerSessions as session}
-        <button
-          class="group flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-[0.75rem] text-subtle transition-colors hover:bg-surface hover:text-bright"
-          onclick={archived ? undefined : () => handleSessionClick(session)}
-          oncontextmenu={(e) => handleContextMenu(e, session, archived)}
+        {@const locked = !archived && lockedSessionIds.has(session.id)}
+        <div
+          class="group/row relative flex items-center text-[0.75rem] text-subtle transition-colors hover:bg-surface hover:text-bright"
         >
-          {#if !archived}
-            <span class="h-1.5 w-1.5 shrink-0 rounded-full {historyDotClass(session)}"></span>
+          {#if archived}
+            <!--
+              Archived rows are not interactive on click — the only
+              affordances are the hover restore + delete buttons. Render
+              as a div so it doesn't appear focusable/clickable when it
+              isn't.
+            -->
+            <div class="flex flex-1 items-center gap-2 px-2.5 py-1.5 text-left">
+              <span class="truncate font-mono text-[0.7rem]">{session.id.slice(0, 8)}</span>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="flex flex-1 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left"
+              onclick={() => handleSessionClick(session)}
+            >
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full {historyDotClass(session)}"></span>
+              <span class="truncate font-mono text-[0.7rem]">{session.id.slice(0, 8)}</span>
+            </button>
           {/if}
-          <span class="truncate font-mono text-[0.7rem]">{session.id.slice(0, 8)}</span>
-        </button>
+          <!--
+            Hover-revealed actions mirror the GitFileTree header pattern
+            (group/hdr + opacity transition). Live rows expose archive;
+            archived rows expose restore + delete so destructive removal
+            is gated behind a deliberate archive-first workflow.
+          -->
+          <div
+            class="absolute right-1 flex items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover/row:opacity-100"
+          >
+            {#if archived}
+              <IconButton
+                tooltip="Restore session"
+                tooltipSide="left"
+                class="rounded p-0.5 text-muted hover:text-fg"
+                onclick={() => handleUnarchive(session)}
+              >
+                <ArchiveRestoreIcon size={12} />
+              </IconButton>
+              <IconButton
+                tooltip="Delete session"
+                tooltipSide="left"
+                class="rounded p-0.5 text-muted hover:text-danger"
+                onclick={() => handleDeleteRequest(session)}
+              >
+                <Trash2 size={12} />
+              </IconButton>
+            {:else}
+              <IconButton
+                tooltip={locked ? 'Unlock session tab to archive' : 'Archive session'}
+                tooltipSide="left"
+                class="rounded p-0.5 text-muted hover:text-fg"
+                disabled={locked}
+                onclick={() => handleArchive(session)}
+              >
+                <ArchiveIcon size={12} />
+              </IconButton>
+            {/if}
+          </div>
+        </div>
       {/each}
     </div>
   {/each}
@@ -241,41 +262,6 @@
     </ResizablePane>
   </ResizablePaneGroup>
 </SidebarPanel>
-
-<!-- Context menu -->
-{#if ctxOpen && ctxSession}
-  <div class="fixed inset-0 z-40" onclick={closeContextMenu} role="none"></div>
-  <div
-    class="fixed z-50 min-w-[140px] rounded-lg border border-edge bg-raised py-1 text-[0.78rem] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
-    style="left: {ctxPos.x}px; top: {ctxPos.y}px;"
-  >
-    {#if !ctxIsArchived}
-      {@const locked = ctxSession ? isSessionTabLocked(ctxSession.id) : false}
-      <button
-        class="w-full rounded-sm border-none bg-transparent px-3 py-1.5 text-left transition-colors
-          {locked ? 'cursor-default text-muted/50' : 'cursor-pointer text-fg hover:bg-surface'}"
-        disabled={locked}
-        onclick={() => ctxSession && handleArchive(ctxSession)}
-      >
-        Archive
-      </button>
-    {:else}
-      <button
-        class="w-full cursor-pointer rounded-sm border-none bg-transparent px-3 py-1.5 text-left text-fg transition-colors hover:bg-surface"
-        onclick={() => ctxSession && handleUnarchive(ctxSession)}
-      >
-        Restore
-      </button>
-      <div class="mx-2 my-1 h-px bg-edge"></div>
-      <button
-        class="w-full cursor-pointer rounded-sm border-none bg-transparent px-3 py-1.5 text-left text-danger transition-colors hover:bg-danger-bg"
-        onclick={() => ctxSession && handleDeleteRequest(ctxSession)}
-      >
-        Delete
-      </button>
-    {/if}
-  </div>
-{/if}
 
 <ConfirmDialog
   open={deleteConfirmOpen}

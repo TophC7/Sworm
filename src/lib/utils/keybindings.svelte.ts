@@ -104,19 +104,6 @@ function normalizeEvent(e: KeyboardEvent): string | null {
   return [...mods, key].join('+')
 }
 
-// Skip dispatch when focus is somewhere that owns the key itself:
-// terminals (xterm consumes its own keys), and text-editing surfaces
-// where app-level Ctrl+N / Ctrl+W / Ctrl+T would shadow platform
-// conventions (delete-previous-word, move-cursor, etc.).
-function shouldSkip(target: EventTarget | null): boolean {
-  if (!target || !(target instanceof HTMLElement)) return false
-  if (target.closest?.('.xterm')) return true
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return true
-  return false
-}
-
 /**
  * Register a global shortcut. Returns a disposer.
  * If the same spec is registered twice, the later one wins and a
@@ -133,22 +120,55 @@ export function registerShortcut(spec: string, handler: ShortcutHandler): () => 
   }
 }
 
-/** Install the single keydown listener. Call once from the root layout. */
+/**
+ * True when the event matches a key the user has explicitly bound to
+ * a global shortcut.
+ *
+ * Intended use: any time we add a new event listener that runs BEFORE
+ * the capture-phase global listener (e.g. an even-earlier handler at
+ * `document` for a custom widget, a `keypress`-based adapter, or an
+ * iframe bridge), call this to decide whether to bail and let the
+ * global dispatcher claim the key. Without this guard, such handlers
+ * can shadow user-bound shortcuts and waste a debugging afternoon.
+ *
+ * No current callers — kept exported so we don't have to re-derive the
+ * normalization rules the next time a surface needs to ask the
+ * question. If nothing uses it after a few months, delete it along
+ * with this comment.
+ */
+export function isBoundShortcut(e: KeyboardEvent): boolean {
+  const key = normalizeEvent(e)
+  if (!key) return false
+  return bindings.has(key)
+}
+
+/**
+ * Install the single keydown listener. Call once from the root layout.
+ *
+ * Listens in the CAPTURE phase so user-bound shortcuts win over any
+ * focused surface that wants the same key — xterm forwards a Ctrl+V
+ * to the PTY, Monaco maps Ctrl+Shift+P to its own palette, INPUTs
+ * eat Ctrl+W as delete-prev-word, and so on. Capture phase fires
+ * before the event ever reaches the target, so a single
+ * preventDefault + stopPropagation here is enough to shadow them
+ * all. Unbound keys fall through untouched, leaving normal typing
+ * and focused-surface keymaps undisturbed.
+ */
 export function installKeybindingListener(): () => void {
   function onKeyDown(e: KeyboardEvent) {
     if (suspendCount > 0) return
-    if (shouldSkip(e.target)) return
     const key = normalizeEvent(e)
     if (!key) return
     const handler = bindings.get(key)
     if (!handler) return
     e.preventDefault()
+    e.stopPropagation()
     handler(e)
   }
-  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keydown', onKeyDown, { capture: true })
   const unsubscribe = onOverridesChange(reapplyAllGlobalBindings)
   return () => {
-    window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keydown', onKeyDown, { capture: true })
     unsubscribe()
   }
 }
