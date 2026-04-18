@@ -18,6 +18,7 @@
 
 ### UI
 
+- [ ] Recursive split-tree panes with size + count caps — replace the fixed `SplitMode`/`QuadLayout` state machine in `workspace.svelte.ts` with a recursive `Node = Leaf | Branch` tree (direction + sizes + children[]) so arbitrary layouts like 2-top+1-bottom or 3-column become reachable. Gate new splits with two caps: (A) measured min pane size — register each pane's element in a `WeakMap<PaneId, HTMLElement>` from `Pane.svelte` on attach, and have `canSplitPane(leafId, direction)` reject splits that would produce panes smaller than `MIN_PANE_PX` (~240px) via `getBoundingClientRect()`; (B) hard `MAX_PANES` count cap (~8) as a safety net. Drop overlay should dim + relabel ("Pane too small" / "Max panes reached") when rejected. Needs workspace persistence v1→v2 migration for the tree schema and updates in `PaneGrid.svelte`, `Pane.svelte`, and the pane drop observer.
 - [ ] Pane overscroll feature — when scrolling past the end of content in a pane, allow elastic overscroll that pushes content up so the end feels reachable. Should have configurable threshold, max overscroll amount, and spring animation on return. Blocked on: threshold definition (immediate vs amount), max distance cap, trigger input (wheel only vs keyboard/trackpad), return behavior (scroll up vs any scroll down), handling of edge cases (empty/short content, text selection at bottom, window resize while overscrolled, keyboard nav during overscroll, momentum scrolling). Start with single pane prototype, not all panes.
 
 ### Keyboard Shortcuts

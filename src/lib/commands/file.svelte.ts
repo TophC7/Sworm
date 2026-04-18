@@ -1,4 +1,5 @@
 import type { Command, CommandGroup, FileCallbacks } from './types'
+import { backend } from '$lib/api/backend'
 import { getActiveProject, getProjects } from '$lib/stores/projects.svelte'
 import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -13,6 +14,7 @@ import {
   HomeIcon,
   SettingsIcon,
   SquareArrowOutUpRight,
+  TerminalIcon,
   XIcon
 } from '$lib/icons/lucideExports'
 
@@ -73,6 +75,17 @@ export function getFileCommands(callbacks: FileCallbacks): CommandGroup[] {
       onSelect: () => {
         void revealItemInDir(activeProject.path).catch((error) => {
           notify.error('Reveal in file manager failed', getErrorMessage(error))
+        })
+      }
+    })
+    commands.push({
+      id: 'open-in-external-terminal',
+      label: 'Open in External Terminal',
+      icon: TerminalIcon,
+      keywords: ['terminal', 'shell', 'external', 'launch', 'kitty', 'alacritty', 'wezterm', 'gnome', 'konsole'],
+      onSelect: () => {
+        void backend.projects.openInTerminal(activeProject.path).catch((error) => {
+          notify.error('Open in terminal failed', getErrorMessage(error))
         })
       }
     })

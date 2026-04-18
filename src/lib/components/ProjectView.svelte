@@ -10,13 +10,7 @@
   import SessionHistoryView from '$lib/components/session/SessionHistoryView.svelte'
   import { getSidebarWidth, setSidebarWidth, isSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
   import PaneGrid from '$lib/components/PaneGrid.svelte'
-  import {
-    addCommitTab,
-    addChangesTab,
-    addStashTab,
-    getFocusedTab,
-    promoteTemporaryTab
-  } from '$lib/stores/workspace.svelte'
+  import { addCommitTab, addChangesTab, addStashTab, promoteFocusedTab } from '$lib/stores/workspace.svelte'
 
   let {
     project
@@ -97,10 +91,7 @@
             projectPath={project.path}
             onRefresh={handleRefreshGit}
             onFileClick={(filePath, staged) => addChangesTab(project.id, staged, filePath)}
-            onPersistTab={() => {
-              const tab = getFocusedTab(project.id)
-              if (tab && tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
-            }}
+            onPersistTab={() => promoteFocusedTab(project.id)}
             onCommitFileClick={(hash, shortHash, message, filePath) =>
               addCommitTab(project.id, hash, shortHash, message, filePath)}
             onStashFileClick={(stashIndex, message, filePath) => addStashTab(project.id, stashIndex, message, filePath)}

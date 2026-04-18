@@ -13,7 +13,7 @@
   import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
   import { RotateCw } from '$lib/icons/lucideExports'
   import { openFile, ensureFreshSession } from '$lib/utils/openFile'
-  import { addChangesTab } from '$lib/stores/workspace.svelte'
+  import { addChangesTab, promoteFocusedTab } from '$lib/stores/workspace.svelte'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { getFocusedTab } from '$lib/stores/workspace.svelte'
   import { copyToClipboard } from '$lib/utils/clipboard'
@@ -581,6 +581,7 @@
           onFileClick={(node) => {
             if (node.change?.path) handleFileClick(node.change.path)
           }}
+          onFileDblClick={() => promoteFocusedTab(projectId)}
           onFileContextMenu={handleFileContextMenu}
           dndEnabled={true}
           {dndSourceAttachment}

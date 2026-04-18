@@ -100,7 +100,26 @@ export interface NotificationTestTab {
   locked: boolean
 }
 
-export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | EditorTab | NotificationTestTab
+/**
+ * The "new tab" picker tab. Replaces the old `showNewSession` flag so the
+ * picker participates in normal tab routing: `activeTabId` alone decides
+ * what the pane renders, eliminating the dual-source-of-truth bug where
+ * the picker could stick around over another tab's content.
+ *
+ * Home tabs are per-pane (one max) and are never persisted — on restore
+ * the empty-pane fallback in `Pane.svelte` still shows the picker for
+ * panes that end up with zero tabs.
+ */
+export interface HomeTab {
+  kind: 'home'
+  id: TabId
+  locked: boolean
+  // Fixed false to keep `tab.temporary` checks (double-click to promote,
+  // temp-replacement in addContentTab) well-typed without special-casing.
+  temporary: false
+}
+
+export type Tab = SessionTab | CommitTab | ChangesTab | StashTab | EditorTab | NotificationTestTab | HomeTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -274,6 +293,28 @@ function persistAppShellSnapshot() {
   })
 }
 
+/**
+ * Seed a home tab into the given pane. Used to maintain the invariant
+ * that every live workspace has at least one tab — otherwise a freshly
+ * opened project (or a restored workspace whose user closed everything
+ * last session) would render an empty tab strip with the picker
+ * floating underneath, which is visually inconsistent with every other
+ * pane state and breaks the "tab strip is the source of truth" model.
+ *
+ * Mutates `ws` in place. Caller is responsible for committing.
+ */
+function seedHomeTab(ws: ProjectWorkspace, pane: PaneState): void {
+  const tab: HomeTab = {
+    kind: 'home',
+    id: generateTabId(),
+    locked: false,
+    temporary: false
+  }
+  ws.tabs = [...ws.tabs, tab]
+  pane.tabs = [...pane.tabs, tab.id]
+  pane.activeTabId = tab.id
+}
+
 function ensureWorkspace(projectId: string): ProjectWorkspace {
   let ws = workspaces.get(projectId)
   if (!ws) {
@@ -285,6 +326,12 @@ function ensureWorkspace(projectId: string): ProjectWorkspace {
       quadLayout: null,
       focusedPaneSlot: 'sole'
     }
+    // Fresh workspaces need a home tab so the user sees the picker as a
+    // real tab (matching every other pane state) instead of a floating
+    // overlay. The legacy bootstrap path in syncSessionTabs may replace
+    // or extend this later with session tabs — it's additive so it
+    // doesn't clobber the home tab.
+    seedHomeTab(ws, ws.panes[0])
     commitWorkspace(ws)
     // Re-read the committed (cloned) version from the map.
     ws = workspaces.get(projectId)!
@@ -458,14 +505,23 @@ export async function restoreWorkspaceFromDisk(projectId: string): Promise<void>
       if (!persisted) return
 
       const hydrated = deserializeWorkspace(persisted, generateTabId)
-      workspaces = new Map(workspaces).set(projectId, {
+      const restored: ProjectWorkspace = {
         projectId,
         tabs: hydrated.tabs,
         panes: hydrated.panes,
         splitMode: hydrated.splitMode,
         quadLayout: hydrated.quadLayout,
         focusedPaneSlot: hydrated.focusedPaneSlot
-      })
+      }
+      // Home tabs are never persisted, so a workspace saved while the
+      // user had only a home tab open would hydrate with zero tabs.
+      // Seed one back so the invariant "every workspace has at least
+      // one tab" holds after restore too.
+      if (restored.tabs.length === 0) {
+        const targetPane = restored.panes.find((p) => p.slot === restored.focusedPaneSlot) ?? restored.panes[0]
+        if (targetPane) seedHomeTab(restored, targetPane)
+      }
+      workspaces = new Map(workspaces).set(projectId, restored)
     } catch (error) {
       console.warn(`Workspace restore failed for ${projectId}, falling back to empty layout:`, error)
     }
@@ -774,6 +830,57 @@ export function addReadonlyEditorTab(
   )
 }
 
+/**
+ * Focus an existing home tab in the target pane, or create one if absent.
+ * One home tab per pane maximum — the picker is a single surface, not a
+ * stack of identical buffers.
+ *
+ * `paneSlot` defaults to the focused pane. Callers (e.g. PaneTabBar's +
+ * button) pass their own slot explicitly so the picker always opens in
+ * the pane the user clicked from, regardless of focus races.
+ */
+export function openHomeTab(projectId: string, paneSlot?: PaneSlot): TabId {
+  const ws = ensureWorkspace(projectId)
+  const pane = (paneSlot && ws.panes.find((p) => p.slot === paneSlot)) || activePaneOf(ws)
+
+  const existingHomeId = pane.tabs.find((id) => findTab(ws, id)?.kind === 'home')
+  if (existingHomeId) {
+    pane.activeTabId = existingHomeId
+    ws.focusedPaneSlot = pane.slot
+    commitWorkspace(ws)
+    return existingHomeId
+  }
+
+  const tab: HomeTab = {
+    kind: 'home',
+    id: generateTabId(),
+    locked: false,
+    temporary: false
+  }
+
+  ws.tabs = [...ws.tabs, tab]
+  pane.tabs = [...pane.tabs, tab.id]
+  pane.activeTabId = tab.id
+  ws.focusedPaneSlot = pane.slot
+  commitWorkspace(ws)
+  return tab.id
+}
+
+/**
+ * Close the home tab living in the given pane, if any. Used by
+ * `Pane.svelte` to clean up after a successful session creation so the
+ * picker doesn't linger next to the session it spawned.
+ */
+export function closeHomeTabInPane(projectId: string, paneSlot: PaneSlot): void {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  const pane = ws.panes.find((p) => p.slot === paneSlot)
+  if (!pane) return
+  const homeTabId = pane.tabs.find((id) => findTab(ws, id)?.kind === 'home')
+  if (!homeTabId) return
+  closeTab(projectId, homeTabId)
+}
+
 export function addNotificationTestTab(projectId: string, temporary = false): TabId {
   return addContentTab(
     projectId,
@@ -800,6 +907,27 @@ export function promoteTemporaryTab(tabId: TabId) {
     return t
   })
   commitWorkspace(ws)
+}
+
+/**
+ * Promote the focused pane's active tab to persistent, if it's a
+ * temporary content tab. Centralised here because every sidebar needs
+ * the same "double-click to pin" gesture, and duplicating the guard
+ * inline at each call site (ProjectView, FilesSidebar, …) is exactly
+ * how the Files tree ended up silently missing the feature: the Git
+ * sidebar wired it, the Files sidebar didn't, and there was no shared
+ * surface to fall off of. Callers now just invoke this directly.
+ *
+ * Sessions can't be "temporary" and home tabs are permanent picker
+ * surfaces — both fall through unchanged, so this is safe to call
+ * regardless of which tab kind happens to be focused.
+ */
+export function promoteFocusedTab(projectId: string): void {
+  const tab = getFocusedTab(projectId)
+  if (!tab) return
+  if (tab.kind === 'session' || tab.kind === 'home') return
+  if (!tab.temporary) return
+  promoteTemporaryTab(tab.id)
 }
 
 export function closeTab(projectId: string, tabId: TabId) {
@@ -1269,7 +1397,11 @@ export function collapsePaneIfEmpty(projectId: string) {
   const previousSplitMode = ws.splitMode
 
   if (ws.tabs.length === 0) {
+    // Closing the last tab leaves the user with no surface to act on.
+    // Reset to a single pane and seed a home tab so the picker is
+    // reachable as a real tab (matching fresh-project behaviour).
     resetToSinglePane(ws)
+    seedHomeTab(ws, ws.panes[0])
     commitWorkspace(ws)
     return
   }
@@ -1277,6 +1409,8 @@ export function collapsePaneIfEmpty(projectId: string) {
   // Remove empty panes (keep at least one)
   const nonEmpty = ws.panes.filter((p) => p.tabs.length > 0)
   if (nonEmpty.length === 0) {
+    // Tabs exist but no pane owns them — orphan state recovery.
+    // resetToSinglePane re-homes every tab, so we don't need to seed.
     resetToSinglePane(ws)
     commitWorkspace(ws)
     return
@@ -1412,11 +1546,33 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
   }
 }
 
+/**
+ * Which tab kinds support the "lock" feature.
+ *
+ * Only content surfaces where typing/editing is the primary interaction
+ * benefit from a lock — a misclick in Monaco or an accidental keystroke
+ * in xterm can do real damage. Diff-view tabs (changes/commit/stash)
+ * are read-only renders of git state, and the home tab is a transient
+ * picker. Locking any of them serves no purpose and just complicates
+ * the mental model ("why is the lock icon different on this tab?").
+ */
+export function canLockTab(tab: Tab): boolean {
+  return tab.kind === 'session' || tab.kind === 'editor'
+}
+
 export function toggleTabLocked(projectId: string, tabId: TabId) {
   const ws = getWorkspace(projectId)
   if (!ws) return
 
-  ws.tabs = ws.tabs.map((tab) => (tab.id === tabId ? { ...tab, locked: !tab.locked } : tab))
+  const tab = findTab(ws, tabId)
+  if (!tab) return
+  // Defense: the UI already hides the Lock menu item for non-lockable
+  // kinds, but guarding here means a stale persisted blob or a future
+  // caller can't sneak a locked state onto a tab that the rest of the
+  // code assumes is always unlocked.
+  if (!canLockTab(tab)) return
+
+  ws.tabs = ws.tabs.map((t) => (t.id === tabId ? { ...t, locked: !t.locked } : t))
   commitWorkspace(ws)
 }
 

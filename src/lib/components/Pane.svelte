@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Tab, PaneState } from '$lib/stores/workspace.svelte'
-  import { setFocusedPane, getFocusedPaneSlot } from '$lib/stores/workspace.svelte'
+  import { closeHomeTabInPane, openHomeTab, setFocusedPane, getFocusedPaneSlot } from '$lib/stores/workspace.svelte'
   import { paneDndUi, paneDropObserver } from '$lib/dnd/adapters/pane.svelte'
   import DropOverlay from '$lib/dnd/DropOverlay.svelte'
   import { LocalTransfer } from '$lib/dnd'
@@ -35,8 +35,10 @@
     activeTab?.kind === 'session' ? (sessions.find((session) => session.id === activeTab.sessionId) ?? null) : null
   )
 
-  let showNewSession = $state(false)
-  let showLockedOverlay = $derived(!showNewSession && activeTab !== null && activeTab.locked)
+  // Only content tabs get the lock overlay. Home tabs never carry content
+  // worth shielding, and rendering the overlay on top of the picker would
+  // confuse the user — they can always click the lock icon to unlock.
+  let showLockedOverlay = $derived(activeTab !== null && activeTab.kind !== 'home' && activeTab.locked)
   let dropVisible = $derived(paneDndUi.visible(projectId, pane.slot))
   let dropZone = $derived(paneDndUi.zone(projectId, pane.slot))
   let dropLabel = $derived(paneDndUi.label(projectId, pane.slot))
@@ -52,17 +54,45 @@
     return true
   })
 
+  let paneRootEl: HTMLDivElement | undefined = $state()
+
   function handleFocus() {
     setFocusedPane(pane.slot)
   }
 
   function handleNewSession() {
     handleFocus()
-    showNewSession = true
+    // Pass the pane slot explicitly: focus is set above but the commit
+    // ordering inside the store means the "active pane" lookup could
+    // still see the previous focus if two panes race for a + click.
+    openHomeTab(projectId, pane.slot)
   }
+
+  function handleSessionCreated() {
+    // The picker did its job — drop the home tab so the user isn't left
+    // with a stale "New" tab next to the session they just started. If
+    // they deliberately locked the home tab, respect that (closeTab skips
+    // locked) and leave it.
+    closeHomeTabInPane(projectId, pane.slot)
+  }
+
+  // When a tab is locked we want *all* content-area interaction to stop —
+  // pointer events are blocked by the overlay itself, but keyboard focus
+  // may still be sitting inside Monaco or xterm, so without blurring the
+  // user can keep typing through the lock. This was the Monaco bug:
+  // SessionTerminal disabled input at the manager layer; Monaco had no
+  // equivalent and quietly kept accepting keystrokes.
+  $effect(() => {
+    if (!showLockedOverlay) return
+    const active = document.activeElement
+    if (active instanceof HTMLElement && paneRootEl?.contains(active)) {
+      active.blur()
+    }
+  })
 </script>
 
 <div
+  bind:this={paneRootEl}
   class="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden {isFocused
     ? 'ring-1 ring-accent/30'
     : ''}"
@@ -72,10 +102,7 @@
     pane,
     projectId,
     projectPath,
-    locked: showLockedOverlay,
-    onDropHandled: () => {
-      showNewSession = false
-    }
+    locked: showLockedOverlay
   })}
   role="region"
 >
@@ -86,12 +113,16 @@
     {projectId}
     {isFocused}
     onNewSession={handleNewSession}
-    onTabSelected={() => (showNewSession = false)}
   />
 
   <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-    {#if showNewSession || !activeTab}
-      <NewSessionView onCreated={() => (showNewSession = false)} />
+    <!-- The picker is rendered whenever the active tab is a home tab or
+         the pane is empty (e.g. user closed the last tab). Inlining both
+         checks here keeps Svelte's template narrowing happy in the else
+         branches — every subsequent `activeTab.kind` read is guaranteed
+         to see a non-null, non-home tab. -->
+    {#if !activeTab || activeTab.kind === 'home'}
+      <NewSessionView onCreated={handleSessionCreated} />
     {:else if activeTab.kind === 'session' && paneSession}
       <SessionTerminal
         session={paneSession}
@@ -131,8 +162,16 @@
     {/if}
 
     {#if showLockedOverlay}
+      <!-- pointer-events-auto (default) is deliberate: the overlay has to
+           actually intercept clicks, otherwise they fall through to Monaco
+           / xterm / etc. and the lock is visual-only. This was bug #1
+           (Monaco ignoring lock) — each tab type implemented its own lock
+           and Monaco simply didn't. Combined with the focus-blur $effect
+           above, this gates both pointer and keyboard input at the pane
+           boundary regardless of tab kind. -->
       <div
-        class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-ground/72 backdrop-blur-[1px]"
+        class="absolute inset-0 z-10 flex items-center justify-center bg-ground/72 backdrop-blur-[1px]"
+        role="presentation"
       >
         <div
           class="rounded-lg border border-edge bg-surface/95 px-3 py-2 text-center text-[0.78rem] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)]"

@@ -64,6 +64,7 @@ pub fn run() {
             commands::projects::project_list,
             commands::projects::project_get,
             commands::projects::project_remove,
+            commands::projects::project_open_in_terminal,
             // Provider commands
             commands::providers::provider_list,
             commands::providers::provider_refresh,

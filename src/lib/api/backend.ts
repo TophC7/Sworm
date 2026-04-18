@@ -76,6 +76,9 @@ export const backend = {
     add(path: string): Promise<Project> {
       return invoke<Project>('project_add', { path })
     },
+    openInTerminal(path: string): Promise<void> {
+      return invoke<void>('project_open_in_terminal', { path })
+    },
     list(): Promise<Project[]> {
       return invoke<Project[]>('project_list')
     },

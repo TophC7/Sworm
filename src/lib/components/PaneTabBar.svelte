@@ -5,7 +5,13 @@
   import { allProviders, directOptions } from '$lib/data/providers'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
-  import { closeTab, promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/stores/workspace.svelte'
+  import {
+    canLockTab,
+    closeTab,
+    promoteTemporaryTab,
+    setActiveTab,
+    toggleTabLocked
+  } from '$lib/stores/workspace.svelte'
   import { tabDragSource } from '$lib/dnd/adapters/tab-strip'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { closeTabWithChecks } from '$lib/utils/tabActions.svelte'
@@ -21,8 +27,7 @@
     paneSlot,
     projectId,
     isFocused = false,
-    onNewSession,
-    onTabSelected
+    onNewSession
   }: {
     tabs: Tab[]
     activeTabId: TabId | null
@@ -30,7 +35,6 @@
     projectId: string
     isFocused?: boolean
     onNewSession?: () => void
-    onTabSelected?: () => void
   } = $props()
 
   let contextMenuOpen = $state(false)
@@ -42,7 +46,6 @@
 
   function handleTabClick(tabId: TabId) {
     setActiveTab(projectId, paneSlot, tabId)
-    onTabSelected?.()
   }
 
   async function handleTabClose(e: Event, tabId: TabId) {
@@ -76,6 +79,8 @@
         return tab.refLabel ? `${tab.fileName} (${tab.refLabel})` : tab.fileName
       case 'notification-test':
         return tab.label
+      case 'home':
+        return 'New'
     }
   }
 
@@ -131,7 +136,6 @@
     if (!tab || tab.kind !== 'session' || !session) return
 
     setActiveTab(projectId, paneSlot, tab.id)
-    onTabSelected?.()
     await tick()
 
     await runNotifiedTask(
@@ -222,6 +226,8 @@
             <BellIcon size={14} class="shrink-0 text-accent" />
           {:else if tab.kind === 'editor'}
             <FileIcon filename={tab.fileName} size={14} />
+          {:else if tab.kind === 'home'}
+            <Plus size={14} class="shrink-0 text-accent" />
           {:else}
             {@const icon = providerIcon(tab)}
             {#if icon}
@@ -270,7 +276,10 @@
         {contextSessionValue.status === 'running' || contextSessionValue.status === 'starting' ? 'Stop' : 'Restart'}
       </button>
     {/if}
-    {#if contextTab}
+    {#if contextTab && canLockTab(contextTab)}
+      <!-- Lock only makes sense on content tabs where accidental input
+           can cause damage (session terminals, Monaco editors). Home
+           and diff-view tabs skip this affordance entirely. -->
       <button
         class="w-full cursor-pointer rounded-sm border-none bg-transparent px-3 py-1.5 text-left text-fg transition-colors hover:bg-surface"
         onclick={() => handleToggleLock(contextTab.id)}

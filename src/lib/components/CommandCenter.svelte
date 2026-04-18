@@ -13,7 +13,7 @@
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import RebindDialog from '$lib/components/RebindDialog.svelte'
-  import { PencilIcon } from '$lib/icons/lucideExports'
+  import { HistoryIcon, PencilIcon } from '$lib/icons/lucideExports'
   import { cn } from '$lib/utils/cn'
   import {
     getAppCommandGroups,
@@ -22,6 +22,7 @@
     type CommandConfirm,
     type FileCallbacks
   } from '$lib/commands/index.svelte'
+  import { getRecentCommandIds, recordRecentCommand } from '$lib/commands/recents.svelte'
   import { isCommandPaletteOpen, setCommandPaletteOpen } from '$lib/stores/ui.svelte'
   import { isEditorFocused } from '$lib/editor/editorActions.svelte'
   import { getEffectiveSpec } from '$lib/stores/shortcutOverrides.svelte'
@@ -65,11 +66,34 @@
     return keywords.some((kw) => kw.toLowerCase().includes(q))
   }
 
+  // Build a synthetic "Recent" group from the persisted id list.
+  // Only surfaced in app mode, and only when search is empty — filtering
+  // should hit the real groups so every match is discoverable without
+  // duplicates across Recent + its source section.
+  let recentGroup = $derived.by<import('$lib/commands/index.svelte').CommandGroup | null>(() => {
+    if (isEditorMode) return null
+    const ids = getRecentCommandIds()
+    if (ids.length === 0) return null
+    const byId = new Map<string, CommandType>()
+    for (const g of appGroups) {
+      for (const cmd of g.commands) byId.set(cmd.id, cmd)
+    }
+    const recents: CommandType[] = []
+    for (const id of ids) {
+      const cmd = byId.get(id)
+      if (!cmd) continue
+      recents.push({ ...cmd, id: `recent:${cmd.id}`, icon: cmd.icon ?? HistoryIcon })
+    }
+    if (recents.length === 0) return null
+    return { heading: 'Recent', commands: recents }
+  })
+
   let activeGroups = $derived.by(() => {
     const source = isEditorMode ? editorGroups : appGroups
-    if (!filterQuery) return source
+    const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
+    if (!filterQuery) return withRecents
 
-    return source
+    return withRecents
       .map((g) => ({
         ...g,
         commands: g.commands.filter((cmd) => matchesQuery(filterQuery, cmd.label, cmd.keywords, cmd.id))
@@ -97,28 +121,35 @@
     }
   })
 
-  function run(handler: () => void) {
+  function run(cmd: CommandType) {
+    // Strip the `recent:` prefix we add when cloning into the Recent group
+    // so both entry points record under the original command id.
+    const baseId = cmd.id.startsWith('recent:') ? cmd.id.slice('recent:'.length) : cmd.id
+    if (!isEditorMode) recordRecentCommand(baseId)
     setCommandPaletteOpen(false)
     search = ''
     // Tick delay so the dialog closes before the handler fires
     // (avoids focus conflicts with settings dialog, file picker, etc.)
-    requestAnimationFrame(handler)
+    requestAnimationFrame(cmd.onSelect)
   }
 </script>
 
 <Dialog.Root {open} onOpenChange={(v) => setCommandPaletteOpen(v)}>
   <Dialog.Portal>
     <Dialog.Overlay class="fixed inset-0 z-50 bg-ground/70 backdrop-blur-sm" />
-    <Dialog.Content class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" aria-label="Command center">
+    <Dialog.Content
+      class="fixed inset-0 z-50 flex translate-y-[-5vh] items-start justify-center pt-[20vh]"
+      aria-label="Command center"
+    >
       <div
         class={cn(
           'w-full max-w-[520px] overflow-hidden rounded-xl border border-edge',
           'bg-raised shadow-[0_16px_48px_rgba(0,0,0,0.5)]'
         )}
       >
-        <Command loop vimBindings={false} shouldFilter={false}>
+        <Command vimBindings={false} shouldFilter={false}>
           <CommandInput placeholder={isEditorMode ? 'Editor command...' : 'Type a command...'} bind:value={search} />
-          <CommandList>
+          <CommandList class="max-h-[50vh] [scroll-padding-block:0.5rem]">
             <CommandEmpty />
 
             {#each activeGroups as group, i (group.heading)}
@@ -129,7 +160,7 @@
                 {#each group.commands as cmd (cmd.id)}
                   {@const Icon = cmd.icon}
                   {@const effectiveShortcut = getEffectiveSpec(cmd.id, cmd.shortcut)}
-                  <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd.onSelect)} class="group">
+                  <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
                     {#if Icon}
                       <Icon />
                     {:else if cmd.iconSrc}

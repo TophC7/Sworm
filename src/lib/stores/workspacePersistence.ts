@@ -83,6 +83,11 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
     case 'notification-test':
       // Dev-only tab; don't let it show up on next launch.
       return null
+    case 'home':
+      // The picker tab is a transient UI surface, not content. On restore
+      // the empty-pane fallback in Pane.svelte covers the "no active tab"
+      // case by rendering NewSessionView inline.
+      return null
     default: {
       // Exhaustiveness: any new Tab kind forces the compiler to add a
       // case above. Without this the default path would silently drop
@@ -116,6 +121,14 @@ export function serializeWorkspace(ws: ProjectWorkspace, focusedPaneSlot: PaneSl
     if (pane.activeTabId) {
       const idx = tabIndexById.get(pane.activeTabId)
       if (idx !== undefined) activeTabIndex = tabIndices.indexOf(idx)
+    }
+    // If the active tab was one we dropped from persistence (e.g. a home
+    // tab), fall back to the last persisted tab in the pane. Otherwise
+    // the restored pane would mount with no active tab even though its
+    // tab list is non-empty, and the user would lose their active-tab
+    // selection across reloads whenever a home tab happened to be active.
+    if (activeTabIndex < 0 && tabIndices.length > 0) {
+      activeTabIndex = tabIndices.length - 1
     }
     return {
       slot: pane.slot,
