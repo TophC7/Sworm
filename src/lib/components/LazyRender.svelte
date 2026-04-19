@@ -45,7 +45,7 @@
   {#if visible}
     {@render children()}
   {:else}
-    <div style="min-height: {minHeight}px" class="flex items-center justify-center text-[0.72rem] text-subtle">
+    <div style="min-height: {minHeight}px" class="flex items-center justify-center text-sm text-subtle">
       Scroll to load diff...
     </div>
   {/if}

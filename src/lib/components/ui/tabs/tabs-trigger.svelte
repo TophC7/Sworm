@@ -18,7 +18,8 @@
 <Tabs.Trigger
   {value}
   class={cn(
-    'cursor-pointer px-2.5 py-1 text-[0.72rem] transition-colors',
+    'cursor-pointer px-2.5 py-1 text-sm transition-colors',
+    'focus-visible:shadow-focus-ring focus-visible:outline-none',
     'data-[state=active]:bg-accent-bg data-[state=active]:text-accent',
     'data-[state=inactive]:text-muted data-[state=inactive]:hover:text-fg',
     className

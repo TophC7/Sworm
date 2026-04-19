@@ -1,23 +1,24 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { Badge } from '$lib/components/ui/badge'
+  import { Button, IconButton } from '$lib/components/ui/button'
+  import { Checkbox } from '$lib/components/ui/checkbox'
+  import { DialogContent, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import { Input } from '$lib/components/ui/input'
+  import { ScrollArea } from '$lib/components/ui/scroll-area'
+  import { X } from '$lib/icons/lucideExports'
+  import { notify } from '$lib/stores/notifications.svelte'
+  import { refreshProviders } from '$lib/stores/providers.svelte'
   import {
-    loadSettings,
     getSettings,
     getSettingsLoading,
+    loadSettings,
     saveGeneralSettings,
     saveProviderConfig
   } from '$lib/stores/settings.svelte'
-  import { refreshProviders } from '$lib/stores/providers.svelte'
-  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { getWindowControls, setWindowControls } from '$lib/stores/ui.svelte'
-  import { DialogRoot, DialogContent, DialogTitle } from '$lib/components/ui/dialog'
-  import { Button } from '$lib/components/ui/button'
-  import { Badge } from '$lib/components/ui/badge'
-  import { ScrollArea } from '$lib/components/ui/scroll-area'
-  import { Separator } from '$lib/components/ui/separator'
-  import { X } from '$lib/icons/lucideExports'
-  import { notify } from '$lib/stores/notifications.svelte'
   import { getErrorMessage } from '$lib/utils/notifiedTask'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { onMount } from 'svelte'
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 
@@ -140,138 +141,121 @@
   }}
 >
   <DialogContent class="flex max-h-[80vh] max-w-lg flex-col p-0">
-    <!-- Header -->
-    <div class="flex shrink-0 items-center justify-between border-b border-edge px-5 py-3">
+    <header class="flex shrink-0 items-center justify-between border-b border-edge px-5 py-3">
       <DialogTitle>Settings</DialogTitle>
-      <Button variant="ghost" size="icon-sm" onclick={onClose}>
+      <IconButton tooltip="Close" onclick={onClose}>
         <X size={14} />
-      </Button>
-    </div>
+      </IconButton>
+    </header>
 
     {#if flashMessage}
-      <div class="shrink-0 border-b border-edge bg-success/5 px-5 py-2 text-[0.82rem] text-success">
+      <div
+        role="status"
+        class="shrink-0 border-b border-success/40 bg-success-bg px-5 py-2 text-sm text-success-bright"
+      >
         {flashMessage}
       </div>
     {/if}
 
-    <!-- Content -->
     <ScrollArea class="flex-1">
-      <!-- Window controls (always visible, not backend-dependent) -->
-      <div class="border-b border-edge">
+      <section class="border-b border-edge">
         <div class="px-5 py-2">
-          <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Window Controls</span>
+          <span class="text-2xs font-semibold tracking-wide text-muted uppercase"> Window Controls </span>
         </div>
 
         <div class="flex flex-col gap-2.5 px-5 pb-3">
-          <label class="flex items-center gap-2 text-[0.82rem]">
-            <input
-              type="checkbox"
-              checked={wcConfig.useSystemDecorations}
-              onchange={(e) => handleToggleSystemDecorations((e.currentTarget as HTMLInputElement).checked)}
-            />
-            <span class="text-fg">Use system window decorations</span>
+          <label class="flex items-center gap-2 text-base text-fg">
+            <Checkbox checked={wcConfig.useSystemDecorations} onCheckedChange={handleToggleSystemDecorations} />
+            <span>Use system window decorations</span>
           </label>
 
           {#if !wcConfig.useSystemDecorations}
-            <div class="flex items-center gap-4 pl-5 text-[0.82rem]">
+            <div class="flex items-center gap-4 pl-5 text-base text-muted">
               <label class="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={wcConfig.showMinimize}
-                  onchange={(e) => handleToggleWcButton('showMinimize', (e.currentTarget as HTMLInputElement).checked)}
+                  onCheckedChange={(v) => handleToggleWcButton('showMinimize', v)}
                 />
-                <span class="text-muted">Minimize</span>
+                <span>Minimize</span>
               </label>
               <label class="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={wcConfig.showMaximize}
-                  onchange={(e) => handleToggleWcButton('showMaximize', (e.currentTarget as HTMLInputElement).checked)}
+                  onCheckedChange={(v) => handleToggleWcButton('showMaximize', v)}
                 />
-                <span class="text-muted">Maximize</span>
+                <span>Maximize</span>
               </label>
               <label class="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={wcConfig.showClose}
-                  onchange={(e) => handleToggleWcButton('showClose', (e.currentTarget as HTMLInputElement).checked)}
-                />
-                <span class="text-muted">Close</span>
+                <Checkbox checked={wcConfig.showClose} onCheckedChange={(v) => handleToggleWcButton('showClose', v)} />
+                <span>Close</span>
               </label>
             </div>
           {/if}
         </div>
-      </div>
+      </section>
 
       {#if loading && !settings}
-        <div class="px-5 py-8 text-[0.82rem] text-muted">Loading settings&hellip;</div>
+        <div class="px-5 py-8 text-sm text-muted">Loading settings&hellip;</div>
       {:else if settings}
-        <!-- Terminal settings -->
-        <div class="border-b border-edge">
+        <section class="border-b border-edge">
           <div class="flex items-center justify-between px-5 py-2">
-            <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Terminal</span>
+            <span class="text-2xs font-semibold tracking-wide text-muted uppercase"> Terminal </span>
             <Button size="sm" onclick={handleSaveGeneral} disabled={savingGeneral}>
               {savingGeneral ? 'Saving\u2026' : 'Save'}
             </Button>
           </div>
 
           <div class="flex flex-col gap-3 px-5 pb-3">
-            <label class="flex items-center gap-3 text-[0.82rem]">
+            <label class="flex items-center gap-3 text-base">
               <span class="w-28 shrink-0 text-muted">Font family</span>
-              <input class="field-input flex-1" bind:value={generalDraft.terminal_font_family} />
+              <Input class="flex-1" bind:value={generalDraft.terminal_font_family} />
             </label>
-            <label class="flex items-center gap-3 text-[0.82rem]">
+            <label class="flex items-center gap-3 text-base">
               <span class="w-28 shrink-0 text-muted">Font size</span>
-              <input
-                class="field-input w-20"
-                type="number"
-                min="10"
-                max="24"
-                bind:value={generalDraft.terminal_font_size}
-              />
+              <Input class="w-20" type="number" min="10" max="24" bind:value={generalDraft.terminal_font_size} />
             </label>
           </div>
-        </div>
+        </section>
 
-        <!-- Nix settings -->
-        <div class="border-b border-edge">
+        <section class="border-b border-edge">
           <div class="flex items-center justify-between px-5 py-2">
-            <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Nix</span>
+            <span class="text-2xs font-semibold tracking-wide text-muted uppercase">Nix</span>
             <Button size="sm" onclick={handleSaveGeneral} disabled={savingGeneral}>
               {savingGeneral ? 'Saving\u2026' : 'Save'}
             </Button>
           </div>
 
           <div class="flex flex-col gap-3 px-5 pb-3">
-            <label class="flex items-center gap-3 text-[0.82rem]">
+            <label class="flex items-center gap-3 text-base">
               <span class="w-28 shrink-0 text-muted">Eval timeout</span>
-              <input
-                class="field-input w-24"
+              <Input
+                class="w-24"
                 type="number"
                 min="30"
                 max="3600"
                 step="30"
                 bind:value={generalDraft.nix_eval_timeout_secs}
               />
-              <span class="text-[0.75rem] text-subtle">
+              <span class="text-sm text-subtle">
                 seconds. Cold stores need 300s+; first flake build may take minutes.
               </span>
             </label>
           </div>
-        </div>
+        </section>
 
-        <!-- Provider settings -->
-        <div>
+        <section>
           <div class="px-5 py-2">
-            <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Providers</span>
+            <span class="text-2xs font-semibold tracking-wide text-muted uppercase"> Providers </span>
           </div>
 
           {#each settings.providers as entry (entry.provider.id)}
-            <div class="mx-4 mb-3 overflow-hidden rounded-lg border border-edge">
-              <div class="flex items-center justify-between bg-surface px-3 py-2">
+            <article class="mx-4 mb-3 overflow-hidden rounded-lg border border-edge bg-overlay">
+              <div class="flex items-center justify-between border-b border-edge px-3 py-2">
                 <div class="flex min-w-0 items-center gap-2">
-                  <span class="text-[0.85rem] font-semibold text-bright">{entry.provider.label}</span>
-                  <Badge variant={statusVariant(entry.provider.status)}>{entry.provider.status}</Badge>
+                  <span class="text-md font-semibold text-bright">{entry.provider.label}</span>
+                  <Badge variant={statusVariant(entry.provider.status)}>
+                    {entry.provider.status}
+                  </Badge>
                 </div>
                 <Button
                   size="sm"
@@ -283,41 +267,39 @@
               </div>
 
               <div class="flex flex-col gap-2.5 px-3 py-2.5">
-                <div class="text-[0.75rem] text-muted">
-                  {entry.provider.version ?? 'Version unavailable'}
+                <div class="text-sm text-muted">
+                  <span class="font-mono text-xs">
+                    {entry.provider.version ?? 'Version unavailable'}
+                  </span>
                   {#if entry.provider.resolved_path}
-                    <span class="text-subtle"> &middot; {entry.provider.resolved_path}</span>
+                    <span class="font-mono text-xs text-subtle">
+                      &middot; {entry.provider.resolved_path}
+                    </span>
                   {/if}
                 </div>
 
                 {#if entry.provider.message}
-                  <div class="text-[0.75rem] text-warning">{entry.provider.message}</div>
+                  <div class="text-sm text-warning-bright">{entry.provider.message}</div>
                 {/if}
 
                 {#if entry.provider.status === 'missing'}
-                  <div class="font-mono text-[0.75rem] text-muted">{entry.provider.install_hint}</div>
+                  <div class="font-mono text-sm text-muted">{entry.provider.install_hint}</div>
                 {/if}
 
-                <label class="flex items-center gap-2 text-[0.82rem]">
-                  <input
-                    type="checkbox"
+                <label class="flex items-center gap-2 text-base">
+                  <Checkbox
                     checked={providerDrafts[entry.provider.id]?.enabled ?? true}
-                    onchange={(event) =>
-                      updateProviderDraft(
-                        entry.provider.id,
-                        'enabled',
-                        (event.currentTarget as HTMLInputElement).checked
-                      )}
+                    onCheckedChange={(v) => updateProviderDraft(entry.provider.id, 'enabled', v)}
                   />
                   <span class="text-fg">Enabled</span>
                 </label>
 
-                <label class="flex items-center gap-3 text-[0.82rem]">
+                <label class="flex items-center gap-3 text-base">
                   <span class="w-28 shrink-0 text-muted">Binary path</span>
-                  <input
-                    class="field-input flex-1"
+                  <Input
+                    class="flex-1"
                     value={providerDrafts[entry.provider.id]?.binaryPath ?? ''}
-                    oninput={(event) =>
+                    oninput={(event: Event) =>
                       updateProviderDraft(
                         entry.provider.id,
                         'binaryPath',
@@ -327,12 +309,12 @@
                   />
                 </label>
 
-                <label class="flex items-center gap-3 text-[0.82rem]">
+                <label class="flex items-center gap-3 text-base">
                   <span class="w-28 shrink-0 text-muted">Extra args</span>
-                  <input
-                    class="field-input flex-1"
+                  <Input
+                    class="flex-1"
                     value={providerDrafts[entry.provider.id]?.extraArgs ?? ''}
-                    oninput={(event) =>
+                    oninput={(event: Event) =>
                       updateProviderDraft(
                         entry.provider.id,
                         'extraArgs',
@@ -342,11 +324,11 @@
                   />
                 </label>
               </div>
-            </div>
+            </article>
           {/each}
-        </div>
+        </section>
       {:else}
-        <div class="px-5 py-8 text-[0.82rem] text-muted">No settings data available.</div>
+        <div class="px-5 py-8 text-sm text-muted">No settings data available.</div>
       {/if}
     </ScrollArea>
   </DialogContent>

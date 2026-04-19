@@ -94,12 +94,16 @@
 
     <StatusBar />
   </div>
-</TooltipProvider>
 
-<CommandCenter onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
-<SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
-<NotificationsSurface />
-<ConfirmHost />
+  <!-- Dialogs and overlays live under the same Tooltip.Provider as the
+       main app so IconButtons inside them (e.g. Settings close) find a
+       provider without needing a per-surface one. Nested providers
+       confuse bits-ui's cross-tooltip coordination. -->
+  <CommandCenter onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
+  <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  <NotificationsSurface />
+  <ConfirmHost />
+</TooltipProvider>
 
 {#if projectError}
   <ConfirmDialog

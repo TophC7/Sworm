@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { buttonVariants } from '$lib/components/ui/button'
+  import { iconButtonVariants } from '$lib/components/ui/button'
   import { BellIcon } from '$lib/icons/lucideExports'
   import {
     getNotifications,
@@ -15,11 +15,7 @@
 
 <button
   type="button"
-  class={cn(
-    buttonVariants({ variant: 'ghost', size: 'icon-sm' }),
-    'relative text-muted',
-    expanded && 'bg-surface text-fg'
-  )}
+  class={cn(iconButtonVariants({ size: 'sm', active: expanded }), 'relative')}
   aria-label={expanded ? 'Hide notifications' : 'Show notifications'}
   aria-controls="notifications-surface"
   aria-expanded={expanded}

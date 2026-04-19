@@ -1,7 +1,7 @@
 export const NOTIFICATION_PANEL_WIDTH_CLASS = 'w-80'
 export const NOTIFICATION_LIST_CLASS = 'flex flex-col gap-1.5 p-2'
 export const NOTIFICATION_EMPTY_STATE_CLASS =
-  'flex items-center justify-center px-3 py-6 text-center text-[0.72rem] text-subtle'
+  'flex items-center justify-center px-3 py-6 text-center text-sm text-subtle'
 export const NOTIFICATION_SURFACE_CLASS =
   'pointer-events-auto overflow-hidden rounded-xl border border-edge bg-raised shadow-[0_10px_30px_rgba(0,0,0,0.45)]'
 export const NOTIFICATION_VIEWPORT_CLASS = 'max-h-96 overflow-y-auto'

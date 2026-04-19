@@ -75,7 +75,7 @@
       <ContextMenuItem disabled>
         <FileDiff size={14} class="shrink-0" />
         <span>Open Changes</span>
-        <span class="ml-auto text-[0.65rem] text-subtle">WIP</span>
+        <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
       <ContextMenuItem onclick={onOpenFile}>
         <Eye size={14} class="shrink-0 text-muted" />
@@ -106,7 +106,7 @@
       <ContextMenuItem disabled>
         <PackageIcon size={14} class="shrink-0" />
         <span>Stash Changes</span>
-        <span class="ml-auto text-[0.65rem] text-subtle">WIP</span>
+        <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
 
       <ContextMenuSeparator />
@@ -150,7 +150,7 @@
       <ContextMenuItem disabled>
         <FileDiff size={14} class="shrink-0" />
         <span>Open Changes</span>
-        <span class="ml-auto text-[0.65rem] text-subtle">WIP</span>
+        <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
 
       <ContextMenuSeparator />

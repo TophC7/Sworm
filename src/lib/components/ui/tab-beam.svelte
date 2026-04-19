@@ -1,11 +1,14 @@
 <!--
-  TabBeam: animated gradient glow that sweeps across the top of an active tab.
-  Place as a child inside the active tab button, positioned absolutely.
+  TabBeam: animated gradient glow that sweeps across the edge of an active tab.
+  Also re-used by NotificationProgressBar for non-accent progress tones.
 
-  @param variant - color variant: 'accent' (default), 'warning' (working), 'success' (done), 'danger' (error)
+  @param variant - color variant. Tabs always use 'accent' per design spec §7.3.
+                    Other variants exist only for notification progress bars.
+  @param position - 'top' (default) or 'bottom' to pin the beam line.
 -->
 <script lang="ts" module>
   export type BeamVariant = 'accent' | 'warning' | 'success' | 'danger'
+  export type BeamPosition = 'top' | 'bottom'
 </script>
 
 <script lang="ts">
@@ -13,17 +16,16 @@
 
   let {
     variant = 'accent' as BeamVariant,
+    position = 'top' as BeamPosition,
     class: className
   }: {
     variant?: BeamVariant
+    position?: BeamPosition
     class?: string
   } = $props()
 </script>
 
-<span
-  class={cn('pointer-events-none absolute top-0 right-0 left-0 h-[2px] overflow-hidden', className)}
-  aria-hidden="true"
->
+<span class={cn('pointer-events-none absolute inset-x-0 top-0 h-[2px] overflow-hidden', className)} aria-hidden="true">
   <span class="tab-beam-gradient" data-variant={variant}></span>
 </span>
 

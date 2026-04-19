@@ -171,19 +171,19 @@
 
 <div class="flex min-h-0 flex-1 flex-col bg-ground">
   {#if error}
-    <div class="border-b border-danger-border bg-danger-bg px-2.5 py-1.5 text-[0.8rem] text-danger">
+    <div class="border-b border-danger-border bg-danger-bg px-2.5 py-1.5 text-base text-danger">
       {error}
     </div>
   {/if}
 
   {#if isHistorical && !error}
     <div
-      class="flex items-center justify-between gap-2 border-b border-edge bg-raised px-2.5 py-1.5 text-[0.8rem] text-muted"
+      class="flex items-center justify-between gap-2 border-b border-edge bg-raised px-2.5 py-1.5 text-base text-muted"
     >
       <span>Session exited. Showing restored terminal history.</span>
       <button
         type="button"
-        class="text-foreground rounded border border-edge bg-surface px-2 py-0.5 text-[0.75rem] transition-colors hover:bg-overlay"
+        class="text-foreground rounded border border-edge bg-surface px-2 py-0.5 text-sm transition-colors hover:bg-overlay"
         onclick={resumeSession}
       >
         Resume
@@ -206,7 +206,7 @@
       <div class="pointer-events-none absolute inset-1 z-20 rounded-lg border border-accent/60 bg-accent/10">
         <div class="absolute inset-0 flex items-center justify-center">
           <span
-            class="rounded border border-edge-strong/70 bg-raised/90 px-2 py-0.5 text-[0.68rem] font-medium tracking-wide text-bright uppercase"
+            class="rounded border border-edge-strong/70 bg-raised/90 px-2 py-0.5 text-xs font-medium tracking-wide text-bright uppercase"
           >
             Insert Path
           </span>

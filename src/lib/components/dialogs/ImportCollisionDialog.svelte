@@ -42,7 +42,7 @@
     </DialogDescription>
 
     <div class="mt-3 space-y-1.5">
-      <label for={renameInputId} class="text-[0.72rem] font-medium text-muted uppercase">Rename To</label>
+      <label for={renameInputId} class="text-sm font-medium text-muted uppercase">Rename To</label>
       <Input
         id={renameInputId}
         value={renameValue}

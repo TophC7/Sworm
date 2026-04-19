@@ -141,12 +141,7 @@
       class="fixed inset-0 z-50 flex translate-y-[-5vh] items-start justify-center pt-[20vh]"
       aria-label="Command center"
     >
-      <div
-        class={cn(
-          'w-full max-w-[520px] overflow-hidden rounded-xl border border-edge',
-          'bg-raised shadow-[0_16px_48px_rgba(0,0,0,0.5)]'
-        )}
-      >
+      <div class={cn('w-full max-w-[520px] overflow-hidden rounded-xl border border-edge', 'bg-raised shadow-popover')}>
         <Command vimBindings={false} shouldFilter={false}>
           <CommandInput placeholder={isEditorMode ? 'Editor command...' : 'Type a command...'} bind:value={search} />
           <CommandList class="max-h-[50vh] [scroll-padding-block:0.5rem]">

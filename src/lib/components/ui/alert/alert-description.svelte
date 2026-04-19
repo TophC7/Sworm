@@ -11,6 +11,6 @@
   } = $props()
 </script>
 
-<div class={cn('text-[0.7rem] leading-snug opacity-85', className)}>
+<div class={cn('text-xs leading-snug opacity-85', className)}>
   {#if children}{@render children()}{/if}
 </div>

@@ -17,7 +17,7 @@
 </script>
 
 <footer
-  class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-[0.68rem]"
+  class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-xs"
 >
   <div class="flex items-center gap-2.5">
     {#if gitSummary?.branch}
@@ -58,12 +58,12 @@
       </IconButton>
       <TooltipRoot>
         <TooltipTrigger
-          class="min-w-6 cursor-pointer border-none bg-transparent px-0.5 text-center text-[0.65rem] text-muted transition-colors hover:text-fg"
+          class="min-w-6 cursor-pointer border-none bg-transparent px-0.5 text-center text-2xs text-muted transition-colors hover:text-fg"
           onclick={zoomReset}
         >
           {Math.round(zoom * 100)}%
         </TooltipTrigger>
-        <TooltipContent>Reset zoom <kbd class="ml-2 font-mono text-[0.68rem] text-subtle">Ctrl+0</kbd></TooltipContent>
+        <TooltipContent>Reset zoom <kbd class="ml-2 font-mono text-xs text-subtle">Ctrl+0</kbd></TooltipContent>
       </TooltipRoot>
       <IconButton tooltip="Zoom in" shortcut="Ctrl+=" onclick={zoomIn}>
         <Plus size={10} />

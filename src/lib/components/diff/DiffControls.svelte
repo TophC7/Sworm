@@ -1,17 +1,22 @@
 <script lang="ts">
+  import { Button, IconButton } from '$lib/components/ui/button'
+  import { Separator } from '$lib/components/ui/separator'
+  import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
   import { DiffMode } from '$lib/diff/types'
-  import { Button } from '$lib/components/ui/button'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
-  import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
+  import { ChevronsDownUp, ChevronsUpDown } from '$lib/icons/lucideExports'
 
   let {
     mode = $bindable(DiffMode.Split),
     wrap = $bindable(false),
-    fontSize = $bindable(13)
+    fontSize = $bindable(13),
+    allExpanded = false,
+    onToggleAll
   }: {
     mode: DiffMode
     wrap: boolean
     fontSize: number
+    allExpanded?: boolean
+    onToggleAll?: () => void
   } = $props()
 
   function adjustFontSize(delta: number) {
@@ -19,7 +24,8 @@
   }
 </script>
 
-<div class="flex shrink-0 items-center gap-2">
+<div class="flex shrink-0 items-center gap-1.5">
+  <!-- Split / Unified -->
   <TabsRoot
     value={mode === DiffMode.Split ? 'split' : 'unified'}
     onValueChange={(v) => {
@@ -32,44 +38,30 @@
     </TabsList>
   </TabsRoot>
 
-  <TooltipRoot>
-    <TooltipTrigger>
-      {#snippet child({ props })}
-        <Button
-          variant={wrap ? 'accent' : 'ghost'}
-          size="xs"
-          onclick={() => (wrap = !wrap)}
-          aria-pressed={wrap}
-          {...props}
-        >
-          Wrap
-        </Button>
-      {/snippet}
-    </TooltipTrigger>
-    <TooltipContent>Toggle line wrapping</TooltipContent>
-  </TooltipRoot>
+  <!-- Expand / collapse all files. Arrow direction reflects the action the
+       next click will perform: arrows-outward means "expand", arrows-inward
+       means "collapse". -->
+  {#if onToggleAll}
+    <IconButton tooltip={allExpanded ? 'Collapse all files' : 'Expand all files'} onclick={onToggleAll}>
+      {#if allExpanded}
+        <ChevronsDownUp size={14} />
+      {:else}
+        <ChevronsUpDown size={14} />
+      {/if}
+    </IconButton>
+  {/if}
 
+  <Separator orientation="vertical" class="mx-0.5 h-4" />
+
+  <!-- Wrap toggle -->
+  <Button variant={wrap ? 'accent' : 'ghost'} size="xs" onclick={() => (wrap = !wrap)} aria-pressed={wrap}>Wrap</Button>
+
+  <Separator orientation="vertical" class="mx-0.5 h-4" />
+
+  <!-- Font controls -->
   <div class="flex items-center gap-1">
-    <TooltipRoot>
-      <TooltipTrigger disabled={fontSize <= 10}>
-        {#snippet child({ props })}
-          <Button variant="ghost" size="xs" onclick={() => adjustFontSize(-1)} disabled={fontSize <= 10} {...props}>
-            A-
-          </Button>
-        {/snippet}
-      </TooltipTrigger>
-      <TooltipContent>Decrease font size</TooltipContent>
-    </TooltipRoot>
-    <span class="min-w-[2.8rem] text-center text-[0.68rem] text-muted tabular-nums">{fontSize}px</span>
-    <TooltipRoot>
-      <TooltipTrigger disabled={fontSize >= 20}>
-        {#snippet child({ props })}
-          <Button variant="ghost" size="xs" onclick={() => adjustFontSize(1)} disabled={fontSize >= 20} {...props}>
-            A+
-          </Button>
-        {/snippet}
-      </TooltipTrigger>
-      <TooltipContent>Increase font size</TooltipContent>
-    </TooltipRoot>
+    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(-1)} disabled={fontSize <= 10}>A-</Button>
+    <span class="min-w-[2.8rem] text-center text-2xs text-muted tabular-nums">{fontSize}px</span>
+    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(1)} disabled={fontSize >= 20}>A+</Button>
   </div>
 </div>

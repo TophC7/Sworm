@@ -85,11 +85,9 @@
 </script>
 
 {#if binary}
-  <div class="flex items-center justify-center py-6 text-[0.8rem] text-subtle italic">
-    Binary file — diff not available
-  </div>
+  <div class="flex items-center justify-center py-6 text-base text-subtle italic">Binary file — diff not available</div>
 {:else if !hasDiffContent}
-  <div class="flex items-center justify-center py-6 text-[0.8rem] text-subtle italic">No changes</div>
+  <div class="flex items-center justify-center py-6 text-base text-subtle italic">No changes</div>
 {:else if diffFile}
   {#if mode === DiffMode.Unified}
     <DiffUnifiedPane {diffFile} {rows} {wrap} {fontSize} />

@@ -25,30 +25,37 @@
  *  15  #fffaf8   near-white (max)
  */
 
+/*
+ * SECTION: @theme //
+ *
+ * Authoritative Sworm design tokens. Tailwind v4 emits utilities from
+ * these variables — see .claude/skills/sworm-design/SKILL.md for the
+ * full system and component recipes.
+ */
 @theme {
-  /* ── Surface hierarchy ────────────────────── */
+  /* SURFACES // darkest → lightest. Every element sits on exactly one. */
   --color-ground: #131313;
-  --color-surface: #1c1917;
-  --color-raised: #262220;
-  --color-overlay: #302a28;
+  --color-surface: #201c1a;
+  --color-raised: #2f2926;
+  --color-overlay: #3c3532;
 
-  /* ── Borders ──────────────────────────────── */
+  /* BORDERS // */
   --color-edge: #3a322e;
   --color-edge-strong: #4a403a;
 
-  /* ── Foreground ───────────────────────────── */
+  /* FOREGROUND // strict hierarchy — subtle → max. */
   --color-fg: #e2e2e2;
   --color-muted: #a59c99;
   --color-subtle: #6e6864;
   --color-bright: #fff3ef;
   --color-max: #fffaf8;
 
-  /* ── Accent (warm peach) ──────────────────── */
+  /* ACCENT // single warm peach; used for activity, focus, primary CTA. */
   --color-accent: #ffb59f;
   --color-accent-dim: #f29d84;
   --color-accent-bright: #ffc0ad;
 
-  /* ── Semantic ─────────────────────────────── */
+  /* SEMANTIC // danger / success / warning, each with a brighter hover shade. */
   --color-danger: #ff7672;
   --color-danger-bright: #ffa29f;
   --color-success: #98ff7f;
@@ -56,22 +63,70 @@
   --color-warning: #ffe572;
   --color-warning-bright: #ffeea5;
 
-  /* ── Extended palette ─────────────────────── */
+  /* EXTENDED // decorative highlights and text-selection fill. */
   --color-selection: #7c2d15;
   --color-warm: #763724;
   --color-pink: #ffcbbb;
   --color-peach: #ffddd3;
 
-  /* ── Derived functional colors ────────────── */
+  /* FUNCTIONAL FILLS // pre-mixed tints for filled states. */
   --color-danger-bg: #2d1014;
   --color-danger-border: #5b1b21;
   --color-success-bg: rgba(152, 255, 127, 0.08);
   --color-warning-bg: rgba(255, 229, 114, 0.08);
   --color-accent-bg: rgba(255, 181, 159, 0.13);
 
-  /* ── Font stacks ─────────────────────────── */
+  /* FONTS // mono is Monocraft only; falls back to default monospace. */
   --font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Monocraft Nerd Font', monospace;
+
+  /* TYPE SCALE // utilities text-3xs through text-5xl. */
+  --text-3xs: 0.5rem;
+  --text-3xs--line-height: 1;
+  --text-2xs: 0.65rem;
+  --text-2xs--line-height: 1.2;
+  --text-xs: 0.68rem;
+  --text-xs--line-height: 1.25;
+  --text-sm: 0.72rem;
+  --text-sm--line-height: 1.3;
+  --text-base: 0.82rem;
+  --text-base--line-height: 1.4;
+  --text-md: 0.85rem;
+  --text-md--line-height: 1.4;
+  --text-lg: 0.9rem;
+  --text-lg--line-height: 1.4;
+  --text-xl: 1rem;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 1.1rem;
+  --text-2xl--line-height: 1.3;
+  --text-3xl: 1.25rem;
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 1.5rem;
+  --text-4xl--line-height: 1.15;
+  --text-5xl: 2rem;
+  --text-5xl--line-height: 1.1;
+
+  /* EASING // utilities ease-out-expo, ease-out-quart, ease-default. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-default: cubic-bezier(0.2, 0, 0, 1);
+
+  /* DURATIONS // utilities duration-instant, duration-fast, duration-med, duration-slow. */
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-med: 240ms;
+  --duration-slow: 400ms;
+
+  /*
+   * SHADOWS // elevation is reserved for floating surfaces only
+   * (popovers, dropdowns, command palette, toasts). Cards, buttons,
+   * inputs, and sidebars do NOT take shadow — they use surface steps.
+   * Focus ring is documented here for non-input interactive elements;
+   * inputs use the border-accent swap on focus instead.
+   */
+  --shadow-popover: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --shadow-kbd-inset: inset 0 -1px 0 #3a322e;
+  --shadow-focus-ring: 0 0 0 2px rgba(255, 181, 159, 0.35);
 }
 
 /* ── Bundled fonts ────────────────────────────── */
@@ -112,19 +167,7 @@
 
 @layer components {
   .section-label {
-    @apply flex items-center justify-between px-3.5 pt-2.5 pb-1 text-[0.7rem] font-semibold tracking-wide text-muted uppercase;
-  }
-
-  .btn-sm {
-    @apply cursor-pointer rounded border border-edge bg-raised px-2.5 py-1 text-[0.72rem] text-fg transition-colors hover:border-accent disabled:cursor-default disabled:opacity-60;
-  }
-
-  .field-input {
-    @apply rounded border border-edge bg-ground px-2.5 py-1.5 text-[0.82rem] text-fg;
-  }
-
-  .btn-ghost {
-    @apply cursor-pointer border-none bg-transparent px-1 text-[0.9rem] text-muted transition-colors hover:text-bright;
+    @apply flex items-center justify-between px-3.5 pt-2.5 pb-1 text-xs font-semibold tracking-wide text-muted uppercase;
   }
 }
 
@@ -149,6 +192,21 @@
     &::-webkit-scrollbar {
       display: none;
     }
+  }
+
+  /* Accent pulse — see SKILL.md §7. Used only on actively-working indicators. */
+  @keyframes pulse-accent {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+
+  .pulse-accent {
+    animation: pulse-accent 1400ms var(--ease-out-quart) infinite;
   }
 
   /* Scrollbar — no Tailwind equivalent */

@@ -48,7 +48,7 @@
 </script>
 
 {#if wrapTooLarge}
-  <div class="bg-warning/10 px-3 py-1 text-center text-[0.72rem] text-warning">
+  <div class="bg-warning/10 px-3 py-1 text-center text-sm text-warning">
     Wrap disabled for this file ({rows.length} lines). Use unified mode for wrapped view of large diffs.
   </div>
 {/if}

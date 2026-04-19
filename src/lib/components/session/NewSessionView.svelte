@@ -3,6 +3,7 @@
   import StageView from '$lib/components/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { MagicCard } from '$lib/components/ui/magic-card'
+  import { Separator } from '$lib/components/ui/separator'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { allProviders, directOptions, type ProviderMeta } from '$lib/data/providers'
   import { getActiveProjectId } from '$lib/stores/projects.svelte'
@@ -78,14 +79,14 @@
             ></span>
           {:else}
             <span
-              class="shrink-0 text-[1.1rem] leading-tight font-semibold {connected ? 'text-fg' : 'text-muted'}"
+              class="shrink-0 text-2xl leading-tight font-semibold {connected ? 'text-fg' : 'text-muted'}"
               style:font-family={provider.textFont ?? 'inherit'}>{provider.textLabel ?? provider.label}</span
             >
           {/if}
           {#if !connected}
-            <span class="text-[0.65rem] text-muted italic">Not detected</span>
+            <span class="text-2xs text-muted italic">Not detected</span>
           {:else if status?.version}
-            <span class="text-[0.65rem] text-success">{status.version}</span>
+            <span class="text-2xs text-success">{status.version}</span>
           {/if}
         </div>
         {#if provider.id === 'fresh'}
@@ -112,7 +113,7 @@
 <StageView>
   <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
     <h2 class="mb-1 text-center text-xl text-bright">New Session</h2>
-    <p class="mb-8 text-center text-[0.82rem] text-muted">Choose a coding agent to start</p>
+    <p class="mb-8 text-center text-base text-muted">Choose a coding agent to start</p>
   </BlurFade>
 
   <!-- Agent CLIs -->
@@ -122,12 +123,12 @@
     {/each}
   </div>
 
-  <!-- Divider -->
+  <!-- Divider — labeled "or" separator between agent and direct options -->
   <BlurFade delay={0.1 + allProviders.length * 0.08} duration={0.4} direction="up" offset={8}>
     <div class="my-4 flex items-center gap-4">
-      <div class="flex-1 border-t border-edge"></div>
-      <span class="text-[0.75rem] text-muted">or</span>
-      <div class="flex-1 border-t border-edge"></div>
+      <Separator class="flex-1" />
+      <span class="text-sm text-muted">or</span>
+      <Separator class="flex-1" />
     </div>
   </BlurFade>
 

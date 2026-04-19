@@ -127,6 +127,6 @@
         {/if}
       </div>
     </div>
-    <span class="truncate pr-2 text-[0.68rem] text-subtle">{hunkText}</span>
+    <span class="truncate pr-2 text-xs text-subtle">{hunkText}</span>
   </div>
 {/if}

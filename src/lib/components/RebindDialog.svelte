@@ -144,32 +144,31 @@
         onclick={startRecording}
         class="flex min-h-[96px] w-full cursor-pointer appearance-none flex-col items-center justify-center gap-2
                rounded-xl border-2 border-dashed bg-ground/60 p-4 transition-colors
-               outline-none focus:outline-none focus-visible:ring-0 focus-visible:outline-none
+               focus-visible:shadow-focus-ring focus-visible:outline-none
                {recording ? 'border-accent bg-accent/10' : 'border-edge hover:border-accent/60 hover:bg-ground/80'}"
       >
         {#if recording}
           {#if rejectedHint}
-            <KbdGroup class="text-[0.9rem]">
-              <Kbd class="h-8 min-w-8 px-2 text-[0.85rem] opacity-60">{rejectedHint}</Kbd>
+            <KbdGroup class="text-lg">
+              <Kbd class="h-8 min-w-8 px-2 text-md opacity-60">{rejectedHint}</Kbd>
             </KbdGroup>
-            <span class="text-[0.72rem] text-danger">Needs a modifier (Ctrl / Shift / Alt)</span>
+            <span class="text-sm text-danger">Needs a modifier (Ctrl / Shift / Alt)</span>
           {:else}
-            <span class="font-mono text-[0.78rem] tracking-wide text-accent">Press a combo&hellip; (Esc to cancel)</span
-            >
+            <span class="font-mono text-base tracking-wide text-accent">Press a combo&hellip; (Esc to cancel)</span>
           {/if}
         {:else if displayParts.length > 0}
-          <KbdGroup class="text-[0.9rem]">
+          <KbdGroup class="text-lg">
             {#each displayParts as part, i (i)}
               {#if i > 0}<span class="text-subtle">+</span>{/if}
-              <Kbd class="h-8 min-w-8 px-2 text-[0.85rem]">{part}</Kbd>
+              <Kbd class="h-8 min-w-8 px-2 text-md">{part}</Kbd>
             {/each}
           </KbdGroup>
         {:else}
-          <span class="text-[0.82rem] text-subtle italic">Click to record</span>
+          <span class="text-base text-subtle italic">Click to record</span>
         {/if}
 
         {#if defaultSpec && defaultSpec !== displaySpec}
-          <span class="text-[0.7rem] text-subtle">
+          <span class="text-xs text-subtle">
             Default: <span class="font-mono">{defaultSpec}</span>
           </span>
         {/if}

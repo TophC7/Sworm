@@ -52,7 +52,7 @@
     <TreeNode expanded={!isCollapsed(node.path)} {depth}>
       {#snippet label()}
         <button
-          class="relative flex w-full cursor-pointer items-center gap-1 border-none py-0.5 text-left text-[0.72rem] text-muted hover:bg-surface {dropActive
+          class="relative flex w-full cursor-pointer items-center gap-1 border-none py-0.5 text-left text-sm text-muted transition-colors hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none {dropActive
             ? 'bg-accent/14 text-bright'
             : 'bg-transparent'}"
           style="padding-left: {depth * 12 + 10}px"
@@ -82,7 +82,7 @@
     {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
     {@const active = isActive?.(node.change.path) ?? false}
     <button
-      class="relative flex w-full cursor-pointer items-center gap-1.5 border-none py-0.5 text-left text-[0.75rem] hover:bg-surface {active
+      class="relative flex w-full cursor-pointer items-center gap-1.5 border-none py-0.5 text-left text-sm transition-colors hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none {active
         ? 'bg-accent/10 text-bright'
         : 'bg-transparent text-fg'}"
       style="padding-left: {depth * 12 + 10}px"

@@ -141,13 +141,13 @@
 {#snippet sessionList(list: Map<string, Session[]>, archived: boolean)}
   {#each [...list.entries()] as [providerId, providerSessions]}
     <div class="border-b border-edge last:border-b-0">
-      <div class="px-2.5 py-1.5 text-[0.65rem] font-semibold tracking-wider text-muted uppercase">
+      <div class="px-2.5 py-1.5 text-2xs font-semibold tracking-wider text-muted uppercase">
         {providerLabel(providerId)}
       </div>
       {#each providerSessions as session}
         {@const locked = !archived && lockedSessionIds.has(session.id)}
         <div
-          class="group/row relative flex items-center text-[0.75rem] text-subtle transition-colors hover:bg-surface hover:text-bright"
+          class="group/row relative flex items-center text-sm text-subtle transition-colors hover:bg-surface hover:text-bright"
         >
           {#if archived}
             <!--
@@ -157,7 +157,7 @@
               isn't.
             -->
             <div class="flex flex-1 items-center gap-2 px-2.5 py-1.5 text-left">
-              <span class="truncate font-mono text-[0.7rem]">{session.id.slice(0, 8)}</span>
+              <span class="truncate font-mono text-xs">{session.id.slice(0, 8)}</span>
             </div>
           {:else}
             <button
@@ -166,7 +166,7 @@
               onclick={() => handleSessionClick(session)}
             >
               <span class="h-1.5 w-1.5 shrink-0 rounded-full {historyDotClass(session)}"></span>
-              <span class="truncate font-mono text-[0.7rem]">{session.id.slice(0, 8)}</span>
+              <span class="truncate font-mono text-xs">{session.id.slice(0, 8)}</span>
             </button>
           {/if}
           <!--
@@ -238,7 +238,7 @@
     <ResizablePane defaultSize={65} minSize={20}>
       <div class="h-full overflow-y-auto">
         {#if agentSessions.length === 0}
-          <div class="px-2.5 py-3 text-[0.75rem] text-subtle">No agent sessions yet.</div>
+          <div class="px-2.5 py-3 text-sm text-subtle">No agent sessions yet.</div>
         {:else}
           {@render sessionList(grouped, false)}
         {/if}
@@ -247,14 +247,14 @@
     <ResizableHandle />
     <ResizablePane defaultSize={35} minSize={10}>
       <div class="h-full overflow-y-auto">
-        <div class="px-2.5 py-1.5 text-[0.65rem] font-semibold tracking-wider text-subtle uppercase">
+        <div class="px-2.5 py-1.5 text-2xs font-semibold tracking-wider text-subtle uppercase">
           Archived
           {#if agentArchived.length > 0}
-            <span class="text-[0.6rem] font-normal text-subtle">({agentArchived.length})</span>
+            <span class="text-2xs font-normal text-subtle">({agentArchived.length})</span>
           {/if}
         </div>
         {#if agentArchived.length === 0}
-          <div class="px-2.5 py-1.5 text-[0.7rem] text-subtle">None</div>
+          <div class="px-2.5 py-1.5 text-xs text-subtle">None</div>
         {:else}
           {@render sessionList(archivedGrouped, true)}
         {/if}

@@ -38,10 +38,10 @@
   <div class="flex min-h-0 flex-1 items-center justify-center bg-ground p-6">
     <div class="max-w-3xl rounded-xl border border-danger-border bg-danger-bg/30 p-4 text-left">
       <h2 class="mb-2 text-sm font-semibold text-danger-bright">Startup failed</h2>
-      <p class="mb-3 text-[0.82rem] text-danger">
+      <p class="mb-3 text-base text-danger">
         Open the devtools console and look for the logged `[sworm] startup bootstrap failed` details.
       </p>
-      <pre class="overflow-auto text-[0.72rem] whitespace-pre-wrap text-fg">{bootstrapError}</pre>
+      <pre class="overflow-auto text-sm whitespace-pre-wrap text-fg">{bootstrapError}</pre>
     </div>
   </div>
 {:else if showEmpty}

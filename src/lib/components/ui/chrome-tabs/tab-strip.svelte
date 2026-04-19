@@ -10,12 +10,16 @@
 <script lang="ts" module>
   import { tv, type VariantProps } from 'tailwind-variants'
 
+  // Both variants share the same flex/scroll skeleton. The only differences:
+  //   - project rides the titlebar height (h-full), inherits the titlebar bg.
+  //   - pane renders its own 32px strip on `ground` with a bottom edge.
+  // Keep `variant` as a data hook so we can diverge later.
   export const tabStripVariants = tv({
-    base: 'flex items-center overflow-x-auto scrollbar-none',
+    base: 'relative flex h-full items-center gap-px overflow-x-auto scrollbar-none',
     variants: {
       variant: {
-        project: 'min-w-0 flex-1 gap-px',
-        pane: 'bg-ground border-b shrink-0 h-8 relative'
+        project: 'min-w-0 flex-1',
+        pane: 'h-8 shrink-0 bg-ground border-b border-edge'
       }
     },
     defaultVariants: {

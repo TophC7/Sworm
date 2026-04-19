@@ -23,8 +23,8 @@
   data-slot="kbd"
   class={cn(
     'pointer-events-none inline-flex h-6 min-w-6 items-center justify-center rounded-md border border-edge',
-    'bg-surface px-1.5 font-mono text-[0.72rem] font-medium text-fg select-none',
-    'shadow-[inset_0_-1px_0_var(--color-edge)]',
+    'bg-surface px-1.5 font-mono text-sm font-medium text-fg select-none',
+    'shadow-kbd-inset',
     className
   )}
   {...rest}

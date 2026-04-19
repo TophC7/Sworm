@@ -11,21 +11,33 @@
 <script lang="ts" module>
   import { tv, type VariantProps } from 'tailwind-variants'
 
+  // Project vs pane share 95% of the chrome. The only real differences:
+  //   1. The animated beam sits at the bottom for project, top for pane (handled in the template).
+  //   2. Active/hover bg steps up one surface from whichever parent the strip lives on —
+  //      project lives on `surface` (titlebar) → steps to `raised`.
+  //      pane    lives on `ground`   (pane header) → steps to `surface`.
+  // Everything else (height-fills-container, padding, text role, focus ring, close affordance)
+  // is identical. Keep the `variant` prop as a data hook so we can diverge later without
+  // rewriting consumers.
   export const tabButtonVariants = tv({
-    base: 'group relative flex items-center gap-1.5 px-3 shrink-0 border-none cursor-pointer transition-colors',
+    base:
+      'group relative flex h-full items-center gap-1.5 px-3 shrink-0 text-sm border-none cursor-pointer transition-colors ' +
+      'focus-visible:shadow-focus-ring focus-visible:outline-none',
     variants: {
       variant: {
-        project: 'text-[0.78rem] rounded-t h-8',
-        pane: 'text-[0.75rem] self-stretch'
+        project: '',
+        pane: ''
       },
       active: {
-        true: '',
-        false: 'bg-transparent text-muted hover:text-fg hover:bg-surface/50'
+        true: 'text-bright',
+        false: 'bg-transparent text-muted'
       }
     },
     compoundVariants: [
-      { variant: 'project', active: true, class: 'bg-ground text-bright' },
-      { variant: 'pane', active: true, class: 'bg-surface text-fg' }
+      { variant: 'project', active: true, class: 'bg-raised' },
+      { variant: 'project', active: false, class: 'hover:bg-raised/50 hover:text-bright' },
+      { variant: 'pane', active: true, class: 'bg-surface' },
+      { variant: 'pane', active: false, class: 'hover:bg-surface/50 hover:text-bright' }
     ],
     defaultVariants: {
       variant: 'pane',
@@ -37,7 +49,7 @@
 </script>
 
 <script lang="ts">
-  import TabBeam, { type BeamVariant } from '$lib/components/ui/tab-beam.svelte'
+  import TabBeam from '$lib/components/ui/tab-beam.svelte'
   import { cn } from '$lib/utils/cn'
   import { X } from '$lib/icons/lucideExports'
   import type { Snippet } from 'svelte'
@@ -49,7 +61,6 @@
     variant = 'pane',
     active = false,
     showBeam,
-    beamVariant = 'accent' as BeamVariant,
     leading,
     onClose,
     class: className,
@@ -59,7 +70,6 @@
     variant?: TabButtonVariant
     active?: boolean
     showBeam?: boolean
-    beamVariant?: BeamVariant
     leading?: Snippet
     onClose?: (event: CloseEvent) => void | Promise<void>
     class?: string
@@ -79,12 +89,14 @@
 </script>
 
 <button class={cn(tabButtonVariants({ variant, active }), className)} role="tab" aria-selected={active} {...rest}>
-  {#if active && effectiveShowBeam}<TabBeam variant={beamVariant} />{/if}
+  {#if active && effectiveShowBeam}
+    <TabBeam />
+  {/if}
   {#if leading}{@render leading()}{/if}
   {#if children}{@render children()}{/if}
   {#if onClose}
     <span
-      class="text-[0.7rem] leading-none text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-danger"
+      class=" -mr-1 p-0.5 text-xs leading-none text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-danger"
       role="button"
       tabindex="0"
       onclick={handleClose}

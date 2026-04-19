@@ -105,7 +105,7 @@
         )}
         aria-hidden={!expanded}
       >
-        <span class="text-[0.72rem] font-medium tracking-wide text-muted uppercase">
+        <span class="text-sm font-medium tracking-wide text-muted uppercase">
           Notifications{notificationCount > 0 ? ` (${notificationCount})` : ''}
         </span>
         {#if notificationCount > 0}

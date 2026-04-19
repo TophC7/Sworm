@@ -15,7 +15,7 @@
 <textarea
   bind:value
   class={cn(
-    'w-full resize-none rounded border border-edge bg-surface px-2 py-1.5 text-[0.75rem] text-fg outline-none placeholder:text-subtle focus:border-accent/50',
+    'w-full resize-none rounded border border-edge bg-surface px-2.5 py-1.5 text-base text-fg transition-colors outline-none placeholder:text-subtle focus:border-accent',
     className
   )}
   {...rest}

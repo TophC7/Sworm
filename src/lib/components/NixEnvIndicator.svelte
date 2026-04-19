@@ -139,7 +139,7 @@
 {#if hasNixFiles}
   <DropdownMenuRoot>
     <DropdownMenuTrigger
-      class="flex items-center gap-1 text-[0.68rem] {statusColor()} cursor-pointer border-none bg-transparent p-0 transition-colors hover:text-bright"
+      class="flex items-center gap-1 text-xs {statusColor()} cursor-pointer border-none bg-transparent p-0 transition-colors hover:text-bright"
     >
       {#if evaluatingNow}
         <LoaderCircle size={10} class="animate-spin" />
@@ -176,14 +176,14 @@
           {#if detection.selected.status === 'ready'}
             <DropdownMenuItem onclick={handleEvaluate}>Re-evaluate</DropdownMenuItem>
           {:else if detection.selected.status === 'error' || detection.selected.status === 'timeout'}
-            <div class="px-3 py-1.5 text-[0.72rem] text-danger">
+            <div class="px-3 py-1.5 text-sm text-danger">
               {detection.selected.error_message ?? 'Evaluation failed'}
             </div>
             <DropdownMenuItem onclick={handleEvaluate}>Retry</DropdownMenuItem>
           {:else if detection.selected.status === 'pending'}
             <DropdownMenuItem onclick={handleEvaluate}>Evaluate</DropdownMenuItem>
           {:else if detection.selected.status === 'evaluating' || evaluatingNow}
-            <div class="flex items-center gap-1.5 px-3 py-1.5 text-[0.72rem] text-muted">
+            <div class="flex items-center gap-1.5 px-3 py-1.5 text-sm text-muted">
               <LoaderCircle size={10} class="animate-spin" />
               Evaluating...
             </div>

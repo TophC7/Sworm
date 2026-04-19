@@ -8,7 +8,8 @@
   import FileTreeItems from '$lib/components/FileTreeItems.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
-  import { Play, Trash2 } from '$lib/icons/lucideExports'
+  import { IconButton } from '$lib/components/ui/button'
+  import { ClockIcon, Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/utils/graph'
   import { runNotifiedTask } from '$lib/utils/notifiedTask'
   import { SvelteSet } from 'svelte/reactivity'
@@ -123,9 +124,9 @@
   }
 </script>
 
-<div class="flex h-full flex-col text-[0.78rem]">
+<div class="flex h-full flex-col text-base">
   {#if stashes.length === 0}
-    <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No stashes.</div>
+    <div class="px-2.5 py-2 text-sm text-subtle">No stashes.</div>
   {:else}
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
       <div class="flex-1 overflow-y-auto">
@@ -137,86 +138,89 @@
           {@const totalAdds = stash.files.reduce((s, f) => s + f.additions, 0)}
           {@const totalDels = stash.files.reduce((s, f) => s + f.deletions, 0)}
 
-          <TooltipRoot>
-            <TooltipTrigger
-              class="group flex w-full items-center gap-1.5 border-t border-edge/30 px-2.5 text-left hover:bg-raised/50 {isExpanded
-                ? 'bg-raised/60'
-                : ''}"
-              style="height: 22px"
-              onclick={() => toggleStash(stash.index)}
-            >
-              <span class="shrink-0 rounded bg-accent-bg px-1 py-px font-mono text-[0.6rem] text-accent">
-                {stash.index}
-              </span>
-              {#if parsed.branch}
-                <span
-                  class="inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight"
-                  style="background: {color}20; color: {color}"
-                >
-                  {parsed.branch}
+          <!-- Row is a wrapping div so the action buttons can sit as siblings
+               to the tooltip-triggering row button. Nesting <button>s inside
+               <button>s breaks keyboard/pointer semantics. -->
+          <div
+            class="group flex w-full items-center gap-1.5 border-t border-edge/30 px-2.5 hover:bg-raised/50 {isExpanded
+              ? 'bg-raised/60'
+              : ''}"
+            style="height: 22px"
+          >
+            <TooltipRoot>
+              <TooltipTrigger
+                class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-left outline-none"
+                onclick={() => toggleStash(stash.index)}
+              >
+                <span class="shrink-0 rounded bg-accent-bg px-1 py-px font-mono text-2xs text-accent">
+                  {stash.index}
                 </span>
-              {/if}
-              <span class="min-w-0 flex-1 truncate text-[0.72rem] text-fg">
-                {parsed.label}
-              </span>
-              <span class="shrink-0 text-[0.6rem] text-subtle group-hover:hidden">
-                {timeAgo(stash.date)}
-              </span>
-              <div class="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                <button
-                  class="rounded p-0.5 text-muted hover:text-success"
-                  onclick={(e: MouseEvent) => {
-                    e.stopPropagation()
-                    handlePop(stash.index)
-                  }}
-                  title="Pop (apply + remove)"
-                >
-                  <Play size={12} />
-                </button>
-                <button
-                  class="rounded p-0.5 text-muted hover:text-danger"
-                  onclick={(e: MouseEvent) => {
-                    e.stopPropagation()
-                    dropIndex = stash.index
-                  }}
-                  title="Drop stash"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent class="max-w-80" sideOffset={6} side="right" align="center">
-              <div class="flex flex-col gap-2 py-0.5">
-                <div class="flex items-center gap-1 text-[0.72rem]">
-                  <span class="text-subtle">&#x25F7;</span>
-                  <span class="text-muted">{timeAgo(stash.date)}</span>
-                  <span class="text-subtle">({formatFullDate(stash.date)})</span>
-                </div>
-                <p class="text-[0.72rem] leading-snug text-fg">{stash.message}</p>
-                {#if fileCount > 0}
-                  <p class="text-[0.68rem]">
-                    <span class="text-muted">{fileCount} file{fileCount !== 1 ? 's' : ''},</span>
-                    {' '}
-                    <span class="text-success">{totalAdds} insertions(+)</span>
-                    <span class="text-muted">,</span>
-                    {' '}
-                    <span class="text-danger">{totalDels} deletions(-)</span>
-                  </p>
-                {/if}
                 {#if parsed.branch}
-                  <div class="flex items-center gap-1 text-[0.68rem]">
-                    <span class="text-[0.5rem]" style="color: {color}">&#x25CE;</span>
-                    <span class="font-mono" style="color: {color}">{parsed.branch}</span>
-                  </div>
+                  <span
+                    class="inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
+                    style="background: {color}20; color: {color}"
+                  >
+                    {parsed.branch}
+                  </span>
                 {/if}
-              </div>
-            </TooltipContent>
-          </TooltipRoot>
+                <span class="min-w-0 flex-1 truncate text-sm text-fg">
+                  {parsed.label}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent class="max-w-80" sideOffset={6} side="right" align="center">
+                <div class="flex flex-col gap-2 py-0.5">
+                  <div class="flex items-center gap-1 text-sm">
+                    <ClockIcon size={10} class="text-subtle" />
+                    <span class="text-muted">{timeAgo(stash.date)}</span>
+                    <span class="text-subtle">({formatFullDate(stash.date)})</span>
+                  </div>
+                  <p class="text-sm leading-snug text-fg">{stash.message}</p>
+                  {#if fileCount > 0}
+                    <p class="text-xs">
+                      <span class="text-muted">{fileCount} file{fileCount !== 1 ? 's' : ''},</span>
+                      {' '}
+                      <span class="text-success">{totalAdds} insertions(+)</span>
+                      <span class="text-muted">,</span>
+                      {' '}
+                      <span class="text-danger">{totalDels} deletions(-)</span>
+                    </p>
+                  {/if}
+                  {#if parsed.branch}
+                    <div class="flex items-center gap-1 text-xs">
+                      <span
+                        class="inline-block h-1 w-1 shrink-0 rounded-full"
+                        style="background: {color}"
+                        aria-hidden="true"
+                      ></span>
+                      <span class="font-mono" style="color: {color}">{parsed.branch}</span>
+                    </div>
+                  {/if}
+                </div>
+              </TooltipContent>
+            </TooltipRoot>
+
+            <span class="shrink-0 text-2xs text-subtle group-hover:hidden">
+              {timeAgo(stash.date)}
+            </span>
+            <div class="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+              <IconButton tooltip="Pop (apply + remove)" tooltipSide="left" onclick={() => handlePop(stash.index)}>
+                <Play size={12} />
+              </IconButton>
+              <IconButton
+                tooltip="Drop stash"
+                tooltipSide="left"
+                tone="danger"
+                onclick={() => (dropIndex = stash.index)}
+              >
+                <Trash2 size={12} />
+              </IconButton>
+            </div>
+          </div>
 
           {#if isExpanded}
             <div class="border-t border-edge/30 bg-surface/40 py-1">
               {#if expandedTree.length === 0}
-                <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
+                <div class="px-4 py-1.5 text-xs text-subtle">No files changed.</div>
               {:else}
                 <FileTreeItems
                   nodes={expandedTree}

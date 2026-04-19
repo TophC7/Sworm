@@ -84,13 +84,13 @@
 </script>
 
 {#if !detail}
-  <div class="flex h-full items-center justify-center text-[0.78rem] text-subtle">Loading commit...</div>
+  <div class="flex h-full items-center justify-center text-base text-subtle">Loading commit...</div>
 {:else}
   <div class="flex h-full flex-col overflow-hidden">
     <!-- Commit header -->
     <div class="shrink-0 border-b border-edge bg-surface px-4 py-3">
-      <h2 class="mb-2 text-[0.88rem] leading-snug font-semibold text-bright">{detail.message}</h2>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.72rem] text-muted">
+      <h2 class="mb-2 text-md leading-snug font-semibold text-bright">{detail.message}</h2>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
         <span class="flex items-center gap-1">
           <UserIcon size={12} />
           {detail.author}

@@ -34,7 +34,7 @@
       {#if label}
         <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
           <span
-            class="rounded border border-edge-strong/70 bg-raised/85 px-2 py-0.5 text-[0.68rem] font-medium tracking-wide text-bright uppercase"
+            class="rounded border border-edge-strong/70 bg-raised/85 px-2 py-0.5 text-xs font-medium tracking-wide text-bright uppercase"
           >
             {label}
           </span>

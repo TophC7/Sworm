@@ -272,7 +272,7 @@
   }
 </script>
 
-<div class="flex min-h-full flex-col text-[0.78rem]">
+<div class="flex min-h-full flex-col text-base">
   <div class="border-b border-edge px-2.5 py-2">
     <Textarea rows={2} placeholder="Commit message..." bind:value={commitMessage} onkeydown={handleKeydown} />
     <div class="mt-1.5">
@@ -287,7 +287,7 @@
           >
             <ChevronDown size={11} />
           </DropdownMenuTrigger>
-          <DropdownMenuContent class="min-w-[180px] text-[0.72rem]">
+          <DropdownMenuContent class="min-w-[180px] text-sm">
             <DropdownMenuItem onclick={() => onPull?.()}>Pull</DropdownMenuItem>
             <DropdownMenuItem onclick={() => onPush?.()}>Push</DropdownMenuItem>
             <DropdownMenuItem onclick={() => onFetch?.()}>Fetch</DropdownMenuItem>
@@ -324,7 +324,7 @@
     {#if tree.length > 0}
       <div class="py-1">
         <div class="group/hdr relative flex items-center px-2.5 py-1" {@attach gitZoneAttachment(isStaged)}>
-          <span class="text-[0.68rem] font-medium tracking-wide text-muted uppercase">
+          <span class="text-xs font-medium tracking-wide text-muted uppercase">
             {label} ({countFiles(tree)})
           </span>
           <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
@@ -421,7 +421,7 @@
     onResetTarget={resetContextTarget}
   >
     {#if stagedTree.length === 0 && unstagedTree.length === 0}
-      <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No changes.</div>
+      <div class="px-2.5 py-2 text-sm text-subtle">No changes.</div>
     {/if}
 
     {@render fileGroup('Staged', stagedTree, 'staged', true)}

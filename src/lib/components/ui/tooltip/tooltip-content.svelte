@@ -33,7 +33,7 @@
     {side}
     {align}
     class={cn(
-      'z-50 max-w-80 rounded-lg border border-edge bg-overlay px-3 py-2 text-[0.72rem] leading-5 text-fg shadow-[0_10px_30px_rgba(0,0,0,0.45)]',
+      'z-50 max-w-80 rounded-lg border border-edge bg-overlay px-3 py-2 text-sm leading-5 text-fg shadow-popover',
       className
     )}
     {...rest}

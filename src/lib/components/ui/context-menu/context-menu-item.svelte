@@ -23,7 +23,7 @@
   {disabled}
   onSelect={(e) => onclick?.(e)}
   class={cn(
-    'flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left transition-colors outline-none',
+    'flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left transition-colors outline-none focus-visible:shadow-focus-ring',
     disabled
       ? 'cursor-not-allowed text-muted/50'
       : destructive

@@ -2,7 +2,7 @@
   import { tv, type VariantProps } from 'tailwind-variants'
 
   export const alertVariants = tv({
-    base: 'relative flex min-w-0 items-start gap-2.5 rounded-lg border px-3 py-2.5 text-[0.75rem]',
+    base: 'relative flex min-w-0 items-start gap-2.5 rounded-lg border px-3 py-2.5 text-sm',
     variants: {
       variant: {
         info: 'border-edge bg-surface text-fg [&>svg]:text-muted',

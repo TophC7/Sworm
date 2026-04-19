@@ -17,12 +17,7 @@
 <Dialog.Portal>
   <DialogOverlay />
   <Dialog.Content class="fixed inset-0 z-50 flex items-center justify-center p-5" {...rest}>
-    <div
-      class={cn(
-        'w-full max-w-[480px] rounded-2xl border border-edge bg-raised p-5 shadow-[0_10px_30px_rgba(0,0,0,0.45)]',
-        className
-      )}
-    >
+    <div class={cn('w-full max-w-[480px] rounded-2xl border border-edge bg-raised p-5 shadow-popover', className)}>
       {#if children}{@render children()}{/if}
     </div>
   </Dialog.Content>

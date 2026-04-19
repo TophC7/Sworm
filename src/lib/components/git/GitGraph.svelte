@@ -138,16 +138,16 @@
   }
 </script>
 
-<div class="flex h-full flex-col text-[0.78rem]">
+<div class="flex h-full flex-col text-base">
   <div class="flex shrink-0 items-center justify-between px-2.5 py-1.5">
-    <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">
+    <span class="text-xs font-semibold tracking-wide text-muted uppercase">
       {activeTab === 'graph' ? 'Graph' : 'Stashes'}{activeTab === 'stashes' && stashCount > 0 ? ` (${stashCount})` : ''}
     </span>
     <div class="flex items-center gap-0.5">
       <IconButton
         tooltip="Commit graph"
         tooltipSide="bottom"
-        class="rounded p-0.5 transition-colors {activeTab === 'graph' ? 'text-fg' : 'text-muted hover:text-fg'}"
+        active={activeTab === 'graph'}
         onclick={() => (activeTab = 'graph')}
       >
         <GitGraphIcon size={13} />
@@ -155,7 +155,7 @@
       <IconButton
         tooltip="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
         tooltipSide="bottom"
-        class="rounded p-0.5 transition-colors {activeTab === 'stashes' ? 'text-fg' : 'text-muted hover:text-fg'}"
+        active={activeTab === 'stashes'}
         onclick={() => (activeTab = 'stashes')}
       >
         <PackageIcon size={13} />
@@ -165,7 +165,7 @@
 
   {#if activeTab === 'graph'}
     {#if rows.length === 0}
-      <div class="px-2.5 py-2 text-[0.75rem] text-subtle">No commits found.</div>
+      <div class="px-2.5 py-2 text-sm text-subtle">No commits found.</div>
     {:else}
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <div class="flex-1 overflow-y-auto">
@@ -212,11 +212,11 @@
                   {/if}
                 </svg>
                 <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-                  <span class="min-w-0 truncate text-[0.72rem] text-fg">{row.commit.message}</span>
+                  <span class="min-w-0 truncate text-sm text-fg">{row.commit.message}</span>
                   {#if refs.length > 0}
                     <!-- First ref: full label badge, colored to match the graph line -->
                     <span
-                      class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-[0.62rem] leading-tight"
+                      class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
                       style="background: {r.circle.color}20; color: {r.circle.color}"
                       title={refLabel(refs[0])}
                     >
@@ -244,9 +244,9 @@
             {#if isExpanded}
               <div class="border-t border-edge/30 bg-surface/40 py-1">
                 {#if !expandedDetail}
-                  <div class="px-4 py-1.5 text-[0.68rem] text-subtle">Loading files...</div>
+                  <div class="px-4 py-1.5 text-xs text-subtle">Loading files...</div>
                 {:else if expandedTree.length === 0}
-                  <div class="px-4 py-1.5 text-[0.68rem] text-subtle">No files changed.</div>
+                  <div class="px-4 py-1.5 text-xs text-subtle">No files changed.</div>
                 {:else}
                   <FileTreeItems
                     nodes={expandedTree}

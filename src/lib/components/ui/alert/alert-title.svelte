@@ -11,6 +11,6 @@
   } = $props()
 </script>
 
-<h5 class={cn('text-[0.72rem] leading-snug font-semibold', className)}>
+<h5 class={cn('text-sm leading-snug font-semibold', className)}>
   {#if children}{@render children()}{/if}
 </h5>

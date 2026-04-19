@@ -87,12 +87,7 @@
   {/each}
 
   {#snippet trailing()}
-    <IconButton
-      tooltip="Open project"
-      tooltipSide="bottom"
-      class="ml-0.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center border-none bg-transparent text-sm text-muted transition-colors hover:text-bright"
-      onclick={() => selectProject(null)}
-    >
+    <IconButton size="md" tooltip="Open project" onclick={() => selectProject(null)}>
       <Plus size={14} />
     </IconButton>
   {/snippet}

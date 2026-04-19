@@ -81,12 +81,12 @@
       onclick={() => onToggle(file.path)}
     >
       <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
-      <span class="text-[0.65rem] font-bold {gitStatusColor(file.status)}" title={gitStatusLabel(file.status)}
+      <span class="text-2xs font-bold {gitStatusColor(file.status)}" title={gitStatusLabel(file.status)}
         >{gitStatusDisplay(file.status)}</span
       >
       <FileIcon filename={file.path} size={13} />
-      <span class="min-w-0 truncate font-mono text-[0.72rem] text-fg">{file.path}</span>
-      <span class="ml-auto shrink-0 font-mono text-[0.62rem]">
+      <span class="min-w-0 truncate font-mono text-sm text-fg">{file.path}</span>
+      <span class="ml-auto shrink-0 font-mono text-2xs">
         {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
         {#if file.deletions > 0}<span class="ml-1 text-danger">-{file.deletions}</span>{/if}
       </span>
@@ -112,7 +112,7 @@
 
   {#if expanded}
     {#if loading}
-      <div class="px-4 py-6 text-center text-[0.72rem] text-subtle">Loading diff...</div>
+      <div class="px-4 py-6 text-center text-sm text-subtle">Loading diff...</div>
     {:else if entry}
       <LazyRender minHeight={Math.min(Math.max(80, (file.additions + file.deletions) * 22), 600)}>
         <DiffViewer
@@ -126,7 +126,7 @@
         />
       </LazyRender>
     {:else}
-      <div class="px-4 py-6 text-center text-[0.72rem] text-subtle">No diff available</div>
+      <div class="px-4 py-6 text-center text-sm text-subtle">No diff available</div>
     {/if}
   {/if}
 </div>

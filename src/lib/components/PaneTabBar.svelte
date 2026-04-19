@@ -2,16 +2,17 @@
   import { backend } from '$lib/api/backend'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
+  import {
+    ContextMenuRoot,
+    ContextMenuTrigger,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuSeparator
+  } from '$lib/components/ui/context-menu'
   import { allProviders, directOptions } from '$lib/data/providers'
   import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
   import type { PaneSlot, Tab, TabId } from '$lib/stores/workspace.svelte'
-  import {
-    canLockTab,
-    closeTab,
-    promoteTemporaryTab,
-    setActiveTab,
-    toggleTabLocked
-  } from '$lib/stores/workspace.svelte'
+  import { canLockTab, promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/stores/workspace.svelte'
   import { tabDragSource } from '$lib/dnd/adapters/tab-strip'
   import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { closeTabWithChecks } from '$lib/utils/tabActions.svelte'
@@ -37,9 +38,6 @@
     onNewSession?: () => void
   } = $props()
 
-  let contextMenuOpen = $state(false)
-  let contextMenuTabId = $state<TabId | null>(null)
-  let contextMenuPos = $state({ x: 0, y: 0 })
   let sessions = $derived(getSessions())
   let warningOpen = $state(false)
   let pendingSessionAction: (() => Promise<void>) | null = null
@@ -51,18 +49,6 @@
   async function handleTabClose(e: Event, tabId: TabId) {
     e.stopPropagation()
     await closeTabWithChecks(projectId, tabId)
-  }
-
-  function handleContextMenu(e: MouseEvent, tabId: TabId) {
-    e.preventDefault()
-    contextMenuTabId = tabId
-    contextMenuPos = { x: e.clientX, y: e.clientY }
-    contextMenuOpen = true
-  }
-
-  function closeContextMenu() {
-    contextMenuOpen = false
-    contextMenuTabId = null
   }
 
   function tabLabel(tab: Tab): string {
@@ -96,20 +82,13 @@
     void handleTabClose(e, tabId)
   }
 
-  function getTabById(tabId: TabId | null): Tab | null {
-    if (!tabId) return null
-    return tabs.find((candidate) => candidate.id === tabId) ?? null
-  }
-
-  function contextSession(tabId: TabId | null) {
-    const tab = getTabById(tabId)
-    if (!tab || tab.kind !== 'session') return null
+  function sessionForTab(tab: Tab) {
+    if (tab.kind !== 'session') return null
     return sessions.find((session) => session.id === tab.sessionId) ?? null
   }
 
-  async function stopSessionFromMenu(tabId: TabId) {
-    const tab = getTabById(tabId)
-    if (!tab || tab.kind !== 'session') return
+  async function stopSessionFromMenu(tab: Tab) {
+    if (tab.kind !== 'session') return
 
     await runNotifiedTask(
       async () => {
@@ -127,13 +106,11 @@
         error: { title: 'Stop session failed' }
       }
     )
-    closeContextMenu()
   }
 
-  async function restartSessionNow(tabId: TabId) {
-    const tab = getTabById(tabId)
-    const session = contextSession(tabId)
-    if (!tab || tab.kind !== 'session' || !session) return
+  async function restartSessionNow(tab: Tab) {
+    const session = sessionForTab(tab)
+    if (tab.kind !== 'session' || !session) return
 
     setActiveTab(projectId, paneSlot, tab.id)
     await tick()
@@ -160,18 +137,18 @@
         }
       }
     )
-    closeContextMenu()
   }
 
-  function handleRestartFromMenu(tabId: TabId) {
-    const session = contextSession(tabId)
+  function handleRestartFromMenu(tab: Tab) {
+    const session = sessionForTab(tab)
     if (!session) return
 
-    const restart = () => restartSessionNow(tabId)
+    const restart = () => restartSessionNow(tab)
+    // Restarts share the same shared-workspace footgun as starts — prompt
+    // the user if another session is live before kicking it.
     if (sessions.some((candidate) => candidate.id !== session.id && candidate.status === 'running')) {
       pendingSessionAction = restart
       warningOpen = true
-      closeContextMenu()
       return
     }
 
@@ -180,69 +157,79 @@
 
   function handleToggleLock(tabId: TabId) {
     toggleTabLocked(projectId, tabId)
-    closeContextMenu()
   }
-
-  $effect(() => {
-    if (!contextMenuOpen) return
-    const close = () => closeContextMenu()
-    const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('blur', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKeydown)
-    return () => {
-      window.removeEventListener('blur', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKeydown)
-    }
-  })
 </script>
 
 <TabStrip variant="pane" ariaLabel="Pane tabs" class={isFocused ? 'border-edge' : 'border-edge/50'}>
   {#each tabs as tab (tab.id)}
-    <div class="contents" draggable={!tab.locked} {@attach tabDragSource({ tab, paneSlot, projectId })}>
-      <TabButton
-        variant="pane"
-        active={activeTabId === tab.id}
+    {@const session = sessionForTab(tab)}
+    {@const isRunning = session?.status === 'running' || session?.status === 'starting'}
+    <ContextMenuRoot>
+      <ContextMenuTrigger
+        class="contents"
         draggable={!tab.locked}
-        onclick={() => handleTabClick(tab.id)}
-        ondblclick={() => {
-          if (tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
-        }}
-        oncontextmenu={(e) => handleContextMenu(e, tab.id)}
-        onauxclick={(e) => handleAuxClick(e, tab.id)}
-        onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
+        {@attach tabDragSource({ tab, paneSlot, projectId })}
       >
-        {#snippet leading()}
-          {#if tab.kind === 'changes'}
-            <FileDiff size={14} class="shrink-0 text-accent" />
-          {:else if tab.kind === 'commit'}
-            <GitCommitIcon size={14} class="shrink-0 text-accent" />
-          {:else if tab.kind === 'stash'}
-            <PackageIcon size={14} class="shrink-0 text-accent" />
-          {:else if tab.kind === 'notification-test'}
-            <BellIcon size={14} class="shrink-0 text-accent" />
-          {:else if tab.kind === 'editor'}
-            <FileIcon filename={tab.fileName} size={14} />
-          {:else if tab.kind === 'home'}
-            <Plus size={14} class="shrink-0 text-accent" />
-          {:else}
-            {@const icon = providerIcon(tab)}
-            {#if icon}
-              <img src={icon} alt="" width={14} height={14} class="shrink-0" />
+        <TabButton
+          variant="pane"
+          active={activeTabId === tab.id}
+          draggable={!tab.locked}
+          onclick={() => handleTabClick(tab.id)}
+          ondblclick={() => {
+            if (tab.kind !== 'session' && tab.temporary) promoteTemporaryTab(tab.id)
+          }}
+          onauxclick={(e) => handleAuxClick(e, tab.id)}
+          onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
+        >
+          {#snippet leading()}
+            {#if tab.kind === 'changes'}
+              <FileDiff size={14} class="shrink-0 text-accent" />
+            {:else if tab.kind === 'commit'}
+              <GitCommitIcon size={14} class="shrink-0 text-accent" />
+            {:else if tab.kind === 'stash'}
+              <PackageIcon size={14} class="shrink-0 text-accent" />
+            {:else if tab.kind === 'notification-test'}
+              <BellIcon size={14} class="shrink-0 text-accent" />
+            {:else if tab.kind === 'editor'}
+              <FileIcon filename={tab.fileName} size={14} />
+            {:else if tab.kind === 'home'}
+              <Plus size={14} class="shrink-0 text-accent" />
+            {:else}
+              {@const icon = providerIcon(tab)}
+              {#if icon}
+                <img src={icon} alt="" width={14} height={14} class="shrink-0" />
+              {/if}
             {/if}
-          {/if}
-          {#if tab.locked}
-            <Lock size={11} class="shrink-0 text-muted" />
-          {/if}
-        {/snippet}
-        <span class="max-w-[120px] truncate {tab.kind !== 'session' && tab.temporary ? 'italic' : ''}">
-          {tabLabel(tab)}
-        </span>
-      </TabButton>
-    </div>
+            {#if tab.locked}
+              <Lock size={11} class="shrink-0 text-muted" />
+            {/if}
+          {/snippet}
+          <span class="max-w-[120px] truncate {tab.kind !== 'session' && tab.temporary ? 'italic' : ''}">
+            {tabLabel(tab)}
+          </span>
+        </TabButton>
+      </ContextMenuTrigger>
+
+      <ContextMenuContent>
+        {#if tab.kind === 'session' && session}
+          <ContextMenuItem onclick={() => (isRunning ? void stopSessionFromMenu(tab) : handleRestartFromMenu(tab))}>
+            {isRunning ? 'Stop' : 'Restart'}
+          </ContextMenuItem>
+        {/if}
+        {#if canLockTab(tab)}
+          <!-- Lock only makes sense on content tabs where accidental input
+               can cause damage (session terminals, Monaco editors). Home
+               and diff-view tabs skip this affordance entirely. -->
+          <ContextMenuItem onclick={() => handleToggleLock(tab.id)}>
+            {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+        {/if}
+        <ContextMenuItem destructive disabled={tab.locked} onclick={() => void closeTabWithChecks(projectId, tab.id)}>
+          Close
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenuRoot>
   {/each}
 
   {#snippet trailing()}
@@ -256,51 +243,6 @@
     </IconButton>
   {/snippet}
 </TabStrip>
-
-{#if contextMenuOpen}
-  {@const contextTab = getTabById(contextMenuTabId)}
-  {@const contextSessionValue = contextSession(contextMenuTabId)}
-  <div class="fixed inset-0 z-40" onclick={closeContextMenu} role="none"></div>
-  <div
-    class="fixed z-50 min-w-[140px] rounded-lg border border-edge bg-raised py-1 text-[0.78rem] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
-    style="left: {contextMenuPos.x}px; top: {contextMenuPos.y}px;"
-  >
-    {#if contextTab?.kind === 'session' && contextSessionValue}
-      <button
-        class="w-full cursor-pointer rounded-sm border-none bg-transparent px-3 py-1.5 text-left text-fg transition-colors hover:bg-surface"
-        onclick={() =>
-          contextSessionValue.status === 'running' || contextSessionValue.status === 'starting'
-            ? void stopSessionFromMenu(contextTab.id)
-            : handleRestartFromMenu(contextTab.id)}
-      >
-        {contextSessionValue.status === 'running' || contextSessionValue.status === 'starting' ? 'Stop' : 'Restart'}
-      </button>
-    {/if}
-    {#if contextTab && canLockTab(contextTab)}
-      <!-- Lock only makes sense on content tabs where accidental input
-           can cause damage (session terminals, Monaco editors). Home
-           and diff-view tabs skip this affordance entirely. -->
-      <button
-        class="w-full cursor-pointer rounded-sm border-none bg-transparent px-3 py-1.5 text-left text-fg transition-colors hover:bg-surface"
-        onclick={() => handleToggleLock(contextTab.id)}
-      >
-        {contextTab.locked ? 'Unlock Tab' : 'Lock Tab'}
-      </button>
-      <div class="mx-2 my-1 h-px bg-edge"></div>
-    {/if}
-    <button
-      class="w-full rounded-sm border-none bg-transparent px-3 py-1.5 text-left transition-colors
-				{contextTab?.locked ? 'cursor-default text-muted/50' : 'cursor-pointer text-danger hover:bg-danger-bg'}"
-      disabled={contextTab?.locked}
-      onclick={(e) => {
-        if (contextMenuTabId) {
-          void handleTabClose(e, contextMenuTabId)
-        }
-        closeContextMenu()
-      }}>Close</button
-    >
-  </div>
-{/if}
 
 <ConfirmDialog
   open={warningOpen}

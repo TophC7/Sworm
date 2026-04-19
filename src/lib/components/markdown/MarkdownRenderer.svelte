@@ -1,25 +1,26 @@
 <script lang="ts">
   import SvelteMarkdown from '@humanspeak/svelte-markdown'
   import CodeBlock from './CodeBlock.svelte'
+  import { Checkbox } from '$lib/components/ui/checkbox'
 
   let { source }: { source: string } = $props()
 </script>
 
-<div class="markdown-preview px-6 py-4 text-[0.82rem] leading-relaxed text-fg">
+<div class="markdown-preview px-6 py-4 text-base leading-relaxed text-fg">
   <SvelteMarkdown {source}>
     {#snippet heading({ depth, children })}
       {#if depth === 1}
-        <h1 class="mt-6 mb-3 border-b border-edge pb-1.5 text-[1.5rem] font-bold text-bright first:mt-0">
+        <h1 class="mt-6 mb-3 border-b border-edge pb-1.5 text-4xl font-bold text-bright first:mt-0">
           {@render children?.()}
         </h1>
       {:else if depth === 2}
-        <h2 class="mt-5 mb-2.5 border-b border-edge pb-1 text-[1.2rem] font-semibold text-bright first:mt-0">
+        <h2 class="mt-5 mb-2.5 border-b border-edge pb-1 text-2xl font-semibold text-bright first:mt-0">
           {@render children?.()}
         </h2>
       {:else if depth === 3}
-        <h3 class="mt-4 mb-2 text-[1rem] font-semibold text-bright first:mt-0">{@render children?.()}</h3>
+        <h3 class="mt-4 mb-2 text-xl font-semibold text-bright first:mt-0">{@render children?.()}</h3>
       {:else}
-        <h4 class="mt-3 mb-1.5 text-[0.9rem] font-medium text-bright first:mt-0">{@render children?.()}</h4>
+        <h4 class="mt-3 mb-1.5 text-lg font-medium text-bright first:mt-0">{@render children?.()}</h4>
       {/if}
     {/snippet}
 
@@ -61,8 +62,8 @@
 
     {#snippet listitem({ children, task, checked }: { children?: any; task?: boolean; checked?: boolean })}
       {#if task}
-        <li class="mb-1 list-none">
-          <input type="checkbox" {checked} disabled class="mr-2 align-middle accent-accent" />
+        <li class="mb-1 flex list-none items-center gap-2">
+          <Checkbox checked={checked ?? false} disabled />
           {@render children?.()}
         </li>
       {:else}
@@ -94,7 +95,7 @@
 
     {#snippet tablecell({ header, children }: { header: boolean; children?: any })}
       {#if header}
-        <th class="border border-edge bg-surface px-3 py-1.5 text-left text-[0.78rem] font-semibold text-bright"
+        <th class="border border-edge bg-surface px-3 py-1.5 text-left text-base font-semibold text-bright"
           >{@render children?.()}</th
         >
       {:else}

@@ -21,6 +21,6 @@
   </div>
 {:else}
   <pre class="my-3 overflow-x-auto rounded-md border border-edge bg-surface p-4"><code
-      class="font-mono text-[0.78rem] leading-[1.45] text-fg">{text}</code
+      class="font-mono text-base leading-[1.45] text-fg">{text}</code
     ></pre>
 {/if}

@@ -10,7 +10,7 @@
   } = $props()
 </script>
 
-<div class="flex shrink-0 items-center gap-3 border-b border-edge bg-surface/50 px-4 py-1.5 text-[0.72rem]">
+<div class="flex shrink-0 items-center gap-3 border-b border-edge bg-surface/50 px-4 py-1.5 text-sm">
   {#if left}
     {@render left()}
   {/if}

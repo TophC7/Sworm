@@ -93,9 +93,7 @@
 
 <div
   bind:this={paneRootEl}
-  class="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden {isFocused
-    ? 'ring-1 ring-accent/30'
-    : ''}"
+  class="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
   onfocusin={handleFocus}
   onpointerdown={handleFocus}
   {@attach paneDropObserver({
@@ -174,7 +172,7 @@
         role="presentation"
       >
         <div
-          class="rounded-lg border border-edge bg-surface/95 px-3 py-2 text-center text-[0.78rem] text-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)]"
+          class="rounded-lg border border-edge bg-surface/95 px-3 py-2 text-center text-sm text-muted shadow-popover"
         >
           <div class="font-medium text-fg">Tab locked</div>
           <div>Unlock it from the tab menu to interact.</div>

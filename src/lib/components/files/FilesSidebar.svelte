@@ -542,7 +542,7 @@
   {/snippet}
 
   <div
-    class="h-full overflow-y-auto text-[0.78rem] {isFileTreeDropActive(projectId, '.') ? 'bg-accent/6' : ''}"
+    class="h-full overflow-y-auto text-base {isFileTreeDropActive(projectId, '.') ? 'bg-accent/6' : ''}"
     {@attach rootDndAttachment()}
   >
     <FileContextMenu
@@ -566,11 +566,11 @@
       onResetTarget={resetContextTarget}
     >
       {#if loading}
-        <div class="px-2.5 py-3 text-[0.75rem] text-subtle">Loading files&hellip;</div>
+        <div class="px-2.5 py-3 text-sm text-subtle">Loading files&hellip;</div>
       {:else if error}
-        <div class="px-2.5 py-3 text-[0.75rem] text-danger">{error}</div>
+        <div class="px-2.5 py-3 text-sm text-danger">{error}</div>
       {:else if fileTree.length === 0}
-        <div class="px-2.5 py-3 text-[0.75rem] text-subtle">No files found.</div>
+        <div class="px-2.5 py-3 text-sm text-subtle">No files found.</div>
       {:else}
         <FileTreeItems
           nodes={fileTree}

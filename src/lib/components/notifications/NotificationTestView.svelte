@@ -180,7 +180,7 @@
   <PanelHeader>
     {#snippet left()}
       <BellIcon size={12} class="text-accent" />
-      <span class="text-[0.7rem] font-semibold tracking-wide text-muted uppercase">Notification Tester</span>
+      <span class="text-xs font-semibold tracking-wide text-muted uppercase">Notification Tester</span>
     {/snippet}
     {#snippet right()}
       <Button variant="ghost" size="xs" class="h-6" onclick={openNotificationCenter}>Open Center</Button>
@@ -190,8 +190,8 @@
   <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
     <div class="mx-auto flex w-full max-w-4xl flex-col gap-4">
       <section class="rounded-xl border border-edge bg-surface p-4">
-        <h2 class="text-[0.82rem] font-semibold text-bright">Preset Scenarios</h2>
-        <p class="mt-1 text-[0.74rem] leading-relaxed text-muted">
+        <h2 class="text-base font-semibold text-bright">Preset Scenarios</h2>
+        <p class="mt-1 text-sm leading-relaxed text-muted">
           These buttons exercise the loading, progress, update, action, and split-action flows.
         </p>
 
@@ -206,19 +206,19 @@
       </section>
 
       <section class="rounded-xl border border-edge bg-surface p-4">
-        <h2 class="text-[0.82rem] font-semibold text-bright">Custom Notification</h2>
-        <p class="mt-1 text-[0.74rem] leading-relaxed text-muted">
+        <h2 class="text-base font-semibold text-bright">Custom Notification</h2>
+        <p class="mt-1 text-sm leading-relaxed text-muted">
           Quick way to preview copy changes without touching production code paths.
         </p>
 
         <div class="mt-4 grid gap-3">
           <label class="grid gap-1">
-            <span class="text-[0.7rem] font-medium tracking-wide text-muted uppercase">Title</span>
+            <span class="text-xs font-medium tracking-wide text-muted uppercase">Title</span>
             <Input bind:value={customTitle} />
           </label>
 
           <label class="grid gap-1">
-            <span class="text-[0.7rem] font-medium tracking-wide text-muted uppercase">Description</span>
+            <span class="text-xs font-medium tracking-wide text-muted uppercase">Description</span>
             <Textarea rows={3} bind:value={customDescription} />
           </label>
 

@@ -283,7 +283,7 @@
             {/snippet}
           </TooltipTrigger>
           <TooltipContent>
-            Save <kbd class="ml-2 font-mono text-[0.68rem] text-subtle">Ctrl+S</kbd>
+            Save <kbd class="ml-2 font-mono text-xs text-subtle">Ctrl+S</kbd>
           </TooltipContent>
         </TooltipRoot>
       {/if}
@@ -297,10 +297,10 @@
   </ContentToolbar>
 
   {#if error}
-    <div class="px-3 py-2 text-[0.75rem] text-danger">{error}</div>
+    <div class="px-3 py-2 text-sm text-danger">{error}</div>
   {/if}
   {#if lintDiagnostics.length > 0}
-    <div class="flex flex-col gap-0.5 px-3 py-1.5 text-[0.7rem] text-warning">
+    <div class="flex flex-col gap-0.5 px-3 py-1.5 text-xs text-warning">
       {#each lintDiagnostics as d}
         <span>Line {d.line}:{d.column} — {d.message}</span>
       {/each}
@@ -310,9 +310,9 @@
   <!-- Content -->
   <div class="min-h-0 flex-1">
     {#if loading}
-      <div class="px-4 py-3 text-[0.75rem] text-subtle">Loading&hellip;</div>
+      <div class="px-4 py-3 text-sm text-subtle">Loading&hellip;</div>
     {:else if isBinary}
-      <div class="flex h-full items-center justify-center text-[0.82rem] text-subtle">
+      <div class="flex h-full items-center justify-center text-base text-subtle">
         Binary file &mdash; cannot display
       </div>
     {:else if isMarkdown && mode === 'preview'}

@@ -116,12 +116,10 @@
     })
   }
 
-  function expandAll() {
-    expandedFiles = new Set(files.map((f) => f.path))
-  }
+  let allExpanded = $derived(files.length > 0 && expandedFiles.size === files.length)
 
-  function collapseAll() {
-    expandedFiles = new Set()
+  function toggleAll() {
+    expandedFiles = allExpanded ? new Set() : new Set(files.map((f) => f.path))
   }
 
   // --- Scroll context for pane virtualization ---
@@ -174,7 +172,7 @@
 </script>
 
 {#if files.length === 0 && !loading}
-  <div class="flex h-full items-center justify-center text-[0.78rem] text-subtle">No changes.</div>
+  <div class="flex h-full items-center justify-center text-base text-subtle">No changes.</div>
 {:else}
   <ContentToolbar>
     {#snippet left()}
@@ -198,12 +196,13 @@
       {/if}
     {/snippet}
     {#snippet right()}
-      <span class="flex gap-1">
-        <button class="text-muted hover:text-fg" onclick={expandAll}>Expand</button>
-        <span class="text-subtle">/</span>
-        <button class="text-muted hover:text-fg" onclick={collapseAll}>Collapse</button>
-      </span>
-      <DiffControls bind:mode={diffMode} bind:wrap={diffWrap} bind:fontSize={diffFontSize} />
+      <DiffControls
+        bind:mode={diffMode}
+        bind:wrap={diffWrap}
+        bind:fontSize={diffFontSize}
+        {allExpanded}
+        onToggleAll={toggleAll}
+      />
     {/snippet}
   </ContentToolbar>
 

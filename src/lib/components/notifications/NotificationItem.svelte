@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert'
-  import { Button } from '$lib/components/ui/button'
+  import { Button, buttonVariants, IconButton } from '$lib/components/ui/button'
   import { ButtonGroup } from '$lib/components/ui/button-group'
   import {
     DropdownMenuContent,
@@ -73,13 +73,12 @@
 
               <DropdownMenuRoot>
                 <DropdownMenuTrigger
-                  data-slot="button"
-                  class="flex items-center rounded border border-edge bg-raised px-1 py-1 text-muted transition-colors hover:border-accent hover:text-bright"
+                  class={cn(buttonVariants({ variant: 'default', size: 'xs' }), 'rounded px-1 py-1 text-muted')}
                   disabled={notification.primaryAction.disabled}
                 >
                   <ChevronDown size={11} />
                 </DropdownMenuTrigger>
-                <DropdownMenuContent class="notifications-surface-interactive min-w-[180px] text-[0.72rem]">
+                <DropdownMenuContent class="notifications-surface-interactive min-w-[180px] text-sm">
                   {#each notification.primaryAction.items as action}
                     <DropdownMenuItem
                       class={action.disabled ? 'pointer-events-none opacity-50' : ''}
@@ -122,22 +121,12 @@
       </div>
     {/if}
 
-    <div
-      class={cn('text-[0.65rem] leading-none text-subtle', !showTimestamp && 'invisible')}
-      aria-hidden={!showTimestamp}
-    >
+    <div class={cn('text-2xs leading-none text-subtle', !showTimestamp && 'invisible')} aria-hidden={!showTimestamp}>
       {formatNotificationTimestamp(notification.timestamp)}
     </div>
   </div>
 
-  <Button
-    type="button"
-    variant="ghost"
-    size="icon-sm"
-    aria-label="Dismiss"
-    class="absolute top-2 right-2 rounded-md text-subtle hover:text-fg"
-    onclick={() => onDismiss(notification.id)}
-  >
+  <IconButton tooltip="Dismiss" class="absolute top-2 right-2" onclick={() => onDismiss(notification.id)}>
     <X size={10} />
-  </Button>
+  </IconButton>
 </Alert>

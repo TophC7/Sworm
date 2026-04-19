@@ -22,7 +22,7 @@
         class="h-2.5 w-full rounded-[3px]"
         style="background: {count > 0 ? color : 'var(--color-edge)'}; opacity: {count > 0 ? intensity : 0.15};"
       ></div>
-      <span class="text-[0.45rem] leading-none text-subtle">{days[i]}</span>
+      <span class="text-3xs text-subtle">{days[i]}</span>
     </div>
   {/each}
 </div>

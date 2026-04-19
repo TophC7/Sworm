@@ -12,7 +12,7 @@
 
 <script lang="ts">
   import { Tooltip } from 'bits-ui'
-  import { buttonVariants } from '../button/button.svelte'
+  import { iconButtonVariants } from '../button'
   import TooltipContent from './tooltip-content.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
@@ -36,11 +36,7 @@
   <Tooltip.Trigger
     type="button"
     aria-label={ariaLabel}
-    class={cn(
-      buttonVariants({ variant: 'ghost', size: 'icon-sm' }),
-      'font-mono text-[0.68rem] font-semibold',
-      className
-    )}
+    class={cn(iconButtonVariants({ size: 'sm' }), 'font-mono text-xs font-semibold', className)}
   >
     ?
   </Tooltip.Trigger>
