@@ -137,7 +137,14 @@
     {:else if activeTab.kind === 'commit'}
       <CommitView commitHash={activeTab.commitHash} {projectId} {projectPath} initialFile={activeTab.initialFile} />
     {:else if activeTab.kind === 'changes'}
-      <ChangesView {projectId} {projectPath} staged={activeTab.staged} initialFile={activeTab.initialFile} />
+      <ChangesView
+        {projectId}
+        {projectPath}
+        staged={activeTab.staged}
+        scopePath={activeTab.scopePath}
+        initialFile={activeTab.initialFile}
+        revealNonce={activeTab.revealNonce}
+      />
     {:else if activeTab.kind === 'stash'}
       <StashView stashIndex={activeTab.stashIndex} {projectId} {projectPath} initialFile={activeTab.initialFile} />
     {:else if activeTab.kind === 'editor'}

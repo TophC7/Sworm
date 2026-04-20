@@ -191,8 +191,13 @@
     </div>
   {/if}
 
+  <!-- `data-terminal-focus-scope` is read by the global keybinding
+       dispatcher: when DOM focus lives anywhere inside this subtree
+       (xterm's hidden textarea, etc.) non-`skipShell` shortcuts yield
+       to the PTY so readline/tmux/nvim keep their native bindings. -->
   <div
     class="relative min-h-0 flex-1"
+    data-terminal-focus-scope
     bind:this={containerEl}
     {@attach terminalDropObserver({
       sessionId: session.id,

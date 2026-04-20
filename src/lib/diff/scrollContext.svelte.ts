@@ -20,6 +20,6 @@ export function setDiffScrollContext(state: DiffScrollState) {
   setContext(DIFF_SCROLL_CTX, state)
 }
 
-export function useDiffScroll(): DiffScrollState {
-  return getContext<DiffScrollState>(DIFF_SCROLL_CTX)
+export function useDiffScroll(): DiffScrollState | undefined {
+  return getContext<DiffScrollState | undefined>(DIFF_SCROLL_CTX)
 }

@@ -226,33 +226,14 @@
 }
 
 /*
- * Diff viewer highlight styles.
- * Used by @git-diff-view/core's template system (getPlainDiffTemplate,
- * getSyntaxDiffTemplate) which generates <span> elements with these
- * CSS custom properties as background-color.
+ * Shiki syntax highlighting tokens.
  *
- * The template system uses inline styles with var() references, so
- * we define the variables at the root level.
+ * The multi-file diff viewer is now Monaco-based (see
+ * `$lib/components/diff/MonacoDiffBody.svelte`); it owns its own
+ * add/delete/hunk rendering. The old `@git-diff-view/core` template
+ * CSS variables have been removed as part of that migration.
  */
 :root {
-  /* Character-level diff highlight backgrounds */
-  --diff-add-content-highlight--: rgba(152, 255, 127, 0.2);
-  --diff-del-content-highlight--: rgba(255, 118, 114, 0.22);
-
-  /* Line backgrounds (used by template inline styles) */
-  --diff-add-content--: rgba(152, 255, 127, 0.08);
-  --diff-del-content--: #2d1014;
-  --diff-plain-content--: #131313;
-  --diff-expand-content--: #1c1917;
-
-  /* Hunk backgrounds */
-  --diff-hunk-content--: rgba(255, 181, 159, 0.06);
-  --diff-hunk-lineNumber--: rgba(255, 181, 159, 0.1);
-  --diff-hunk-content-color--: #a59c99;
-
-  /* Empty cells (split view placeholders) */
-  --diff-empty-content--: #1c1917;
-
   /*
    * Shiki syntax highlighting tokens.
    * Maps the Sworm base16 palette to Shiki's CSS-variables theme.

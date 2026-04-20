@@ -1,10 +1,11 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import type { StashEntry } from '$lib/types/backend'
-  import DiffStack, { type DiffEntry } from '$lib/components/diff/DiffStack.svelte'
+  import type { FileDiff, StashEntry } from '$lib/types/backend'
+  import DiffStack from '$lib/components/diff/DiffStack.svelte'
   import { parseStashMessage } from '$lib/utils/git'
   import { PackageIcon, GitBranchIcon, CalendarIcon } from '$lib/icons/lucideExports'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
+  import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
 
   let {
     stashIndex,
@@ -19,50 +20,27 @@
   } = $props()
 
   let stashEntry = $state<StashEntry | null>(null)
-  let rawDiffs = $state<Record<string, string>>({})
-  let loadingDiffs = $state(false)
-  let loadedIndex = -1
-
-  let diffs = $derived.by(() => {
-    const m = new Map<string, DiffEntry>()
-    for (const [p, d] of Object.entries(rawDiffs)) {
-      m.set(p, { rawDiff: d })
-    }
-    return m
-  })
+  let files = $state<FileDiff[]>([])
+  const loader = createTrackedAsyncLoad<number>()
+  let loading = $derived(loader.loading)
 
   let parsed = $derived(stashEntry ? parseStashMessage(stashEntry.message) : { branch: null, label: '' })
 
   $effect(() => {
     const idx = stashIndex
     const path = projectPath
-    if (idx === loadedIndex) return
-    loadedIndex = idx
-    rawDiffs = {}
-    stashEntry = null
-    void loadStash(path, idx)
-  })
-
-  async function loadStash(path: string, idx: number) {
-    try {
-      // Load stash metadata from the list
-      const list = await backend.git.stashList(path)
-      if (idx !== loadedIndex) return
-      stashEntry = list.find((s) => s.index === idx) ?? null
-      if (!stashEntry) return
-
-      loadingDiffs = true
-      const dR = await backend.git.getStashDiffs(path, idx)
-      if (idx !== loadedIndex) return
-      rawDiffs = dR
-    } catch {
-      if (idx !== loadedIndex) return
+    loader.run(idx, async (isCurrent) => {
       stashEntry = null
-      rawDiffs = {}
-    } finally {
-      loadingDiffs = false
-    }
-  }
+      files = []
+      const [list, f] = await Promise.all([
+        backend.git.stashList(path),
+        backend.git.getDiffFiles(path, { kind: 'stash', index: idx })
+      ])
+      if (!isCurrent()) return
+      stashEntry = list.find((s) => s.index === idx) ?? null
+      files = f
+    })
+  })
 </script>
 
 {#if !stashEntry}
@@ -91,15 +69,6 @@
       </div>
     </div>
 
-    <DiffStack
-      files={stashEntry.files}
-      {diffs}
-      loading={loadingDiffs}
-      {initialFile}
-      idPrefix="stash-file"
-      {projectId}
-      {projectPath}
-      {stashIndex}
-    />
+    <DiffStack {files} {loading} {initialFile} idPrefix="stash-file" {projectId} {projectPath} {stashIndex} />
   </div>
 {/if}

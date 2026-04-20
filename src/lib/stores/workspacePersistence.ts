@@ -67,6 +67,7 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       return {
         kind: 'changes',
         staged: tab.staged,
+        scopePath: tab.scopePath,
         initialFile: tab.initialFile,
         temporary: tab.temporary,
         locked: tab.locked
@@ -204,11 +205,17 @@ export function deserializeWorkspace(data: PersistedWorkspaceV1, generateTabId: 
         tab = {
           kind: 'changes',
           id,
-          label: persisted.staged ? 'Staged Changes' : 'Changes',
+          label: persisted.scopePath
+            ? `Changes: ${persisted.scopePath}`
+            : persisted.staged
+              ? 'Staged Changes'
+              : 'Changes',
           staged: persisted.staged,
+          scopePath: persisted.scopePath ?? null,
           initialFile: persisted.initialFile,
           temporary: persisted.temporary,
-          locked: persisted.locked
+          locked: persisted.locked,
+          revealNonce: 0
         }
         break
       case 'stash':

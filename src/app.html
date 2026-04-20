@@ -53,7 +53,23 @@
           pre.textContent = lines.join('\n')
         }
 
+        // Benign spec-mandated warnings browsers fire during ResizeObserver
+        // callbacks that change geometry the same observer watches. Monaco's
+        // layout() legitimately does this; filtering keeps the error overlay
+        // clean while real errors still surface.
+        //
+        // The root-cause fix lives in MonacoDiffBody and DiffStack, which
+        // RAF-coalesce their ResizeObserver callbacks so layout() runs
+        // AFTER the observer returns. This filter is defense in depth for
+        // any future observer we miss.
+        const BENIGN_MESSAGE_PATTERNS = [
+          /^ResizeObserver loop/i,
+          /^ResizeObserver loop completed with undelivered notifications/i
+        ]
+        const isBenign = (msg) => typeof msg === 'string' && BENIGN_MESSAGE_PATTERNS.some((re) => re.test(msg))
+
         window.addEventListener('error', (event) => {
+          if (isBenign(event.message)) return
           render('window error', {
             message: event.message,
             filename: event.filename,

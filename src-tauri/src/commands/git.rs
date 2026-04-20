@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::services::git::{CommitDetail, DiffContext, GitSummary, GraphCommit, StashEntry};
+use crate::models::file_diff::{DiffSource, FileDiff};
+use crate::services::git::{CommitDetail, GitSummary, GraphCommit, StashEntry};
 use std::path::{Path, PathBuf};
 
 /// Reject anything that isn't a hex commit hash (40-char full or 7+ short).
@@ -74,34 +75,6 @@ pub fn git_get_summary(
     Ok(state.git.get_summary(Path::new(&path)))
 }
 
-/// Get diff for a specific file.
-#[tauri::command]
-pub fn git_get_file_diff(
-    project_path: String,
-    file_path: String,
-    staged: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<String>, ApiError> {
-    validated_project_file(&project_path, &file_path)?;
-    Ok(state
-        .git
-        .get_file_diff(Path::new(&project_path), &file_path, staged))
-}
-
-/// Get structured diff context with file content for the diff viewer.
-#[tauri::command]
-pub fn git_get_diff_context(
-    project_path: String,
-    file_path: String,
-    staged: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<DiffContext>, ApiError> {
-    validated_project_file(&project_path, &file_path)?;
-    Ok(state
-        .git
-        .get_diff_context(Path::new(&project_path), &file_path, staged))
-}
-
 /// Get full commit detail (metadata + file list with stats).
 #[tauri::command]
 pub fn git_get_commit_detail(
@@ -113,28 +86,22 @@ pub fn git_get_commit_detail(
     Ok(state.git.get_commit_detail(Path::new(&path), &hash))
 }
 
-/// Get all working-tree diffs in a single batch call (staged or unstaged).
+/// Unified diff payload for the Monaco multi-file viewer. Returns one
+/// `FileDiff` per changed file, with both sides of content attached,
+/// regardless of whether the source is the working tree, a commit,
+/// or a stash. Replaces the mixed-shape `git_get_*_diffs` family.
 #[tauri::command]
-pub fn git_get_working_diffs(
+pub fn diff_get_files(
     path: String,
-    staged: bool,
-    untracked_paths: Vec<String>,
+    source: DiffSource,
     state: tauri::State<'_, AppState>,
-) -> Result<std::collections::HashMap<String, String>, ApiError> {
-    Ok(state
-        .git
-        .get_working_diffs(Path::new(&path), staged, &untracked_paths))
-}
-
-/// Get all file diffs for a commit in a single batch call.
-#[tauri::command]
-pub fn git_get_commit_diffs(
-    path: String,
-    hash: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<std::collections::HashMap<String, String>, ApiError> {
-    validated_git_ref(&hash)?;
-    Ok(state.git.get_commit_diffs(Path::new(&path), &hash))
+) -> Result<Vec<FileDiff>, ApiError> {
+    // Validate refs up front so invalid input fails before we hit git.
+    match &source {
+        DiffSource::Commit { hash } => validated_git_ref(hash)?,
+        DiffSource::Stash { .. } | DiffSource::Working { .. } => {}
+    }
+    Ok(state.git.get_diff_files(Path::new(&path), &source))
 }
 
 /// Get commit graph data for visualization (all branches).
@@ -355,16 +322,6 @@ pub fn git_stash_drop(
         .git
         .stash_drop(Path::new(&path), index)
         .map_err(ApiError::Internal)
-}
-
-/// Get all file diffs for a stash entry.
-#[tauri::command]
-pub fn git_get_stash_diffs(
-    path: String,
-    index: usize,
-    state: tauri::State<'_, AppState>,
-) -> Result<std::collections::HashMap<String, String>, ApiError> {
-    Ok(state.git.get_stash_diffs(Path::new(&path), index))
 }
 
 /// Return file content at a specific git revision.

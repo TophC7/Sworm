@@ -1,33 +1,22 @@
-<script lang="ts" module>
-  export interface DiffEntry {
-    rawDiff: string
-    oldContent?: string | null
-    newContent?: string | null
-  }
-
-  export interface DiffFile {
-    path: string
-    status: string
-    additions: number
-    deletions: number
-  }
-</script>
-
 <script lang="ts">
-  import { untrack } from 'svelte'
-  import { DiffMode } from '$lib/diff/types'
-  import { setDiffScrollContext, type DiffScrollState } from '$lib/diff/scrollContext.svelte'
+  // Multi-file diff shell. Owns: scroll container, expand/collapse
+  // state, DiffModelStore lifecycle, and global Monaco settings
+  // (propagated to the pool).
+
+  import { onMount, untrack } from 'svelte'
+  import type { FileDiff } from '$lib/types/backend'
   import ContentToolbar from '$lib/components/ContentToolbar.svelte'
   import DiffControls from '$lib/components/diff/DiffControls.svelte'
   import DiffStackFile from '$lib/components/diff/DiffStackFile.svelte'
-
-  const AUTO_EXPAND_LIMIT = 8
+  import { setDiffScrollContext, type DiffScrollState } from '$lib/diff/scrollContext.svelte'
+  import { DiffModelStore } from '$lib/diff/diffModels.svelte'
+  import { getDiffEditorPool } from '$lib/diff/editorPool.svelte'
 
   let {
     files,
-    diffs,
     loading = false,
     initialFile = null,
+    scrollNonce = 0,
     label = '',
     idPrefix = 'diff',
     projectId = '',
@@ -35,10 +24,10 @@
     commitHash = null,
     stashIndex = null
   }: {
-    files: DiffFile[]
-    diffs: Map<string, DiffEntry>
+    files: FileDiff[]
     loading?: boolean
     initialFile?: string | null
+    scrollNonce?: number
     label?: string
     idPrefix?: string
     projectId?: string
@@ -48,16 +37,61 @@
   } = $props()
 
   let expandedFiles = $state<Set<string>>(new Set())
-  let diffMode = $state(DiffMode.Split)
-  let diffWrap = $state(false)
-  let diffFontSize = $state(13)
+  // Split (side-by-side) is the default — matches the prior UI.
+  let sideBySide = $state(true)
+  let wrap = $state(false)
+  let fontSize = $state(13)
 
-  let totalAdditions = $derived(files.reduce((s, f) => s + f.additions, 0))
-  let totalDeletions = $derived(files.reduce((s, f) => s + f.deletions, 0))
+  const store = new DiffModelStore()
+  const pool = getDiffEditorPool()
 
-  // Auto-expand on initial load or when file list changes.
-  // Preserves user expand/collapse state on incremental updates (e.g. git poll
-  // adding a file) — only new files are added, nothing is collapsed.
+  // Load Monaco once, attach to the store, apply initial settings.
+  // `ready()` is idempotent and cached, so multiple DiffStack mounts
+  // share the single Monaco module load.
+  let storeReady = $state(false)
+  onMount(() => {
+    let disposed = false
+    void (async () => {
+      const monaco = await pool.ready()
+      if (disposed) return
+      store.attach(monaco)
+      // Reflect initial Svelte state onto the pool so already-pooled
+      // editors pick up settings before their first acquire.
+      pool.updateSettings({
+        renderSideBySide: sideBySide,
+        wordWrap: wrap,
+        fontSize
+      })
+      // Initial sync of the current file list.
+      store.sync(files)
+      storeReady = true
+    })()
+    return () => {
+      disposed = true
+      store.dispose()
+    }
+  })
+
+  // Keep the model store in sync with the file list.
+  $effect(() => {
+    if (!storeReady) return
+    store.sync(files)
+  })
+
+  // Propagate settings changes to the entire pool — both the editors
+  // currently mounted and the warm-but-parked ones. A row that reopens
+  // later will get the new settings for free.
+  $effect(() => {
+    pool.updateSettings({ renderSideBySide: sideBySide, wordWrap: wrap, fontSize })
+  })
+
+  let totalAdditions = $derived(files.reduce((s, f) => s + (f.additions ?? 0), 0))
+  let totalDeletions = $derived(files.reduce((s, f) => s + (f.deletions ?? 0), 0))
+
+  // Initial load opens exactly one row: the explicitly targeted file,
+  // or the first file in the scoped diff when no target was provided.
+  // Incremental updates preserve the user's existing expand/collapse
+  // choices instead of re-expanding rows automatically.
   let lastFileListKey = ''
   $effect(() => {
     const paths = files.map((f) => f.path)
@@ -68,33 +102,26 @@
     lastFileListKey = key
 
     if (isInitialLoad) {
-      if (paths.length <= AUTO_EXPAND_LIMIT) {
-        expandedFiles = new Set(paths)
-      } else if (initialFile) {
-        expandedFiles = new Set([initialFile])
-      }
+      const firstPath = initialFile && paths.includes(initialFile) ? initialFile : (paths[0] ?? null)
+      expandedFiles = firstPath ? new Set([firstPath]) : new Set()
     } else {
-      // Incremental: add new files to expanded set without clobbering existing state
       const currentPaths = new Set(paths)
       const prev = new Set(expandedFiles)
-      // Remove files that no longer exist
       for (const p of prev) {
         if (!currentPaths.has(p)) prev.delete(p)
-      }
-      // Auto-expand new files if we're still under the limit
-      if (currentPaths.size <= AUTO_EXPAND_LIMIT) {
-        for (const p of paths) prev.add(p)
       }
       expandedFiles = prev
     }
   })
 
-  // Scroll to initialFile when it changes
-  let lastScrolledFile: string | null = null
+  // Scroll to the `initialFile` when it flips. Expand it first so the
+  // row has height to scroll to.
+  let lastScrollRequest = ''
   $effect(() => {
     const file = initialFile
-    if (file && file !== lastScrolledFile && files.length > 0) {
-      lastScrolledFile = file
+    const requestKey = file ? `${scrollNonce}:${file}` : ''
+    if (file && requestKey !== lastScrollRequest && files.length > 0) {
+      lastScrollRequest = requestKey
       untrack(() => scrollToFile(file))
     }
   })
@@ -116,13 +143,13 @@
     })
   }
 
-  let allExpanded = $derived(files.length > 0 && expandedFiles.size === files.length)
+  let anyExpanded = $derived(expandedFiles.size > 0)
 
   function toggleAll() {
-    expandedFiles = allExpanded ? new Set() : new Set(files.map((f) => f.path))
+    expandedFiles = anyExpanded ? new Set() : new Set(files.map((f) => f.path))
   }
 
-  // --- Scroll context for pane virtualization ---
+  // --- Scroll context for the IntersectionObserver inside MonacoDiffBody ---
   let scrollEl = $state<HTMLElement | null>(null)
 
   let scrollCtx: DiffScrollState = $state({
@@ -158,9 +185,19 @@
     }
 
     el.addEventListener('scroll', onScroll, { passive: true })
+    // Deferred to the next frame so that downstream consumers' reactive
+    // updates don't run synchronously inside the observer callback (the
+    // "ResizeObserver loop completed with undelivered notifications"
+    // warning fires when they do).
+    let roPending = false
     const ro = new ResizeObserver(() => {
-      const h = el.clientHeight
-      if (h !== scrollCtx.containerHeight) scrollCtx.containerHeight = h
+      if (roPending) return
+      roPending = true
+      requestAnimationFrame(() => {
+        roPending = false
+        const h = el.clientHeight
+        if (h !== scrollCtx.containerHeight) scrollCtx.containerHeight = h
+      })
     })
     ro.observe(el)
 
@@ -196,29 +233,19 @@
       {/if}
     {/snippet}
     {#snippet right()}
-      <DiffControls
-        bind:mode={diffMode}
-        bind:wrap={diffWrap}
-        bind:fontSize={diffFontSize}
-        {allExpanded}
-        onToggleAll={toggleAll}
-      />
+      <DiffControls bind:sideBySide bind:wrap bind:fontSize {anyExpanded} onToggleAll={toggleAll} />
     {/snippet}
   </ContentToolbar>
 
-  <!-- Stacked diffs -->
   <div class="min-h-0 flex-1 overflow-y-auto" bind:this={scrollEl}>
     {#each files as file (file.path)}
-      {@const entry = diffs.get(file.path)}
       {@const expanded = expandedFiles.has(file.path)}
       <DiffStackFile
         {file}
-        {entry}
         {expanded}
-        {diffMode}
-        {diffWrap}
-        {diffFontSize}
         {loading}
+        {storeReady}
+        {store}
         {idPrefix}
         {projectId}
         {projectPath}

@@ -90,12 +90,12 @@
             projectId={project.id}
             projectPath={project.path}
             onRefresh={handleRefreshGit}
-            onFileClick={(filePath, staged) => addChangesTab(project.id, staged, filePath)}
+            onFileClick={(filePath, staged) => addChangesTab(project.id, staged, null, filePath)}
             onPersistTab={() => promoteFocusedTab(project.id)}
             onCommitFileClick={(hash, shortHash, message, filePath) =>
               addCommitTab(project.id, hash, shortHash, message, filePath)}
             onStashFileClick={(stashIndex, message, filePath) => addStashTab(project.id, stashIndex, message, filePath)}
-            onViewAllChanges={(staged) => addChangesTab(project.id, staged, null, false)}
+            onViewAllChanges={(staged) => addChangesTab(project.id, staged, null, null, false)}
           />
         {:else if sidebarView === 'sessions'}
           <SessionHistoryView projectId={project.id} />

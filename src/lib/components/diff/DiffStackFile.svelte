@@ -1,28 +1,25 @@
 <!--
   @component
-  Single file in a diff stack with expand/collapse header and lazy-loaded diff viewer.
-  Handles file header rendering, status display, and editor actions.
+  Single file row in a diff stack: collapsible header + lazy Monaco body.
 -->
 
 <script lang="ts">
-  import { DiffMode } from '$lib/diff/types'
-  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/utils/gitStatus'
+  import type { FileDiff, GitStatusKind } from '$lib/types/backend'
+  import type { DiffModelStore } from '$lib/diff/diffModels.svelte'
   import { openFile } from '$lib/utils/openFile'
   import { addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
-  import DiffViewer from '$lib/components/diff/DiffViewer.svelte'
-  import LazyRender from '$lib/components/LazyRender.svelte'
+  import MonacoDiffBody from '$lib/components/diff/MonacoDiffBody.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
+  import { Separator } from '$lib/components/ui/separator'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
-  import { ChevronRight, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
+  import { ChevronRight, ChevronsDownUp, ChevronsUpDown, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
 
   interface Props {
-    file: { path: string; status: string; additions: number; deletions: number }
-    entry: { rawDiff: string; oldContent?: string | null; newContent?: string | null } | undefined
+    file: FileDiff
     expanded: boolean
-    diffMode?: typeof DiffMode.Split | typeof DiffMode.Unified
-    diffWrap?: boolean
-    diffFontSize?: number
     loading?: boolean
+    storeReady: boolean
+    store: DiffModelStore
     idPrefix?: string
     projectId?: string
     projectPath?: string
@@ -33,12 +30,10 @@
 
   let {
     file,
-    entry,
     expanded,
-    diffMode = DiffMode.Split,
-    diffWrap = false,
-    diffFontSize = 13,
     loading = false,
+    storeReady,
+    store,
     idPrefix = 'diff',
     projectId = '',
     projectPath = '',
@@ -46,6 +41,18 @@
     stashIndex = null,
     onToggle
   }: Props = $props()
+
+  const STATUS_DISPLAY: Record<GitStatusKind, { color: string; letter: string; label: string }> = {
+    added: { color: 'text-success', letter: 'A', label: 'Added' },
+    modified: { color: 'text-accent', letter: 'M', label: 'Modified' },
+    deleted: { color: 'text-danger', letter: 'D', label: 'Deleted' },
+    renamed: { color: 'text-accent', letter: 'R', label: 'Renamed' },
+    copied: { color: 'text-accent', letter: 'C', label: 'Copied' },
+    untracked: { color: 'text-success', letter: '?', label: 'Untracked' },
+    unmerged: { color: 'text-warning', letter: 'U', label: 'Unmerged' },
+    unknown: { color: 'text-muted', letter: ' ', label: 'Unknown' }
+  }
+  let statusDisplay = $derived(STATUS_DISPLAY[file.status])
 
   function openInEditor(filePath: string) {
     if (!projectId || !projectPath) return
@@ -63,6 +70,41 @@
     const stashRef = `stash@{${stashIndex}}`
     addReadonlyEditorTab(projectId, filePath, stashRef, `stash-${stashIndex}`)
   }
+
+  // Per-file "expand all unchanged code" toggle. Seeded from the store
+  // (preference survives collapse/scroll) and mirrored back on toggle.
+  // `file.path` is the `{#each}` key, so a path change recreates this
+  // component — initial-capture is correct. `hasExpandedUnchanged`
+  // tracks Monaco's live state (may drift from the preference when the
+  // user expands a region inside the editor). The command-seq is bumped
+  // on toggle so MonacoDiffBody's effect re-fires even when the boolean
+  // is unchanged but Monaco drifted.
+  function seedHide(): boolean {
+    return store.get(file.path)?.hideUnchanged ?? true
+  }
+  let hideUnchanged = $state(seedHide())
+  let hasExpandedUnchanged = $state(!seedHide())
+  let hideUnchangedCommandSeq = $state(0)
+
+  function toggleHideUnchanged() {
+    const next = hasExpandedUnchanged
+    hideUnchanged = next
+    hasExpandedUnchanged = !next
+    store.persistHideUnchangedPreference(file.path, next)
+    hideUnchangedCommandSeq += 1
+  }
+
+  function handleExpandedUnchangedChange(next: boolean) {
+    hasExpandedUnchanged = next
+  }
+
+  // Reset the drift tracker when Monaco detaches. Once the row collapses
+  // there is no live editor to report hidden-area state, so the tracker
+  // must snap back to mirror the preference — otherwise the next expand
+  // would start with a stale "drifted" flag and show the wrong toggle icon.
+  $effect(() => {
+    if (!expanded) hasExpandedUnchanged = !hideUnchanged
+  })
 </script>
 
 {#snippet headerAction(Icon: typeof Eye, label: string, onclick: () => void)}
@@ -81,50 +123,63 @@
       onclick={() => onToggle(file.path)}
     >
       <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
-      <span class="text-2xs font-bold {gitStatusColor(file.status)}" title={gitStatusLabel(file.status)}
-        >{gitStatusDisplay(file.status)}</span
-      >
+      <span class="text-2xs font-bold {statusDisplay.color}" title={statusDisplay.label}>{statusDisplay.letter}</span>
       <FileIcon filename={file.path} size={13} />
-      <span class="min-w-0 truncate font-mono text-sm text-fg">{file.path}</span>
+      <span class="min-w-0 truncate font-mono text-sm text-fg">
+        {#if file.oldPath}<span class="text-muted">{file.oldPath} → </span>{/if}{file.path}
+      </span>
       <span class="ml-auto shrink-0 font-mono text-2xs">
-        {#if file.additions > 0}<span class="text-success">+{file.additions}</span>{/if}
-        {#if file.deletions > 0}<span class="ml-1 text-danger">-{file.deletions}</span>{/if}
+        {#if (file.additions ?? 0) > 0}<span class="text-success">+{file.additions}</span>{/if}
+        {#if (file.deletions ?? 0) > 0}<span class="ml-1 text-danger">-{file.deletions}</span>{/if}
       </span>
     </button>
-    {#if projectId}
-      <div class="flex shrink-0 items-center gap-0.5 pr-2">
+    <div class="flex shrink-0 items-center gap-0.5 pr-2">
+      <!-- Per-file expand/collapse of Monaco's unchanged-region
+           folding. Lives on the left of the divider because it's a
+           VIEW control — it changes what you see INSIDE this diff,
+           not where the file opens. Hidden until the row is expanded,
+           since it has no effect on a collapsed body. -->
+      {#if expanded && storeReady && !file.binary}
+        {@render headerAction(
+          hasExpandedUnchanged ? ChevronsDownUp : ChevronsUpDown,
+          hasExpandedUnchanged ? 'Collapse unchanged code' : 'Expand all unchanged code',
+          toggleHideUnchanged
+        )}
+      {/if}
+      {#if projectId}
+        {#if expanded && storeReady && !file.binary}
+          <Separator orientation="vertical" class="mx-1 h-4" />
+        {/if}
         {#if commitHash}
           {@render headerAction(Eye, 'View at commit', () => viewAtCommit(file.path))}
-          {#if file.status !== 'D'}
+          {#if file.status !== 'deleted'}
             {@render headerAction(SquareArrowOutUpRight, 'Open current file', () => openInEditor(file.path))}
           {/if}
         {:else if stashIndex != null}
           {@render headerAction(Eye, 'View in stash', () => viewAtStash(file.path))}
-          {#if file.status !== 'D'}
+          {#if file.status !== 'deleted'}
             {@render headerAction(SquareArrowOutUpRight, 'Open current file', () => openInEditor(file.path))}
           {/if}
         {:else}
           {@render headerAction(SquareArrowOutUpRight, 'Open in editor', () => openInEditor(file.path))}
         {/if}
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
 
   {#if expanded}
     {#if loading}
       <div class="px-4 py-6 text-center text-sm text-subtle">Loading diff...</div>
-    {:else if entry}
-      <LazyRender minHeight={Math.min(Math.max(80, (file.additions + file.deletions) * 22), 600)}>
-        <DiffViewer
-          rawDiff={entry.rawDiff}
-          filePath={file.path}
-          oldContent={entry.oldContent}
-          newContent={entry.newContent}
-          mode={diffMode}
-          wrap={diffWrap}
-          fontSize={diffFontSize}
-        />
-      </LazyRender>
+    {:else if !storeReady}
+      <div class="px-4 py-6 text-center text-sm text-subtle">Loading editor...</div>
+    {:else if store.get(file.path)}
+      <MonacoDiffBody
+        path={file.path}
+        {store}
+        {hideUnchanged}
+        {hideUnchangedCommandSeq}
+        onExpandedUnchangedChange={handleExpandedUnchangedChange}
+      />
     {:else}
       <div class="px-4 py-6 text-center text-sm text-subtle">No diff available</div>
     {/if}

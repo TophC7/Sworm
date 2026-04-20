@@ -118,12 +118,9 @@ pub fn run() {
             commands::files::files_list_all,
             // Git commands
             commands::git::git_get_summary,
-            commands::git::git_get_file_diff,
-            commands::git::git_get_diff_context,
             commands::git::git_get_graph,
             commands::git::git_get_commit_detail,
-            commands::git::git_get_commit_diffs,
-            commands::git::git_get_working_diffs,
+            commands::git::diff_get_files,
             // Git write commands
             commands::git::git_stage_all,
             commands::git::git_stage_files,
@@ -144,7 +141,6 @@ pub fn run() {
             commands::git::git_stash_list,
             commands::git::git_stash_pop,
             commands::git::git_stash_drop,
-            commands::git::git_get_stash_diffs,
             commands::git::git_show_file,
             commands::git::git_init,
             commands::git::git_clone_in_place,

@@ -41,3 +41,11 @@ export function disposeAll(): void {
 export function get(sessionId: string): TerminalSessionManager | undefined {
   return sessions.get(sessionId)
 }
+
+/**
+ * Give DOM focus to a specific session's xterm, if we know about it.
+ * No-op for unknown ids or managers that haven't mounted yet. Idempotent.
+ */
+export function focus(sessionId: string): void {
+  sessions.get(sessionId)?.focus()
+}

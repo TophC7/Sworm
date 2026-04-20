@@ -8,7 +8,8 @@ import type {
   AppInfo,
   CommitDetail,
   DiscoveredProject,
-  DiffContext,
+  DiffSource,
+  FileDiff,
   EnvProbeResult,
   FileEntryStat,
   FilePasteCollision,
@@ -206,23 +207,19 @@ export const backend = {
     getSummary(path: string): Promise<GitSummary> {
       return invoke<GitSummary>('git_get_summary', { path })
     },
-    getFileDiff(projectPath: string, filePath: string, staged: boolean): Promise<string | null> {
-      return invoke<string | null>('git_get_file_diff', { projectPath, filePath, staged })
-    },
-    getDiffContext(projectPath: string, filePath: string, staged: boolean): Promise<DiffContext | null> {
-      return invoke<DiffContext | null>('git_get_diff_context', { projectPath, filePath, staged })
-    },
     getGraph(path: string, limit = 100): Promise<GraphCommit[]> {
       return invoke<GraphCommit[]>('git_get_graph', { path, limit })
     },
     getCommitDetail(path: string, hash: string): Promise<CommitDetail | null> {
       return invoke<CommitDetail | null>('git_get_commit_detail', { path, hash })
     },
-    getWorkingDiffs(path: string, staged: boolean, untrackedPaths: string[]): Promise<Record<string, string>> {
-      return invoke<Record<string, string>>('git_get_working_diffs', { path, staged, untrackedPaths })
-    },
-    getCommitDiffs(path: string, hash: string): Promise<Record<string, string>> {
-      return invoke<Record<string, string>>('git_get_commit_diffs', { path, hash })
+    /**
+     * Unified payload for the Monaco multi-file diff viewer.
+     * Returns one `FileDiff` per changed file with both sides of
+     * content attached. Source-agnostic (working / commit / stash).
+     */
+    getDiffFiles(path: string, source: DiffSource): Promise<FileDiff[]> {
+      return invoke<FileDiff[]>('diff_get_files', { path, source })
     },
 
     // Write operations
@@ -282,9 +279,6 @@ export const backend = {
     },
     stashDrop(path: string, index: number): Promise<void> {
       return invoke<void>('git_stash_drop', { path, index })
-    },
-    getStashDiffs(path: string, index: number): Promise<Record<string, string>> {
-      return invoke<Record<string, string>>('git_get_stash_diffs', { path, index })
     },
     init(path: string): Promise<void> {
       return invoke<void>('git_init', { path })

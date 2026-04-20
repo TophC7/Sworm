@@ -176,7 +176,36 @@ const EDITOR_COLORS: Record<string, string> = {
   'minimap.background': '#131313',
 
   'editorOverviewRuler.border': '#00000000',
-  focusBorder: '#ffb59f40'
+  focusBorder: '#ffb59f40',
+
+  // ── Diff editor ────────────────────────────────────────────────
+  // Palette mirrors the pre-Monaco custom diff view: warm red for
+  // removals, bright green for additions, tuned against the ground
+  // surface (#131313). Line-level uses ~8% fill for a subtle wash;
+  // char-level "inline" highlights bump to ~22% so the actual edited
+  // characters pop against the already-tinted line.
+  //
+  // Keep in sync with --color-success / --color-danger in app.css.
+  'diffEditor.insertedLineBackground': '#98ff7f14', // success @ 8%
+  'diffEditor.removedLineBackground': '#ff767214', // danger  @ 8%
+  'diffEditor.insertedTextBackground': '#98ff7f38', // success @ 22%
+  'diffEditor.removedTextBackground': '#ff767238', // danger  @ 22%
+  'diffEditor.insertedTextBorder': '#00000000',
+  'diffEditor.removedTextBorder': '#00000000',
+  'diffEditorGutter.insertedLineBackground': '#98ff7f1f', // success @ 12%
+  'diffEditorGutter.removedLineBackground': '#ff76721f', // danger  @ 12%
+  'diffEditorOverview.insertedForeground': '#98ff7f80',
+  'diffEditorOverview.removedForeground': '#ff767280',
+  'diffEditor.border': '#3a322e',
+  // The diagonal stripe fill in empty "nothing to show" side panes.
+  // Low-alpha muted fg so the stripes read as "absence" without fighting
+  // the real content.
+  'diffEditor.diagonalFill': '#3a322e66',
+  // Unchanged regions (the collapsed "X identical lines" affordances).
+  // Use the surface step so the collapsed band reads as *not content*.
+  'diffEditor.unchangedRegionBackground': '#1c1917',
+  'diffEditor.unchangedRegionForeground': '#a59c99',
+  'diffEditor.unchangedCodeBackground': '#13131300'
 }
 
 // ── Exports ─────────────────────────────────────────────────────────

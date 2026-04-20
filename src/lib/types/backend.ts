@@ -139,10 +139,37 @@ export interface CommitFileChange {
   deletions: number
 }
 
-export interface DiffContext {
-  raw_diff: string
-  old_content: string | null
-  new_content: string | null
+// ── Monaco multi-file diff payload ──────────────
+//
+// Mirrors `src-tauri/src/models/file_diff.rs`. One `FileDiff` per
+// changed file; the frontend pairs `oldContent`/`newContent` into two
+// Monaco models and hands them to a `DiffEditor`.
+
+export type GitStatusKind =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'untracked'
+  | 'unmerged'
+  | 'unknown'
+
+export type DiffSource =
+  | { kind: 'working'; staged: boolean | null }
+  | { kind: 'commit'; hash: string }
+  | { kind: 'stash'; index: number }
+
+export interface FileDiff {
+  path: string
+  oldPath: string | null
+  status: GitStatusKind
+  lang: string
+  oldContent: string | null
+  newContent: string | null
+  binary: boolean
+  additions: number | null
+  deletions: number | null
 }
 
 export interface FilePasteCollision {

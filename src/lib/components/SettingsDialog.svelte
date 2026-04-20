@@ -96,7 +96,7 @@
     if (!v) onClose()
   }}
 >
-  <DialogContent class="h-[min(640px,85vh)] max-w-[880px] overflow-hidden bg-ground p-0">
+  <DialogContent class="h-[min(640px,85vh)] max-w-[880px] overflow-hidden bg-ground p-0" onModalClose={onClose}>
     <div class="flex h-full min-h-0">
       <!-- SIDEBAR //-->
       <aside class="flex w-[200px] shrink-0 flex-col border-r border-edge">

@@ -26,6 +26,7 @@
     targetType,
     isStaged,
     children,
+    onOpenChanges,
     onOpenFile,
     onOpenFileHead,
     onStage,
@@ -46,6 +47,7 @@
     targetType: 'file' | 'directory' | null
     isStaged: boolean
     children: Snippet
+    onOpenChanges: () => void
     onOpenFile: () => void
     onOpenFileHead: () => void
     onStage: () => void
@@ -72,10 +74,9 @@
   <ContextMenuContent>
     {#if filePath && targetType === 'file'}
       <!-- ── File menu ── -->
-      <ContextMenuItem disabled>
-        <FileDiff size={14} class="shrink-0" />
+      <ContextMenuItem onclick={onOpenChanges}>
+        <FileDiff size={14} class="shrink-0 text-muted" />
         <span>Open Changes</span>
-        <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
       <ContextMenuItem onclick={onOpenFile}>
         <Eye size={14} class="shrink-0 text-muted" />
@@ -147,10 +148,9 @@
           <span>Stage Changes</span>
         </ContextMenuItem>
       {/if}
-      <ContextMenuItem disabled>
-        <FileDiff size={14} class="shrink-0" />
+      <ContextMenuItem onclick={onOpenChanges}>
+        <FileDiff size={14} class="shrink-0 text-muted" />
         <span>Open Changes</span>
-        <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
 
       <ContextMenuSeparator />

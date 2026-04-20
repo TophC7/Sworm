@@ -1,76 +1,60 @@
 <script lang="ts">
+  // Working-tree (staged or unstaged) diff viewer.
   import { backend } from '$lib/api/backend'
+  import type { FileDiff } from '$lib/types/backend'
   import { getGitSummary } from '$lib/stores/git.svelte'
-  import DiffStack, { type DiffEntry, type DiffFile } from '$lib/components/diff/DiffStack.svelte'
+  import DiffStack from '$lib/components/diff/DiffStack.svelte'
+  import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
 
   let {
     projectId,
     projectPath,
     staged,
+    scopePath = null,
+    revealNonce = 0,
     initialFile = null
   }: {
     projectId: string
     projectPath: string
     staged: boolean
+    scopePath?: string | null
+    revealNonce?: number
     initialFile?: string | null
   } = $props()
 
+  // Summary drives the reload trigger; the file list itself comes from
+  // the unified `diff_get_files` endpoint so every caller sees the same shape.
   let summary = $derived(getGitSummary(projectId))
-  let changes = $derived(summary?.changes.filter((c) => c.staged === staged) ?? [])
-  let files: DiffFile[] = $derived(
-    changes.map((c) => ({
-      path: c.path,
-      status: c.status,
-      additions: c.additions ?? 0,
-      deletions: c.deletions ?? 0
-    }))
+  let changeSignature = $derived(
+    (summary?.changes ?? [])
+      .filter((c) => c.staged === staged)
+      .filter((c) => !scopePath || c.path === scopePath || c.path.startsWith(scopePath + '/'))
+      .map((c) => `${c.path}:${c.status}:${c.additions}:${c.deletions}`)
+      .join('\0')
   )
-  // Untracked file paths for the batch endpoint (git diff won't include them)
-  let untrackedPaths = $derived(changes.filter((c) => c.status === '?').map((c) => c.path))
 
-  let rawDiffs = $state<Record<string, string>>({})
-  let loadingDiffs = $state(false)
+  let files = $state<FileDiff[]>([])
+  const loader = createTrackedAsyncLoad<string>()
+  let loading = $derived(loader.loading)
 
-  let diffs = $derived.by(() => {
-    const m = new Map<string, DiffEntry>()
-    for (const [p, d] of Object.entries(rawDiffs)) {
-      m.set(p, { rawDiff: d })
-    }
-    return m
-  })
-
-  // Reload when file list or stats change
-  let lastFileKey = ''
   $effect(() => {
-    const key = files.map((f) => `${f.path}:${f.additions}:${f.deletions}`).join('\0')
-    if (key === lastFileKey) return
-    lastFileKey = key
-    void loadDiffs()
+    const sig = changeSignature
+    loader.run(sig, async (isCurrent) => {
+      const allFiles = await backend.git.getDiffFiles(projectPath, { kind: 'working', staged })
+      if (!isCurrent()) return
+      files = scopePath
+        ? allFiles.filter((file) => file.path === scopePath || file.path.startsWith(scopePath + '/'))
+        : allFiles
+    })
   })
-
-  async function loadDiffs() {
-    if (files.length === 0) {
-      rawDiffs = {}
-      return
-    }
-
-    loadingDiffs = true
-    try {
-      rawDiffs = await backend.git.getWorkingDiffs(projectPath, staged, untrackedPaths)
-    } catch {
-      rawDiffs = {}
-    } finally {
-      loadingDiffs = false
-    }
-  }
 </script>
 
 <DiffStack
   {files}
-  {diffs}
-  loading={loadingDiffs}
+  {loading}
   {initialFile}
-  label={staged ? 'Staged' : 'Changes'}
+  scrollNonce={revealNonce}
+  label={scopePath ? scopePath : staged ? 'Staged' : 'Changes'}
   idPrefix="changes-file"
   {projectId}
   {projectPath}

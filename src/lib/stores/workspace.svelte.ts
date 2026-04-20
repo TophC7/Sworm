@@ -62,9 +62,11 @@ export interface ChangesTab {
   id: TabId
   label: string
   staged: boolean
+  scopePath: string | null
   initialFile: string | null
   temporary: boolean
   locked: boolean
+  revealNonce: number
 }
 
 export interface StashTab {
@@ -168,6 +170,7 @@ export type PersistedTab =
   | {
       kind: 'changes'
       staged: boolean
+      scopePath?: string | null
       initialFile: string | null
       temporary: boolean
       locked: boolean
@@ -239,6 +242,12 @@ function isProjectRestored(projectId: string): boolean {
 let nextTabId = 0
 function generateTabId(): TabId {
   return `tab-${Date.now()}-${nextTabId++}`
+}
+
+let nextRevealNonce = 0
+function generateRevealNonce(): number {
+  nextRevealNonce += 1
+  return nextRevealNonce
 }
 
 export function createPane(slot: PaneSlot): PaneState {
@@ -625,7 +634,13 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
     case 'commit':
       return b.kind !== 'commit' || a.commitHash !== b.commitHash || a.initialFile !== b.initialFile
     case 'changes':
-      return b.kind !== 'changes' || a.staged !== b.staged || a.initialFile !== b.initialFile
+      return (
+        b.kind !== 'changes' ||
+        a.staged !== b.staged ||
+        a.scopePath !== b.scopePath ||
+        a.initialFile !== b.initialFile ||
+        a.revealNonce !== b.revealNonce
+      )
     case 'stash':
       return b.kind !== 'stash' || a.stashIndex !== b.stashIndex || a.initialFile !== b.initialFile
     case 'editor':
@@ -726,17 +741,37 @@ export function addCommitTab(
 export function addChangesTab(
   projectId: string,
   staged: boolean,
+  scopePath: string | null = null,
   initialFile: string | null = null,
   temporary = true
 ): TabId {
-  const label = staged ? 'Staged Changes' : 'Changes'
+  const label = scopePath ? `Changes: ${scopePath}` : staged ? 'Staged Changes' : 'Changes'
   return addContentTab(
     projectId,
     'changes',
-    (id): ChangesTab => ({ kind: 'changes', id, label, staged, initialFile, temporary, locked: false }),
+    (id): ChangesTab => ({
+      kind: 'changes',
+      id,
+      label,
+      staged,
+      scopePath,
+      initialFile,
+      temporary,
+      locked: false,
+      revealNonce: generateRevealNonce()
+    }),
     temporary,
-    (t) => t.kind === 'changes' && t.staged === staged && !t.temporary,
-    (t) => (t.kind === 'changes' && t.initialFile !== initialFile ? { ...t, initialFile } : t)
+    (t) => t.kind === 'changes' && t.staged === staged && t.scopePath === scopePath && !t.temporary,
+    (t) =>
+      t.kind === 'changes'
+        ? {
+            ...t,
+            label,
+            scopePath,
+            initialFile,
+            revealNonce: generateRevealNonce()
+          }
+        : t
   )
 }
 
@@ -999,7 +1034,7 @@ export function reopenLastClosedTab(projectId: string): TabId | null {
     case 'commit':
       return addCommitTab(projectId, head.commitHash, head.shortHash, head.message, head.initialFile, false)
     case 'changes':
-      return addChangesTab(projectId, head.staged, head.initialFile, false)
+      return addChangesTab(projectId, head.staged, head.scopePath, head.initialFile, false)
     case 'stash':
       return addStashTab(projectId, head.stashIndex, head.message, head.initialFile, false)
     case 'notification-test':

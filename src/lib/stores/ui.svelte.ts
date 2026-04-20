@@ -3,6 +3,8 @@
 // Stores visual preferences that are NOT per-project:
 // sidebar dimensions, collapse state, zoom level, window controls.
 
+import { registerModal } from '$lib/utils/modalRegistry.svelte'
+
 export type SidebarView = 'git' | 'sessions' | 'files'
 
 let sidebarWidth = $state(280)
@@ -145,6 +147,47 @@ export function setCommandPaletteOpen(open: boolean) {
 export function toggleCommandPalette() {
   commandPaletteOpen = !commandPaletteOpen
 }
+
+// ---------------------------------------------------------------------------
+// Settings dialog
+// ---------------------------------------------------------------------------
+//
+// Lives in the store (not `+layout.svelte`) so the global keybinding
+// dispatcher can close it via the transient-modal registry when a
+// shortcut fires from inside it.
+
+let settingsOpen = $state(false)
+
+export function isSettingsOpen(): boolean {
+  return settingsOpen
+}
+
+export function setSettingsOpen(open: boolean) {
+  settingsOpen = open
+}
+
+export function toggleSettings() {
+  settingsOpen = !settingsOpen
+}
+
+// ---------------------------------------------------------------------------
+// Modal registration
+// ---------------------------------------------------------------------------
+//
+// The command palette renders its own Dialog.Content directly against
+// bits-ui (custom top-anchored layout) instead of using the
+// `DialogContent` primitive that auto-registers. Register it
+// explicitly here so the focus-restore signal and auto-dismiss still
+// work. Settings uses `DialogContent` and registers itself there.
+//
+// Blocking dialogs (confirm, prompts, import-collision) register via
+// `DialogContent` too but without a close callback — they participate
+// in focus-restore but must never auto-dismiss.
+
+registerModal({
+  isOpen: isCommandPaletteOpen,
+  close: () => setCommandPaletteOpen(false)
+})
 
 // ---------------------------------------------------------------------------
 // Ephemeral project-picker override — forces EmptyState to render without

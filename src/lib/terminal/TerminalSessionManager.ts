@@ -129,6 +129,16 @@ export class TerminalSessionManager {
     }
   }
 
+  /**
+   * Give DOM focus to xterm's hidden textarea. Called after transient
+   * modals close so keys like Shift+Tab reach the PTY instead of
+   * triggering browser focus-navigation from a stale body focus.
+   */
+  focus(): void {
+    if (!this.inputEnabled) return
+    this.terminal?.focus()
+  }
+
   registerEventListener(listener: EventListener): () => void {
     this.eventListeners.add(listener)
     return () => {
@@ -434,6 +444,21 @@ export class TerminalSessionManager {
           ev.preventDefault()
           void this.handlePasteKey(true)
           return false
+        case 'copy-or-sigint':
+          // Only the manager can see the live selection, so the decision
+          // lives here while the policy (which key + when) stays in the
+          // keymap. With a selection, copy to OS clipboard; without, let
+          // xterm send SIGINT like a real terminal.
+          if (this.terminal?.hasSelection()) {
+            const text = this.terminal.getSelection()
+            navigator.clipboard.writeText(text).catch((err) => {
+              console.warn('Ctrl+C copy failed:', err)
+            })
+            this.terminal.clearSelection()
+            ev.preventDefault()
+            return false
+          }
+          return true
         default: {
           // Forces a compile error if a new KeyAction kind is added
           // to terminalKeymap.ts without a case here. Default returns

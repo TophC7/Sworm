@@ -18,7 +18,7 @@
   import { Textarea } from '$lib/components/ui/input'
   import { ChevronDown, FileDiff, MinusCircle, PackageIcon, PlusCircle, Trash2 } from '$lib/icons/lucideExports'
   import { runGitAction } from '$lib/stores/git.svelte'
-  import { addEditorTab, addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
+  import { addChangesTab, addEditorTab, addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
   import type { GitChange, GitSummary } from '$lib/types/backend'
   import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/stores/notifications.svelte'
@@ -144,6 +144,19 @@
   function handleCtxOpenFile() {
     if (!contextFilePath) return
     addEditorTab(projectId, contextFilePath)
+  }
+
+  function handleCtxOpenChanges() {
+    if (!contextFilePath) return
+
+    if (contextTargetType === 'file') {
+      addChangesTab(projectId, contextIsStaged, contextFilePath, contextFilePath, false)
+      return
+    }
+
+    if (contextTargetType === 'directory') {
+      addChangesTab(projectId, contextIsStaged, contextFilePath, null, false)
+    }
   }
 
   function handleCtxOpenFileHead() {
@@ -404,6 +417,7 @@
     filePath={contextFilePath}
     targetType={contextTargetType}
     isStaged={contextIsStaged}
+    onOpenChanges={handleCtxOpenChanges}
     onOpenFile={handleCtxOpenFile}
     onOpenFileHead={handleCtxOpenFileHead}
     onStage={handleCtxStage}

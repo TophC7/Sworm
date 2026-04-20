@@ -404,7 +404,7 @@
 
   function handleOpenDiff() {
     if (!contextFilePath) return
-    addChangesTab(projectId, false, contextFilePath)
+    addChangesTab(projectId, false, contextFilePath, contextFilePath, false)
   }
 
   async function handleCut() {

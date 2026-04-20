@@ -1,3 +1,4 @@
+use crate::models::file_diff::{DiffSource, FileDiff, GitStatus};
 use serde::Serialize;
 use std::path::Path;
 use tracing::warn;
@@ -58,14 +59,6 @@ pub struct CommitFileChange {
     pub status: String,
     pub additions: i32,
     pub deletions: i32,
-}
-
-/// Structured diff data including file content for diff viewer rendering.
-#[derive(Debug, Clone, Serialize)]
-pub struct DiffContext {
-    pub raw_diff: String,
-    pub old_content: Option<String>,
-    pub new_content: Option<String>,
 }
 
 /// A single stash entry with its file changes.
@@ -352,115 +345,6 @@ impl GitService {
         }
     }
 
-    /// Get diff for a specific file.
-    pub fn get_file_diff(&self, path: &Path, file_path: &str, staged: bool) -> Option<String> {
-        let mut args = vec!["diff"];
-        if staged {
-            args.push("--cached");
-        }
-        args.push("--");
-        args.push(file_path);
-
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            Some(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Get structured diff context with file content for the diff viewer.
-    pub fn get_diff_context(
-        &self,
-        path: &Path,
-        file_path: &str,
-        staged: bool,
-    ) -> Option<DiffContext> {
-        let raw_diff = self
-            .get_file_diff(path, file_path, staged)
-            .filter(|d| !d.trim().is_empty());
-        let old_content = self.get_old_content(path, file_path);
-        let new_content = self.get_new_content(path, file_path, staged);
-
-        // For untracked files, git diff returns empty but we still have content.
-        // `git diff --no-index` exits with code 1 when differences exist (always
-        // true for new-file vs /dev/null), so we check stdout length rather than
-        // exit status — this is intentional, not an oversight.
-        if raw_diff.is_none() && new_content.is_some() && old_content.is_none() {
-            let output = std::process::Command::new("git")
-                .args(["diff", "--no-index", "--", "/dev/null", file_path])
-                .current_dir(path)
-                .output()
-                .ok();
-
-            let synthetic_diff = output
-                .filter(|o| !o.stdout.is_empty())
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-
-            return Some(DiffContext {
-                raw_diff: synthetic_diff.unwrap_or_default(),
-                old_content: None,
-                new_content,
-            });
-        }
-
-        raw_diff.map(|diff| DiffContext {
-            raw_diff: diff,
-            old_content,
-            new_content,
-        })
-    }
-
-    /// Get file content at HEAD, returning `None` for binary or oversized files.
-    fn get_old_content(&self, path: &Path, file_path: &str) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .args([
-                "--no-optional-locks",
-                "show",
-                &format!("HEAD:{}", file_path),
-            ])
-            .current_dir(path)
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        guard_content(output.stdout)
-    }
-
-    /// Get new file content (working tree or staged index).
-    /// Returns `None` for binary or oversized files.
-    fn get_new_content(&self, path: &Path, file_path: &str, staged: bool) -> Option<String> {
-        if staged {
-            let output = std::process::Command::new("git")
-                .args(["--no-optional-locks", "show", &format!(":{}", file_path)])
-                .current_dir(path)
-                .output()
-                .ok()?;
-
-            if !output.status.success() {
-                return None;
-            }
-
-            guard_content(output.stdout)
-        } else {
-            let full_path = path.join(file_path);
-            let meta = std::fs::metadata(&full_path).ok()?;
-            if meta.len() > MAX_CONTENT_BYTES as u64 {
-                return None;
-            }
-            let bytes = std::fs::read(&full_path).ok()?;
-            guard_content(bytes)
-        }
-    }
-
     /// Get commit graph data for all branches (for graph visualization).
     pub fn get_graph(&self, path: &Path, limit: usize) -> Vec<GraphCommit> {
         let output = std::process::Command::new("git")
@@ -644,130 +528,6 @@ impl GitService {
             body: parts.get(6).unwrap_or(&"").trim().to_string(),
             files,
         })
-    }
-
-    /// Get all file diffs for a commit in one git call.
-    pub fn get_commit_diffs(
-        &self,
-        path: &Path,
-        hash: &str,
-    ) -> std::collections::HashMap<String, String> {
-        Self::split_diff_patch(&self.full_commit_patch(path, hash))
-    }
-
-    /// Get all working-tree diffs in one git call (staged or unstaged).
-    /// Includes synthetic diffs for untracked files.
-    pub fn get_working_diffs(
-        &self,
-        path: &Path,
-        staged: bool,
-        untracked_paths: &[String],
-    ) -> std::collections::HashMap<String, String> {
-        let mut args = vec!["diff"];
-        if staged {
-            args.push("--cached");
-        }
-
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(path)
-            .output();
-
-        let full = match output {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => String::new(),
-        };
-
-        let mut result = Self::split_diff_patch(&full);
-
-        // Synthetic diffs for untracked files (not in git diff output)
-        for file_path in untracked_paths {
-            let output = std::process::Command::new("git")
-                .args(["diff", "--no-index", "--", "/dev/null", file_path])
-                .current_dir(path)
-                .output();
-
-            if let Some(diff) = output
-                .ok()
-                .filter(|o| !o.stdout.is_empty() && o.stdout.len() <= MAX_CONTENT_BYTES)
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            {
-                result.insert(file_path.clone(), diff);
-            }
-        }
-
-        result
-    }
-
-    fn split_diff_patch(full: &str) -> std::collections::HashMap<String, String> {
-        let mut result = std::collections::HashMap::new();
-        if full.is_empty() {
-            return result;
-        }
-
-        let mut start = if full.starts_with("diff --git ") {
-            0
-        } else {
-            match full.find("diff --git ") {
-                Some(i) => i,
-                None => return result,
-            }
-        };
-
-        loop {
-            let next = full[start + 1..].find("diff --git ").map(|i| i + start + 1);
-            let end = next.unwrap_or(full.len());
-            let chunk = &full[start..end];
-
-            if let Some(file_path) = Self::extract_diff_path(chunk) {
-                if chunk.len() <= MAX_CONTENT_BYTES {
-                    result.insert(file_path, chunk.to_string());
-                }
-            }
-
-            match next {
-                Some(n) => start = n,
-                None => break,
-            }
-        }
-
-        result
-    }
-
-    fn full_commit_patch(&self, path: &Path, hash: &str) -> String {
-        // Try first-parent diff
-        let output = std::process::Command::new("git")
-            .args(["diff", &format!("{}^..{}", hash, hash)])
-            .current_dir(path)
-            .output();
-
-        if let Ok(ref o) = output {
-            if o.status.success() {
-                let s = String::from_utf8_lossy(&o.stdout);
-                if !s.trim().is_empty() {
-                    return s.to_string();
-                }
-            }
-        }
-
-        // Fallback for root commits
-        let output = std::process::Command::new("git")
-            .args(["diff-tree", "--root", "-p", "--no-commit-id", "-r", hash])
-            .current_dir(path)
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => String::new(),
-        }
-    }
-
-    fn extract_diff_path(chunk: &str) -> Option<String> {
-        // "diff --git a/... b/PATH\n..."
-        let first_line = chunk.lines().next()?;
-        let b_pos = first_line.rfind(" b/")?;
-        let raw = &first_line[b_pos + 3..];
-        Some(raw.trim_matches('"').to_string())
     }
 
     // ── Write operations ────────────────────────────────────────────
@@ -1028,37 +788,6 @@ impl GitService {
     }
 
     /// Get all file diffs for a stash entry (including untracked files).
-    pub fn get_stash_diffs(
-        &self,
-        path: &Path,
-        index: usize,
-    ) -> std::collections::HashMap<String, String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-
-        // Try with --include-untracked first (git 2.32+), fall back without
-        let output = std::process::Command::new("git")
-            .args(["stash", "show", "-p", "-u", &stash_ref])
-            .current_dir(path)
-            .output();
-
-        let full = match output {
-            Ok(ref o) if !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => {
-                // Fallback without untracked
-                let output = std::process::Command::new("git")
-                    .args(["stash", "show", "-p", &stash_ref])
-                    .current_dir(path)
-                    .output();
-                match output {
-                    Ok(o) if !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-                    _ => return std::collections::HashMap::new(),
-                }
-            }
-        };
-
-        Self::split_diff_patch(&full)
-    }
-
     /// Initialize a new git repository.
     pub fn init(&self, path: &Path) -> Result<(), String> {
         let output = std::process::Command::new("git")
@@ -1139,6 +868,567 @@ impl GitService {
 
         "main".to_string()
     }
+
+    // ── Unified diff payload for the Monaco multi-file diff viewer ──
+    //
+    // `get_diff_files` is the single entry point used by the new viewer.
+    // It returns `{old, new}` content per file so the frontend can build
+    // two `ITextModel`s and hand them to a `DiffEditor`. All three diff
+    // sources (working tree, a commit, a stash) funnel through here.
+
+    /// Return every changed file for the given source, with both sides
+    /// of content attached. Skips files that are binary or oversized
+    /// (still present in the list, but with `content: None` + `binary: true`).
+    pub fn get_diff_files(&self, path: &Path, source: &DiffSource) -> Vec<FileDiff> {
+        if !self.is_git_repo(path) {
+            return Vec::new();
+        }
+        match source {
+            DiffSource::Working { staged } => self.working_diff_files(path, *staged),
+            DiffSource::Commit { hash } => self.commit_diff_files(path, hash),
+            DiffSource::Stash { index } => self.stash_diff_files(path, *index),
+        }
+    }
+
+    fn working_diff_files(&self, path: &Path, staged_filter: Option<bool>) -> Vec<FileDiff> {
+        let changes = self.get_changes(path);
+        let mut seen_paths = std::collections::HashSet::<(String, bool)>::new();
+        let mut out = Vec::new();
+        for change in changes {
+            // Untracked files: only relevant for the unstaged view.
+            if change.status == "?" && matches!(staged_filter, Some(true)) {
+                continue;
+            }
+            // Explicit staged/unstaged filter.
+            if let Some(want) = staged_filter {
+                if change.status != "?" && change.staged != want {
+                    continue;
+                }
+            }
+            // A tracked file can appear twice (once staged, once unstaged).
+            // For the combined view (`staged_filter = None`) we keep both,
+            // but dedupe by (path, staged) to guard against porcelain oddities.
+            if !seen_paths.insert((change.path.clone(), change.staged)) {
+                continue;
+            }
+
+            let (old_content, new_content, binary) = self.working_file_contents(path, &change);
+            out.push(FileDiff {
+                path: change.path.clone(),
+                old_path: None,
+                status: GitStatus::from_code(&change.status),
+                lang: lang_from_path(&change.path).to_string(),
+                old_content,
+                new_content,
+                binary,
+                additions: change.additions,
+                deletions: change.deletions,
+            });
+        }
+        out
+    }
+
+    fn working_file_contents(
+        &self,
+        path: &Path,
+        change: &GitChange,
+    ) -> (Option<String>, Option<String>, bool) {
+        match change.status.as_str() {
+            "?" => {
+                // Untracked file: no old side.
+                let blob = read_worktree_blob(path, &change.path);
+                match blob {
+                    BlobResult::Text(s) => (None, Some(s), false),
+                    BlobResult::Binary | BlobResult::Oversized => (None, None, true),
+                    BlobResult::Missing => (None, None, false),
+                }
+            }
+            "D" => {
+                // Deletion: only an old side.
+                let old = if change.staged {
+                    read_git_show_blob(path, &format!("HEAD:{}", change.path))
+                } else {
+                    read_git_show_blob(path, &format!(":{}", change.path))
+                };
+                fold_single_side(old, true)
+            }
+            "A" if change.staged => {
+                // Staged addition: index has it, HEAD does not.
+                let new = read_git_show_blob(path, &format!(":{}", change.path));
+                fold_single_side(new, false)
+            }
+            _ => {
+                if change.staged {
+                    let old = read_git_show_blob(path, &format!("HEAD:{}", change.path));
+                    let new = read_git_show_blob(path, &format!(":{}", change.path));
+                    fold_both_sides(old, new)
+                } else {
+                    // Unstaged: index vs worktree. Fall back to HEAD when
+                    // the index doesn't have an entry (rare edge with
+                    // intent-to-add files).
+                    let old = match read_git_show_blob(path, &format!(":{}", change.path)) {
+                        BlobResult::Missing => {
+                            read_git_show_blob(path, &format!("HEAD:{}", change.path))
+                        }
+                        other => other,
+                    };
+                    let new = read_worktree_blob(path, &change.path);
+                    fold_both_sides(old, new)
+                }
+            }
+        }
+    }
+
+    fn commit_diff_files(&self, path: &Path, hash: &str) -> Vec<FileDiff> {
+        // Parents decide whether this is a root commit (one-sided diff)
+        // or a normal commit diffed against its first parent.
+        let parents_out = std::process::Command::new("git")
+            .args(["rev-list", "--parents", "-n", "1", hash])
+            .current_dir(path)
+            .output();
+        let is_root = match parents_out {
+            Ok(o) if o.status.success() => {
+                let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                // Output is "<hash> <parent1> <parent2> …". No parents → root.
+                line.split_whitespace().count() <= 1
+            }
+            _ => false,
+        };
+        let old_ref = if is_root {
+            None
+        } else {
+            Some(format!("{}^", hash))
+        };
+
+        let files = self.list_rev_files(path, hash, old_ref.as_deref());
+        let mut out = Vec::new();
+        for entry in files {
+            let old_content = match (&old_ref, &entry.old_path_for_diff) {
+                (Some(old_rev), Some(op)) => {
+                    read_git_show_blob(path, &format!("{}:{}", old_rev, op))
+                }
+                _ => BlobResult::Missing,
+            };
+            let new_content = if matches!(entry.status, GitStatus::Deleted) {
+                BlobResult::Missing
+            } else {
+                read_git_show_blob(path, &format!("{}:{}", hash, entry.path))
+            };
+            let (old, new, binary) = fold_both_sides(old_content, new_content);
+            // Language prefers the new path; fall back to the old path for
+            // deletions where `path` itself may be empty.
+            let lang = if !entry.path.is_empty() {
+                lang_from_path(&entry.path)
+            } else {
+                lang_from_path(entry.old_path_for_diff.as_deref().unwrap_or(""))
+            };
+            out.push(FileDiff {
+                path: entry.path,
+                old_path: entry.old_path,
+                status: entry.status,
+                lang: lang.to_string(),
+                old_content: old,
+                new_content: new,
+                binary,
+                additions: entry.additions,
+                deletions: entry.deletions,
+            });
+        }
+        out
+    }
+
+    fn stash_diff_files(&self, path: &Path, index: usize) -> Vec<FileDiff> {
+        let stash_ref = format!("stash@{{{}}}", index);
+        let old_ref = format!("{}^", stash_ref);
+
+        // `git stash show --name-status --numstat` lists both tracked and
+        // (with -u) untracked changes in the stash. Untracked-only entries
+        // live on the third parent `stash@{N}^3` — we treat those as adds.
+        let status_out = std::process::Command::new("git")
+            .args(["stash", "show", "-u", "-z", "--name-status", &stash_ref])
+            .current_dir(path)
+            .output();
+        let numstat_out = std::process::Command::new("git")
+            .args(["stash", "show", "-u", "-z", "--numstat", &stash_ref])
+            .current_dir(path)
+            .output();
+
+        let status_text = match status_out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => String::new(),
+        };
+        let numstat_text = match numstat_out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => String::new(),
+        };
+
+        let stats = parse_numstat(&numstat_text);
+        let entries = parse_name_status(&status_text);
+
+        let mut out = Vec::new();
+        for entry in entries {
+            let (additions, deletions) = stats
+                .get(&entry.path)
+                .copied()
+                .map(|(a, d)| (Some(a), Some(d)))
+                .unwrap_or((None, None));
+
+            // Try reading from the stash's first parent for the old side.
+            // If that fails (untracked files have no pre-image), treat as add.
+            let old_content = match entry.status {
+                GitStatus::Added | GitStatus::Untracked => BlobResult::Missing,
+                _ => {
+                    let source_path = entry.old_path_for_diff.as_deref().unwrap_or(&entry.path);
+                    read_git_show_blob(path, &format!("{}:{}", old_ref, source_path))
+                }
+            };
+            let new_content = if matches!(entry.status, GitStatus::Deleted) {
+                BlobResult::Missing
+            } else {
+                read_git_show_blob(path, &format!("{}:{}", stash_ref, entry.path))
+            };
+            let (old, new, binary) = fold_both_sides(old_content, new_content);
+
+            out.push(FileDiff {
+                path: entry.path.clone(),
+                old_path: entry.old_path,
+                status: entry.status,
+                lang: lang_from_path(&entry.path).to_string(),
+                old_content: old,
+                new_content: new,
+                binary,
+                additions,
+                deletions,
+            });
+        }
+        out
+    }
+
+    /// Parse name-status + numstat for a rev range so we get per-file
+    /// status + rename detection + line counts in one place. Used by
+    /// commit diffs (and reusable for other rev-based callers later).
+    fn list_rev_files(
+        &self,
+        path: &Path,
+        new_rev: &str,
+        old_rev: Option<&str>,
+    ) -> Vec<RevFileEntry> {
+        // `-z` keeps paths NUL-delimited. Without it, paths with tabs /
+        // newlines misparse, AND renames collapse into a single
+        // `{old => new}` field that breaks numstat lookups by new path.
+        let (status_text, numstat_text) = match old_rev {
+            Some(old) => {
+                let range = format!("{}..{}", old, new_rev);
+                (
+                    run_git_capture(path, &["diff", "--name-status", "-z", "-M", "-C", &range]),
+                    run_git_capture(path, &["diff", "--numstat", "-z", &range]),
+                )
+            }
+            None => (
+                run_git_capture(
+                    path,
+                    &[
+                        "diff-tree",
+                        "--root",
+                        "-r",
+                        "-z",
+                        "--no-commit-id",
+                        "--name-status",
+                        new_rev,
+                    ],
+                ),
+                run_git_capture(
+                    path,
+                    &[
+                        "diff-tree",
+                        "--root",
+                        "-r",
+                        "-z",
+                        "--no-commit-id",
+                        "--numstat",
+                        new_rev,
+                    ],
+                ),
+            ),
+        };
+
+        let stats = parse_numstat(&numstat_text);
+        let mut entries = parse_name_status(&status_text);
+        for entry in entries.iter_mut() {
+            if let Some((a, d)) = stats.get(&entry.path).copied() {
+                entry.additions = Some(a);
+                entry.deletions = Some(d);
+            }
+        }
+        entries
+    }
+}
+
+/// Intermediate rev-walk entry. Keeps the old-path separate so the
+/// caller can resolve content from the old rev with the correct name.
+struct RevFileEntry {
+    path: String,
+    /// User-facing old path for renames/copies (`Some("old")` when
+    /// different from `path`, `None` otherwise).
+    old_path: Option<String>,
+    /// The path to feed into `git show <old_rev>:<path>`. Same as
+    /// `old_path.or(path)` but stored explicitly so rename logic stays
+    /// in parsing, not reading.
+    old_path_for_diff: Option<String>,
+    status: GitStatus,
+    additions: Option<i32>,
+    deletions: Option<i32>,
+}
+
+/// Outcome of reading a blob: text, binary, oversized, or missing.
+/// The command layer folds the non-text variants into `content: None`
+/// + `binary: true` (oversized) / `binary: false` (missing).
+enum BlobResult {
+    Text(String),
+    Binary,
+    Oversized,
+    Missing,
+}
+
+/// Fold paired blob results into `(old, new, binary)` for `FileDiff`.
+/// Binary OR oversized on either side → `binary = true`; the frontend
+/// shows a placeholder instead of mounting Monaco.
+fn fold_both_sides(old: BlobResult, new: BlobResult) -> (Option<String>, Option<String>, bool) {
+    let binary = matches!(old, BlobResult::Binary | BlobResult::Oversized)
+        || matches!(new, BlobResult::Binary | BlobResult::Oversized);
+    let to_opt = |b: BlobResult| -> Option<String> {
+        match b {
+            BlobResult::Text(s) => Some(s),
+            _ => None,
+        }
+    };
+    (to_opt(old), to_opt(new), binary)
+}
+
+/// Single-sided fold: `on_old` selects whether the blob is the old or new side.
+fn fold_single_side(blob: BlobResult, on_old: bool) -> (Option<String>, Option<String>, bool) {
+    let binary = matches!(blob, BlobResult::Binary | BlobResult::Oversized);
+    let text = match blob {
+        BlobResult::Text(s) => Some(s),
+        _ => None,
+    };
+    if on_old {
+        (text, None, binary)
+    } else {
+        (None, text, binary)
+    }
+}
+
+/// Read a blob via `git show` (supports `HEAD:path`, `:path`, `<ref>:path`).
+fn read_git_show_blob(path: &Path, spec: &str) -> BlobResult {
+    let output = std::process::Command::new("git")
+        .args(["--no-optional-locks", "show", spec])
+        .current_dir(path)
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return BlobResult::Missing,
+    };
+    if !output.status.success() {
+        return BlobResult::Missing;
+    }
+    classify_bytes(output.stdout)
+}
+
+/// Read a blob directly from the working tree.
+fn read_worktree_blob(project: &Path, rel: &str) -> BlobResult {
+    let full = project.join(rel);
+    let meta = match std::fs::metadata(&full) {
+        Ok(m) => m,
+        Err(_) => return BlobResult::Missing,
+    };
+    if meta.len() > MAX_CONTENT_BYTES as u64 {
+        return BlobResult::Oversized;
+    }
+    match std::fs::read(&full) {
+        Ok(bytes) => classify_bytes(bytes),
+        Err(_) => BlobResult::Missing,
+    }
+}
+
+/// Classify a raw byte buffer as text / binary / oversized.
+/// Mirrors `guard_content` but preserves the binary vs oversize distinction
+/// so the frontend can flag binaries explicitly.
+fn classify_bytes(bytes: Vec<u8>) -> BlobResult {
+    if bytes.len() > MAX_CONTENT_BYTES {
+        return BlobResult::Oversized;
+    }
+    let probe = bytes.len().min(8192);
+    if bytes[..probe].contains(&0) {
+        return BlobResult::Binary;
+    }
+    match String::from_utf8(bytes) {
+        Ok(s) => BlobResult::Text(s),
+        Err(_) => BlobResult::Binary,
+    }
+}
+
+/// Parse `git diff --numstat -z` output into `{path: (additions, deletions)}`.
+///
+/// `-z` format records are NUL-terminated:
+///   regular: `adds\tdels\tpath\0`
+///   rename:  `adds\tdels\t\0oldpath\0newpath\0`   (empty path field, then two paths)
+///
+/// Keyed by the POST-rename path so callers can look up by `entry.path`.
+/// Binary entries (`-\t-\tpath`) skip and surface as `None` upstream.
+fn parse_numstat(text: &str) -> std::collections::HashMap<String, (i32, i32)> {
+    let mut map = std::collections::HashMap::new();
+    let mut fields = text.split('\0').filter(|s| !s.is_empty()).peekable();
+
+    while let Some(head) = fields.next() {
+        // `head` is either "adds\tdels\tpath" or "adds\tdels\t" (rename prefix).
+        let tab_parts: Vec<&str> = head.splitn(3, '\t').collect();
+        if tab_parts.len() < 3 {
+            continue;
+        }
+        let Ok(adds) = tab_parts[0].parse::<i32>() else {
+            continue;
+        };
+        let Ok(dels) = tab_parts[1].parse::<i32>() else {
+            continue;
+        };
+        let path = if tab_parts[2].is_empty() {
+            // Rename: next two fields are old, new.
+            let _old = fields.next();
+            let Some(new_path) = fields.next() else {
+                continue;
+            };
+            new_path.to_string()
+        } else {
+            tab_parts[2].to_string()
+        };
+        map.insert(path, (adds, dels));
+    }
+    map
+}
+
+/// Parse `git diff --name-status -z -M -C` output into structured entries.
+///
+/// `-z` format alternates status and path(s), all NUL-delimited:
+///   regular: `<status>\0<path>\0`
+///   rename:  `R<score>\0<oldpath>\0<newpath>\0`
+fn parse_name_status(text: &str) -> Vec<RevFileEntry> {
+    let mut out = Vec::new();
+    let mut fields = text.split('\0').filter(|s| !s.is_empty());
+
+    while let Some(code_raw) = fields.next() {
+        let code_letter = code_raw.get(0..1).unwrap_or("M");
+        let status = GitStatus::from_code(code_letter);
+
+        let (new_path, old_path) = match status {
+            GitStatus::Renamed | GitStatus::Copied => {
+                let Some(old) = fields.next() else { break };
+                let Some(new) = fields.next() else { break };
+                (new.to_string(), Some(old.to_string()))
+            }
+            _ => {
+                let Some(p) = fields.next() else { break };
+                (p.to_string(), None)
+            }
+        };
+        let old_path_for_diff = old_path.clone().or_else(|| Some(new_path.clone()));
+
+        out.push(RevFileEntry {
+            path: new_path,
+            old_path,
+            old_path_for_diff,
+            status,
+            additions: None,
+            deletions: None,
+        });
+    }
+    out
+}
+
+/// Run a git command and return stdout as a String (empty on failure).
+fn run_git_capture(path: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(std::iter::once("--no-optional-locks").chain(args.iter().copied()))
+        .current_dir(path)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Resolve a Monaco language id from a file path. Falls back to
+/// `plaintext` for unknown extensions and dotfiles we don't special-case.
+/// Kept intentionally narrow — add only languages that have real support
+/// in the loaded Monaco bundle (see `src/lib/editor/monacoEnv.ts`).
+fn lang_from_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    let basename = std::path::Path::new(&lower)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&lower);
+
+    // Special-case common extensionless files before extension match.
+    match basename {
+        "dockerfile" => return "dockerfile",
+        "makefile" | "gnumakefile" => return "makefile",
+        "cmakelists.txt" => return "cmake",
+        ".gitignore" | ".gitattributes" | ".editorconfig" => return "plaintext",
+        _ => {}
+    }
+
+    let ext = std::path::Path::new(&lower)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    match ext {
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "typescript",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "javascript",
+        "json" | "jsonc" => "json",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" | "sass" => "scss",
+        "less" => "less",
+        "svelte" => "svelte",
+        "vue" => "html",
+        "rs" => "rust",
+        "go" => "go",
+        "py" | "pyi" => "python",
+        "rb" => "ruby",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
+        "m" | "mm" => "objective-c",
+        "cs" => "csharp",
+        "php" => "php",
+        "sh" | "bash" | "zsh" => "shell",
+        "fish" => "fish",
+        "ps1" => "powershell",
+        "lua" => "lua",
+        "sql" => "sql",
+        "yml" | "yaml" => "yaml",
+        "toml" => "toml",
+        "ini" | "cfg" => "ini",
+        "xml" | "svg" => "xml",
+        "md" | "markdown" => "markdown",
+        "nix" => "nix",
+        "dart" => "dart",
+        "r" => "r",
+        "scala" | "sc" => "scala",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "hs" => "haskell",
+        "clj" | "cljs" | "cljc" | "edn" => "clojure",
+        "proto" => "proto",
+        "graphql" | "gql" => "graphql",
+        "tex" => "latex",
+        _ => "plaintext",
+    }
 }
 
 /// Run a `git diff` variant and return stdout as a String, or `None` if empty.
@@ -1180,20 +1470,6 @@ fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
-}
-
-/// Return content as a String if it's within the size limit and looks
-/// like text (no null bytes in the first 8 KiB). Returns `None` for
-/// binary or oversized content so the frontend falls back gracefully.
-fn guard_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.len() > MAX_CONTENT_BYTES {
-        return None;
-    }
-    let probe_len = bytes.len().min(8192);
-    if bytes[..probe_len].contains(&0) {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
 }
 
 fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) {

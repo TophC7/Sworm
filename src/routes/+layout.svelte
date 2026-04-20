@@ -2,6 +2,7 @@
   import '../app.css'
   import { onMount } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
+  import * as sessionRegistry from '$lib/terminal/sessionRegistry'
   import { disposeAll } from '$lib/terminal/sessionRegistry'
   import { backend } from '$lib/api/backend'
   import CommandCenter from '$lib/components/CommandCenter.svelte'
@@ -14,16 +15,46 @@
   import TitleBar from '$lib/components/TitleBar.svelte'
   import { TooltipProvider } from '$lib/components/ui/tooltip'
   import { addProject } from '$lib/stores/projects.svelte'
-  import { getWindowControls } from '$lib/stores/ui.svelte'
+  import { getWindowControls, isSettingsOpen, setSettingsOpen } from '$lib/stores/ui.svelte'
+  import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/utils/shortcuts.svelte'
-  import { flushPersistencePending, openProject } from '$lib/stores/workspace.svelte'
+  import { flushPersistencePending, getActiveSessionId, openProject } from '$lib/stores/workspace.svelte'
   import { getDirtyEditorsCount, hasAnyDirtyEditors } from '$lib/stores/dirtyEditors.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
 
-  let settingsOpen = $state(false)
   let projectError = $state<string | null>(null)
+
+  // Keep xterm's textarea focus aligned with the active session.
+  //
+  // Two classes of problem this solves:
+  //   1. Tab/pane switches. When the user moves between sessions, a
+  //      different SessionTerminal becomes visible but the previously
+  //      clicked terminal keeps real DOM focus. Visible-but-unfocused
+  //      xterm means Shift+Tab falls through to the browser's focus-
+  //      navigation instead of reaching the PTY — feels like "terminal
+  //      keys stopped working on this tab."
+  //   2. Transient modals (palette, settings). bits-ui restores focus
+  //      to the activeElement captured at open time. If the command
+  //      that ran mutated the DOM (new tab, close tab, re-attach),
+  //      that reference is stale and focus falls to <body>.
+  //
+  // One effect tracks both signals. We refocus the current active
+  // session's xterm on any change, unless a transient modal is
+  // currently open — in which case the modal owns keyboard focus and
+  // the effect will fire again when it closes. rAF waits one frame so
+  // bits-ui's own restoration attempt completes first and we override
+  // it last.
+  const activeSessionId = $derived(getActiveSessionId())
+  const anyModalOpen = $derived(isAnyModalOpen())
+
+  $effect(() => {
+    const id = activeSessionId
+    const open = anyModalOpen
+    if (open || !id) return
+    requestAnimationFrame(() => sessionRegistry.focus(id))
+  })
 
   onMount(() => {
     const appWindow = getCurrentWindow()
@@ -86,7 +117,7 @@
 
 <TooltipProvider delayDuration={300}>
   <div class="flex h-screen flex-col overflow-hidden">
-    <TitleBar onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
+    <TitleBar onNewProject={handleNewProject} onSettings={() => setSettingsOpen(true)} />
 
     <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {@render children()}
@@ -99,8 +130,8 @@
        main app so IconButtons inside them (e.g. Settings close) find a
        provider without needing a per-surface one. Nested providers
        confuse bits-ui's cross-tooltip coordination. -->
-  <CommandCenter onNewProject={handleNewProject} onSettings={() => (settingsOpen = true)} />
-  <SettingsDialog open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  <CommandCenter onNewProject={handleNewProject} onSettings={() => setSettingsOpen(true)} />
+  <SettingsDialog open={isSettingsOpen()} onClose={() => setSettingsOpen(false)} />
   <NotificationsSurface />
   <ConfirmHost />
 </TooltipProvider>

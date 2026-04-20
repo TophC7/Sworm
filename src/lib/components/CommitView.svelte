@@ -1,10 +1,10 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import type { CommitDetail } from '$lib/types/backend'
-  import DiffStack, { type DiffEntry } from '$lib/components/diff/DiffStack.svelte'
+  import type { CommitDetail, FileDiff } from '$lib/types/backend'
+  import DiffStack from '$lib/components/diff/DiffStack.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { GitCommitIcon, GitBranchIcon, UserIcon, CalendarIcon, CopyIcon, Check } from '$lib/icons/lucideExports'
-  // Alias for CheckIcon
+  import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
   const CheckIcon = Check
 
   let {
@@ -20,48 +20,26 @@
   } = $props()
 
   let detail = $state<CommitDetail | null>(null)
-  let rawDiffs = $state<Record<string, string>>({})
-  let loadingDiffs = $state(false)
+  let files = $state<FileDiff[]>([])
   let copied = $state(false)
-  let loadedHash = ''
-
-  let diffs = $derived.by(() => {
-    const m = new Map<string, DiffEntry>()
-    for (const [p, d] of Object.entries(rawDiffs)) {
-      m.set(p, { rawDiff: d })
-    }
-    return m
-  })
+  const loader = createTrackedAsyncLoad<string>()
+  let loading = $derived(loader.loading)
 
   $effect(() => {
     const hash = commitHash
     const path = projectPath
-    if (hash === loadedHash) return
-    loadedHash = hash
-    rawDiffs = {}
-    detail = null
-    void loadDetail(path, hash)
-  })
-
-  async function loadDetail(path: string, hash: string) {
-    try {
-      const d = await backend.git.getCommitDetail(path, hash)
-      if (hash !== loadedHash) return
-      detail = d
-      if (!detail) return
-
-      loadingDiffs = true
-      const dR = await backend.git.getCommitDiffs(path, hash)
-      if (hash !== loadedHash) return
-      rawDiffs = dR
-    } catch {
-      if (hash !== loadedHash) return
+    loader.run(hash, async (isCurrent) => {
       detail = null
-      rawDiffs = {}
-    } finally {
-      loadingDiffs = false
-    }
-  }
+      files = []
+      const [d, f] = await Promise.all([
+        backend.git.getCommitDetail(path, hash),
+        backend.git.getDiffFiles(path, { kind: 'commit', hash })
+      ])
+      if (!isCurrent()) return
+      detail = d
+      files = f
+    })
+  })
 
   function formatDate(iso: string): string {
     try {
@@ -127,15 +105,6 @@
       </div>
     </div>
 
-    <DiffStack
-      files={detail.files}
-      {diffs}
-      loading={loadingDiffs}
-      {initialFile}
-      idPrefix="commit-file"
-      {projectId}
-      {projectPath}
-      {commitHash}
-    />
+    <DiffStack {files} {loading} {initialFile} idPrefix="commit-file" {projectId} {projectPath} {commitHash} />
   </div>
 {/if}

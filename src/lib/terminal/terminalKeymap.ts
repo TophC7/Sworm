@@ -7,8 +7,10 @@
 //   Tier 2 — Surface keymaps      this file + (future) editorKeymap.ts
 //   Tier 3 — Component-local      inline onkeydown in dialogs / inputs
 //
-// Tier 1 fires first via a capture-phase window listener. Anything it
-// doesn't claim continues into the focused surface, where xterm's
+// Tier 1 fires first via a capture-phase window listener but yields to
+// the shell whenever a terminal has DOM focus, unless the binding is
+// tagged `skipShell` (palette, zoom, reload, project picker). Anything
+// Tier 1 doesn't claim continues into the focused surface, where xterm's
 // `attachCustomKeyEventHandler` calls `resolveTerminalKey()`. The
 // returned `KeyAction` tells `TerminalSessionManager` exactly what to
 // do — never split the decision between the keymap and the manager.
@@ -27,6 +29,7 @@ export type KeyAction =
   | { kind: 'send-pty'; bytes: string }
   | { kind: 'paste-text-or-image' }
   | { kind: 'paste-text-only' }
+  | { kind: 'copy-or-sigint' }
 
 /**
  * Per-provider behaviour. Add an entry only when an agent is known to
@@ -72,15 +75,19 @@ const BROWSER: KeyAction = { kind: 'browser' }
  *   1. Non-keydown events pass through.
  *   2. Ctrl/Cmd+Shift+C → browser copy (so OS clipboard gets the
  *      selection instead of the agent receiving Ctrl+C).
- *   3. Ctrl/Cmd+V        → clipboard paste, with image-fallback.
+ *   3. Ctrl/Cmd+C (no shift) → copy if a selection exists, otherwise
+ *      let xterm send SIGINT. Manager inspects the terminal state.
+ *   4. Ctrl/Cmd+V        → clipboard paste, with image-fallback.
  *      Ctrl/Cmd+Shift+V  → clipboard paste, text only.
- *   4. Shift+Tab / Shift+Enter → encoded per the active provider
+ *   5. Shift+Tab / Shift+Enter → encoded per the active provider
  *      profile.
- *   5. Anything else passes through to xterm's default handling.
+ *   6. Anything else passes through to xterm's default handling.
  *
- * Tier 1 shortcuts (Ctrl+Shift+P, Ctrl+W, …) never reach this
- * function: the global capture listener stops propagation before the
- * event reaches the xterm element.
+ * Tier 1 skipShell shortcuts (Ctrl+Shift+P, zoom, …) never reach this
+ * function — the global capture listener claims them first. Tier 1
+ * non-skipShell shortcuts (Ctrl+W, Ctrl+N, Ctrl+T) DO reach here when
+ * the terminal is focused, fall through to `PASS`, and xterm forwards
+ * the native bytes to the PTY so readline/tmux see them.
  */
 export function resolveTerminalKey(ev: KeyboardEvent, providerId: string | null): KeyAction {
   if (ev.type !== 'keydown') return PASS
@@ -95,6 +102,10 @@ export function resolveTerminalKey(ev: KeyboardEvent, providerId: string | null)
 
   if (ctrlOrMeta && ev.code === 'KeyC' && ev.shiftKey) {
     return BROWSER
+  }
+
+  if (ctrlOrMeta && ev.code === 'KeyC' && !ev.shiftKey) {
+    return { kind: 'copy-or-sigint' }
   }
 
   if (ctrlOrMeta && ev.code === 'KeyV') {

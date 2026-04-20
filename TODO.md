@@ -76,4 +76,14 @@
 ### Terminal / PTY
 
 - [ ] PTY output ring buffer — keep last N bytes of output per session in PtyService so webview reloads can replay terminal history and reconnect to the running PTY instead of restarting the session
+- [ ] Terminal font + settings cleanup — `terminal_font_family` and `terminal_font_size` exist on `GeneralSettings` (Rust models + SQLite) but `TerminalSessionManager.TERMINAL_OPTIONS` hardcodes `'Monocraft Nerd Font'` and never reads them. The Svelte-side Terminal settings view was removed (dead UI). Decide: either (a) wire the settings through so users can customize the terminal font + size, or (b) drop the fields from `GeneralSettings`, the SQLite schema, and any migration. Same question applies to anywhere else we "force mono" — confirm we want that locked in or make it configurable.
 - [x] Drag-and-drop image attach into terminal — terminal drop target now handles file/os drops, image payloads are written to temp via `dnd_save_dropped_bytes`, and dropped paths are shell-quoted into the PTY
+
+
+- clicking a git diff file opens the file in the diff view, but if you move to some other file withing the git diff like scroll of open another collapsed oned, clicking the file you openend the diff with wont take you to it, it fails
+- clicking file A opens the file in temp view, double clicking the file now makse it permanent, clicking file B opens a temp, now if you click file A the temp changes to file A, and you end up with two file A tabs, you can continue the process infinitely, duplicating a tab which causese editing issues, you should not be able to do that, you should always be taken to the open file if its open
+- opening a file or sessions or any tab while a "new tab" is open wont close the new tab, i think if we made the new tab always be temporay this would be fixed by heuristics
+- opening a new tab does not focus the cursor on it, NOT THE MOUSE, the cursor/keyboard is what should move focus only
+- monaco is not very smart about updating when a file changes, rn if a file changes and a monaco editor is open, it wont know and keep the outdated file, if a file it open/in view, has no changes and a change has been made we should update the view for that file
+- monaco tabs have various issues with edit history and with keeping changes on tab movement/state changes, for example if i have a monaco tab and i made some chanes to that file, if i move the tab to another pane it resest the file, if change the tab from temp to permanent, it resets the file, and once a file is reset i cant undo or redo chanpes it loses that history
+- 

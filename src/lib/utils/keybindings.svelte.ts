@@ -1,15 +1,59 @@
 // Global keyboard shortcut registry.
 //
 // One listener on window. Handlers register with a normalized key string
-// ("ctrl+shift+p") and are deduped by that string. Skips xterm focus
-// (terminals consume their own keys) but fires against inputs/editors —
-// Ctrl/Meta-prefixed shortcuts are never intended as typed input.
+// ("ctrl+shift+p") and are deduped by that string.
+//
+// Focus-aware dispatch: when DOM focus lives inside a terminal
+// (`[data-terminal-focus-scope]`), the shell keeps the key unless the
+// binding opts in with `skipShell: true`. That single list — Ctrl+Shift+P,
+// zoom, reload-view, show-project-picker — is the user's escape hatch from
+// any TUI that grabs every key. Everything else (Ctrl+W, Ctrl+N, Ctrl+T)
+// falls through to the PTY when the terminal is focused, so bash readline,
+// tmux, nvim, lazygit, etc. keep their native bindings.
+//
+// When the terminal is NOT focused the dispatcher wins unconditionally,
+// so global shortcuts still work from editors, inputs, and chrome.
 
 import { getEffectiveSpec, onOverridesChange } from '$lib/stores/shortcutOverrides.svelte'
+import { closeTransientModals } from '$lib/utils/modalRegistry.svelte'
 
 type ShortcutHandler = (event: KeyboardEvent) => void
 
-const bindings = new Map<string, ShortcutHandler>()
+/**
+ * Per-binding metadata.
+ * `skipShell` — app wins even when focus is inside a terminal.
+ * `keepsModals` — do NOT auto-close transient modals before firing.
+ * Reserve for modal toggles (palette) and in-modal adjustments (zoom)
+ * that the user can reasonably make while a modal is open.
+ */
+interface RegisteredBinding {
+  handler: ShortcutHandler
+  skipShell: boolean
+  keepsModals: boolean
+}
+
+export interface ShortcutOptions {
+  /**
+   * When true, fire this shortcut even if a terminal has DOM focus.
+   * When false (default), defer to the terminal so the shell's own
+   * keybinding wins.
+   */
+  skipShell?: boolean
+
+  /**
+   * When true, do not auto-dismiss transient modals (command palette,
+   * settings) before firing the handler. Set on modal toggles (the
+   * palette toggle would re-open itself otherwise) and on chrome
+   * adjustments users might reasonably make from inside a modal
+   * (zoom, which leaves the modal open so they can keep working).
+   *
+   * Default false — any action-performing shortcut dismisses open
+   * transient modals so the command's result isn't hidden behind one.
+   */
+  keepsModals?: boolean
+}
+
+const bindings = new Map<string, RegisteredBinding>()
 
 // Suspend counter — when non-zero, the global listener no-ops. Lets the
 // rebind dialog capture raw keypresses without triggering the real
@@ -109,14 +153,19 @@ function normalizeEvent(e: KeyboardEvent): string | null {
  * If the same spec is registered twice, the later one wins and a
  * warning is logged — helps catch accidental collisions early.
  */
-export function registerShortcut(spec: string, handler: ShortcutHandler): () => void {
+export function registerShortcut(spec: string, handler: ShortcutHandler, options: ShortcutOptions = {}): () => void {
   const key = normalizeSpec(spec)
   if (bindings.has(key)) {
     console.warn(`[keybindings] overwriting existing binding for "${key}"`)
   }
-  bindings.set(key, handler)
+  const entry: RegisteredBinding = {
+    handler,
+    skipShell: options.skipShell ?? false,
+    keepsModals: options.keepsModals ?? false
+  }
+  bindings.set(key, entry)
   return () => {
-    if (bindings.get(key) === handler) bindings.delete(key)
+    if (bindings.get(key) === entry) bindings.delete(key)
   }
 }
 
@@ -143,27 +192,55 @@ export function isBoundShortcut(e: KeyboardEvent): boolean {
 }
 
 /**
+ * True when DOM focus currently lives inside a terminal surface. Any
+ * element inside a `[data-terminal-focus-scope]` subtree counts — that
+ * attribute is owned by `SessionTerminal.svelte` and wraps xterm's
+ * hidden textarea. Using `activeElement` (queried at dispatch time)
+ * avoids the dual-source-of-truth problem of mirroring xterm's focus
+ * events into a reactive flag.
+ */
+function isTerminalFocused(): boolean {
+  const el = document.activeElement as HTMLElement | null
+  return !!el?.closest('[data-terminal-focus-scope]')
+}
+
+/**
  * Install the single keydown listener. Call once from the root layout.
  *
  * Listens in the CAPTURE phase so user-bound shortcuts win over any
- * focused surface that wants the same key — xterm forwards a Ctrl+V
- * to the PTY, Monaco maps Ctrl+Shift+P to its own palette, INPUTs
- * eat Ctrl+W as delete-prev-word, and so on. Capture phase fires
- * before the event ever reaches the target, so a single
- * preventDefault + stopPropagation here is enough to shadow them
- * all. Unbound keys fall through untouched, leaving normal typing
- * and focused-surface keymaps undisturbed.
+ * focused surface that wants the same key — Monaco maps Ctrl+Shift+P to
+ * its own palette, INPUTs would eat Ctrl+A, etc. Capture fires before
+ * the event reaches the target, so preventDefault + stopPropagation
+ * here is enough to shadow focused-surface handlers.
+ *
+ * Terminal focus is the one exception: when a terminal has focus, the
+ * dispatcher defers to the shell unless the binding is tagged
+ * `skipShell: true`. That keeps readline/tmux/nvim shortcuts alive while
+ * still reserving the escape-hatch bindings (Ctrl+Shift+P, zoom, etc.)
+ * for the app.
  */
 export function installKeybindingListener(): () => void {
   function onKeyDown(e: KeyboardEvent) {
     if (suspendCount > 0) return
     const key = normalizeEvent(e)
     if (!key) return
-    const handler = bindings.get(key)
-    if (!handler) return
+    const entry = bindings.get(key)
+    if (!entry) return
+
+    // Terminal has focus → shell wins unless binding opted into skipShell.
+    // When focus is elsewhere (editor, input, chrome), the app always wins.
+    if (isTerminalFocused() && !entry.skipShell) return
+
     e.preventDefault()
     e.stopPropagation()
-    handler(e)
+
+    // Dismiss open transient modals before firing, so a command-fire
+    // from inside the palette reveals its effect instead of leaving a
+    // stale modal on top. Bindings that would fight this (palette
+    // toggle, zoom) opt out with `keepsModals`.
+    if (!entry.keepsModals) closeTransientModals()
+
+    entry.handler(e)
   }
   window.addEventListener('keydown', onKeyDown, { capture: true })
   const unsubscribe = onOverridesChange(reapplyAllGlobalBindings)
@@ -181,6 +258,8 @@ interface BindingEntry {
   id: string
   defaultSpec: string | undefined
   handler: ShortcutHandler
+  skipShell: boolean
+  keepsModals: boolean
   disposer: (() => void) | null
 }
 
@@ -192,7 +271,10 @@ function applyBinding(entry: BindingEntry): void {
   entry.disposer = null
   const spec = getEffectiveSpec(entry.id, entry.defaultSpec)
   if (!spec) return // explicitly unbound
-  entry.disposer = registerShortcut(spec, entry.handler)
+  entry.disposer = registerShortcut(spec, entry.handler, {
+    skipShell: entry.skipShell,
+    keepsModals: entry.keepsModals
+  })
 }
 
 function reapplyAllGlobalBindings(): void {
@@ -205,18 +287,30 @@ function reapplyAllGlobalBindings(): void {
  * settings UI can change the spec and this binding re-attaches
  * automatically. Returns a disposer that removes both the entry and
  * any live keyboard binding.
+ *
+ * Pass `{ skipShell: true }` for escape-hatch shortcuts that must fire
+ * even when a terminal holds focus (palette, zoom, reload-view). Omit
+ * it for anything that should yield to the shell.
  */
 export function registerGlobalBinding(
   id: string,
   defaultSpec: string | undefined,
-  handler: ShortcutHandler
+  handler: ShortcutHandler,
+  options: ShortcutOptions = {}
 ): () => void {
   const existing = globalBindings.get(id)
   if (existing) {
     console.warn(`[keybindings] overwriting global binding for id "${id}"`)
     existing.disposer?.()
   }
-  const entry: BindingEntry = { id, defaultSpec, handler, disposer: null }
+  const entry: BindingEntry = {
+    id,
+    defaultSpec,
+    handler,
+    skipShell: options.skipShell ?? false,
+    keepsModals: options.keepsModals ?? false,
+    disposer: null
+  }
   globalBindings.set(id, entry)
   applyBinding(entry)
   return () => {
