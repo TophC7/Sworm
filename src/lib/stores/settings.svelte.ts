@@ -1,5 +1,5 @@
 import { backend } from '$lib/api/backend'
-import type { GeneralSettings, ProviderConfig, SettingsPayload } from '$lib/types/backend'
+import type { FormattingSettings, GeneralSettings, ProviderConfig, SettingsPayload } from '$lib/types/backend'
 
 let settings = $state<SettingsPayload | null>(null)
 let loading = $state(false)
@@ -27,6 +27,17 @@ export async function saveGeneralSettings(nextSettings: GeneralSettings) {
     settings = {
       ...settings,
       general: saved
+    }
+  }
+  return saved
+}
+
+export async function saveFormattingSettings(nextSettings: FormattingSettings) {
+  const saved = await backend.settings.setFormatting(nextSettings)
+  if (settings) {
+    settings = {
+      ...settings,
+      formatting: saved
     }
   }
   return saved

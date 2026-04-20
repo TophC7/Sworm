@@ -1,11 +1,9 @@
-// Nix language support for Monaco: configuration, snippets, formatting, and linting.
+// Nix language support for Monaco: configuration and snippets.
 //
 // Adapted from vscode-nix-ide. Called once during Monaco init after the
 // 'nix' language ID is registered via Shiki.
 
-import { backend } from '$lib/api/backend'
-
-/** Register language config, snippets, and formatting for Nix. */
+/** Register language config and snippets for Nix. */
 export function registerNixLanguage(monaco: typeof import('monaco-editor')) {
   // ── Language configuration ──────────────────────────────────────
   monaco.languages.setLanguageConfiguration('nix', {
@@ -70,19 +68,6 @@ export function registerNixLanguage(monaco: typeof import('monaco-editor')) {
           documentation: s.documentation,
           range
         }))
-      }
-    }
-  })
-
-  // ── Formatting via nixfmt ───────────────────────────────────────
-  monaco.languages.registerDocumentFormattingEditProvider('nix', {
-    async provideDocumentFormattingEdits(model) {
-      try {
-        const formatted = await backend.nix.format(model.getValue())
-        return [{ range: model.getFullModelRange(), text: formatted }]
-      } catch (e) {
-        console.warn('nixfmt:', e)
-        return []
       }
     }
   })

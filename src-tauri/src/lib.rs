@@ -71,7 +71,11 @@ pub fn run() {
             // Settings commands
             commands::settings::settings_get,
             commands::settings::settings_set_general,
+            commands::settings::settings_set_formatting,
             commands::settings::settings_set_provider_config,
+            // Formatter commands
+            commands::formatting::formatting_format_biome,
+            commands::formatting::formatting_format_nixfmt,
             // Session commands
             commands::sessions::session_create,
             commands::sessions::session_list,
@@ -144,6 +148,13 @@ pub fn run() {
             commands::git::git_show_file,
             commands::git::git_init,
             commands::git::git_clone_in_place,
+            // LSP commands
+            commands::lsp::lsp_list_extensions,
+            commands::lsp::lsp_list_servers,
+            commands::lsp::lsp_set_server_config,
+            commands::lsp::lsp_start,
+            commands::lsp::lsp_send,
+            commands::lsp::lsp_stop,
             // PTY demo commands (kept for backwards compat)
             commands::pty::pty_demo_start,
             commands::pty::pty_demo_write,
@@ -163,8 +174,13 @@ pub fn run() {
             // unflushed tail" holds on clean shutdown as well.
             state.transcript_batcher.flush_all();
             let cleaned = state.pty.kill_all();
+            let lsp_cleaned = state.lsp.kill_all();
             state.transcript.shutdown_and_join();
-            tracing::info!("App exit cleanup finished, killed {} PTY sessions", cleaned);
+            tracing::info!(
+                "App exit cleanup finished, killed {} PTY sessions and {} LSP sessions",
+                cleaned,
+                lsp_cleaned
+            );
         }
     });
 }

@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::provider::ProviderStatus;
-use crate::services::settings::{GeneralSettings, ProviderConfigRecord, SettingsService};
+use crate::services::settings::{
+    FormattingSettings, GeneralSettings, ProviderConfigRecord, SettingsService,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +15,7 @@ pub struct ProviderSettingsEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPayload {
     pub general: GeneralSettings,
+    pub formatting: FormattingSettings,
     pub providers: Vec<ProviderSettingsEntry>,
 }
 
@@ -28,6 +31,8 @@ pub struct SaveProviderConfigInput {
 pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload, ApiError> {
     let db = state.db.lock();
     let general = SettingsService::get_general_settings(db.conn()).map_err(ApiError::Database)?;
+    let formatting =
+        SettingsService::get_formatting_settings(db.conn()).map_err(ApiError::Database)?;
     let overrides =
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
@@ -50,6 +55,7 @@ pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload
 
     Ok(SettingsPayload {
         general,
+        formatting,
         providers: entries,
     })
 }
@@ -62,6 +68,16 @@ pub fn settings_set_general(
     let db = state.db.lock();
     SettingsService::set_general_settings(db.conn(), &settings).map_err(ApiError::Database)?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn settings_set_formatting(
+    formatting: FormattingSettings,
+    state: tauri::State<'_, AppState>,
+) -> Result<FormattingSettings, ApiError> {
+    let db = state.db.lock();
+    SettingsService::set_formatting_settings(db.conn(), &formatting).map_err(ApiError::Database)?;
+    Ok(formatting)
 }
 
 #[tauri::command]

@@ -74,6 +74,18 @@ export interface GeneralSettings {
   nix_eval_timeout_secs: number
 }
 
+export type FormatterSelection = 'auto' | 'lsp' | 'biome' | 'nixfmt' | 'disabled'
+
+export interface FormattingLanguageSettings {
+  formatter: FormatterSelection
+}
+
+export interface FormattingSettings {
+  javascript_typescript: FormattingLanguageSettings
+  json: FormattingLanguageSettings
+  nix: FormattingLanguageSettings
+}
+
 export interface ProviderConfig {
   provider_id: string
   enabled: boolean
@@ -88,8 +100,114 @@ export interface ProviderSettingsEntry {
 
 export interface SettingsPayload {
   general: GeneralSettings
+  formatting: FormattingSettings
   providers: ProviderSettingsEntry[]
 }
+
+export type LspTraceLevel = 'off' | 'messages' | 'verbose'
+export type LspRuntimeKind = 'host_binary' | 'bundled_binary' | 'extension_binary' | 'bundled_js' | 'extension_js'
+export type LspServerConnectionStatus = 'connected' | 'missing' | 'error' | 'disabled'
+export type LspTransportTraceDirection = 'incoming' | 'outgoing' | 'stderr'
+
+export interface LspLanguageContribution {
+  id: string
+  label: string
+  aliases: string[]
+  extensions: string[]
+  filenames: string[]
+}
+
+export interface LspDocumentSelector {
+  language: string | null
+  extensions: string[]
+  filenames: string[]
+}
+
+export interface LspServerCatalogEntry {
+  server_definition_id: string
+  extension_id: string
+  extension_label: string
+  label: string
+  install_hint: string
+  runtime_kind: LspRuntimeKind
+  command: string
+  runtime_command: string | null
+  entry_path: string | null
+  args: string[]
+  document_selectors: LspDocumentSelector[]
+  initialization_options: unknown
+  built_in: boolean
+}
+
+export interface LspExtensionEntry {
+  id: string
+  label: string
+  built_in: boolean
+  source_path: string | null
+  languages: LspLanguageContribution[]
+  servers: LspServerCatalogEntry[]
+}
+
+export interface LspServerConfig {
+  server_definition_id: string
+  enabled: boolean
+  binary_path_override: string | null
+  runtime_path_override: string | null
+  runtime_args: string[]
+  extra_args: string[]
+  trace: LspTraceLevel
+  settings_json: string | null
+}
+
+export interface LspServerStatus {
+  server_definition_id: string
+  extension_id: string
+  extension_label: string
+  label: string
+  enabled: boolean
+  status: LspServerConnectionStatus
+  resolved_path: string | null
+  runtime_resolved_path: string | null
+  message: string | null
+  install_hint: string
+  document_selectors: LspDocumentSelector[]
+  initialization_options: unknown
+}
+
+export interface LspServerSettingsEntry {
+  server: LspServerStatus
+  config: LspServerConfig
+}
+
+export type LspEvent =
+  | {
+      type: 'started'
+      session_id: string
+      pid: number | null
+      resolved_path: string | null
+      runtime_resolved_path: string | null
+    }
+  | {
+      type: 'message'
+      session_id: string
+      payload_json: string
+    }
+  | {
+      type: 'trace'
+      session_id: string
+      direction: LspTransportTraceDirection
+      payload: string
+    }
+  | {
+      type: 'exit'
+      session_id: string
+      code: number | null
+    }
+  | {
+      type: 'error'
+      session_id: string
+      message: string
+    }
 
 export interface GitChange {
   path: string

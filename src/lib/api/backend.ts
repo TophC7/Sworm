@@ -16,6 +16,7 @@ import type {
   GitSummary,
   GraphCommit,
   GeneralSettings,
+  FormattingSettings,
   NixDetection,
   NixDiagnostic,
   NixEnvRecord,
@@ -25,7 +26,11 @@ import type {
   Session,
   SettingsPayload,
   StashEntry,
-  ProviderConfig
+  ProviderConfig,
+  LspEvent,
+  LspExtensionEntry,
+  LspServerConfig,
+  LspServerSettingsEntry
 } from '$lib/types/backend'
 
 export const backend = {
@@ -379,8 +384,61 @@ export const backend = {
     setGeneral(settings: GeneralSettings): Promise<GeneralSettings> {
       return invoke<GeneralSettings>('settings_set_general', { settings })
     },
+    setFormatting(formatting: FormattingSettings): Promise<FormattingSettings> {
+      return invoke<FormattingSettings>('settings_set_formatting', { formatting })
+    },
     setProviderConfig(config: ProviderConfig): Promise<ProviderConfig> {
       return invoke<ProviderConfig>('settings_set_provider_config', { config })
+    }
+  },
+
+  formatting: {
+    biome(projectId: string, filePath: string, content: string): Promise<string> {
+      return invoke<string>('formatting_format_biome', { projectId, filePath, content })
+    },
+    nixfmt(projectId: string, content: string): Promise<string> {
+      return invoke<string>('formatting_format_nixfmt', { projectId, content })
+    }
+  },
+
+  lsp: {
+    listExtensions(): Promise<LspExtensionEntry[]> {
+      return invoke<LspExtensionEntry[]>('lsp_list_extensions')
+    },
+    listServers(projectId?: string): Promise<LspServerSettingsEntry[]> {
+      return invoke<LspServerSettingsEntry[]>('lsp_list_servers', {
+        projectId: projectId ?? null
+      })
+    },
+    setServerConfig(config: LspServerConfig): Promise<LspServerConfig> {
+      return invoke<LspServerConfig>('lsp_set_server_config', { config })
+    },
+    createEventChannel(onEvent: (event: LspEvent) => void): Channel<LspEvent> {
+      const events = new Channel<LspEvent>()
+      events.onmessage = onEvent
+      return events
+    },
+    start(
+      sessionId: string,
+      projectId: string,
+      serverDefinitionId: string,
+      rootPath: string,
+      onEvent: (event: LspEvent) => void
+    ): Promise<void> {
+      const events = backend.lsp.createEventChannel(onEvent)
+      return invoke('lsp_start', {
+        sessionId,
+        projectId,
+        serverDefinitionId,
+        rootPath,
+        events
+      })
+    },
+    send(sessionId: string, messageJson: string): Promise<void> {
+      return invoke('lsp_send', { sessionId, messageJson })
+    },
+    stop(sessionId: string): Promise<void> {
+      return invoke('lsp_stop', { sessionId })
     }
   }
 }

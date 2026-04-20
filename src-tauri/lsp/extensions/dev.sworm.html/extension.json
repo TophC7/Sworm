@@ -1,0 +1,22 @@
+{
+  "id": "dev.sworm.html",
+  "label": "HTML",
+  "servers": [
+    {
+      "id": "vscode-html-language-server",
+      "label": "HTML Language Server",
+      "runtime": {
+        "kind": "host_binary",
+        "command": "vscode-html-language-server"
+      },
+      "args": ["--stdio"],
+      "install_hint": "Install `vscode-langservers-extracted` and ensure `vscode-html-language-server` is on PATH.",
+      "document_selectors": [
+        {
+          "language": "html",
+          "extensions": [".html", ".htm"]
+        }
+      ]
+    }
+  ]
+}

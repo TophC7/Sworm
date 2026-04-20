@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import EmptyState from '$lib/components/EmptyState.svelte'
   import ProjectView from '$lib/components/ProjectView.svelte'
+  import { preloadLspCatalog } from '$lib/lsp/catalog'
   import { getActiveProject, getProjects, loadProjects } from '$lib/stores/projects.svelte'
   import { loadProviders } from '$lib/stores/providers.svelte'
   import { restoreAppShellState } from '$lib/stores/workspace.svelte'
@@ -20,6 +21,7 @@
       try {
         await loadProjects()
         void loadProviders()
+        await preloadLspCatalog()
         const validIds = new Set(getProjects().map((project) => project.id))
         await restoreAppShellState(validIds)
       } catch (error) {

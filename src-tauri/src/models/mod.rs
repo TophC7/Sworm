@@ -1,5 +1,6 @@
 pub mod activity_map;
 pub mod file_diff;
+pub mod lsp;
 pub mod nix_env;
 pub mod project;
 pub mod provider;

@@ -34,6 +34,7 @@
 ### Editor
 
 - [ ] Editor settings — expose Monaco options and editor extensions as user-configurable settings (similar to VS Code's `.vscode/settings.json`). Start with: `renderWhitespace` (currently hardcoded to `'all'`), indent rainbow toggle (currently command-only), `tabSize`, `fontSize`, `wordWrap`. Store per-project or globally. Eventually support a `.sworm/settings.json` or equivalent
+- [ ] Bundled LSP runtime support — add real launch support for `bundled_binary` / `bundled_js` extension manifests by packaging server assets into app/extension resources, resolving those resource paths at runtime, and surfacing clear status/errors in `Settings -> Languages`
 - [ ] Open in Fresh from editor toolbar — the "Open in Fresh" icon button in FileEditor's toolbar doesn't work when no Fresh session is pre-existing. `ensureFreshSession` creates the session and `waitForSessionReady` confirms the PTY is running, but `backend.editor.openFile` (which calls `fresh --cmd session open-file`) fails silently — Fresh's internal session server isn't ready to accept commands yet even though the PTY status is 'running'. Needs investigation into the gap between PTY running and Fresh session server accepting commands (socket/pipe readiness). Possible fixes: poll Fresh's session socket directly, add a ready-check command to Fresh, or increase wait time with Fresh-specific readiness probe
 
 ### Markdown
@@ -86,4 +87,5 @@
 - opening a new tab does not focus the cursor on it, NOT THE MOUSE, the cursor/keyboard is what should move focus only
 - monaco is not very smart about updating when a file changes, rn if a file changes and a monaco editor is open, it wont know and keep the outdated file, if a file it open/in view, has no changes and a change has been made we should update the view for that file
 - monaco tabs have various issues with edit history and with keeping changes on tab movement/state changes, for example if i have a monaco tab and i made some chanes to that file, if i move the tab to another pane it resest the file, if change the tab from temp to permanent, it resets the file, and once a file is reset i cant undo or redo chanpes it loses that history
-- 
+- monaco editor should show the lines that have git changes
+- the diff viwe monacos are read only which it fine by me, but we might need an editing mode for the diff view, unsure how this should work

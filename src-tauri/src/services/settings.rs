@@ -10,6 +10,96 @@ pub struct ProviderConfigRecord {
     pub extra_args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LspTraceLevel {
+    Off,
+    Messages,
+    Verbose,
+}
+
+impl LspTraceLevel {
+    fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Messages => "messages",
+            Self::Verbose => "verbose",
+        }
+    }
+
+    fn from_db_str(value: &str) -> Self {
+        match value {
+            "messages" => Self::Messages,
+            "verbose" => Self::Verbose,
+            _ => Self::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatterSelection {
+    #[default]
+    Auto,
+    Lsp,
+    Biome,
+    Nixfmt,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FormattingLanguageSettings {
+    #[serde(default)]
+    pub formatter: FormatterSelection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormattingSettings {
+    #[serde(default)]
+    pub javascript_typescript: FormattingLanguageSettings,
+    #[serde(default)]
+    pub json: FormattingLanguageSettings,
+    #[serde(default)]
+    pub nix: FormattingLanguageSettings,
+}
+
+impl Default for FormattingSettings {
+    fn default() -> Self {
+        Self {
+            javascript_typescript: FormattingLanguageSettings::default(),
+            json: FormattingLanguageSettings::default(),
+            nix: FormattingLanguageSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerConfigRecord {
+    pub server_definition_id: String,
+    pub enabled: bool,
+    pub binary_path_override: Option<String>,
+    pub runtime_path_override: Option<String>,
+    pub runtime_args: Vec<String>,
+    pub extra_args: Vec<String>,
+    pub trace: LspTraceLevel,
+    pub settings_json: Option<String>,
+}
+
+impl LspServerConfigRecord {
+    pub fn default_for(server_definition_id: &str) -> Self {
+        Self {
+            server_definition_id: server_definition_id.to_string(),
+            enabled: true,
+            binary_path_override: None,
+            runtime_path_override: None,
+            runtime_args: Vec::new(),
+            extra_args: Vec::new(),
+            trace: LspTraceLevel::Off,
+            settings_json: None,
+        }
+    }
+}
+
 impl ProviderConfigRecord {
     pub fn default_for(provider_id: &str) -> Self {
         Self {
@@ -88,6 +178,23 @@ impl SettingsService {
         let serialized = serde_json::to_string(settings)
             .map_err(|error| format!("Failed to serialize general settings: {}", error))?;
         Self::set(conn, "general", &serialized).map_err(|error| error.to_string())
+    }
+
+    pub fn get_formatting_settings(conn: &Connection) -> Result<FormattingSettings, String> {
+        match Self::get(conn, "formatting").map_err(|error| error.to_string())? {
+            Some(value) => serde_json::from_str(&value)
+                .map_err(|error| format!("Failed to parse formatting settings: {}", error)),
+            None => Ok(FormattingSettings::default()),
+        }
+    }
+
+    pub fn set_formatting_settings(
+        conn: &Connection,
+        settings: &FormattingSettings,
+    ) -> Result<(), String> {
+        let serialized = serde_json::to_string(settings)
+            .map_err(|error| format!("Failed to serialize formatting settings: {}", error))?;
+        Self::set(conn, "formatting", &serialized).map_err(|error| error.to_string())
     }
 
     pub fn get_provider_config(
@@ -179,5 +286,118 @@ impl SettingsService {
         }
 
         Ok(overrides)
+    }
+
+    pub fn get_lsp_server_config(
+        conn: &Connection,
+        server_definition_id: &str,
+    ) -> Result<Option<LspServerConfigRecord>, String> {
+        conn.query_row(
+            "SELECT
+                server_definition_id,
+                enabled,
+                binary_path_override,
+                runtime_path_override,
+                runtime_args_json,
+                extra_args_json,
+                trace,
+                settings_json
+             FROM lsp_server_configs
+             WHERE server_definition_id = ?1",
+            [server_definition_id],
+            |row| {
+                let runtime_args_json: Option<String> = row.get(4)?;
+                let extra_args_json: Option<String> = row.get(5)?;
+
+                let runtime_args = runtime_args_json
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<String>>)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .unwrap_or_default();
+
+                let extra_args = extra_args_json
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<String>>)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .unwrap_or_default();
+
+                let trace: String = row.get(6)?;
+
+                Ok(LspServerConfigRecord {
+                    server_definition_id: row.get(0)?,
+                    enabled: row.get::<_, i64>(1)? != 0,
+                    binary_path_override: row.get(2)?,
+                    runtime_path_override: row.get(3)?,
+                    runtime_args,
+                    extra_args,
+                    trace: LspTraceLevel::from_db_str(&trace),
+                    settings_json: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load LSP server config: {}", error))
+    }
+
+    pub fn save_lsp_server_config(
+        conn: &Connection,
+        config: &LspServerConfigRecord,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let runtime_args_json = serde_json::to_string(&config.runtime_args)
+            .map_err(|error| format!("Failed to serialize runtime args: {}", error))?;
+        let extra_args_json = serde_json::to_string(&config.extra_args)
+            .map_err(|error| format!("Failed to serialize LSP args: {}", error))?;
+
+        conn.execute(
+            "INSERT INTO lsp_server_configs (
+                server_definition_id,
+                enabled,
+                binary_path_override,
+                runtime_path_override,
+                runtime_args_json,
+                extra_args_json,
+                trace,
+                settings_json,
+                updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(server_definition_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                binary_path_override = excluded.binary_path_override,
+                runtime_path_override = excluded.runtime_path_override,
+                runtime_args_json = excluded.runtime_args_json,
+                extra_args_json = excluded.extra_args_json,
+                trace = excluded.trace,
+                settings_json = excluded.settings_json,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                config.server_definition_id,
+                if config.enabled { 1 } else { 0 },
+                config.binary_path_override,
+                config.runtime_path_override,
+                runtime_args_json,
+                extra_args_json,
+                config.trace.as_db_str(),
+                config.settings_json,
+                now
+            ],
+        )
+        .map_err(|error| format!("Failed to save LSP server config: {}", error))?;
+
+        Ok(())
     }
 }

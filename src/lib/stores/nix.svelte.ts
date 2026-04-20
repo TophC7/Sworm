@@ -1,6 +1,7 @@
 // Per-project Nix environment state using Svelte 5 runes.
 
 import { backend } from '$lib/api/backend'
+import { refreshLspProjectEnvironment } from '$lib/lsp/registry'
 import type { NixDetection, NixEnvRecord } from '$lib/types/backend'
 
 let nixState = $state<Map<string, NixDetection>>(new Map())
@@ -28,6 +29,7 @@ export async function selectNixFile(projectId: string, nixFile: string): Promise
     nixState.set(projectId, { ...current, selected: record })
     nixState = new Map(nixState)
   }
+  await refreshLspProjectEnvironment(projectId)
   return record
 }
 
@@ -41,6 +43,7 @@ export async function evaluateNix(projectId: string): Promise<NixEnvRecord> {
       nixState.set(projectId, { ...current, selected: record })
       nixState = new Map(nixState)
     }
+    await refreshLspProjectEnvironment(projectId)
     return record
   } finally {
     evaluating.delete(projectId)
@@ -55,4 +58,5 @@ export async function clearNix(projectId: string): Promise<void> {
     nixState.set(projectId, { ...current, selected: null })
     nixState = new Map(nixState)
   }
+  await refreshLspProjectEnvironment(projectId)
 }

@@ -244,13 +244,19 @@
               pkgs.git
               pkgs.gsettings-desktop-schemas
               pkgs.jq
+              pkgs.biome
               pkgs.nixfmt
+              pkgs.nil
               pkgs.openssl
               pkgs.ripgrep
               pkgs.rust-analyzer
               pkgs.rustc
               pkgs.rustfmt
               pkgs.shared-mime-info
+              pkgs.svelte-language-server
+              pkgs.tailwindcss-language-server
+              pkgs.vtsls
+              pkgs.vscode-langservers-extracted
               pkgs.wget
             ];
 

@@ -17,8 +17,10 @@
     AppWindow,
     SaveIcon,
     ChevronRight,
+    FileCodeIcon,
     LoaderCircle,
     PackageIcon,
+    PaintbrushIcon,
     SettingsIcon,
     X
   } from '$lib/icons/lucideExports'
@@ -32,6 +34,8 @@
   // outside Tauri (e.g. vite preview).
   const versionPromise: Promise<string | null> = getVersion().catch(() => null)
   import GeneralView from './settings/GeneralView.svelte'
+  import FormattingView from './settings/FormattingView.svelte'
+  import LanguagesView from './settings/LanguagesView.svelte'
   import NixView from './settings/NixView.svelte'
   import ProvidersView from './settings/ProvidersView.svelte'
   import WindowView from './settings/WindowView.svelte'
@@ -40,7 +44,7 @@
 
   // NAV //
 
-  type View = 'general' | 'providers' | 'window' | 'nix'
+  type View = 'general' | 'providers' | 'languages' | 'formatting' | 'window' | 'nix'
 
   // NOTE: Nix has no Lucide match, so it uses the project's nixos.svg
   // via a mask span. `icon: null` flags the special render branch.
@@ -48,6 +52,8 @@
   const NAV: NavItem[] = [
     { id: 'general', label: 'General', icon: SettingsIcon },
     { id: 'providers', label: 'Providers', icon: PackageIcon },
+    { id: 'languages', label: 'Languages', icon: FileCodeIcon },
+    { id: 'formatting', label: 'Formatting', icon: PaintbrushIcon },
     { id: 'window', label: 'Window', icon: AppWindow },
     { id: 'nix', label: 'Nix', icon: null }
   ]
@@ -96,7 +102,7 @@
     if (!v) onClose()
   }}
 >
-  <DialogContent class="h-[min(640px,85vh)] max-w-[880px] overflow-hidden bg-ground p-0" onModalClose={onClose}>
+  <DialogContent class="h-full max-h-224 max-w-5xl overflow-hidden bg-ground p-0" onModalClose={onClose}>
     <div class="flex h-full min-h-0">
       <!-- SIDEBAR //-->
       <aside class="flex w-[200px] shrink-0 flex-col border-r border-edge">
@@ -146,6 +152,10 @@
             <GeneralView />
           {:else if active === 'providers'}
             <ProvidersView {onSaving} {onSaved} />
+          {:else if active === 'languages'}
+            <LanguagesView {onSaving} {onSaved} />
+          {:else if active === 'formatting'}
+            <FormattingView {onSaving} {onSaved} />
           {:else if active === 'window'}
             <WindowView />
           {:else if active === 'nix'}

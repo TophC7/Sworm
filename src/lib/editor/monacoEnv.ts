@@ -7,6 +7,8 @@ import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
+import { ensureMonacoFormatters } from '$lib/editor/formatters/registry'
+import { ensureMonacoLsp } from '$lib/lsp/registry'
 import { registerSwormTheme, SWORM_SHIKI_THEME } from '$lib/editor/monacoTheme'
 
 self.MonacoEnvironment = {
@@ -22,6 +24,69 @@ self.MonacoEnvironment = {
 // Languages where Shiki's TextMate grammars replace Monaco's missing
 // or inadequate Monarch tokenizers.
 const SHIKI_LANGUAGES = ['nix', 'svelte', 'fish'] as const
+
+interface TsLanguageDefaults {
+  modeConfiguration: {
+    documentRangeFormattingEdits?: boolean
+    onTypeFormattingEdits?: boolean
+  }
+  setDiagnosticsOptions(options: {
+    noSemanticValidation: boolean
+    noSyntaxValidation: boolean
+    noSuggestionDiagnostics: boolean
+  }): void
+  setModeConfiguration(options: {
+    documentRangeFormattingEdits?: boolean
+    onTypeFormattingEdits?: boolean
+  }): void
+}
+
+interface CssLanguageDefaults {
+  setDiagnosticsOptions(options: {
+    validate?: boolean
+  }): void
+}
+
+interface JsonLanguageDefaults {
+  modeConfiguration: {
+    documentFormattingEdits?: boolean
+    documentRangeFormattingEdits?: boolean
+  }
+  setModeConfiguration(options: {
+    documentFormattingEdits?: boolean
+    documentRangeFormattingEdits?: boolean
+  }): void
+}
+
+const DISABLED_TS_DIAGNOSTICS = {
+  noSemanticValidation: true,
+  noSyntaxValidation: true,
+  noSuggestionDiagnostics: true
+} as const
+
+function getTsLanguageService(monaco: typeof import('monaco-editor')): {
+  javascriptDefaults: TsLanguageDefaults
+  typescriptDefaults: TsLanguageDefaults
+} {
+  return monaco.languages.typescript as unknown as {
+    javascriptDefaults: TsLanguageDefaults
+    typescriptDefaults: TsLanguageDefaults
+  }
+}
+
+function getCssLanguageServices(monaco: typeof import('monaco-editor')): CssLanguageDefaults[] {
+  const cssLanguages = monaco.languages.css as unknown as {
+    cssDefaults: CssLanguageDefaults
+    scssDefaults: CssLanguageDefaults
+    lessDefaults: CssLanguageDefaults
+  }
+
+  return [cssLanguages.cssDefaults, cssLanguages.scssDefaults, cssLanguages.lessDefaults]
+}
+
+function getJsonLanguageService(monaco: typeof import('monaco-editor')): JsonLanguageDefaults {
+  return (monaco.languages.json as unknown as { jsonDefaults: JsonLanguageDefaults }).jsonDefaults
+}
 
 /** One-time Monaco setup: Shiki tokenization, theme, keybinding overrides. */
 let initPromise: Promise<void> | null = null
@@ -49,9 +114,42 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
     shikiToMonaco(highlighter, monaco)
     registerSwormTheme(monaco)
 
+    // Keep Monaco's built-in language features as fallback when an
+    // external LSP is missing or disabled, but suppress TS diagnostics
+    // because Monaco's standalone TS worker misreads Sworm's project
+    // alias/runtime environment and produces false positives.
+    const tsLanguageService = getTsLanguageService(monaco)
+    tsLanguageService.javascriptDefaults.setDiagnosticsOptions(DISABLED_TS_DIAGNOSTICS)
+    tsLanguageService.typescriptDefaults.setDiagnosticsOptions(DISABLED_TS_DIAGNOSTICS)
+    tsLanguageService.javascriptDefaults.setModeConfiguration({
+      ...tsLanguageService.javascriptDefaults.modeConfiguration,
+      documentRangeFormattingEdits: false,
+      onTypeFormattingEdits: false
+    })
+    tsLanguageService.typescriptDefaults.setModeConfiguration({
+      ...tsLanguageService.typescriptDefaults.modeConfiguration,
+      documentRangeFormattingEdits: false,
+      onTypeFormattingEdits: false
+    })
+
+    const jsonLanguageService = getJsonLanguageService(monaco)
+    jsonLanguageService.setModeConfiguration({
+      ...jsonLanguageService.modeConfiguration,
+      documentFormattingEdits: false,
+      documentRangeFormattingEdits: false
+    })
+
+    // CSS diagnostics stay off even without an external LSP so Tailwind
+    // at-rules like @source and @apply do not regress to false errors.
+    for (const cssLanguageService of getCssLanguageServices(monaco)) {
+      cssLanguageService.setDiagnosticsOptions({ validate: false })
+    }
+
     // Language-specific configuration (after Shiki registers language IDs)
     const { registerNixLanguage } = await import('$lib/editor/languages/nix')
     registerNixLanguage(monaco)
+    await ensureMonacoLsp(monaco)
+    await ensureMonacoFormatters(monaco)
 
     const { KeyMod, KeyCode } = monaco
     monaco.editor.addKeybindingRules([

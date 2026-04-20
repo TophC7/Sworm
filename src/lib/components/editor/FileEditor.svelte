@@ -56,6 +56,7 @@
   let isBinary = $derived(filePath != null && isBinaryFile(filePath))
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
+  let lspUriPath = $derived(filePath != null && !gitRef ? `${projectPath}/${filePath}` : null)
   let mode = $state<Mode>('split')
 
   // Debounce preview updates in split mode so the markdown parser doesn't
@@ -157,11 +158,43 @@
         // reload, but editContent already matches so no flash.
         renameEditorTab(projectId, tabId, targetRel)
       }
-      if (isNix) lintNix()
+      if (isNix) {
+        if (await shouldUseLegacyNixLint(targetRel)) {
+          await lintNix()
+        } else {
+          lintDiagnostics = []
+        }
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
     } finally {
       saving = false
+    }
+  }
+
+  async function shouldUseLegacyNixLint(target: string): Promise<boolean> {
+    try {
+      const servers = await backend.lsp.listServers(projectId)
+      const fileName = target.split('/').pop() ?? target
+      const extension = normalizeExtension(target.includes('.') ? target.slice(target.lastIndexOf('.')) : '')
+
+      const hasConnectedNixLsp = servers.some(
+        (entry) =>
+          entry.config.enabled &&
+          entry.server.status === 'connected' &&
+          entry.server.document_selectors.some(
+            (selector) =>
+              selector.language === 'nix' ||
+              selector.filenames.includes(fileName) ||
+              (extension.length > 0 &&
+                selector.extensions.some((value) => normalizeExtension(value) === extension))
+          )
+      )
+
+      return !hasConnectedNixLsp
+    } catch (e) {
+      console.warn('nix-lsp-status:', e)
+      return true
     }
   }
 
@@ -176,6 +209,12 @@
       console.warn('nix-lint:', e)
       if (filePath === target) lintDiagnostics = []
     }
+  }
+
+  function normalizeExtension(value: string): string {
+    const trimmed = value.trim().toLowerCase()
+    if (!trimmed) return ''
+    return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
   }
 
   async function openInFresh() {
@@ -322,13 +361,19 @@
     {:else if isMarkdown && mode === 'split'}
       <ResizablePaneGroup direction="horizontal">
         <ResizablePane defaultSize={50} minSize={20}>
-          <MonacoEditor
-            value={editContent}
-            {language}
-            readonly={isReadonly}
-            wordWrap={true}
-            onchange={handleEditorChange}
-          />
+          {#key `${lspUriPath ?? `untitled:${tabId}`}:${language}` }
+            <MonacoEditor
+              value={editContent}
+              {language}
+              readonly={isReadonly}
+              wordWrap={true}
+              onchange={handleEditorChange}
+              uriPath={lspUriPath}
+              {projectId}
+              {projectPath}
+              lspEnabled={!isReadonly}
+            />
+          {/key}
         </ResizablePane>
         <ResizableHandle />
         <ResizablePane defaultSize={50} minSize={20}>
@@ -339,13 +384,19 @@
       </ResizablePaneGroup>
     {:else}
       <!-- Full-bleed editor for code files or markdown in edit-only mode -->
-      <MonacoEditor
-        value={editContent}
-        {language}
-        readonly={isReadonly}
-        wordWrap={isMarkdown}
-        onchange={handleEditorChange}
-      />
+      {#key `${lspUriPath ?? `untitled:${tabId}`}:${language}` }
+        <MonacoEditor
+          value={editContent}
+          {language}
+          readonly={isReadonly}
+          wordWrap={isMarkdown}
+          onchange={handleEditorChange}
+          uriPath={lspUriPath}
+          {projectId}
+          {projectPath}
+          lspEnabled={!isReadonly}
+        />
+      {/key}
     {/if}
   </div>
 </div>

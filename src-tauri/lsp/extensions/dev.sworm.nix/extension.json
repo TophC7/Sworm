@@ -1,0 +1,30 @@
+{
+  "id": "dev.sworm.nix",
+  "label": "Nix",
+  "languages": [
+    {
+      "id": "nix",
+      "label": "Nix",
+      "aliases": ["nix"],
+      "extensions": [".nix"]
+    }
+  ],
+  "servers": [
+    {
+      "id": "nil",
+      "label": "nil Language Server",
+      "runtime": {
+        "kind": "host_binary",
+        "command": "nil"
+      },
+      "args": [],
+      "install_hint": "Install `nil` and ensure `nil` is on PATH.",
+      "document_selectors": [
+        {
+          "language": "nix",
+          "extensions": [".nix"]
+        }
+      ]
+    }
+  ]
+}

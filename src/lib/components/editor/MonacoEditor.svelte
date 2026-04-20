@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onEditorBlur, onEditorDestroy, onEditorFocus, registerEditor } from '$lib/editor/editorActions.svelte'
   import { attachIndentRainbow, isIndentRainbowEnabled } from '$lib/editor/extensions/indentRainbow.svelte'
+  import { attachLspModel, detachLspModel } from '$lib/lsp/registry'
+  import { consumeEditorReveal } from '$lib/stores/editorNavigation.svelte'
   import { SWORM_THEME_NAME } from '$lib/editor/monacoTheme'
   import { onMount } from 'svelte'
 
@@ -9,18 +11,27 @@
     language = 'plaintext',
     readonly = false,
     wordWrap = false,
-    onchange
+    onchange,
+    uriPath = null,
+    projectId = null,
+    projectPath = null,
+    lspEnabled = true
   }: {
     value?: string
     language?: string
     readonly?: boolean
     wordWrap?: boolean
     onchange?: (value: string) => void
+    uriPath?: string | null
+    projectId?: string | null
+    projectPath?: string | null
+    lspEnabled?: boolean
   } = $props()
 
   let containerEl = $state<HTMLDivElement | null>(null)
   let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
   let monaco: typeof import('monaco-editor') | null = null
+  let model: import('monaco-editor').editor.ITextModel | null = null
   let indentRainbow: import('$lib/editor/extensions/indentRainbow.svelte').IndentRainbowHandle | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
@@ -37,9 +48,12 @@
       monaco = m
       await initMonaco(m)
 
+      const targetUri = uriPath ? m.Uri.file(uriPath) : null
+      // LSP navigation can preload a target model before the editor tab exists.
+      model = targetUri ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri)) : m.editor.createModel(value, language)
+
       editor = m.editor.create(containerEl, {
-        value,
-        language,
+        model,
         theme: SWORM_THEME_NAME,
         readOnly: readonly,
         minimap: { enabled: false },
@@ -70,11 +84,30 @@
           horizontalScrollbarSize: 6,
           useShadows: false
         },
-        quickSuggestions: false,
+        quickSuggestions: {
+          other: true,
+          comments: false,
+          strings: false
+        },
         suggestOnTriggerCharacters: true,
         parameterHints: { enabled: true },
         padding: { top: 12, bottom: 12 }
       })
+
+      if (lspEnabled && model && projectId && projectPath) {
+        void attachLspModel(model, { projectId, projectPath })
+      }
+
+      if (editor && projectId && uriPath) {
+        const revealTarget = consumeEditorReveal(projectId, uriPath)
+        if (revealTarget?.kind === 'range') {
+          editor.setSelection(revealTarget)
+          editor.revealRangeInCenter(revealTarget)
+        } else if (revealTarget?.kind === 'position') {
+          editor.setPosition(revealTarget)
+          editor.revealPositionInCenter(revealTarget)
+        }
+      }
 
       lastReportedValue = value
       editor.onDidChangeModelContent(() => {
@@ -102,12 +135,13 @@
       if (editor) {
         onEditorDestroy(editor)
         indentRainbow?.dispose()
-        const model = editor.getModel()
+        if (model) detachLspModel(model)
         editor.dispose()
         model?.dispose()
       }
       resizeObserver?.disconnect()
       editor = null
+      model = null
     }
   })
 

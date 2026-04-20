@@ -4,6 +4,8 @@
 // vs "bash", "plaintext" vs "text"). This map is tailored for Monaco's
 // built-in Monarch tokenizers.
 
+import { getExtensionLanguageForFilePath } from '$lib/lsp/catalog'
+
 // Map of file extension (without dot) to Monaco language ID.
 const EXT_TO_LANG: Record<string, string> = {
   // -- Web fundamentals --
@@ -206,6 +208,8 @@ function getExtension(filePath: string): string {
 export function filePathToLanguage(filePath: string): string {
   const fileName = filePath.split('/').pop() ?? filePath
   const baseName = fileName.split('.').slice(0, -1).join('.') || fileName
+  const extensionLanguage = getExtensionLanguageForFilePath(filePath)
+  if (extensionLanguage) return extensionLanguage
 
   if (FILENAME_TO_LANG[fileName]) return FILENAME_TO_LANG[fileName]
   if (FILENAME_TO_LANG[baseName]) return FILENAME_TO_LANG[baseName]
