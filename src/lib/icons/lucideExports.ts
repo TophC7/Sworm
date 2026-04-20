@@ -2,6 +2,7 @@
 // Reduces import duplication across components
 
 export { default as AlertTriangle } from '@lucide/svelte/icons/alert-triangle'
+export { default as AppWindow } from '@lucide/svelte/icons/app-window'
 export { default as ArchiveIcon } from '@lucide/svelte/icons/archive'
 export { default as ArchiveRestoreIcon } from '@lucide/svelte/icons/archive-restore'
 export { default as ArrowDown } from '@lucide/svelte/icons/arrow-down'
@@ -53,6 +54,7 @@ export { default as PlusCircle } from '@lucide/svelte/icons/plus-circle'
 export { default as RefreshCw, default as RefreshCwIcon } from '@lucide/svelte/icons/refresh-cw'
 export { default as RotateCcwIcon } from '@lucide/svelte/icons/rotate-ccw'
 export { default as RotateCw } from '@lucide/svelte/icons/rotate-cw'
+export { default as SaveIcon } from '@lucide/svelte/icons/save'
 export { default as ScissorsIcon } from '@lucide/svelte/icons/scissors'
 export { default as SearchIcon } from '@lucide/svelte/icons/search'
 export { default as SettingsIcon } from '@lucide/svelte/icons/settings'

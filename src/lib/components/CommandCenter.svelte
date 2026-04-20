@@ -141,7 +141,7 @@
       class="fixed inset-0 z-50 flex translate-y-[-5vh] items-start justify-center pt-[20vh]"
       aria-label="Command center"
     >
-      <div class={cn('w-full max-w-[520px] overflow-hidden rounded-xl border border-edge', 'bg-raised shadow-popover')}>
+      <div class={cn('w-full max-w-xl overflow-hidden rounded-xl border border-edge', 'bg-raised shadow-popover')}>
         <Command vimBindings={false} shouldFilter={false}>
           <CommandInput placeholder={isEditorMode ? 'Editor command...' : 'Type a command...'} bind:value={search} />
           <CommandList class="max-h-[50vh] [scroll-padding-block:0.5rem]">
@@ -197,6 +197,33 @@
             {/each}
           </CommandList>
         </Command>
+        <!-- Footer hints — surfaces core palette shortcuts so users learn -->
+        <!-- navigation/editor-mode affordances without a separate help pane. -->
+        <div
+          class="flex items-center justify-between gap-4 border-t border-edge bg-surface/60 px-3 py-2 text-xs text-muted"
+        >
+          <div class="flex items-center gap-4">
+            <span class="flex items-center gap-1.5">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd>
+              navigate
+            </span>
+            <span class="flex items-center gap-1.5">
+              <Kbd>↵</Kbd>
+              run
+            </span>
+            {#if !isEditorMode}
+              <span class="flex items-center gap-1.5">
+                <Kbd>&gt;</Kbd>
+                editor mode
+              </span>
+            {/if}
+          </div>
+          <span class="flex items-center gap-1.5">
+            <Kbd>Esc</Kbd>
+            close
+          </span>
+        </div>
       </div>
     </Dialog.Content>
   </Dialog.Portal>
