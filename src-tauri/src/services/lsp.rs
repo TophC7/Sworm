@@ -1,10 +1,8 @@
 use crate::models::lsp::{
     LspEvent, LspServerConnectionStatus, LspServerStatus, LspTransportTraceDirection,
 };
+use crate::services::builtins::LoadedBuiltinLspServerDefinition;
 use crate::services::env::EnvironmentService;
-use crate::services::lsp_catalog::{
-    resolve_extension_relative_path, LoadedLspServerDefinition, LspCatalog,
-};
 use crate::services::nix::NixService;
 use crate::services::settings::{LspServerConfigRecord, LspTraceLevel};
 use parking_lot::Mutex;
@@ -387,18 +385,15 @@ impl LspService {
 }
 
 pub fn resolve_server_status(
-    server: &LoadedLspServerDefinition,
+    server: &LoadedBuiltinLspServerDefinition,
     config: &LspServerConfigRecord,
     env: &ProjectLspEnvironment,
 ) -> LspServerStatus {
     if !config.enabled {
         return LspServerStatus {
-            server_definition_id: LspCatalog::server_definition_id(
-                &server.extension.manifest.id,
-                &server.definition.id,
-            ),
-            extension_id: server.extension.manifest.id.clone(),
-            extension_label: server.extension.manifest.label.clone(),
+            server_definition_id: server.server_definition_id.clone(),
+            builtin_id: server.builtin_id.clone(),
+            builtin_label: server.builtin_label.clone(),
             label: server.definition.label.clone(),
             enabled: false,
             status: LspServerConnectionStatus::Disabled,
@@ -408,17 +403,15 @@ pub fn resolve_server_status(
             install_hint: server.definition.install_hint.clone(),
             document_selectors: server.definition.document_selectors.clone(),
             initialization_options: server.definition.initialization_options.clone(),
+            settings: server.definition.settings.clone(),
         };
     }
 
     match resolve_launch(server, config, env, ".") {
         Ok(resolved) => LspServerStatus {
-            server_definition_id: LspCatalog::server_definition_id(
-                &server.extension.manifest.id,
-                &server.definition.id,
-            ),
-            extension_id: server.extension.manifest.id.clone(),
-            extension_label: server.extension.manifest.label.clone(),
+            server_definition_id: server.server_definition_id.clone(),
+            builtin_id: server.builtin_id.clone(),
+            builtin_label: server.builtin_label.clone(),
             label: server.definition.label.clone(),
             enabled: true,
             status: LspServerConnectionStatus::Connected,
@@ -428,14 +421,12 @@ pub fn resolve_server_status(
             install_hint: server.definition.install_hint.clone(),
             document_selectors: server.definition.document_selectors.clone(),
             initialization_options: server.definition.initialization_options.clone(),
+            settings: server.definition.settings.clone(),
         },
         Err(message) => LspServerStatus {
-            server_definition_id: LspCatalog::server_definition_id(
-                &server.extension.manifest.id,
-                &server.definition.id,
-            ),
-            extension_id: server.extension.manifest.id.clone(),
-            extension_label: server.extension.manifest.label.clone(),
+            server_definition_id: server.server_definition_id.clone(),
+            builtin_id: server.builtin_id.clone(),
+            builtin_label: server.builtin_label.clone(),
             label: server.definition.label.clone(),
             enabled: true,
             status: LspServerConnectionStatus::Missing,
@@ -445,126 +436,37 @@ pub fn resolve_server_status(
             install_hint: server.definition.install_hint.clone(),
             document_selectors: server.definition.document_selectors.clone(),
             initialization_options: server.definition.initialization_options.clone(),
+            settings: server.definition.settings.clone(),
         },
     }
 }
 
 pub fn resolve_launch(
-    server: &LoadedLspServerDefinition,
+    server: &LoadedBuiltinLspServerDefinition,
     config: &LspServerConfigRecord,
     env: &ProjectLspEnvironment,
     cwd: &str,
 ) -> Result<ResolvedLspCommand, String> {
-    let server_id = LspCatalog::server_definition_id(&server.extension.manifest.id, &server.definition.id);
     let runtime = &server.definition.runtime;
     let extra_args = config.extra_args.clone();
 
-    match runtime.kind {
-        crate::models::lsp::LspRuntimeKind::HostBinary => {
-            let program = resolve_host_command(
-                &runtime.command,
-                &env.merged_path,
-                config.binary_path_override.as_deref(),
-            )?;
+    let program = resolve_host_command(
+        &runtime.command,
+        &env.merged_path,
+        config.binary_path_override.as_deref(),
+    )?;
 
-            let mut args = server.definition.args.clone();
-            args.extend(extra_args);
+    let mut args = server.definition.args.clone();
+    args.extend(extra_args);
 
-            Ok(ResolvedLspCommand {
-                program: program.clone(),
-                args,
-                cwd: cwd.to_string(),
-                env: env.child_env.clone(),
-                resolved_path: Some(program),
-                runtime_resolved_path: None,
-            })
-        }
-        crate::models::lsp::LspRuntimeKind::ExtensionBinary => {
-            let root = server.extension.source_path.as_deref().ok_or_else(|| {
-                format!("Extension binary root missing for {}", server_id)
-            })?;
-            let program = resolve_extension_relative_path(Some(root), &runtime.command);
-            if !program.exists() {
-                return Err(format!("Extension binary not found at {}", program.display()));
-            }
-
-            let mut args = server.definition.args.clone();
-            args.extend(extra_args);
-
-            Ok(ResolvedLspCommand {
-                program: program.to_string_lossy().to_string(),
-                args,
-                cwd: cwd.to_string(),
-                env: env.child_env.clone(),
-                resolved_path: Some(program.to_string_lossy().to_string()),
-                runtime_resolved_path: None,
-            })
-        }
-        crate::models::lsp::LspRuntimeKind::BundledBinary => Err(format!(
-            "Bundled binary runtime is not provisioned for {} yet",
-            server_id
-        )),
-        crate::models::lsp::LspRuntimeKind::BundledJs
-        | crate::models::lsp::LspRuntimeKind::ExtensionJs => {
-            let runtime_command = resolve_runtime_command(runtime, config, &env.merged_path)?;
-
-            let entry_path = runtime.entry_path.as_deref().ok_or_else(|| {
-                format!("JS-backed LSP server {} is missing entry_path", server_id)
-            })?;
-            let script_path = match runtime.kind {
-                crate::models::lsp::LspRuntimeKind::ExtensionJs => {
-                    let root = server.extension.source_path.as_deref().ok_or_else(|| {
-                        format!("Extension JS root missing for {}", server_id)
-                    })?;
-                    resolve_extension_relative_path(Some(root), entry_path)
-                }
-                crate::models::lsp::LspRuntimeKind::BundledJs => {
-                    return Err(format!(
-                        "Bundled JS runtime is not provisioned for {} yet",
-                        server_id
-                    ));
-                }
-                _ => unreachable!(),
-            };
-
-            if !script_path.exists() {
-                return Err(format!("LSP entry script not found at {}", script_path.display()));
-            }
-
-            let mut args = runtime.runtime_args.clone();
-            args.extend(config.runtime_args.clone());
-            args.push(script_path.to_string_lossy().to_string());
-            args.extend(server.definition.args.clone());
-            args.extend(extra_args);
-
-            Ok(ResolvedLspCommand {
-                program: runtime_command.clone(),
-                args,
-                cwd: cwd.to_string(),
-                env: env.child_env.clone(),
-                resolved_path: Some(script_path.to_string_lossy().to_string()),
-                runtime_resolved_path: Some(runtime_command),
-            })
-        }
-    }
-}
-
-fn resolve_runtime_command(
-    runtime: &crate::models::lsp::LspRuntimeDefinition,
-    config: &LspServerConfigRecord,
-    merged_path: &str,
-) -> Result<String, String> {
-    if let Some(override_path) = config.runtime_path_override.as_deref() {
-        return resolve_host_command(override_path, merged_path, None);
-    }
-
-    if let Some(command) = runtime.runtime_command.as_deref() {
-        return resolve_host_command(command, merged_path, None)
-            .map_err(|_| format!("Required JavaScript runtime {} is not installed or not on PATH", command));
-    }
-
-    resolve_host_command("bun", merged_path, None)
-        .map_err(|_| "bun is required for this JavaScript-backed LSP server".to_string())
+    Ok(ResolvedLspCommand {
+        program: program.clone(),
+        args,
+        cwd: cwd.to_string(),
+        env: env.child_env.clone(),
+        resolved_path: Some(program),
+        runtime_resolved_path: None,
+    })
 }
 
 fn resolve_host_command(
@@ -644,10 +546,6 @@ fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> Result<Option<String>
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
-
-    use crate::models::lsp::{LspRuntimeDefinition, LspRuntimeKind};
-    use crate::services::settings::LspTraceLevel;
 
     #[test]
     fn parses_framed_lsp_messages() {
@@ -681,82 +579,5 @@ mod tests {
         assert_eq!(resolved, path.to_string_lossy());
 
         fs::remove_file(path).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resolves_bun_for_unpinned_js_servers() {
-        let path_dir = std::env::temp_dir().join(format!("sworm-lsp-runtime-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&path_dir).unwrap();
-        let bun_path = create_executable(&path_dir, "bun");
-
-        let runtime = LspRuntimeDefinition {
-            kind: LspRuntimeKind::ExtensionJs,
-            command: "ignored".to_string(),
-            runtime_command: None,
-            runtime_args: Vec::new(),
-            entry_path: Some("server.js".to_string()),
-        };
-        let config = LspServerConfigRecord {
-            server_definition_id: "test".to_string(),
-            enabled: true,
-            binary_path_override: None,
-            runtime_path_override: None,
-            runtime_args: Vec::new(),
-            extra_args: Vec::new(),
-            trace: LspTraceLevel::Off,
-            settings_json: None,
-        };
-
-        let resolved = resolve_runtime_command(&runtime, &config, path_dir.to_string_lossy().as_ref()).unwrap();
-        assert_eq!(resolved, bun_path.to_string_lossy());
-
-        fs::remove_dir_all(path_dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_missing_explicit_runtime_even_if_bun_exists() {
-        let path_dir = std::env::temp_dir().join(format!("sworm-lsp-runtime-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&path_dir).unwrap();
-        create_executable(&path_dir, "bun");
-
-        let runtime = LspRuntimeDefinition {
-            kind: LspRuntimeKind::ExtensionJs,
-            command: "ignored".to_string(),
-            runtime_command: Some("node".to_string()),
-            runtime_args: Vec::new(),
-            entry_path: Some("server.js".to_string()),
-        };
-        let config = LspServerConfigRecord {
-            server_definition_id: "test".to_string(),
-            enabled: true,
-            binary_path_override: None,
-            runtime_path_override: None,
-            runtime_args: Vec::new(),
-            extra_args: Vec::new(),
-            trace: LspTraceLevel::Off,
-            settings_json: None,
-        };
-
-        let error = resolve_runtime_command(&runtime, &config, path_dir.to_string_lossy().as_ref()).unwrap_err();
-        assert_eq!(
-            error,
-            "Required JavaScript runtime node is not installed or not on PATH".to_string()
-        );
-
-        fs::remove_dir_all(path_dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    fn create_executable(dir: &PathBuf, name: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).unwrap();
-        path
     }
 }

@@ -11,49 +11,54 @@ export interface AutoSaver {
 
 export function createAutoSaver(opts: { delayMs?: number; onBusyChange: (busy: boolean) => void }): AutoSaver {
   const delay = opts.delayMs ?? 400
-  const timers = new Map<string, ReturnType<typeof setTimeout>>()
-  const inFlight = new Set<string>()
+  const timers = new Map<
+    string,
+    {
+      timeout: ReturnType<typeof setTimeout>
+      task: () => Promise<unknown>
+    }
+  >()
+  let inFlight = 0
   let busy = false
 
   function settle() {
-    const nextBusy = timers.size > 0 || inFlight.size > 0
+    const nextBusy = timers.size > 0 || inFlight > 0
     if (nextBusy !== busy) {
       busy = nextBusy
       opts.onBusyChange(busy)
     }
   }
 
+  function runTask(key: string, task: () => Promise<unknown>) {
+    timers.delete(key)
+    inFlight += 1
+    settle()
+    void task()
+      .catch(() => {
+        // Callers surface their own errors (notify.error). This
+        // guard just ensures an unexpected throw still settles the
+        // busy flag instead of stranding the save indicator.
+      })
+      .finally(() => {
+        inFlight = Math.max(0, inFlight - 1)
+        settle()
+      })
+  }
+
   return {
     schedule(key, task) {
       const existing = timers.get(key)
-      if (existing) clearTimeout(existing)
-      const timer = setTimeout(async () => {
-        timers.delete(key)
-        inFlight.add(key)
-        settle()
-        try {
-          await task()
-        } catch {
-          // Callers surface their own errors (notify.error). This
-          // guard just ensures an unexpected throw still settles the
-          // busy flag instead of stranding the save indicator.
-        } finally {
-          inFlight.delete(key)
-          settle()
-        }
-      }, delay)
-      timers.set(key, timer)
+      if (existing) clearTimeout(existing.timeout)
+      const timeout = setTimeout(() => runTask(key, task), delay)
+      timers.set(key, { timeout, task })
       settle()
     },
 
     dispose() {
-      for (const t of timers.values()) clearTimeout(t)
-      timers.clear()
-      // In-flight saves continue; their own finally blocks will
-      // settle. Drop them from our tracking so the next settle()
-      // call reports idle immediately.
-      inFlight.clear()
-      settle()
+      for (const [key, pending] of [...timers.entries()]) {
+        clearTimeout(pending.timeout)
+        runTask(key, pending.task)
+      }
     }
   }
 }

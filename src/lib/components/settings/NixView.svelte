@@ -1,6 +1,6 @@
 <!--
   @component
-  NixView — Nix evaluator tuning.
+  NixView — Nix runtime and editor settings.
 
   Eval timeout governs how long Sworm waits on a flake evaluation
   or build before giving up. Cold stores and first-run flakes can
@@ -12,6 +12,9 @@
 
 <script lang="ts">
   import { Input } from '$lib/components/ui/input'
+  import LanguageSettingsView from './LanguageSettingsView.svelte'
+  import type { JsonSettingsEditorSession } from './jsonSettings'
+  import type { BuiltinSettingsPage } from '$lib/types/backend'
   import { notify } from '$lib/stores/notifications.svelte'
   import { getSettings, saveGeneralSettings } from '$lib/stores/settings.svelte'
   import { getErrorMessage } from '$lib/utils/notifiedTask'
@@ -19,7 +22,17 @@
   import { createAutoSaver } from './autoSaver'
 
   type StatusHook = () => void
-  let { onSaving, onSaved }: { onSaving: StatusHook; onSaved: StatusHook } = $props()
+  let {
+    definition,
+    onOpenJsonEditor,
+    onSaving,
+    onSaved
+  }: {
+    definition: BuiltinSettingsPage
+    onOpenJsonEditor: (session: JsonSettingsEditorSession) => void
+    onSaving: StatusHook
+    onSaved: StatusHook
+  } = $props()
 
   let settings = $derived(getSettings())
   let timeout = $state(600)
@@ -54,14 +67,18 @@
   }
 </script>
 
-<section class="flex flex-col gap-3 px-5 py-4">
-  <h3 class="text-md font-semibold text-bright">Evaluation</h3>
+<section class="border-b border-edge px-5 py-4">
+  <div class="flex flex-col gap-3">
+    <h4 class="text-sm font-semibold text-bright">Runtime</h4>
 
-  <div class="flex items-center">
-    <span class="w-36 shrink-0 text-sm text-muted">Eval timeout</span>
-    <Input class="w-24 py-2" type="number" min="30" max="3600" step="30" bind:value={timeout} oninput={schedule} />
-    <span class="pl-2 text-sm text-subtle">seconds</span>
+    <div class="flex items-center">
+      <span class="w-36 shrink-0 text-sm text-muted">Eval timeout</span>
+      <Input class="w-24 py-2" type="number" min="30" max="3600" step="30" bind:value={timeout} oninput={schedule} />
+      <span class="pl-2 text-sm text-subtle">seconds</span>
+    </div>
+
+    <p class="pl-36 text-xs text-subtle">Cold stores need 300s+; first flake build may take minutes.</p>
   </div>
-
-  <p class="pl-36 text-xs text-subtle">Cold stores need 300s+; first flake build may take minutes.</p>
 </section>
+
+<LanguageSettingsView {definition} {onOpenJsonEditor} {onSaving} {onSaved} />

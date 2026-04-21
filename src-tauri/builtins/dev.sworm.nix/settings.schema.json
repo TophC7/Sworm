@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "nil Language Server Settings",
+  "description": "Settings forwarded under the `nil` section to the nil Nix language server. See https://github.com/oxalica/nil for the upstream reference.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "nil": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "formatting": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "command": {
+              "type": "array",
+              "description": "External formatter command and arguments (e.g. [\"nixfmt\"]). Reads on stdin, writes to stdout.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ignored": {
+              "type": "array",
+              "description": "Diagnostic kind names to suppress (e.g. [\"unused_binding\"]).",
+              "items": { "type": "string" }
+            },
+            "excludedFiles": {
+              "type": "array",
+              "description": "Workspace-relative paths or globs whose diagnostics are ignored entirely.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "nix": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "binary": {
+              "type": "string",
+              "description": "Path to the `nix` binary used for flake operations.",
+              "default": "nix"
+            },
+            "maxMemoryMB": {
+              "type": ["integer", "null"],
+              "description": "Memory ceiling (MB) for nix subprocesses. null disables the limit.",
+              "default": 2560
+            },
+            "flake": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "autoArchive": {
+                  "type": ["boolean", "null"],
+                  "description": "Automatically run `nix flake archive` on flake inputs for offline indexing. null = prompt.",
+                  "default": null
+                },
+                "autoEvalInputs": {
+                  "type": "boolean",
+                  "description": "Eagerly evaluate flake inputs to surface cross-input references.",
+                  "default": false
+                },
+                "nixpkgsInputName": {
+                  "type": ["string", "null"],
+                  "description": "Name of the flake input whose nixpkgs is used for option definitions.",
+                  "default": "nixpkgs"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

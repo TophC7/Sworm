@@ -1,6 +1,12 @@
 import { backend } from '$lib/api/backend'
-import { defaultFormatterForGroup, formattingGroupForLanguageId, type FormattingGroupId } from '$lib/editor/formatters/config'
+import {
+  defaultFormatterForGroup,
+  formatterManagedLanguageIds,
+  formattingGroupForLanguageId,
+  type FormattingGroupId
+} from '$lib/editor/formatters/config'
 import { formatDocumentWithLsp, getLspDocumentContext } from '$lib/lsp/registry'
+import { preloadBuiltinCatalog } from '$lib/builtins/catalog'
 import { getSettings, loadSettings } from '$lib/stores/settings.svelte'
 import type { FormatterSelection } from '$lib/types/backend'
 
@@ -14,11 +20,12 @@ class FormatterRegistry {
 
   async ensureMonaco(monaco: Monaco): Promise<void> {
     this.monaco = monaco
+    await preloadBuiltinCatalog()
     if (!getSettings()) {
       void loadSettings()
     }
 
-    for (const languageId of ['javascript', 'typescript', 'json', 'nix']) {
+    for (const languageId of formatterManagedLanguageIds()) {
       if (this.registeredLanguages.has(languageId)) continue
       this.registeredLanguages.add(languageId)
       monaco.languages.registerDocumentFormattingEditProvider(languageId, {
@@ -66,10 +73,9 @@ export function ensureMonacoFormatters(monaco: Monaco) {
   return registry.ensureMonaco(monaco)
 }
 
-function resolveFormatterSelection(group: FormattingGroupId): Exclude<FormatterSelection, 'auto'> {
+function resolveFormatterSelection(group: FormattingGroupId): FormatterSelection {
   const settings = getSettings()?.formatting
-  const configured = settings?.[group]?.formatter ?? 'auto'
-  return configured === 'auto' ? defaultFormatterForGroup(group) : configured
+  return settings?.[group]?.formatter ?? defaultFormatterForGroup(group)
 }
 
 function toFullDocumentEdit(model: MonacoModel, formatted: string): MonacoTextEdit[] {

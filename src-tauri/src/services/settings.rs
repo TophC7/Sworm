@@ -1,5 +1,6 @@
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,39 +37,39 @@ impl LspTraceLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FormatterSelection {
-    #[default]
-    Auto,
     Lsp,
     Biome,
     Nixfmt,
     Disabled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormattingLanguageSettings {
-    #[serde(default)]
     pub formatter: FormatterSelection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormattingSettings {
-    #[serde(default)]
     pub javascript_typescript: FormattingLanguageSettings,
-    #[serde(default)]
     pub json: FormattingLanguageSettings,
-    #[serde(default)]
     pub nix: FormattingLanguageSettings,
 }
 
 impl Default for FormattingSettings {
     fn default() -> Self {
         Self {
-            javascript_typescript: FormattingLanguageSettings::default(),
-            json: FormattingLanguageSettings::default(),
-            nix: FormattingLanguageSettings::default(),
+            javascript_typescript: FormattingLanguageSettings {
+                formatter: FormatterSelection::Biome,
+            },
+            json: FormattingLanguageSettings {
+                formatter: FormatterSelection::Biome,
+            },
+            nix: FormattingLanguageSettings {
+                formatter: FormatterSelection::Nixfmt,
+            },
         }
     }
 }
@@ -182,8 +183,7 @@ impl SettingsService {
 
     pub fn get_formatting_settings(conn: &Connection) -> Result<FormattingSettings, String> {
         match Self::get(conn, "formatting").map_err(|error| error.to_string())? {
-            Some(value) => serde_json::from_str(&value)
-                .map_err(|error| format!("Failed to parse formatting settings: {}", error)),
+            Some(value) => parse_formatting_settings(&value),
             None => Ok(FormattingSettings::default()),
         }
     }
@@ -399,5 +399,45 @@ impl SettingsService {
         .map_err(|error| format!("Failed to save LSP server config: {}", error))?;
 
         Ok(())
+    }
+}
+
+fn parse_formatting_settings(raw: &str) -> Result<FormattingSettings, String> {
+    let mut value: Value = serde_json::from_str(raw)
+        .map_err(|error| format!("Failed to parse formatting settings: {}", error))?;
+
+    let Some(root) = value.as_object_mut() else {
+        return Err("Failed to parse formatting settings: expected object".to_string());
+    };
+
+    normalize_formatter_group(
+        root,
+        "javascript_typescript",
+        FormatterSelection::Biome,
+    );
+    normalize_formatter_group(root, "json", FormatterSelection::Biome);
+    normalize_formatter_group(root, "nix", FormatterSelection::Nixfmt);
+
+    serde_json::from_value(value)
+        .map_err(|error| format!("Failed to parse formatting settings: {}", error))
+}
+
+fn normalize_formatter_group(
+    root: &mut serde_json::Map<String, Value>,
+    key: &str,
+    default: FormatterSelection,
+) {
+    let group = root.entry(key.to_string()).or_insert_with(|| json!({}));
+    if !group.is_object() {
+        *group = json!({});
+    }
+
+    let group_obj = group.as_object_mut().expect("group is object");
+    let formatter = group_obj.get("formatter").and_then(Value::as_str);
+    if formatter.is_none() || formatter == Some("auto") {
+        group_obj.insert(
+            "formatter".to_string(),
+            serde_json::to_value(default).expect("formatter serializes"),
+        );
     }
 }

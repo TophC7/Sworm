@@ -1,0 +1,45 @@
+{
+  "id": "dev.sworm.biome",
+  "label": "Biome",
+  "contributes": {
+    "languages": [
+      {
+        "id": "json",
+        "label": "JSON",
+        "aliases": ["json", "jsonc"],
+        "extensions": [".json", ".jsonc"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "biome",
+        "label": "Biome",
+        "applies_to_languages": ["javascript", "typescript", "json"],
+        "runtime": {
+          "kind": "host_binary",
+          "command": "biome"
+        },
+        "args": ["lsp-proxy"],
+        "install_hint": "Install Biome so `biome` is available on PATH",
+        "document_selectors": [
+          {
+            "language": "javascript",
+            "extensions": [".js", ".jsx", ".mjs", ".cjs"]
+          },
+          {
+            "language": "typescript",
+            "extensions": [".ts", ".tsx", ".mts", ".cts", ".d.ts"]
+          },
+          {
+            "language": "json",
+            "extensions": [".json", ".jsonc"]
+          }
+        ],
+        "settings": {
+          "section": "biome",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}

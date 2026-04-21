@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::models::lsp::{LspEvent, LspExtensionEntry, LspServerSettingsEntry};
+use crate::models::lsp::{LspEvent, LspServerSettingsEntry};
+use crate::services::builtins::BuiltinCatalogService;
 use crate::services::lsp::{resolve_launch, resolve_server_status, ProjectLspEnvironment};
-use crate::services::lsp_catalog::LspCatalog;
 use crate::services::nix::NixService;
 use crate::services::settings::{
     LspServerConfigRecord, LspTraceLevel, SettingsService,
@@ -22,13 +22,7 @@ pub struct SaveLspServerConfigInput {
 }
 
 #[tauri::command]
-pub fn lsp_list_extensions(app: tauri::AppHandle) -> Result<Vec<LspExtensionEntry>, ApiError> {
-    Ok(LspCatalog::list(&app))
-}
-
-#[tauri::command]
 pub fn lsp_list_servers(
-    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
@@ -41,23 +35,13 @@ pub fn lsp_list_servers(
     };
 
     let mut entries = Vec::new();
-    for extension in LspCatalog::load(&app) {
-        for server in &extension.manifest.servers {
-            let server_definition_id =
-                LspCatalog::server_definition_id(&extension.manifest.id, &server.id);
-            let config = SettingsService::get_lsp_server_config(db.conn(), &server_definition_id)
-                .map_err(ApiError::Database)?
-                .unwrap_or_else(|| LspServerConfigRecord::default_for(&server_definition_id));
-            let status = resolve_server_status(
-                &crate::services::lsp_catalog::LoadedLspServerDefinition {
-                    extension: extension.clone(),
-                    definition: server.clone(),
-                },
-                &config,
-                &env,
-            );
-            entries.push(LspServerSettingsEntry { server: status, config });
-        }
+    for server in BuiltinCatalogService::list_server_definitions().map_err(ApiError::Internal)? {
+        let server_definition_id = server.server_definition_id.clone();
+        let config = SettingsService::get_lsp_server_config(db.conn(), &server_definition_id)
+            .map_err(ApiError::Database)?
+            .unwrap_or_else(|| LspServerConfigRecord::default_for(&server_definition_id));
+        let status = resolve_server_status(&server, &config, &env);
+        entries.push(LspServerSettingsEntry { server: status, config });
     }
 
     Ok(entries)
@@ -86,7 +70,6 @@ pub fn lsp_set_server_config(
 
 #[tauri::command]
 pub fn lsp_start(
-    app: tauri::AppHandle,
     session_id: String,
     project_id: String,
     server_definition_id: String,
@@ -94,9 +77,11 @@ pub fn lsp_start(
     events: tauri::ipc::Channel<LspEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let server = LspCatalog::find_server_definition(&app, &server_definition_id).ok_or_else(|| {
-        ApiError::NotFound(format!("Unknown LSP server definition {}", server_definition_id))
-    })?;
+    let server = BuiltinCatalogService::find_server_definition(&server_definition_id)
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Unknown LSP server definition {}", server_definition_id))
+        })?;
 
     let db = state.db.lock();
     let project = state

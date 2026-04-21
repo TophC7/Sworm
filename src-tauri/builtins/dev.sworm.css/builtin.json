@@ -1,0 +1,57 @@
+{
+  "id": "dev.sworm.css",
+  "label": "CSS",
+  "contributes": {
+    "languages": [
+      {
+        "id": "css",
+        "label": "CSS",
+        "aliases": ["css"],
+        "extensions": [".css"]
+      },
+      {
+        "id": "scss",
+        "label": "SCSS",
+        "aliases": ["scss"],
+        "extensions": [".scss"]
+      },
+      {
+        "id": "less",
+        "label": "Less",
+        "aliases": ["less"],
+        "extensions": [".less"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "vscode-css-language-server",
+        "label": "CSS Language Server",
+        "applies_to_languages": ["css", "scss", "less"],
+        "runtime": {
+          "kind": "host_binary",
+          "command": "vscode-css-language-server"
+        },
+        "args": ["--stdio"],
+        "install_hint": "Install `vscode-langservers-extracted` and ensure `vscode-css-language-server` is on PATH.",
+        "document_selectors": [
+          {
+            "language": "css",
+            "extensions": [".css"]
+          },
+          {
+            "language": "scss",
+            "extensions": [".scss"]
+          },
+          {
+            "language": "less",
+            "extensions": [".less"]
+          }
+        ],
+        "settings": {
+          "section": "css",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}

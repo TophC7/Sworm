@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HTML Language Server Settings",
+  "description": "Settings forwarded under the `html` section. Matches the VS Code HTML language-features schema; only the commonly tuned keys are defined here.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "html": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "format": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enable": { "type": "boolean", "default": true },
+            "wrapLineLength": { "type": "integer", "minimum": 0, "default": 120 },
+            "wrapAttributes": {
+              "type": "string",
+              "enum": ["auto", "force", "force-aligned", "force-expand-multiline", "aligned-multiple", "preserve", "preserve-aligned"],
+              "default": "auto"
+            },
+            "indentInnerHtml": { "type": "boolean", "default": false },
+            "preserveNewLines": { "type": "boolean", "default": true },
+            "maxPreserveNewLines": { "type": ["integer", "null"], "default": null },
+            "endWithNewline": { "type": "boolean", "default": false },
+            "contentUnformatted": {
+              "type": "string",
+              "description": "Comma-separated list of tag names whose contents are preserved verbatim.",
+              "default": "pre,code,textarea"
+            },
+            "unformatted": {
+              "type": "string",
+              "description": "Comma-separated list of inline-formatted tag names.",
+              "default": "wbr"
+            }
+          }
+        },
+        "suggest": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "html5": { "type": "boolean", "default": true }
+          }
+        },
+        "validate": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "scripts": { "type": "boolean", "default": true },
+            "styles": { "type": "boolean", "default": true }
+          }
+        },
+        "autoClosingTags": { "type": "boolean", "default": true },
+        "mirrorCursorOnMatchingTag": { "type": "boolean", "default": false },
+        "completion": {
+          "type": "object",
+          "properties": {
+            "attributeDefaultValue": { "type": "string", "enum": ["doublequotes", "singlequotes", "empty"], "default": "doublequotes" }
+          }
+        },
+        "customData": {
+          "type": "array",
+          "description": "Workspace-relative paths to custom data files that extend HTML language support.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

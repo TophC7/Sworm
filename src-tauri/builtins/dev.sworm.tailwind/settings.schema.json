@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tailwind CSS Language Server Settings",
+  "description": "Settings forwarded under the `tailwindCSS` section. Controls completion, linting, hover previews, and which files the server treats as Tailwind-enabled.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "tailwindCSS": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "emmetCompletions": {
+          "type": "boolean",
+          "description": "Enable completions for Emmet-style class names.",
+          "default": false
+        },
+        "includeLanguages": {
+          "type": "object",
+          "description": "Map arbitrary language ids to ones Tailwind understands so activation extends to them (e.g. { \"plaintext\": \"html\" }).",
+          "additionalProperties": { "type": "string" }
+        },
+        "classAttributes": {
+          "type": "array",
+          "description": "HTML attributes that should be treated as containing class names.",
+          "items": { "type": "string" },
+          "default": ["class", "className", "ngClass", "class:list"]
+        },
+        "experimental": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "classRegex": {
+              "type": "array",
+              "description": "Regex patterns to discover class names inside function calls / template strings.",
+              "items": {
+                "oneOf": [
+                  { "type": "string" },
+                  { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 2 }
+                ]
+              }
+            },
+            "configFile": {
+              "description": "Workspace-relative path to a tailwind.config.* file, or a map of config files to file globs for multi-project setups.",
+              "oneOf": [
+                { "type": "string" },
+                { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } }
+              ]
+            }
+          }
+        },
+        "hovers": { "type": "boolean", "default": true },
+        "suggestions": { "type": "boolean", "default": true },
+        "codeActions": { "type": "boolean", "default": true },
+        "validate": { "type": "boolean", "default": true },
+        "lint": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Severity per diagnostic: 'ignore', 'warning', or 'error'.",
+          "properties": {
+            "cssConflict": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "warning" },
+            "invalidApply": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "error" },
+            "invalidScreen": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "error" },
+            "invalidVariant": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "error" },
+            "invalidConfigPath": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "error" },
+            "invalidTailwindDirective": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "error" },
+            "recommendedVariantOrder": { "type": "string", "enum": ["ignore", "warning", "error"], "default": "warning" }
+          }
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "exclude": {
+              "type": "array",
+              "description": "Globs excluded from Tailwind scanning.",
+              "items": { "type": "string" },
+              "default": ["**/.git/**", "**/node_modules/**", "**/.hg/**", "**/.svn/**"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -74,7 +74,7 @@ export interface GeneralSettings {
   nix_eval_timeout_secs: number
 }
 
-export type FormatterSelection = 'auto' | 'lsp' | 'biome' | 'nixfmt' | 'disabled'
+export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'disabled'
 
 export interface FormattingLanguageSettings {
   formatter: FormatterSelection
@@ -105,11 +105,12 @@ export interface SettingsPayload {
 }
 
 export type LspTraceLevel = 'off' | 'messages' | 'verbose'
-export type LspRuntimeKind = 'host_binary' | 'bundled_binary' | 'extension_binary' | 'bundled_js' | 'extension_js'
 export type LspServerConnectionStatus = 'connected' | 'missing' | 'error' | 'disabled'
 export type LspTransportTraceDirection = 'incoming' | 'outgoing' | 'stderr'
+export type BuiltinFormatterGroupId = 'javascript_typescript' | 'json' | 'nix'
+export type BuiltinSettingsPageKind = 'language' | 'nix'
 
-export interface LspLanguageContribution {
+export interface BuiltinLanguageContribution {
   id: string
   label: string
   aliases: string[]
@@ -123,29 +124,44 @@ export interface LspDocumentSelector {
   filenames: string[]
 }
 
-export interface LspServerCatalogEntry {
-  server_definition_id: string
-  extension_id: string
-  extension_label: string
-  label: string
-  install_hint: string
-  runtime_kind: LspRuntimeKind
-  command: string
-  runtime_command: string | null
-  entry_path: string | null
-  args: string[]
-  document_selectors: LspDocumentSelector[]
-  initialization_options: unknown
-  built_in: boolean
+// Optional per-server settings descriptor sourced from the builtin
+// manifest. `schema` is an inlined JSON Schema object usable by Monaco
+// for autocomplete/validation; `section` hints which LSP workspace
+// configuration section the JSON is expected to slot into; `defaults`
+// seeds the JSON editor when the user has no settings yet.
+export interface LspServerSettingsDescriptor {
+  section: string | null
+  defaults: unknown
+  schema: unknown
 }
 
-export interface LspExtensionEntry {
+export interface BuiltinFormatterPolicy {
+  group: BuiltinFormatterGroupId
+  options: FormatterSelection[]
+  default: FormatterSelection
+}
+
+export interface BuiltinSettingsPage {
   id: string
+  kind: BuiltinSettingsPageKind
   label: string
-  built_in: boolean
-  source_path: string | null
-  languages: LspLanguageContribution[]
-  servers: LspServerCatalogEntry[]
+  icon_filename: string
+  language_ids: string[]
+  server_definition_ids: string[]
+  formatter: BuiltinFormatterPolicy | null
+}
+
+export interface BuiltinRuntimeCatalog {
+  languages: BuiltinLanguageContribution[]
+}
+
+export interface BuiltinSettingsCatalog {
+  pages: BuiltinSettingsPage[]
+}
+
+export interface BuiltinCatalog {
+  runtime: BuiltinRuntimeCatalog
+  settings: BuiltinSettingsCatalog
 }
 
 export interface LspServerConfig {
@@ -161,8 +177,8 @@ export interface LspServerConfig {
 
 export interface LspServerStatus {
   server_definition_id: string
-  extension_id: string
-  extension_label: string
+  builtin_id: string
+  builtin_label: string
   label: string
   enabled: boolean
   status: LspServerConnectionStatus
@@ -172,6 +188,7 @@ export interface LspServerStatus {
   install_hint: string
   document_selectors: LspDocumentSelector[]
   initialization_options: unknown
+  settings: LspServerSettingsDescriptor | null
 }
 
 export interface LspServerSettingsEntry {

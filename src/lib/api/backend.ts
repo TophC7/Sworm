@@ -24,11 +24,11 @@ import type {
   ProviderStatus,
   PtyEvent,
   Session,
+  BuiltinCatalog,
   SettingsPayload,
   StashEntry,
   ProviderConfig,
   LspEvent,
-  LspExtensionEntry,
   LspServerConfig,
   LspServerSettingsEntry
 } from '$lib/types/backend'
@@ -392,6 +392,12 @@ export const backend = {
     }
   },
 
+  builtins: {
+    getCatalog(): Promise<BuiltinCatalog> {
+      return invoke<BuiltinCatalog>('builtins_get_catalog')
+    }
+  },
+
   formatting: {
     biome(projectId: string, filePath: string, content: string): Promise<string> {
       return invoke<string>('formatting_format_biome', { projectId, filePath, content })
@@ -402,9 +408,6 @@ export const backend = {
   },
 
   lsp: {
-    listExtensions(): Promise<LspExtensionEntry[]> {
-      return invoke<LspExtensionEntry[]>('lsp_list_extensions')
-    },
     listServers(projectId?: string): Promise<LspServerSettingsEntry[]> {
       return invoke<LspServerSettingsEntry[]>('lsp_list_servers', {
         projectId: projectId ?? null

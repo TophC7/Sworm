@@ -8,9 +8,9 @@
 
 ### File Explorer
 
-- [ ] **WIP: Single-file diff view** — "Open Changes" in the git context menu should open a Monaco-based editable diff view for a single file (working copy vs HEAD). Currently disabled in GitContextMenu
+- [x] **Single-file diff view** — Git file context menus now open Monaco-backed Changes tabs for a single file (working copy vs HEAD)
 - [ ] **WIP: Per-file stash** — "Stash Changes" in the git context menu should stash individual files (`git stash push -- <file>`). Currently disabled in GitContextMenu
-- [ ] **WIP: Folder-scoped diff view** — "Open Changes" on a folder in the git context menu should open a stacked diff view for only files under that directory. Currently disabled in GitContextMenu
+- [x] **Folder-scoped diff view** — Git folder context menus now open scoped Changes tabs for files under that directory
 
 ---
 
@@ -37,6 +37,34 @@
 - [ ] Bundled LSP runtime support — add real launch support for `bundled_binary` / `bundled_js` extension manifests by packaging server assets into app/extension resources, resolving those resource paths at runtime, and surfacing clear status/errors in `Settings -> Languages`
 - [ ] Open in Fresh from editor toolbar — the "Open in Fresh" icon button in FileEditor's toolbar doesn't work when no Fresh session is pre-existing. `ensureFreshSession` creates the session and `waitForSessionReady` confirms the PTY is running, but `backend.editor.openFile` (which calls `fresh --cmd session open-file`) fails silently — Fresh's internal session server isn't ready to accept commands yet even though the PTY status is 'running'. Needs investigation into the gap between PTY running and Fresh session server accepting commands (socket/pipe readiness). Possible fixes: poll Fresh's session socket directly, add a ready-check command to Fresh, or increase wait time with Fresh-specific readiness probe
 
+### Language Support
+
+- [ ] Add first-party Bash language support extension
+- [ ] Add first-party Fish language support extension
+- [ ] Add first-party Go language support extension
+- [ ] Add first-party Java language support extension
+- [ ] Add first-party JSON language support extension
+- [ ] Add first-party JSX / React language support extension
+- [ ] Add first-party Markdown language support extension — likely needs more than LSP alone (preview, structure, authoring helpers)
+- [ ] Add first-party Rust language support extension
+- [ ] Add first-party TOML language support extension
+- [ ] Add first-party YAML language support extension
+
+### Editor State & Tabs
+
+- [ ] Re-open existing file tabs instead of duplicating them — clicking a file that is already open should always focus the existing tab, not create another temp/permanent copy of the same file
+- [ ] Fix temp-to-permanent promotion without resetting Monaco state — promoting a temp tab to permanent should preserve model state, undo stack, dirty state, and cursor position
+- [ ] Preserve Monaco state when moving tabs between panes — dragging a dirty editor tab to another pane currently resets the file contents and loses undo/redo history
+- [ ] Close or replace the placeholder "new tab" when opening a real file/session/tab — likely easiest if the blank new tab is always temporary
+- [ ] Keyboard focus should follow newly opened tabs — opening a file/tab should move editor focus for typing, not just select the tab visually
+- [ ] Reload clean Monaco models when files change on disk — if an open file has no local edits and the file changes externally, refresh the editor contents instead of leaving stale text in memory
+- [ ] Show git change gutters in Monaco — line-level added/modified/deleted markers in the editor margin
+
+### Diff View
+
+- [ ] Re-focus already-open diff tabs correctly from the git file list — clicking the same diff entry again should navigate to the existing diff tab even after opening/scrolling elsewhere in the diff view
+- [ ] Investigate editable diff mode — current diff editors are read-only, but we may want an explicit edit/apply workflow instead of only read-only inspection
+
 ### Markdown
 
 - [ ] Notes sidebar — new activity bar view for project markdown notes. Auto-discovers common repo files (README.md, TODO.md, CONTRIBUTING.md, CHANGELOG.md) and pins them at the top. Below that, lists all other .md/.mdx files in the repo. Clicking any file opens it in the built-in markdown editor
@@ -46,8 +74,8 @@
 
 ### Project & Session Recovery
 
-- [ ] Persistent workspace state — save and restore pane layout, active tabs, and view state (sidebar view, collapsed dirs) per project so reopening a project restores what you were working on
-- [ ] App-level tab restoration — when Sworm exits with tabs open across any project, restore them on app relaunch. Currently inconsistent — some tabs persist, some don't
+- [ ] Workspace view-state persistence — pane layout, active tabs, and app-shell reopen now persist; remaining gaps are sidebar view, collapsed dirs, and other non-tab UI state
+- [x] App-level tab restoration — persisted content tabs now restore across reopened projects via app-shell + per-project workspace hydration
 - [ ] Non-blocking restoration — load last state asynchronously so the app doesn't freeze if a session fails to reconnect
 - [ ] Reload View dirty check — the Reload View command (`window.location.reload()`) destroys all Monaco editors, terminal frontend state, and unsaved content with no confirmation. Needs a dirty-tab check and confirm dialog before reloading. Part of broader session recovery work
 
@@ -55,7 +83,7 @@
 
 - [ ] Unsaved changes warning on tab close — closing a dirty editor tab silently discards edits. `closeTab` in workspace.svelte.ts has no awareness of dirty state. Needs confirm dialog before closing tabs with unsaved changes, and possibly a "Save All" or "Discard" flow
 - [ ] Vykar repo backups (beta opt-in) — integrate Vykar backup functionality into the file explorer view. Opt-in feature behind a beta flag so users can enable/disable it. Lives in the files sidebar as a backup management section
-- [ ] Git status colors in file tree — show file status (modified, staged, untracked, ignored) as inline badges or text color in the file explorer so you can see what's changed without switching to git view
+- [x] Git status colors in file tree — Files sidebar now renders git status badges for changed files and marks directories containing changes
 - [ ] Inline rename for files and folders — replace the PromptDialog-based rename with an in-tree input that takes over the node's label (like VS Code, Nautilus). Need to handle focus, Escape to cancel, Enter to commit, and path validation inline
 - [ ] Paste safety cap for large clipboards — add a sanity limit to `file_paste` (e.g. 100k files / 1 GiB total) to prevent accidents when the clipboard points at a huge tree (`/`, `$HOME`). Proper UX is progress + cancel (depends on notification system below)
 - [x] Paste collision UX — paste and drop now share Replace / Skip / Rename collision handling via `ImportCollisionDialog` and explicit backend collision policies
@@ -63,29 +91,19 @@
 - [ ] Symlink support in file operations — `copy_recursive` currently follows symlinks instead of preserving them, and Monaco errors with "Is a directory" when opening symlinks-to-directories. Need `std::os::unix::fs::symlink` in the copy path and Monaco-side detection before open
 - [x] Surface file-op errors to the user — paste/rename/delete/cut/copy/new-item and git copy-patch/discard now route failures through `notify.error()`
 - [ ] Incremental file tree updates — every paste/rename/delete/new currently triggers a full `backend.files.listAll(projectPath)` re-walk (git ls-files or filesystem scan up to 25k files). For large repos this will eventually feel sluggish. `file_paste` already returns the list of created project-relative paths; extend rename/delete/create to do the same, then mutate the in-memory `fileTree` directly instead of reloading
+- [ ] File operations follow-through — the file context menu already supports rename/delete/cut/copy/paste/new item; remaining gaps are duplicate/move flows plus trash vs permanent-delete semantics
 
 ### Notifications & Feedback
 
 - [x] Status-bar notification system — `src/lib/stores/notifications.svelte.ts` + `NotificationsButton` in the status bar with a bell icon, unread badge, and popover listing all notifications as Alerts
 - [ ] Notification update API should allow clearing descriptions — `NotificationUpdate.description` can replace a description but cannot explicitly remove one once set. Add a clearable contract for updates so loading/success/error transitions can drop stale body copy without replacing the whole notification
-- [ ] Progress notifications with cancel — extend the notification store to support in-progress items (spinner + % complete + cancel action) for long-running operations like paste, clone, push. Currently notifications are one-shot info/success/warning/error only
+- [ ] Real progress notifications + cancel wiring — the notification store already supports loading/progress/actions; remaining work is standardizing cancel semantics and wiring long-running operations like paste, clone, and push to use it
 - [ ] Progress feedback for long file operations — visual indicator (spinner in sidebar, progress in status bar) during paste/copy of large trees. Today there's no feedback between click and completion
 - [ ] Branch controls in file view — show current branch and provide quick-access branch switcher in the files sidebar header (or dropdown)
 - [ ] File preview/viewer for common types — support previewing images (PNG, JPG, SVG), JSON, CSV, and other common file types inline in the editor pane, not just markdown
-- [ ] File operations — right-click menu to delete, rename, duplicate, or move files. Trash deleted files or permanent delete option. Should integrate with git if applicable
 
 ### Terminal / PTY
 
 - [ ] PTY output ring buffer — keep last N bytes of output per session in PtyService so webview reloads can replay terminal history and reconnect to the running PTY instead of restarting the session
 - [ ] Terminal font + settings cleanup — `terminal_font_family` and `terminal_font_size` exist on `GeneralSettings` (Rust models + SQLite) but `TerminalSessionManager.TERMINAL_OPTIONS` hardcodes `'Monocraft Nerd Font'` and never reads them. The Svelte-side Terminal settings view was removed (dead UI). Decide: either (a) wire the settings through so users can customize the terminal font + size, or (b) drop the fields from `GeneralSettings`, the SQLite schema, and any migration. Same question applies to anywhere else we "force mono" — confirm we want that locked in or make it configurable.
 - [x] Drag-and-drop image attach into terminal — terminal drop target now handles file/os drops, image payloads are written to temp via `dnd_save_dropped_bytes`, and dropped paths are shell-quoted into the PTY
-
-
-- clicking a git diff file opens the file in the diff view, but if you move to some other file withing the git diff like scroll of open another collapsed oned, clicking the file you openend the diff with wont take you to it, it fails
-- clicking file A opens the file in temp view, double clicking the file now makse it permanent, clicking file B opens a temp, now if you click file A the temp changes to file A, and you end up with two file A tabs, you can continue the process infinitely, duplicating a tab which causese editing issues, you should not be able to do that, you should always be taken to the open file if its open
-- opening a file or sessions or any tab while a "new tab" is open wont close the new tab, i think if we made the new tab always be temporay this would be fixed by heuristics
-- opening a new tab does not focus the cursor on it, NOT THE MOUSE, the cursor/keyboard is what should move focus only
-- monaco is not very smart about updating when a file changes, rn if a file changes and a monaco editor is open, it wont know and keep the outdated file, if a file it open/in view, has no changes and a change has been made we should update the view for that file
-- monaco tabs have various issues with edit history and with keeping changes on tab movement/state changes, for example if i have a monaco tab and i made some chanes to that file, if i move the tab to another pane it resest the file, if change the tab from temp to permanent, it resets the file, and once a file is reset i cant undo or redo chanpes it loses that history
-- monaco editor should show the lines that have git changes
-- the diff viwe monacos are read only which it fine by me, but we might need an editing mode for the diff view, unsure how this should work

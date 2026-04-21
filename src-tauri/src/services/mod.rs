@@ -1,4 +1,5 @@
 pub mod activity_map;
+pub mod builtins;
 pub mod codex_state;
 pub mod credentials;
 pub mod db;
@@ -7,7 +8,6 @@ pub mod files;
 pub mod formatting;
 pub mod git;
 pub mod lsp;
-pub mod lsp_catalog;
 pub mod nix;
 pub mod projects;
 pub mod providers;

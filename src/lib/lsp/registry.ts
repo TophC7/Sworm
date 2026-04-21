@@ -1,7 +1,7 @@
 import { backend } from '$lib/api/backend'
-import { FORMATTER_MANAGED_LANGUAGE_IDS } from '$lib/editor/formatters/config'
+import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/builtins/catalog'
+import { isFormatterManagedLanguage } from '$lib/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/editor/languageMap'
-import { getLspCatalogServers, getLspExtensions, preloadLspCatalog } from '$lib/lsp/catalog'
 import { queueEditorReveal } from '$lib/stores/editorNavigation.svelte'
 import { addEditorTab, openProject } from '$lib/stores/workspace.svelte'
 import type {
@@ -87,8 +87,8 @@ class LspRegistry {
     }
 
     this.providerInitPromise = (async () => {
-      await preloadLspCatalog()
-      this.registerExtensionLanguages(monaco)
+      await preloadBuiltinCatalog()
+      this.registerBuiltinLanguages(monaco)
       this.registerProviders(monaco)
     })().catch((error) => {
       this.providerInitPromise = null
@@ -259,33 +259,19 @@ class LspRegistry {
     return { suggestions }
   }
 
-  private registerExtensionLanguages(monaco: Monaco) {
+  private registerBuiltinLanguages(monaco: Monaco) {
     const existing = new Set(monaco.languages.getLanguages().map((entry) => entry.id))
-    for (const extension of getLspExtensions()) {
-      for (const language of extension.languages) {
-        if (existing.has(language.id)) continue
-        monaco.languages.register({ id: language.id, extensions: language.extensions, aliases: [language.label] })
-        existing.add(language.id)
-      }
+    for (const language of getBuiltinRuntimeLanguages()) {
+      if (existing.has(language.id)) continue
+      monaco.languages.register({ id: language.id, extensions: language.extensions, aliases: [language.label] })
+      existing.add(language.id)
     }
   }
 
   private registerProviders(monaco: Monaco) {
     this.registerEditorOpener(monaco)
 
-    const languageIds = new Set<string>()
-    for (const extension of getLspExtensions()) {
-      for (const language of extension.languages) {
-        languageIds.add(language.id)
-      }
-    }
-    for (const server of getLspCatalogServers()) {
-      for (const selector of server.document_selectors) {
-        if (selector.language) languageIds.add(selector.language)
-      }
-    }
-
-    for (const languageId of languageIds) {
+    for (const languageId of getBuiltinRuntimeLanguages().map((language) => language.id)) {
       if (this.registeredLanguages.has(languageId)) continue
       this.registeredLanguages.add(languageId)
 
@@ -302,7 +288,7 @@ class LspRegistry {
         provideCompletionItems: (model, position) => this.provideCompletionItems(model, position)
       })
 
-      if (!FORMATTER_MANAGED_LANGUAGE_IDS.has(languageId)) {
+      if (!isFormatterManagedLanguage(languageId)) {
         monaco.languages.registerDocumentFormattingEditProvider(languageId, {
           provideDocumentFormattingEdits: (model) => this.provideDocumentFormattingEdits(model)
         })

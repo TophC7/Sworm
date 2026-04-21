@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vtsls / TypeScript LSP Settings",
+  "description": "Settings forwarded to vtsls. Combines the standard VS Code `typescript.*` and `javascript.*` sections with vtsls-specific keys under `vtsls.*`. Only a commonly used subset is defined here; additional properties are allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "typescript": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "tsdk": {
+          "type": "string",
+          "description": "Path to a specific TypeScript installation (relative paths resolve from the workspace root)."
+        },
+        "preferences": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "importModuleSpecifier": { "type": "string", "enum": ["shortest", "relative", "non-relative", "project-relative"] },
+            "quoteStyle": { "type": "string", "enum": ["auto", "single", "double"] },
+            "autoImportFileExcludePatterns": { "type": "array", "items": { "type": "string" } },
+            "includePackageJsonAutoImports": { "type": "string", "enum": ["auto", "on", "off"] }
+          }
+        },
+        "suggest": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "autoImports": { "type": "boolean", "default": true },
+            "completeFunctionCalls": { "type": "boolean", "default": false }
+          }
+        },
+        "inlayHints": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "parameterNames": { "type": "object", "properties": { "enabled": { "type": "string", "enum": ["none", "literals", "all"] } } },
+            "parameterTypes": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+            "variableTypes": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+            "propertyDeclarationTypes": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+            "functionLikeReturnTypes": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+            "enumMemberValues": { "type": "object", "properties": { "enabled": { "type": "boolean" } } }
+          }
+        },
+        "updateImportsOnFileMove": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "string", "enum": ["always", "prompt", "never"], "default": "prompt" }
+          }
+        }
+      }
+    },
+    "javascript": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Mirror of `typescript.*` but for JS files. See typescript for supported keys."
+    },
+    "vtsls": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "vtsls-specific overrides not in upstream VS Code.",
+      "properties": {
+        "autoUseWorkspaceTsdk": {
+          "type": "boolean",
+          "description": "Automatically use the workspace's TypeScript version when present.",
+          "default": true
+        },
+        "experimental": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "completion": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "entriesLimit": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "maxInlayHintLength": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "tsserver": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "globalPlugins": {
+              "type": "array",
+              "description": "List of ts-server plugin configurations (name, location, etc).",
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          }
+        }
+      }
+    }
+  }
+}

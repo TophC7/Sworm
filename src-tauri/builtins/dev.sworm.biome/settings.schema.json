@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Biome LSP Settings",
+  "description": "Settings forwarded to the Biome language server under the `biome` configuration section. Biome primarily reads biome.json from the workspace; most keys here mirror that file's top-level fields.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Globally enables or disables Biome for this workspace.",
+      "default": true
+    },
+    "requireConfiguration": {
+      "type": "boolean",
+      "description": "When true, Biome only activates if a biome.json/biome.jsonc file is present.",
+      "default": false
+    },
+    "formatter": {
+      "type": "object",
+      "description": "Formatter-wide overrides. Language-specific overrides belong in biome.json.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "indentStyle": { "type": "string", "enum": ["tab", "space"], "default": "tab" },
+        "indentWidth": { "type": "integer", "minimum": 0, "maximum": 24, "default": 2 },
+        "lineEnding": { "type": "string", "enum": ["lf", "crlf", "cr"], "default": "lf" },
+        "lineWidth": { "type": "integer", "minimum": 1, "maximum": 320, "default": 80 }
+      }
+    },
+    "linter": {
+      "type": "object",
+      "description": "Linter-wide overrides. Use biome.json for per-rule configuration.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true }
+      }
+    },
+    "organizeImports": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true }
+      }
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

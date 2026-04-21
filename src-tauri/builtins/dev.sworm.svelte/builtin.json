@@ -1,0 +1,37 @@
+{
+  "id": "dev.sworm.svelte",
+  "label": "Svelte",
+  "contributes": {
+    "languages": [
+      {
+        "id": "svelte",
+        "label": "Svelte",
+        "aliases": ["svelte"],
+        "extensions": [".svelte"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "svelte-language-server",
+        "label": "Svelte Language Server",
+        "applies_to_languages": ["svelte"],
+        "runtime": {
+          "kind": "host_binary",
+          "command": "svelteserver"
+        },
+        "args": ["--stdio"],
+        "install_hint": "Install `svelte-language-server` and ensure `svelteserver` is on PATH.",
+        "document_selectors": [
+          {
+            "language": "svelte",
+            "extensions": [".svelte"]
+          }
+        ],
+        "settings": {
+          "section": "svelte",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}

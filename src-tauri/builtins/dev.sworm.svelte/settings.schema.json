@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Svelte Language Server Settings",
+  "description": "Settings forwarded under the `svelte` section. The server also picks up nested `typescript.*` and `javascript.*` subsections that are forwarded to its internal TS plugin.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "svelte": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enable-ts-plugin": {
+          "type": "boolean",
+          "description": "Enable the TypeScript plugin that provides IntelliSense in .svelte files when they are imported from .ts/.js.",
+          "default": true
+        },
+        "ask-to-enable-ts-plugin": { "type": "boolean", "default": false },
+        "plugin": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "svelte": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "enable": { "type": "boolean", "default": true },
+                "diagnostics": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+                "format": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "enable": { "type": "boolean", "default": true },
+                    "config": {
+                      "type": "object",
+                      "description": "Prettier config overrides (printWidth, tabWidth, semi, etc). Leave empty to use prettier's discovery.",
+                      "additionalProperties": true
+                    }
+                  }
+                },
+                "completions": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+                "hover": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+                "codeActions": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+                "compilerWarnings": {
+                  "type": "object",
+                  "description": "Map of Svelte compiler warning codes to their severity: 'ignore', 'hint', 'warning', or 'error'.",
+                  "additionalProperties": { "type": "string", "enum": ["ignore", "hint", "warning", "error"] }
+                }
+              }
+            },
+            "html": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+            "css": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } },
+            "typescript": { "type": "object", "properties": { "enable": { "type": "boolean", "default": true } } }
+          }
+        },
+        "language-server": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "runtime": { "type": "string", "description": "Path to the Node.js runtime the server should use." },
+            "ls-path": { "type": "string", "description": "Path to a custom svelte-language-server entrypoint." },
+            "debug": { "type": "boolean", "default": false }
+          }
+        },
+        "ui": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "svelte": {
+              "type": "object",
+              "properties": {
+                "showCompilerWarningsReasoning": { "type": "boolean", "default": false }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

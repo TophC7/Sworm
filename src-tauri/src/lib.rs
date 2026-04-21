@@ -56,6 +56,8 @@ pub fn run() {
             commands::app::env_probe,
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
+            // Builtins commands
+            commands::builtins::builtins_get_catalog,
             // Drag and drop commands
             commands::dnd::dnd_save_dropped_bytes,
             // Project commands
@@ -149,7 +151,6 @@ pub fn run() {
             commands::git::git_init,
             commands::git::git_clone_in_place,
             // LSP commands
-            commands::lsp::lsp_list_extensions,
             commands::lsp::lsp_list_servers,
             commands::lsp::lsp_set_server_config,
             commands::lsp::lsp_start,
