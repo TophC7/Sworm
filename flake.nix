@@ -124,12 +124,13 @@
           # Shared args for crane's dep and source builds.
           # src-tauri IS the Cargo root, so use it directly as the source.
           # cleanCargoSource strips non-Cargo files; we extend the filter
-          # to keep Tauri assets (config, capabilities, icons, migrations)
-          # that build.rs and the runtime need.
+          # to keep Tauri assets (config, capabilities, icons, migrations,
+          # builtin manifests/schemas) that build.rs and the runtime need.
           tauriSourceFilter =
             path: type:
             (craneLib.filterCargoSources path type)
             || (lib.hasSuffix "tauri.conf.json" path)
+            || (lib.hasInfix "/builtins/" path)
             || (lib.hasInfix "/capabilities/" path)
             || (lib.hasInfix "/icons/" path)
             || (lib.hasInfix "/migrations/" path);
