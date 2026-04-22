@@ -18,8 +18,8 @@
   import { getWindowControls, isSettingsOpen, setSettingsOpen } from '$lib/stores/ui.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/utils/shortcuts.svelte'
-  import { flushPersistencePending, getActiveSessionId, openProject } from '$lib/stores/workspace.svelte'
-  import { getDirtyEditorsCount, hasAnyDirtyEditors } from '$lib/stores/dirtyEditors.svelte'
+  import { getDirtyTextSurfaceCount, hasAnyDirtyTextSurfaces } from '$lib/surfaces/text/service.svelte'
+  import { flushPersistencePending, getActiveSessionId, openProject } from '$lib/workbench/state.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
@@ -62,8 +62,8 @@
     const unlisten = appWindow.onCloseRequested(async (event) => {
       // Guard before any teardown — once we've started flushing the
       // user has effectively committed to closing.
-      if (hasAnyDirtyEditors()) {
-        const count = getDirtyEditorsCount()
+      if (hasAnyDirtyTextSurfaces()) {
+        const count = getDirtyTextSurfaceCount()
         const noun = count === 1 ? 'file' : 'files'
         const proceed = await confirmAsync({
           title: 'Unsaved changes',

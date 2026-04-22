@@ -1,4 +1,4 @@
-import type { PaneSlot, Tab } from '$lib/stores/workspace.svelte'
+import type { PaneSlot, Tab } from '$lib/workbench/state.svelte'
 import { type DragPayload, stampDataTransfer } from '$lib/dnd/payload'
 import { LocalTransfer } from '$lib/dnd/transfer.svelte'
 

@@ -5,7 +5,7 @@
 
 import { backend } from '$lib/api/backend'
 import { removeSession as removeActivityEntry } from '$lib/stores/activity.svelte'
-import { addSessionTab, restoreWorkspaceFromDisk, syncSessionTabs } from '$lib/stores/workspace.svelte'
+import { addSessionTab, restoreWorkspaceFromDisk, syncSessionTabs } from '$lib/workbench/state.svelte'
 import type { Session } from '$lib/types/backend'
 
 let sessions = $state<Session[]>([])

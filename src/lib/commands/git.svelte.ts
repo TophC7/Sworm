@@ -1,7 +1,7 @@
 import type { CommandConfirm, CommandGroup } from './types'
 import { getActiveProject } from '$lib/stores/projects.svelte'
 import { getGitSummary, runGitAction } from '$lib/stores/git.svelte'
-import { getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { getActiveProjectId } from '$lib/workbench/state.svelte'
 import { backend } from '$lib/api/backend'
 import { getGitActionNotifications, type GitActionKind } from '$lib/utils/gitActionNotifications'
 import { runNotifiedTask } from '$lib/utils/notifiedTask'

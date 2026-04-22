@@ -18,7 +18,8 @@
   import { Textarea } from '$lib/components/ui/input'
   import { ChevronDown, FileDiff, MinusCircle, PackageIcon, PlusCircle, Trash2 } from '$lib/icons/lucideExports'
   import { runGitAction } from '$lib/stores/git.svelte'
-  import { addChangesTab, addEditorTab, addReadonlyEditorTab } from '$lib/stores/workspace.svelte'
+  import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/surfaces/diff/service.svelte'
+  import { openTextFile } from '$lib/surfaces/text/service.svelte'
   import type { GitChange, GitSummary } from '$lib/types/backend'
   import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/stores/notifications.svelte'
@@ -143,25 +144,25 @@
 
   function handleCtxOpenFile() {
     if (!contextFilePath) return
-    addEditorTab(projectId, contextFilePath)
+    openTextFile(projectId, contextFilePath)
   }
 
   function handleCtxOpenChanges() {
     if (!contextFilePath) return
 
     if (contextTargetType === 'file') {
-      addChangesTab(projectId, contextIsStaged, contextFilePath, contextFilePath, false)
+      openWorkingTreeDiff(projectId, contextIsStaged, contextFilePath, contextFilePath, { temporary: false })
       return
     }
 
     if (contextTargetType === 'directory') {
-      addChangesTab(projectId, contextIsStaged, contextFilePath, null, false)
+      openWorkingTreeDiff(projectId, contextIsStaged, contextFilePath, null, { temporary: false })
     }
   }
 
   function handleCtxOpenFileHead() {
     if (!contextFilePath) return
-    addReadonlyEditorTab(projectId, contextFilePath, 'HEAD', 'HEAD')
+    openHeadSnapshot(projectId, contextFilePath)
   }
 
   function handleCtxStage() {

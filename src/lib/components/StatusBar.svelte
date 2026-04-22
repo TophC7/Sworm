@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSessions } from '$lib/stores/sessions.svelte'
   import { getGitSummary } from '$lib/stores/git.svelte'
-  import { getActiveProjectId } from '$lib/stores/workspace.svelte'
+  import { getActiveProjectId } from '$lib/workbench/state.svelte'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'

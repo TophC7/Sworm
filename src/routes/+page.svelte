@@ -5,7 +5,7 @@
   import ProjectView from '$lib/components/ProjectView.svelte'
   import { getActiveProject, getProjects, loadProjects } from '$lib/stores/projects.svelte'
   import { loadProviders } from '$lib/stores/providers.svelte'
-  import { restoreAppShellState } from '$lib/stores/workspace.svelte'
+  import { restoreAppShellState } from '$lib/workbench/state.svelte'
   import { isProjectPickerOverride } from '$lib/stores/ui.svelte'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
 

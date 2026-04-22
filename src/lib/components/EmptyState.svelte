@@ -5,7 +5,7 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { addProject, getProjects } from '$lib/stores/projects.svelte'
   import { notify } from '$lib/stores/notifications.svelte'
-  import { getActiveProjectId, openProject } from '$lib/stores/workspace.svelte'
+  import { getActiveProjectId, openProject } from '$lib/workbench/state.svelte'
   import { hideProjectPicker, isProjectPickerOverride } from '$lib/stores/ui.svelte'
   import { parentPath } from '$lib/utils/path'
   import { getErrorMessage } from '$lib/utils/notifiedTask'

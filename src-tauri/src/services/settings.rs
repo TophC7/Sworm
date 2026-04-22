@@ -410,11 +410,7 @@ fn parse_formatting_settings(raw: &str) -> Result<FormattingSettings, String> {
         return Err("Failed to parse formatting settings: expected object".to_string());
     };
 
-    normalize_formatter_group(
-        root,
-        "javascript_typescript",
-        FormatterSelection::Biome,
-    );
+    normalize_formatter_group(root, "javascript_typescript", FormatterSelection::Biome);
     normalize_formatter_group(root, "json", FormatterSelection::Biome);
     normalize_formatter_group(root, "nix", FormatterSelection::Nixfmt);
 

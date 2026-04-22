@@ -229,7 +229,7 @@
  * Shiki syntax highlighting tokens.
  *
  * The multi-file diff viewer is now Monaco-based (see
- * `$lib/components/diff/MonacoDiffBody.svelte`); it owns its own
+ * `$lib/renderers/monaco/diff/MonacoDiffBody.svelte`); it owns its own
  * add/delete/hunk rendering. The old `@git-diff-view/core` template
  * CSS variables have been removed as part of that migration.
  */

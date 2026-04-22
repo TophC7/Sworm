@@ -1,7 +1,7 @@
 // Project state module using Svelte 5 runes.
 //
 // Manages the project list (CRUD against the backend).
-// Active project selection is delegated to workspace.svelte.ts —
+// Active project selection is delegated to workbench/state.svelte.ts —
 // this module re-exports getters for backward compatibility.
 
 import { backend } from '$lib/api/backend'
@@ -10,7 +10,7 @@ import {
   getActiveProjectId as workspaceGetActiveProjectId,
   selectProject as workspaceSelectProject,
   openProject
-} from '$lib/stores/workspace.svelte'
+} from '$lib/workbench/state.svelte'
 
 let projects = $state<Project[]>([])
 

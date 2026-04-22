@@ -8,11 +8,11 @@
 
 import { backend } from '$lib/api/backend'
 import { confirmAsync } from '$lib/stores/confirmService.svelte'
-import { isEditorDirty } from '$lib/stores/dirtyEditors.svelte'
 import { notify } from '$lib/stores/notifications.svelte'
 import { getSessions, updateSessionInList } from '$lib/stores/sessions.svelte'
-import type { TabId } from '$lib/stores/workspace.svelte'
-import { closeTab, collapsePaneIfEmpty, getAllTabs, getFocusedTab } from '$lib/stores/workspace.svelte'
+import type { TabId } from '$lib/workbench/state.svelte'
+import { closeTab, collapsePaneIfEmpty, getAllTabs, getFocusedTab } from '$lib/workbench/state.svelte'
+import { isTextSurfaceDirty } from '$lib/surfaces/text/service.svelte'
 import { getErrorMessage } from '$lib/utils/notifiedTask'
 
 /**
@@ -32,7 +32,7 @@ export async function closeTabWithChecks(projectId: string, tabId: TabId): Promi
   if (!tab) return false
   if (tab.locked) return false
 
-  if (tab.kind === 'editor' && isEditorDirty(projectId, tab.id)) {
+  if (tab.kind === 'text' && isTextSurfaceDirty(projectId, tab.id)) {
     const proceed = await confirmAsync({
       title: 'Unsaved changes',
       message: `${tab.fileName} has unsaved changes. Close and lose them?`,

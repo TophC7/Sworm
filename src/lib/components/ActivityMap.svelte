@@ -6,7 +6,7 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { allProviders } from '$lib/data/providers'
   import { addProject } from '$lib/stores/projects.svelte'
-  import { openProject } from '$lib/stores/workspace.svelte'
+  import { openProject } from '$lib/workbench/state.svelte'
   import {
     getDiscoveredProjects,
     isActivityMapLoading,

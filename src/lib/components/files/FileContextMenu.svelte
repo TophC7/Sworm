@@ -31,7 +31,7 @@
     targetType,
     children,
     onRevealInFolder,
-    onOpenInMonaco,
+    onOpenInEditor,
     onOpenInFresh,
     onOpenDiff,
     onCut,
@@ -51,7 +51,7 @@
     targetType: 'file' | 'directory' | null
     children: Snippet
     onRevealInFolder: () => void
-    onOpenInMonaco: () => void
+    onOpenInEditor: () => void
     onOpenInFresh: () => void
     onOpenDiff: () => void
     onCut: () => void
@@ -93,9 +93,9 @@
             <ChevronRight size={12} class="shrink-0 text-subtle" />
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>
-            <ContextMenuItem onclick={onOpenInMonaco}>
+            <ContextMenuItem onclick={onOpenInEditor}>
               <FileCodeIcon size={14} class="shrink-0 text-muted" />
-              <span>Monaco Editor</span>
+              <span>Built-in Editor</span>
             </ContextMenuItem>
             <ContextMenuItem onclick={onOpenInFresh}>
               <TerminalIcon size={14} class="shrink-0 text-muted" />

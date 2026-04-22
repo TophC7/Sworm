@@ -24,7 +24,7 @@
   } from '$lib/commands/index.svelte'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/commands/recents.svelte'
   import { isCommandPaletteOpen, setCommandPaletteOpen } from '$lib/stores/ui.svelte'
-  import { isEditorFocused } from '$lib/editor/editorActions.svelte'
+  import { isTextEditorFocused } from '$lib/renderers/monaco/text/actions.svelte'
   import { getEffectiveSpec } from '$lib/stores/shortcutOverrides.svelte'
   import { splitShortcut } from '$lib/utils/keybindings.svelte'
 
@@ -112,10 +112,10 @@
   ])
 
   // Set initial search when palette opens/closes. untrack prevents
-  // re-running when isEditorFocused changes while already open.
+  // re-running when isTextEditorFocused changes while already open.
   $effect(() => {
     if (open) {
-      search = untrack(() => isEditorFocused()) ? '> ' : ''
+      search = untrack(() => isTextEditorFocused()) ? '> ' : ''
     } else {
       search = ''
     }

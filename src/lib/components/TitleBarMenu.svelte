@@ -19,7 +19,7 @@
   import { MenuIcon } from '$lib/icons/lucideExports'
   import { getProjects } from '$lib/stores/projects.svelte'
   import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
-  import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
+  import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/workbench/state.svelte'
 
   let {
     onNewProject,

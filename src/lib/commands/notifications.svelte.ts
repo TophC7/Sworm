@@ -6,7 +6,8 @@ import {
   isNotificationCenterOpen,
   setNotificationCenterOpen
 } from '$lib/stores/notifications.svelte'
-import { addNotificationTestTab, getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { getActiveProjectId } from '$lib/workbench/state.svelte'
+import { openNotificationTool } from '$lib/surfaces/tool/service.svelte'
 
 export function getNotificationCommands(): CommandGroup[] {
   const notifications = getNotifications()
@@ -29,7 +30,7 @@ export function getNotificationCommands(): CommandGroup[] {
       label: 'Open Notification Tester',
       icon: BellIcon,
       keywords: ['notification', 'notifications', 'tester', 'preview', 'debug', 'demo', 'test'],
-      onSelect: () => addNotificationTestTab(activeProjectId)
+      onSelect: () => openNotificationTool(activeProjectId)
     })
   }
 

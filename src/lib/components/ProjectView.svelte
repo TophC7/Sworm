@@ -9,8 +9,9 @@
   import FilesSidebar from '$lib/components/files/FilesSidebar.svelte'
   import SessionHistoryView from '$lib/components/session/SessionHistoryView.svelte'
   import { getSidebarWidth, setSidebarWidth, isSidebarCollapsed, getSidebarView } from '$lib/stores/ui.svelte'
-  import PaneGrid from '$lib/components/PaneGrid.svelte'
-  import { addCommitTab, addChangesTab, addStashTab, promoteFocusedTab } from '$lib/stores/workspace.svelte'
+  import PaneGrid from '$lib/workbench/PaneGrid.svelte'
+  import { openCommitDiff, openStashDiff, openWorkingTreeDiff } from '$lib/surfaces/diff/service.svelte'
+  import { promoteFocusedTab } from '$lib/workbench/state.svelte'
 
   let {
     project
@@ -90,12 +91,13 @@
             projectId={project.id}
             projectPath={project.path}
             onRefresh={handleRefreshGit}
-            onFileClick={(filePath, staged) => addChangesTab(project.id, staged, null, filePath)}
+            onFileClick={(filePath, staged) => openWorkingTreeDiff(project.id, staged, null, filePath)}
             onPersistTab={() => promoteFocusedTab(project.id)}
             onCommitFileClick={(hash, shortHash, message, filePath) =>
-              addCommitTab(project.id, hash, shortHash, message, filePath)}
-            onStashFileClick={(stashIndex, message, filePath) => addStashTab(project.id, stashIndex, message, filePath)}
-            onViewAllChanges={(staged) => addChangesTab(project.id, staged, null, null, false)}
+              openCommitDiff(project.id, hash, shortHash, message, filePath)}
+            onStashFileClick={(stashIndex, message, filePath) =>
+              openStashDiff(project.id, stashIndex, message, filePath)}
+            onViewAllChanges={(staged) => openWorkingTreeDiff(project.id, staged, null, null, { temporary: false })}
           />
         {:else if sidebarView === 'sessions'}
           <SessionHistoryView projectId={project.id} />

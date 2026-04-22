@@ -1,9 +1,9 @@
 import { isSidebarCollapsed, toggleSidebar, zoomIn, zoomOut, zoomReset } from '$lib/stores/ui.svelte'
-import { getActiveProjectId, hasClosedTabs } from '$lib/stores/workspace.svelte'
+import { getActiveProjectId, hasClosedTabs } from '$lib/workbench/state.svelte'
 import type { CommandGroup } from './types'
 import { closeActiveTab, reloadView, reopenTab } from './actions.svelte'
 
-import { isIndentRainbowEnabled, toggleIndentRainbow } from '$lib/editor/extensions/indentRainbow.svelte'
+import { isIndentRainbowEnabled, toggleIndentRainbow } from '$lib/renderers/monaco/text/indentRainbow.svelte'
 import {
   PaintbrushIcon,
   PanelLeftIcon,

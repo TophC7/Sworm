@@ -141,6 +141,30 @@ impl SessionService {
         Ok(sessions)
     }
 
+    /// Return the most recently updated non-archived session for a
+    /// project/provider pair.
+    pub fn get_latest_for_project_provider(
+        &self,
+        conn: &Connection,
+        project_id: &str,
+        provider_id: &str,
+    ) -> Result<Option<Session>, String> {
+        let query = format!(
+            "SELECT {} FROM sessions
+             WHERE project_id = ?1 AND provider_id = ?2 AND archived = 0
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            SESSION_COLS
+        );
+        let mut stmt = conn
+            .prepare(&query)
+            .map_err(|e| format!("Failed to prepare session singleton query: {}", e))?;
+
+        stmt.query_row(rusqlite::params![project_id, provider_id], row_to_session)
+            .optional()
+            .map_err(|e| format!("Failed to query session singleton: {}", e))
+    }
+
     /// List archived sessions for a project.
     pub fn list_archived_for_project(
         &self,

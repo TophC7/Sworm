@@ -5,8 +5,8 @@ import { dragObserver, frameAt, type DragFrame } from '$lib/dnd/observer.svelte'
 import { DropRegistry } from '$lib/dnd/registry.svelte'
 import { LocalTransfer } from '$lib/dnd/transfer.svelte'
 import { backend } from '$lib/api/backend'
+import { openTextFile } from '$lib/surfaces/text/service.svelte'
 import {
-  addEditorTab,
   canSplitPane,
   moveTabToPane,
   setActiveTab,
@@ -15,7 +15,7 @@ import {
   type SplitDirection,
   type PaneSlot,
   type PaneState
-} from '$lib/stores/workspace.svelte'
+} from '$lib/workbench/state.svelte'
 import { notify } from '$lib/stores/notifications.svelte'
 import { toProjectRelativePath } from '$lib/utils/paths'
 
@@ -131,9 +131,7 @@ async function dispatchPaneDrop(
 
     if (item.kind === 'file') {
       if (item.projectId !== projectId || item.isDir) continue
-      const tabId = addEditorTab(projectId, item.path)
-      moveTabToPane(projectId, tabId, targetSlot)
-      setActiveTab(projectId, targetSlot, tabId)
+      openTextFile(projectId, item.path, { paneSlot: targetSlot })
       setFocusedPane(targetSlot)
       handled = true
       continue
@@ -159,9 +157,7 @@ async function dispatchPaneDrop(
           continue
         }
 
-        const tabId = addEditorTab(projectId, rel)
-        moveTabToPane(projectId, tabId, targetSlot)
-        setActiveTab(projectId, targetSlot, tabId)
+        openTextFile(projectId, rel, { paneSlot: targetSlot })
         setFocusedPane(targetSlot)
         handled = true
       }

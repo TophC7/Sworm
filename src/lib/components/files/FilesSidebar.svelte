@@ -12,10 +12,11 @@
   import { getGitSummary } from '$lib/stores/git.svelte'
   import GitStatusBadge from '$lib/components/git/GitStatusBadge.svelte'
   import { RotateCw } from '$lib/icons/lucideExports'
-  import { openFile, ensureFreshSession } from '$lib/utils/openFile'
-  import { addChangesTab, promoteFocusedTab } from '$lib/stores/workspace.svelte'
+  import { openWorkingTreeDiff } from '$lib/surfaces/diff/service.svelte'
+  import { deleteTextPath, openTextFile, openTextInFresh, renameTextPath } from '$lib/surfaces/text/service.svelte'
+  import { promoteFocusedTab } from '$lib/workbench/state.svelte'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
-  import { getFocusedTab } from '$lib/stores/workspace.svelte'
+  import { getFocusedTab } from '$lib/workbench/state.svelte'
   import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/stores/notifications.svelte'
   import type { DragPayload } from '$lib/dnd/payload'
@@ -311,12 +312,12 @@
   }
 
   function handleFileClick(filePath: string) {
-    openFile(projectId, projectPath, filePath)
+    openTextFile(projectId, filePath)
   }
 
   // Active file from the focused editor tab
   let focusedTab = $derived(getFocusedTab(projectId))
-  let activeFilePath = $derived(focusedTab?.kind === 'editor' ? focusedTab.filePath : null)
+  let activeFilePath = $derived(focusedTab?.kind === 'text' ? focusedTab.filePath : null)
 
   // Reveal the active file in the tree by expanding every ancestor
   // directory. The effect deliberately depends on `loading` so that on
@@ -392,19 +393,19 @@
     await revealItemInDir(absPath)
   }
 
-  function handleOpenInMonaco() {
+  function handleOpenInEditor() {
     if (!contextFilePath) return
-    openFile(projectId, projectPath, contextFilePath)
+    openTextFile(projectId, contextFilePath)
   }
 
   async function handleOpenInFresh() {
     if (!contextFilePath) return
-    await ensureFreshSession(projectId)
+    await openTextInFresh(projectId, projectPath, contextFilePath)
   }
 
   function handleOpenDiff() {
     if (!contextFilePath) return
-    addChangesTab(projectId, false, contextFilePath, contextFilePath, false)
+    openWorkingTreeDiff(projectId, false, contextFilePath, contextFilePath, { temporary: false })
   }
 
   async function handleCut() {
@@ -465,6 +466,7 @@
     }
     try {
       await backend.files.rename(projectPath, renameFilePath, renameValue)
+      renameTextPath(projectId, renameFilePath, renameValue)
       await loadFiles()
     } catch (e) {
       notify.error('Rename failed', errMessage(e))
@@ -483,6 +485,7 @@
     if (!deleteFilePath) return
     try {
       await backend.files.delete(projectPath, deleteFilePath)
+      deleteTextPath(projectId, deleteFilePath)
       await loadFiles()
     } catch (e) {
       notify.error('Delete failed', errMessage(e))
@@ -512,7 +515,7 @@
       if (kind === 'file') {
         await backend.files.write(projectPath, newItemName.trim(), '')
         await loadFiles()
-        openFile(projectId, projectPath, newItemName.trim())
+        openTextFile(projectId, newItemName.trim())
       } else if (kind === 'folder') {
         await backend.files.createDir(projectPath, newItemName.trim())
         await loadFiles()
@@ -549,7 +552,7 @@
       filePath={contextFilePath}
       targetType={contextTargetType}
       onRevealInFolder={handleRevealInFolder}
-      onOpenInMonaco={handleOpenInMonaco}
+      onOpenInEditor={handleOpenInEditor}
       onOpenInFresh={handleOpenInFresh}
       onOpenDiff={handleOpenDiff}
       onCut={handleCut}

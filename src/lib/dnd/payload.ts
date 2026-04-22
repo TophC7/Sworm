@@ -1,4 +1,4 @@
-import type { PaneSlot, TabId } from '$lib/stores/workspace.svelte'
+import type { PaneSlot, TabId } from '$lib/workbench/state.svelte'
 
 export const DND_MIME = {
   SWORM_ITEM: 'application/vnd.sworm.item+json',

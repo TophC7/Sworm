@@ -4,10 +4,10 @@
 // store is populated on editor focus and cleared on blur/unmount).
 
 import type { CommandGroup } from './types'
-import { getEditorActions } from '$lib/editor/editorActions.svelte'
+import { getTextEditorActions } from '$lib/renderers/monaco/text/actions.svelte'
 
 export function getEditorCommands(): CommandGroup[] {
-  const actions = getEditorActions()
+  const actions = getTextEditorActions()
   if (actions.length === 0) return []
 
   return [

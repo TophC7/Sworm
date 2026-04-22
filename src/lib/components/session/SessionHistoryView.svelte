@@ -7,7 +7,7 @@
     unarchiveSession,
     removeSession
   } from '$lib/stores/sessions.svelte'
-  import { addSessionTab, closeTabBySessionId, getAllTabs } from '$lib/stores/workspace.svelte'
+  import { closeTabBySessionId, getAllTabs } from '$lib/workbench/state.svelte'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { IconButton } from '$lib/components/ui/button'
   import { ArchiveIcon, ArchiveRestoreIcon, Trash2 } from '$lib/icons/lucideExports'
@@ -18,6 +18,7 @@
   import SidebarPanel from '$lib/components/SidebarPanel.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { runNotifiedTask } from '$lib/utils/notifiedTask'
+  import { ensureSessionSurface } from '$lib/surfaces/session/service.svelte'
 
   let {
     projectId
@@ -96,7 +97,7 @@
   })
 
   function handleSessionClick(session: Session) {
-    addSessionTab(projectId, session.id, session.title, session.provider_id)
+    ensureSessionSurface(projectId, session.id, session.title, session.provider_id)
   }
 
   async function handleArchive(session: Session) {

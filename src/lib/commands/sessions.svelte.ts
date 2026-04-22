@@ -2,7 +2,8 @@ import type { Command, CommandConfirm, CommandGroup } from './types'
 import { allProviders, directOptions } from '$lib/data/providers'
 import { getConnectedProviders } from '$lib/stores/providers.svelte'
 import { createAndOpenSession, hasRunningSessions } from '$lib/stores/sessions.svelte'
-import { focusTab, getAllTabs, getActiveProjectId } from '$lib/stores/workspace.svelte'
+import { ensureFreshSession } from '$lib/surfaces/session/service.svelte'
+import { getActiveProjectId } from '$lib/workbench/state.svelte'
 import { runNotifiedTask } from '$lib/utils/notifiedTask'
 
 const freshIcon = directOptions.find((p) => p.id === 'fresh')?.icon ?? ''
@@ -56,12 +57,7 @@ async function doCreate(providerId: string, label: string) {
 function openFresh() {
   const projectId = getActiveProjectId()
   if (!projectId) return
-  const freshTab = getAllTabs(projectId).find((t) => t.kind === 'session' && t.providerId === 'fresh')
-  if (freshTab) {
-    focusTab(projectId, freshTab.id)
-    return
-  }
-  startSession('fresh', 'Fresh')
+  void ensureFreshSession(projectId)
 }
 
 export function getSessionCommands(): CommandGroup[] {

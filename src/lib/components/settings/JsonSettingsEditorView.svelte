@@ -6,7 +6,7 @@
 
 <script lang="ts">
   import { Button } from '$lib/components/ui/button'
-  import { SWORM_THEME_NAME } from '$lib/editor/monacoTheme'
+  import { SWORM_THEME_NAME } from '$lib/renderers/monaco/core/monacoTheme'
   import { CircleAlert } from '$lib/icons/lucideExports'
   import { getErrorMessage } from '$lib/utils/notifiedTask'
 
@@ -71,9 +71,8 @@
     if (!editorEl) return
     let disposed = false
     ready = false
-
     ;(async () => {
-      const { initMonaco } = await import('$lib/editor/monacoEnv')
+      const { initMonaco } = await import('$lib/renderers/monaco/core/monacoEnv')
       const m = await import('monaco-editor')
       if (disposed || !editorEl) return
 

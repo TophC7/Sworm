@@ -6,7 +6,7 @@
     selectProject,
     closeProject,
     reorderProjects
-  } from '$lib/stores/workspace.svelte'
+  } from '$lib/workbench/state.svelte'
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { Plus } from '$lib/icons/lucideExports'

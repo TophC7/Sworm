@@ -30,10 +30,7 @@ impl ProjectLspEnvironment {
         }
     }
 
-    pub fn from_nix(
-        env: &EnvironmentService,
-        nix_env: Option<&HashMap<String, String>>,
-    ) -> Self {
+    pub fn from_nix(env: &EnvironmentService, nix_env: Option<&HashMap<String, String>>) -> Self {
         match nix_env {
             Some(nix_env) => Self {
                 merged_path: NixService::merged_path(&env.merged_path, nix_env),
@@ -153,14 +150,7 @@ impl LspService {
             events.clone(),
             Arc::clone(&shutdown),
         );
-        self.spawn_wait_thread(
-            session_id,
-            runtime_id,
-            child,
-            events,
-            shutdown,
-            finalized,
-        );
+        self.spawn_wait_thread(session_id, runtime_id, child, events, shutdown, finalized);
 
         Ok(())
     }
@@ -270,7 +260,10 @@ impl LspService {
                         }
                     }
                 }
-                info!("LSP stdout thread finished for {} ({})", session_id, runtime_id);
+                info!(
+                    "LSP stdout thread finished for {} ({})",
+                    session_id, runtime_id
+                );
             })
             .expect("failed to spawn LSP stdout thread");
     }
@@ -323,7 +316,10 @@ impl LspService {
                         break;
                     }
                 }
-                info!("LSP stderr thread finished for {} ({})", session_id, runtime_id);
+                info!(
+                    "LSP stderr thread finished for {} ({})",
+                    session_id, runtime_id
+                );
             })
             .expect("failed to spawn LSP stderr thread");
     }
@@ -539,7 +535,9 @@ fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> Result<Option<String>
         .read_exact(&mut body)
         .map_err(|error| format!("Failed to read LSP payload: {}", error))?;
 
-    String::from_utf8(body).map(Some).map_err(|error| error.to_string())
+    String::from_utf8(body)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -559,7 +557,8 @@ mod tests {
 
     #[test]
     fn rejects_missing_direct_command_paths() {
-        let missing = std::env::temp_dir().join(format!("sworm-lsp-missing-{}", uuid::Uuid::new_v4()));
+        let missing =
+            std::env::temp_dir().join(format!("sworm-lsp-missing-{}", uuid::Uuid::new_v4()));
         let result = validate_direct_command_path(missing.to_string_lossy().as_ref());
         assert!(result.is_err());
     }

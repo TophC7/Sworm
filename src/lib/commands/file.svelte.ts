@@ -1,7 +1,7 @@
 import type { Command, CommandGroup, FileCallbacks } from './types'
 import { backend } from '$lib/api/backend'
 import { getActiveProject, getProjects } from '$lib/stores/projects.svelte'
-import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/stores/workspace.svelte'
+import { closeProject, getActiveProjectId, getOpenProjectIds, openProject } from '$lib/workbench/state.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { notify } from '$lib/stores/notifications.svelte'
 import { getErrorMessage } from '$lib/utils/notifiedTask'

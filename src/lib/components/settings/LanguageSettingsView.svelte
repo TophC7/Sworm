@@ -6,10 +6,16 @@
   import { Switch } from '$lib/components/ui/switch'
   import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
   import { Braces, CircleAlert, ChevronDown, RefreshCwIcon } from '$lib/icons/lucideExports'
-  import { getLspServers, getLspServersLoading, loadLspServers, refreshLspServers, saveLspServerConfig } from '$lib/stores/lspSettings.svelte'
+  import {
+    getLspServers,
+    getLspServersLoading,
+    loadLspServers,
+    refreshLspServers,
+    saveLspServerConfig
+  } from '$lib/stores/lspSettings.svelte'
   import { notify } from '$lib/stores/notifications.svelte'
   import { getSettings, saveFormattingSettings } from '$lib/stores/settings.svelte'
-  import { getActiveProjectId } from '$lib/stores/workspace.svelte'
+  import { getActiveProjectId } from '$lib/workbench/state.svelte'
   import type { BuiltinSettingsPage, FormatterSelection, LspServerSettingsEntry } from '$lib/types/backend'
   import { getErrorMessage } from '$lib/utils/notifiedTask'
   import { onDestroy } from 'svelte'
@@ -277,7 +283,9 @@
 {#if lspLoading && servers.length === 0}
   <div class="border-t border-edge px-5 py-8 text-sm text-muted">Loading language servers&hellip;</div>
 {:else if servers.length === 0}
-  <div class="border-t border-edge px-5 py-8 text-sm text-muted">No language servers are attached to this language yet.</div>
+  <div class="border-t border-edge px-5 py-8 text-sm text-muted">
+    No language servers are attached to this language yet.
+  </div>
 {:else}
   <div class="flex flex-col border-t border-edge">
     {#each servers as entry (entry.server.server_definition_id)}
@@ -299,7 +307,11 @@
           }}
           class="group flex cursor-pointer items-center gap-3 px-5 py-3 transition-colors hover:bg-surface/40"
         >
-          <div role="presentation" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+          <div
+            role="presentation"
+            onclick={(event) => event.stopPropagation()}
+            onkeydown={(event) => event.stopPropagation()}
+          >
             <Switch checked={draft?.enabled ?? true} onCheckedChange={(value) => updateServer(id, 'enabled', value)} />
           </div>
 
@@ -343,17 +355,19 @@
               <Input
                 class="flex-1 py-2"
                 value={draft.binaryPath}
-                oninput={(event: Event) => updateServer(id, 'binaryPath', (event.currentTarget as HTMLInputElement).value)}
+                oninput={(event: Event) =>
+                  updateServer(id, 'binaryPath', (event.currentTarget as HTMLInputElement).value)}
                 placeholder="Use detected binary"
               />
             </div>
 
-              <div class="flex items-center gap-3">
-                <span class="w-32 shrink-0 text-sm text-muted">Extra args</span>
-                <Input
+            <div class="flex items-center gap-3">
+              <span class="w-32 shrink-0 text-sm text-muted">Extra args</span>
+              <Input
                 class="flex-1 py-2"
                 value={draft.extraArgs}
-                oninput={(event: Event) => updateServer(id, 'extraArgs', (event.currentTarget as HTMLInputElement).value)}
+                oninput={(event: Event) =>
+                  updateServer(id, 'extraArgs', (event.currentTarget as HTMLInputElement).value)}
                 placeholder="--stdio already comes from the manifest"
               />
             </div>

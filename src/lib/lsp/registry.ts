@@ -2,13 +2,8 @@ import { backend } from '$lib/api/backend'
 import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/builtins/catalog'
 import { isFormatterManagedLanguage } from '$lib/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/editor/languageMap'
-import { queueEditorReveal } from '$lib/stores/editorNavigation.svelte'
-import { addEditorTab, openProject } from '$lib/stores/workspace.svelte'
-import type {
-  LspDocumentSelector,
-  LspEvent,
-  LspServerSettingsEntry
-} from '$lib/types/backend'
+import { openTextFile } from '$lib/surfaces/text/service.svelte'
+import type { LspDocumentSelector, LspEvent, LspServerSettingsEntry } from '$lib/types/backend'
 
 const LSP_MARKER_OWNER = 'sworm-lsp'
 const TEXT_DOCUMENT_SYNC_FULL = 1
@@ -326,12 +321,10 @@ class LspRegistry {
         const modelReady = await this.ensureFileModel(resource, context)
         if (!modelReady) return false
 
-        if (selectionOrPosition) {
-          queueEditorReveal(context.projectId, targetPath, toEditorRevealTarget(selectionOrPosition))
-        }
-
-        openProject(context.projectId)
-        addEditorTab(context.projectId, relativePath, true)
+        openTextFile(context.projectId, relativePath, {
+          temporary: true,
+          reveal: selectionOrPosition ? toEditorRevealTarget(selectionOrPosition) : null
+        })
         return true
       }
     })
@@ -351,11 +344,7 @@ class LspRegistry {
     return promise
   }
 
-  private ensureServerInstance(
-    context: DocumentContext,
-    entry: LspServerSettingsEntry,
-    order: number
-  ): ServerInstance {
+  private ensureServerInstance(context: DocumentContext, entry: LspServerSettingsEntry, order: number): ServerInstance {
     const rootPath = context.projectPath
     const key = `${context.projectId}:${entry.server.server_definition_id}:${rootPath}`
     const existing = this.serverInstances.get(key)
@@ -453,14 +442,8 @@ class LspRegistry {
     }
   }
 
-  private async attachServerDefinition(
-    document: ManagedDocument,
-    serverDefinitionId: string
-  ): Promise<void> {
-    await this.attachMatchingServers(
-      document,
-      (entry) => entry.server.server_definition_id === serverDefinitionId
-    )
+  private async attachServerDefinition(document: ManagedDocument, serverDefinitionId: string): Promise<void> {
+    await this.attachMatchingServers(document, (entry) => entry.server.server_definition_id === serverDefinitionId)
   }
 
   private async attachMatchingServers(
@@ -498,9 +481,7 @@ class LspRegistry {
     if (!document) return null
 
     await Promise.all(
-      [...document.attachments]
-        .map((key) => this.serverInstances.get(key)?.startPromise ?? null)
-        .filter(Boolean)
+      [...document.attachments].map((key) => this.serverInstances.get(key)?.startPromise ?? null).filter(Boolean)
     )
 
     return document
@@ -629,11 +610,7 @@ class LspRegistry {
     })
   }
 
-  private async request(
-    instance: ServerInstance,
-    method: string,
-    params: unknown
-  ): Promise<unknown> {
+  private async request(instance: ServerInstance, method: string, params: unknown): Promise<unknown> {
     const id = instance.nextRequestId++
     return new Promise((resolve, reject) => {
       instance.pending.set(id, { resolve, reject, method })
@@ -721,12 +698,7 @@ class LspRegistry {
     this.handleServerNotification(instance, method, message.params)
   }
 
-  private async handleServerRequest(
-    instance: ServerInstance,
-    id: JsonRpcId,
-    method: string,
-    params: unknown
-  ) {
+  private async handleServerRequest(instance: ServerInstance, id: JsonRpcId, method: string, params: unknown) {
     if (method === 'workspace/configuration') {
       const items = Array.isArray((params as { items?: unknown[] } | undefined)?.items)
         ? ((params as { items: unknown[] }).items as unknown[])
@@ -1044,7 +1016,10 @@ function toMarkdownContents(contents: unknown): import('monaco-editor').IMarkdow
     if (typeof (contents as { value?: unknown }).value === 'string') {
       return [{ value: (contents as { value: string }).value }]
     }
-    if (typeof (contents as { language?: unknown }).language === 'string' && typeof (contents as { value?: unknown }).value === 'string') {
+    if (
+      typeof (contents as { language?: unknown }).language === 'string' &&
+      typeof (contents as { value?: unknown }).value === 'string'
+    ) {
       return [
         {
           value: `\`\`\`${(contents as { language: string }).language}\n${(contents as { value: string }).value}\n\`\`\``
@@ -1080,12 +1055,13 @@ function toMonacoCompletionItem(
     | { newText?: string; range?: unknown; insert?: unknown; replace?: unknown }
     | undefined
 
-  const range = textEdit?.insert && textEdit?.replace
-    ? {
-        insert: fromLspRange(textEdit.insert) ?? fallbackRange,
-        replace: fromLspRange(textEdit.replace) ?? fallbackRange
-      }
-    : fromLspRange(textEdit?.range) ?? fallbackRange
+  const range =
+    textEdit?.insert && textEdit?.replace
+      ? {
+          insert: fromLspRange(textEdit.insert) ?? fallbackRange,
+          replace: fromLspRange(textEdit.replace) ?? fallbackRange
+        }
+      : (fromLspRange(textEdit?.range) ?? fallbackRange)
 
   return {
     label: typeof item.label === 'string' ? item.label : String(item.label ?? ''),
@@ -1146,12 +1122,14 @@ function lspCompletionKindToMonaco(kind: number): number {
 function toMonacoLocations(response: unknown): MonacoLocation[] | null {
   const items = Array.isArray(response) ? response : response ? [response] : []
   const locations = items.flatMap((item) => {
-    const uri = typeof (item as { targetUri?: unknown }).targetUri === 'string'
-      ? (item as { targetUri: string }).targetUri
-      : typeof (item as { uri?: unknown }).uri === 'string'
-        ? (item as { uri: string }).uri
-        : null
-    const range = (item as { targetSelectionRange?: unknown }).targetSelectionRange ?? (item as { range?: unknown }).range
+    const uri =
+      typeof (item as { targetUri?: unknown }).targetUri === 'string'
+        ? (item as { targetUri: string }).targetUri
+        : typeof (item as { uri?: unknown }).uri === 'string'
+          ? (item as { uri: string }).uri
+          : null
+    const range =
+      (item as { targetSelectionRange?: unknown }).targetSelectionRange ?? (item as { range?: unknown }).range
     if (!uri) return []
     const monacoRange = fromLspRange(range)
     if (!monacoRange) return []
@@ -1170,9 +1148,10 @@ function parseUri(uri: string) {
 
 function toMonacoTextEdit(edit: unknown): MonacoTextEdit | null {
   const range = fromLspRange((edit as { range?: unknown } | undefined)?.range)
-  const text = typeof (edit as { newText?: unknown } | undefined)?.newText === 'string'
-    ? ((edit as { newText: string }).newText ?? '')
-    : ''
+  const text =
+    typeof (edit as { newText?: unknown } | undefined)?.newText === 'string'
+      ? ((edit as { newText: string }).newText ?? '')
+      : ''
   return range ? { range, text } : null
 }
 
@@ -1189,9 +1168,10 @@ function toMonacoMarker(diagnostic: unknown): import('monaco-editor').editor.IMa
 
   return {
     ...range,
-    message: typeof (diagnostic as { message?: unknown } | undefined)?.message === 'string'
-      ? ((diagnostic as { message: string }).message ?? '')
-      : 'LSP diagnostic',
+    message:
+      typeof (diagnostic as { message?: unknown } | undefined)?.message === 'string'
+        ? ((diagnostic as { message: string }).message ?? '')
+        : 'LSP diagnostic',
     severity: severityMap[Number((diagnostic as { severity?: unknown }).severity)] ?? 4,
     code:
       typeof (diagnostic as { code?: unknown } | undefined)?.code === 'string' ||
@@ -1215,9 +1195,10 @@ function safeJsonParse(value: string | null): unknown {
 }
 
 function configurationValueForSection(settings: unknown, item: unknown): unknown {
-  const section = typeof (item as { section?: unknown } | undefined)?.section === 'string'
-    ? ((item as { section: string }).section ?? '')
-    : ''
+  const section =
+    typeof (item as { section?: unknown } | undefined)?.section === 'string'
+      ? ((item as { section: string }).section ?? '')
+      : ''
 
   if (!section.trim()) {
     return settings ?? null

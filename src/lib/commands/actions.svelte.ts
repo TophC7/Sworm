@@ -6,24 +6,23 @@
 // Ctrl+N and click "New File" from the palette run the same code path.
 
 import { confirmAsync } from '$lib/stores/confirmService.svelte'
-import { getDirtyEditorsCount, hasAnyDirtyEditors } from '$lib/stores/dirtyEditors.svelte'
 import { notify } from '$lib/stores/notifications.svelte'
 import { createAndOpenSession } from '$lib/stores/sessions.svelte'
 import { getConnectedProviders } from '$lib/stores/providers.svelte'
 import { showProjectPicker } from '$lib/stores/ui.svelte'
 import {
-  addNewEmptyEditorTab,
-  flushPersistencePending,
-  getActiveProjectId,
-  reopenLastClosedTab
-} from '$lib/stores/workspace.svelte'
+  createUntitledTextSurface,
+  getDirtyTextSurfaceCount,
+  hasAnyDirtyTextSurfaces
+} from '$lib/surfaces/text/service.svelte'
+import { flushPersistencePending, getActiveProjectId, reopenLastClosedTab } from '$lib/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/utils/tabActions.svelte'
 import { runNotifiedTask, getErrorMessage } from '$lib/utils/notifiedTask'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
 export async function reloadView(): Promise<void> {
-  if (hasAnyDirtyEditors()) {
-    const count = getDirtyEditorsCount()
+  if (hasAnyDirtyTextSurfaces()) {
+    const count = getDirtyTextSurfaceCount()
     const noun = count === 1 ? 'file' : 'files'
     const proceed = await confirmAsync({
       title: 'Unsaved changes',
@@ -44,7 +43,7 @@ export async function reloadView(): Promise<void> {
 export function newEmptyFile(): void {
   const projectId = getActiveProjectId()
   if (!projectId) return
-  addNewEmptyEditorTab(projectId)
+  createUntitledTextSurface(projectId)
 }
 
 export async function newTerminalSession(): Promise<void> {

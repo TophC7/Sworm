@@ -129,6 +129,19 @@ pub fn session_create(
     }
 
     let db = state.db.lock();
+    if provider_id == "fresh" {
+        // Fresh is a project-scoped singleton tool: multiple frontend
+        // entry points may "open" it, but they should all resolve the
+        // same persisted session row.
+        if let Some(existing) = state
+            .sessions
+            .get_latest_for_project_provider(db.conn(), &project_id, &provider_id)
+            .map_err(ApiError::Database)?
+        {
+            return Ok(existing);
+        }
+    }
+
     let project = state
         .projects
         .get(db.conn(), &project_id)

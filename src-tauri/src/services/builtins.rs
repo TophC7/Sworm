@@ -199,7 +199,9 @@ fn load_catalog() -> Result<LoadedBuiltinCatalog, String> {
             runtime: BuiltinRuntimeCatalog {
                 languages: runtime_languages,
             },
-            settings: BuiltinSettingsCatalog { pages: settings_pages },
+            settings: BuiltinSettingsCatalog {
+                pages: settings_pages,
+            },
         },
         server_definitions,
         server_definitions_by_id,
@@ -211,7 +213,10 @@ fn parse_builtin(asset: &BuiltinAsset) -> Result<LoadedBuiltinManifest, String> 
         .map_err(|error| format!("Failed to parse {} builtin manifest: {}", asset.id, error))?;
 
     if manifest.id.trim().is_empty() || manifest.label.trim().is_empty() {
-        return Err(format!("Builtin {} must have a non-empty id and label", asset.id));
+        return Err(format!(
+            "Builtin {} must have a non-empty id and label",
+            asset.id
+        ));
     }
 
     if manifest.id != asset.id {
@@ -441,7 +446,12 @@ fn build_server_definitions(
                 }
             }
 
-            validate_document_selectors(&builtin.manifest.id, &definition.id, &definition.document_selectors, &known_language_ids)?;
+            validate_document_selectors(
+                &builtin.manifest.id,
+                &definition.id,
+                &definition.document_selectors,
+                &known_language_ids,
+            )?;
 
             let server_definition_id =
                 BuiltinCatalogService::server_definition_id(&builtin.manifest.id, &definition.id);
@@ -504,7 +514,10 @@ fn build_settings_pages(
             kind: overlay.kind,
             label: overlay.label.to_string(),
             icon_filename: overlay.icon_filename.to_string(),
-            server_definition_ids: server_definition_ids_for_languages(server_definitions, &language_ids),
+            server_definition_ids: server_definition_ids_for_languages(
+                server_definitions,
+                &language_ids,
+            ),
             language_ids,
             formatter: overlay.formatter_group.map(formatter_policy),
         });
@@ -524,7 +537,10 @@ fn build_settings_pages(
             kind: BuiltinSettingsPageKind::Language,
             label: language.label.clone(),
             icon_filename: icon_filename_for_language(&language),
-            server_definition_ids: server_definition_ids_for_languages(server_definitions, &language_ids),
+            server_definition_ids: server_definition_ids_for_languages(
+                server_definitions,
+                &language_ids,
+            ),
             language_ids,
             formatter: None,
         });
@@ -537,7 +553,10 @@ fn server_definition_ids_for_languages(
     server_definitions: &[LoadedBuiltinLspServerDefinition],
     language_ids: &[String],
 ) -> Vec<String> {
-    let page_languages = language_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+    let page_languages = language_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
 
     server_definitions
         .iter()

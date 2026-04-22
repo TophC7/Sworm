@@ -4,9 +4,7 @@ use crate::models::lsp::{LspEvent, LspServerSettingsEntry};
 use crate::services::builtins::BuiltinCatalogService;
 use crate::services::lsp::{resolve_launch, resolve_server_status, ProjectLspEnvironment};
 use crate::services::nix::NixService;
-use crate::services::settings::{
-    LspServerConfigRecord, LspTraceLevel, SettingsService,
-};
+use crate::services::settings::{LspServerConfigRecord, LspTraceLevel, SettingsService};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -28,7 +26,8 @@ pub fn lsp_list_servers(
 ) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
     let db = state.db.lock();
     let env = if let Some(project_id) = project_id.as_deref() {
-        let nix_env = NixService::load_env_vars(db.conn(), project_id).map_err(ApiError::Database)?;
+        let nix_env =
+            NixService::load_env_vars(db.conn(), project_id).map_err(ApiError::Database)?;
         ProjectLspEnvironment::from_nix(&state.env, nix_env.as_ref())
     } else {
         ProjectLspEnvironment::from_host(&state.env)
@@ -41,7 +40,10 @@ pub fn lsp_list_servers(
             .map_err(ApiError::Database)?
             .unwrap_or_else(|| LspServerConfigRecord::default_for(&server_definition_id));
         let status = resolve_server_status(&server, &config, &env);
-        entries.push(LspServerSettingsEntry { server: status, config });
+        entries.push(LspServerSettingsEntry {
+            server: status,
+            config,
+        });
     }
 
     Ok(entries)
@@ -80,7 +82,10 @@ pub fn lsp_start(
     let server = BuiltinCatalogService::find_server_definition(&server_definition_id)
         .map_err(ApiError::Internal)?
         .ok_or_else(|| {
-            ApiError::NotFound(format!("Unknown LSP server definition {}", server_definition_id))
+            ApiError::NotFound(format!(
+                "Unknown LSP server definition {}",
+                server_definition_id
+            ))
         })?;
 
     let db = state.db.lock();
@@ -128,10 +133,7 @@ pub fn lsp_send(
 }
 
 #[tauri::command]
-pub fn lsp_stop(
-    session_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+pub fn lsp_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state.lsp.kill(&session_id).map_err(ApiError::Internal)
 }
 
