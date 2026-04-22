@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { Dialog } from 'bits-ui'
+  import { DialogRoot, DialogPortal, DialogOverlay, DialogContentRaw } from '$lib/components/ui/dialog'
   import {
     Command,
     CommandEmpty,
@@ -136,10 +136,10 @@
   }
 </script>
 
-<Dialog.Root {open} onOpenChange={(v) => setCommandPaletteOpen(v)}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="fixed inset-0 z-50 bg-ground/70 backdrop-blur-sm" />
-    <Dialog.Content
+<DialogRoot {open} onOpenChange={(v) => setCommandPaletteOpen(v)}>
+  <DialogPortal>
+    <DialogOverlay />
+    <DialogContentRaw
       class="fixed inset-0 z-50 flex translate-y-[-5vh] items-start justify-center pt-[20vh]"
       aria-label="Command center"
     >
@@ -227,9 +227,9 @@
           </span>
         </div>
       </div>
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+    </DialogContentRaw>
+  </DialogPortal>
+</DialogRoot>
 
 {#each confirms as confirm (confirm.title)}
   <ConfirmDialog

@@ -2,7 +2,7 @@
   import WorkingDiffView from '$lib/features/workbench/surfaces/diff/WorkingDiffView.svelte'
   import CommitDiffView from '$lib/features/workbench/surfaces/diff/CommitDiffView.svelte'
   import StashDiffView from '$lib/features/workbench/surfaces/diff/StashDiffView.svelte'
-  import type { DiffTab } from '$lib/features/workbench/state.svelte'
+  import type { DiffTab } from '$lib/features/workbench/model'
 
   let {
     tab = null,

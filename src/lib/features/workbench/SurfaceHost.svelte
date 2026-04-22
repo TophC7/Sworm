@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Session } from '$lib/types/backend'
-  import type { Tab } from '$lib/features/workbench/state.svelte'
+  import type { Tab } from '$lib/features/workbench/model'
   import LauncherSurface from '$lib/features/workbench/surfaces/launcher/LauncherSurface.svelte'
   import SessionSurface from '$lib/features/workbench/surfaces/session/SessionSurface.svelte'
   import TextSurface from '$lib/features/workbench/surfaces/text/TextSurface.svelte'

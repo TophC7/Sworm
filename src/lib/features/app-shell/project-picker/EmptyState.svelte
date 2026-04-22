@@ -7,7 +7,7 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getActiveProjectId, openProject } from '$lib/features/workbench/state.svelte'
   import { hideProjectPicker, isProjectPickerOverride } from '$lib/features/app-shell/project-picker/state.svelte'
-  import { parentPath } from '$lib/utils/path'
+  import { basename, parentPath } from '$lib/utils/paths'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { FolderOpen, Worm } from '$lib/icons/lucideExports'
 
@@ -26,7 +26,7 @@
   }
 
   function dirName(path: string): string {
-    return path.split('/').pop() ?? path
+    return basename(path)
   }
 
   // Esc dismisses the picker only when it's an override on top of a

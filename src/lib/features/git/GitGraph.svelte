@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import type { TabId } from '$lib/features/workbench/model'
   import type { CommitDetail, CommitFileChange } from '$lib/types/backend'
   import { computeGraph, computeRowRender, SWIMLANE_HEIGHT, CIRCLE_RADIUS } from '$lib/features/git/graph'
   import type { GraphRow } from '$lib/features/git/graph'
@@ -22,9 +23,9 @@
     onMutate
   }: {
     projectPath: string
-    onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => void
-    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => void
-    onPersistTab?: () => void
+    onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => TabId | Promise<TabId> | void
+    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
+    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
     onMutate?: () => void
   } = $props()
 
@@ -39,6 +40,7 @@
   let expandedDetail = $state<CommitDetail | null>(null)
   let expandedTree = $state<FileTreeNode<CommitFileChange>[]>([])
   let collapsedDirs = new SvelteSet<string>()
+  let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
   // Shared detail cache (tooltip prefetch + expand reuse the same data)
   let detailCache = new SvelteMap<string, CommitDetail>()
@@ -110,8 +112,12 @@
   }
 
   function handleFileClick(hash: string, filePath: string) {
-    if (!expandedDetail) return
-    onFileClick?.(hash, expandedDetail.short_hash, expandedDetail.message, filePath)
+    if (!expandedDetail) {
+      pendingOpenedTab = null
+      return
+    }
+    const openedTab = onFileClick?.(hash, expandedDetail.short_hash, expandedDetail.message, filePath)
+    pendingOpenedTab = openedTab == null ? null : Promise.resolve(openedTab)
   }
 
   function toggleDir(path: string) {
@@ -254,7 +260,7 @@
                     onToggleDir={toggleDir}
                     onFileClick={(node) =>
                       expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
-                    onFileDblClick={() => onPersistTab?.()}
+                    onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
                   >
                     {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
                       {#if node.change}

@@ -1,6 +1,9 @@
-import { addNotificationToolTab, type ToolTab, type TabId } from '$lib/features/workbench/state.svelte'
+import type { TabId, ToolTab } from '$lib/features/workbench/model'
+import { addNotificationToolTab, openProject, restoreWorkspaceFromDisk } from '$lib/features/workbench/state.svelte'
 
-export function openNotificationTool(projectId: string): TabId {
+export async function openNotificationTool(projectId: string): Promise<TabId> {
+  openProject(projectId)
+  await restoreWorkspaceFromDisk(projectId)
   return addNotificationToolTab(projectId)
 }
 

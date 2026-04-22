@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import { basename } from '$lib/utils/paths'
 import type {
   BuiltinCatalog,
   BuiltinFormatterGroupId,
@@ -55,7 +56,7 @@ export function getBuiltinLanguageLabel(languageId: string): string {
 }
 
 export function getBuiltinLanguageForFilePath(filePath: string): string | null {
-  const fileName = filePath.split('/').pop() ?? filePath
+  const fileName = basename(filePath)
   const extension = getNormalizedExtension(fileName)
 
   for (const contribution of getBuiltinRuntimeLanguages()) {

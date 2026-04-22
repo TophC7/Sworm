@@ -20,7 +20,7 @@
     openStashDiff,
     openWorkingTreeDiff
   } from '$lib/features/workbench/surfaces/diff/service.svelte'
-  import { promoteFocusedTab } from '$lib/features/workbench/state.svelte'
+  import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
 
   let {
     project
@@ -101,7 +101,7 @@
             projectPath={project.path}
             onRefresh={handleRefreshGit}
             onFileClick={(filePath, staged) => openWorkingTreeDiff(project.id, staged, null, filePath)}
-            onPersistTab={() => promoteFocusedTab(project.id)}
+            onPersistTab={(openedTab) => promoteTabWhenReady(project.id, openedTab)}
             onCommitFileClick={(hash, shortHash, message, filePath) =>
               openCommitDiff(project.id, hash, shortHash, message, filePath)}
             onStashFileClick={(stashIndex, message, filePath) =>

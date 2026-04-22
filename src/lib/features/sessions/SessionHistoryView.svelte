@@ -97,7 +97,7 @@
   })
 
   function handleSessionClick(session: Session) {
-    ensureSessionSurface(projectId, session.id, session.title, session.provider_id)
+    void ensureSessionSurface(projectId, session.id, session.title, session.provider_id)
   }
 
   async function handleArchive(session: Session) {

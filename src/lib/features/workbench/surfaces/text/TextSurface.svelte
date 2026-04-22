@@ -1,6 +1,6 @@
 <script lang="ts">
   import FileEditor from '$lib/features/workbench/surfaces/text/FileEditor.svelte'
-  import type { TextTab } from '$lib/features/workbench/state.svelte'
+  import type { TextTab } from '$lib/features/workbench/model'
 
   let {
     tab = null,

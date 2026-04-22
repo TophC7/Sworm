@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import type { TabId } from '$lib/features/workbench/model'
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
   import GitContextMenu from '$lib/features/git/GitContextMenu.svelte'
@@ -57,8 +58,8 @@
     projectPath: string
     hasCommits?: boolean
     commitMessage?: string
-    onFileClick?: (filePath: string, staged: boolean) => void
-    onPersistTab?: () => void
+    onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
+    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
     onViewAllChanges?: (staged: boolean) => void
     onCommit?: (message: string) => void
     onStageAll?: () => void
@@ -78,6 +79,7 @@
   let contextFilePath = $state<string | null>(null)
   let contextTargetType = $state<'file' | 'directory' | null>(null)
   let contextIsStaged = $state(false)
+  let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
   let discardConfirmOpen = $state(false)
   let discardTarget = $state<string | null>(null)
@@ -140,6 +142,14 @@
   function getFilesUnderPath(dirPath: string, staged: boolean): string[] {
     const changes = staged ? stagedFiles : unstagedFiles
     return changes.filter((c) => c.path.startsWith(dirPath + '/')).map((c) => c.path)
+  }
+
+  function trackOpenedTab(openedTab: TabId | Promise<TabId> | void): void {
+    if (openedTab == null) {
+      pendingOpenedTab = null
+      return
+    }
+    pendingOpenedTab = Promise.resolve(openedTab)
   }
 
   function handleCtxOpenFile() {
@@ -403,8 +413,11 @@
           nodes={tree}
           isCollapsed={(path) => collapsedDirs.has(getDirKey(keySuffix, path))}
           onToggleDir={(path) => toggleDir(keySuffix, path)}
-          onFileClick={(node) => node.change && onFileClick?.(node.change.path, node.change.staged)}
-          onFileDblClick={() => onPersistTab?.()}
+          onFileClick={(node) => {
+            if (!node.change) return
+            trackOpenedTab(onFileClick?.(node.change.path, node.change.staged))
+          }}
+          onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
           onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
           {fileTrailing}
           dndEnabled={true}

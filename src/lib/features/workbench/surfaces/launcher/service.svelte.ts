@@ -1,11 +1,14 @@
+import type { PaneSlot, TabId } from '$lib/features/workbench/model'
 import {
   closeLauncherTabInPane,
   openLauncherTab,
-  type PaneSlot,
-  type TabId
+  openProject,
+  restoreWorkspaceFromDisk
 } from '$lib/features/workbench/state.svelte'
 
-export function openLauncherSurface(projectId: string, paneSlot?: PaneSlot): TabId {
+export async function openLauncherSurface(projectId: string, paneSlot?: PaneSlot): Promise<TabId> {
+  openProject(projectId)
+  await restoreWorkspaceFromDisk(projectId)
   return openLauncherTab(projectId, paneSlot)
 }
 

@@ -1,8 +1,8 @@
 <script lang="ts">
   import Pane from '$lib/features/workbench/Pane.svelte'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
-  import type { PaneSlot, PaneState, Tab } from '$lib/features/workbench/state.svelte'
-  import { createPane, getAllTabs, getPanes, getQuadLayout, getSplitMode } from '$lib/features/workbench/state.svelte'
+  import { createPane, type PaneSlot, type PaneState, type Tab } from '$lib/features/workbench/model'
+  import { getAllTabs, getPanes, getQuadLayout, getSplitMode } from '$lib/features/workbench/state.svelte'
 
   const PANE_CLASS = 'min-h-0 min-w-0 overflow-hidden'
 

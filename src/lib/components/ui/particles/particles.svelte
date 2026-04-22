@@ -7,6 +7,8 @@
     staticity = 50,
     ease = 50,
     size = 0.4,
+    // Mirrors --color-accent (see src/app.css). Canvas fillStyle needs a
+    // literal hex; keep this default in sync if the accent token moves.
     color = '#ffb59f',
     vx = 0,
     vy = 0

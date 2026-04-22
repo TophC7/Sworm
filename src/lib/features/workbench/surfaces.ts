@@ -1,4 +1,4 @@
-import type { Tab } from '$lib/features/workbench/state.svelte'
+import type { Tab } from '$lib/features/workbench/model'
 
 export type SurfaceKind = 'launcher' | 'session' | 'text' | 'diff' | 'tool'
 

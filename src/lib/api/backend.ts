@@ -135,7 +135,7 @@ export const backend = {
       output: Channel<number[]>,
       events: Channel<PtyEvent>
     ): Promise<void> {
-      return invoke('session_start', { sessionId, cols, rows, output, events })
+      return invoke<void>('session_start', { sessionId, cols, rows, output, events })
     },
     start(
       sessionId: string,
@@ -149,25 +149,25 @@ export const backend = {
       return backend.sessions.startWithChannels(sessionId, cols, rows, output, events)
     },
     write(sessionId: string, data: Uint8Array): Promise<void> {
-      return invoke('session_write', { sessionId, data: Array.from(data) })
+      return invoke<void>('session_write', { sessionId, data: Array.from(data) })
     },
     resize(sessionId: string, cols: number, rows: number): Promise<void> {
-      return invoke('session_resize', { sessionId, cols, rows })
+      return invoke<void>('session_resize', { sessionId, cols, rows })
     },
     stop(sessionId: string): Promise<void> {
-      return invoke('session_stop', { sessionId })
+      return invoke<void>('session_stop', { sessionId })
     },
     reset(sessionId: string): Promise<void> {
-      return invoke('session_reset', { sessionId })
+      return invoke<void>('session_reset', { sessionId })
     },
     remove(sessionId: string): Promise<void> {
-      return invoke('session_remove', { sessionId })
+      return invoke<void>('session_remove', { sessionId })
     },
     archive(sessionId: string): Promise<void> {
-      return invoke('session_archive', { sessionId })
+      return invoke<void>('session_archive', { sessionId })
     },
     unarchive(sessionId: string): Promise<void> {
-      return invoke('session_unarchive', { sessionId })
+      return invoke<void>('session_unarchive', { sessionId })
     },
     listArchived(projectId: string): Promise<Session[]> {
       return invoke<Session[]>('session_list_archived', { projectId })
@@ -295,13 +295,13 @@ export const backend = {
 
   fresh: {
     openFile(projectId: string, projectPath: string, filePath: string): Promise<void> {
-      return invoke('editor_open_file', { projectId, projectPath, filePath })
+      return invoke<void>('editor_open_file', { projectId, projectPath, filePath })
     },
     openAtCommit(projectId: string, projectPath: string, commitHash: string, filePath: string): Promise<void> {
-      return invoke('editor_open_at_commit', { projectId, projectPath, commitHash, filePath })
+      return invoke<void>('editor_open_at_commit', { projectId, projectPath, commitHash, filePath })
     },
     openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
-      return invoke('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
+      return invoke<void>('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
     }
   },
 
@@ -432,7 +432,7 @@ export const backend = {
       onEvent: (event: LspEvent) => void
     ): Promise<void> {
       const events = backend.lsp.createEventChannel(onEvent)
-      return invoke('lsp_start', {
+      return invoke<void>('lsp_start', {
         sessionId,
         projectId,
         serverDefinitionId,
@@ -441,10 +441,10 @@ export const backend = {
       })
     },
     send(sessionId: string, messageJson: string): Promise<void> {
-      return invoke('lsp_send', { sessionId, messageJson })
+      return invoke<void>('lsp_send', { sessionId, messageJson })
     },
     stop(sessionId: string): Promise<void> {
-      return invoke('lsp_stop', { sessionId })
+      return invoke<void>('lsp_stop', { sessionId })
     }
   }
 }

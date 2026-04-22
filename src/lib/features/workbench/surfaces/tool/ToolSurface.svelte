@@ -1,6 +1,6 @@
 <script lang="ts">
   import NotificationTestView from '$lib/features/workbench/surfaces/tool/NotificationTestView.svelte'
-  import type { ToolTab } from '$lib/features/workbench/state.svelte'
+  import type { ToolTab } from '$lib/features/workbench/model'
 
   let {
     tab = null

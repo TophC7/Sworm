@@ -64,7 +64,12 @@
         // any future observer we miss.
         const BENIGN_MESSAGE_PATTERNS = [
           /^ResizeObserver loop/i,
-          /^ResizeObserver loop completed with undelivered notifications/i
+          /^ResizeObserver loop completed with undelivered notifications/i,
+          // Monaco DiffEditor: the diff-worker promise rejects when the
+          // editor swaps or disposes its model mid-compute. Happens during
+          // normal pool churn (scroll in/out fast, collapse-all, teardown).
+          // Internal to Monaco — no API to catch it at the call site.
+          /^no diff result available/i
         ]
         const isBenign = (msg) => typeof msg === 'string' && BENIGN_MESSAGE_PATTERNS.some((re) => re.test(msg))
 
@@ -81,8 +86,13 @@
 
         window.addEventListener('unhandledrejection', (event) => {
           const reason = event.reason
+          const message = reason && reason.message ? String(reason.message) : typeof reason === 'string' ? reason : ''
+          if (isBenign(message)) {
+            event.preventDefault()
+            return
+          }
           render('unhandled rejection', {
-            message: reason && reason.message ? String(reason.message) : 'Unhandled promise rejection',
+            message: message || 'Unhandled promise rejection',
             reasonText: typeof reason === 'string' ? reason : '',
             reasonStack: reason && reason.stack ? String(reason.stack) : ''
           })

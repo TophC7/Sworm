@@ -1,5 +1,4 @@
-import type { Tab } from '$lib/features/workbench/state.svelte'
-import { canLockTab } from '$lib/features/workbench/state.svelte'
+import { canLockTab, type Tab } from '$lib/features/workbench/model'
 import { getDiffTabTitle } from '$lib/features/workbench/surfaces/diff/service.svelte'
 import { getLauncherTitle } from '$lib/features/workbench/surfaces/launcher/service.svelte'
 import { getSessionProviderIcon, getSessionTabTitle } from '$lib/features/workbench/surfaces/session/service.svelte'

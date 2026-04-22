@@ -1,5 +1,6 @@
 import { backend } from '$lib/api/backend'
 import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/service.svelte'
+import type { PaneSlot, Tab, TabId, TextTab } from '$lib/features/workbench/model'
 import {
   addReadonlyTextTab,
   addTextTab,
@@ -10,10 +11,7 @@ import {
   moveTabToPane,
   openProject,
   renameTextTab,
-  type TextTab,
-  type PaneSlot,
-  type Tab,
-  type TabId
+  restoreWorkspaceFromDisk
 } from '$lib/features/workbench/state.svelte'
 
 export type TextRevealTarget =
@@ -89,9 +87,13 @@ export function takePendingTextReveal(tabId: TabId): TextRevealTarget | null {
   return target
 }
 
-export function openTextFile(projectId: string, filePath: string, options: OpenTextOptions = {}): TabId {
+async function ensureProjectWorkspaceReady(projectId: string): Promise<void> {
   openProject(projectId)
+  await restoreWorkspaceFromDisk(projectId)
+}
 
+export async function openTextFile(projectId: string, filePath: string, options: OpenTextOptions = {}): Promise<TabId> {
+  await ensureProjectWorkspaceReady(projectId)
   const existing = getAllTabs(projectId).find((tab) => isLiveTextTab(tab, filePath))
   if (existing) {
     placeAndFocus(projectId, existing.id, options.paneSlot)
@@ -105,15 +107,14 @@ export function openTextFile(projectId: string, filePath: string, options: OpenT
   return tabId
 }
 
-export function openTextSnapshot(
+export async function openTextSnapshot(
   projectId: string,
   filePath: string,
   gitRef: string,
   refLabel: string,
   options: OpenTextOptions = {}
-): TabId {
-  openProject(projectId)
-
+): Promise<TabId> {
+  await ensureProjectWorkspaceReady(projectId)
   const existing = getAllTabs(projectId).find((tab) => isSnapshotTextTab(tab, filePath, gitRef))
   if (existing) {
     placeAndFocus(projectId, existing.id, options.paneSlot)
@@ -127,8 +128,8 @@ export function openTextSnapshot(
   return tabId
 }
 
-export function createUntitledTextSurface(projectId: string, paneSlot?: PaneSlot): TabId {
-  openProject(projectId)
+export async function createUntitledTextSurface(projectId: string, paneSlot?: PaneSlot): Promise<TabId> {
+  await ensureProjectWorkspaceReady(projectId)
   const tabId = addUntitledTextTab(projectId)
   placeAndFocus(projectId, tabId, paneSlot)
   return tabId
@@ -158,7 +159,8 @@ export function isTextSurfaceDirty(projectId: string, tabId: TabId): boolean {
   return dirtyKeys.has(makeDirtyKey(projectId, tabId))
 }
 
-export function renameTextPath(projectId: string, oldPath: string, newPath: string): void {
+export async function renameTextPath(projectId: string, oldPath: string, newPath: string): Promise<void> {
+  await restoreWorkspaceFromDisk(projectId)
   const tabs = getAllTabs(projectId)
   const prefix = `${oldPath}/`
 
@@ -176,7 +178,8 @@ export function renameTextPath(projectId: string, oldPath: string, newPath: stri
   }
 }
 
-export function deleteTextPath(projectId: string, path: string): void {
+export async function deleteTextPath(projectId: string, path: string): Promise<void> {
+  await restoreWorkspaceFromDisk(projectId)
   const tabs = getAllTabs(projectId)
   const prefix = `${path}/`
 

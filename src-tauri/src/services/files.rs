@@ -2,13 +2,15 @@ use crate::errors::ApiError;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
-/// Directories always skipped during the walk, regardless of git status.
-/// `.git` and build/cache dirs without a universally-agreed gitignore entry
-/// are listed here so non-git projects (and git projects with a stale index)
-/// still get a clean tree.
-const SKIP_DIRS: &[&str] = &[
+const MAX_FILES: usize = 25_000;
+const MAX_DEPTH: usize = 50;
+/// Traversed after ordinary directories so generated trees do not exhaust the
+/// explorer cap before user-authored files are discovered.
+///
+/// TODO: replace this heuristic with configurable hidden-file defaults in the
+/// file explorer.
+const LOW_PRIORITY_DIRS: &[&str] = &[
     ".git",
     "node_modules",
     ".next",
@@ -21,9 +23,6 @@ const SKIP_DIRS: &[&str] = &[
     ".venv",
     "venv",
 ];
-
-const MAX_FILES: usize = 25_000;
-const MAX_DEPTH: usize = 50;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePasteCollision {
@@ -317,14 +316,14 @@ impl FileService {
     ///
     /// Filesystem-first: walks the real directory tree so the explorer reflects
     /// disk state (deleted files don't linger, newly created files appear
-    /// immediately). In a git repo we additionally query `.gitignore` once and
-    /// prune matching paths during the walk — but git's index is never the
-    /// source of truth for what exists.
+    /// immediately). No filtering — the explorer shows everything on disk —
+    /// but bulky generated trees are traversed last so the 25k file cap is
+    /// spent on likely-user-authored paths first. `.gitignore` is a git-tree
+    /// concern and should only prune git views.
     pub fn list_all(&self, project_path: &Path) -> Result<Vec<String>, ApiError> {
-        let ignored = collect_ignored(project_path);
         let mut out = Vec::new();
         let mut visited = HashSet::new();
-        self.walk_dir(project_path, "", &ignored, &mut out, &mut visited, 0)?;
+        self.walk_dir(project_path, "", &mut out, &mut visited, 0)?;
         out.sort();
         Ok(out)
     }
@@ -335,19 +334,12 @@ impl FileService {
     /// than `strip_prefix(root)`) lets us descend through a symlink whose
     /// target lives outside the project.
     ///
-    /// Skip rules, in order:
-    ///   1. `SKIP_DIRS`  — always-hidden junk (`.git`, `node_modules`, …)
-    ///   2. `ignored`    — paths matched by the project's `.gitignore`
-    ///
-    /// Dotted entries that pass both rules (`.github`, `.vscode`, `.agents`)
-    /// are shown — matching how VS Code and other real file explorers behave.
     /// Symlinks to directories are followed; `visited` tracks canonical
     /// targets so symlink cycles can't cause infinite recursion.
     fn walk_dir(
         &self,
         dir: &Path,
         rel_prefix: &str,
-        ignored: &HashSet<String>,
         out: &mut Vec<String>,
         visited: &mut HashSet<PathBuf>,
         depth: usize,
@@ -356,33 +348,28 @@ impl FileService {
             return Ok(());
         }
 
-        let entries = std::fs::read_dir(dir)
-            .map_err(|e| ApiError::Io(format!("Cannot read {}: {}", dir.display(), e)))?;
+        let mut entries = std::fs::read_dir(dir)
+            .map_err(|e| ApiError::Io(format!("Cannot read {}: {}", dir.display(), e)))?
+            .map(|entry| {
+                let entry = entry.map_err(|e| ApiError::Io(e.to_string()))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = entry.path();
+                let ft = entry.file_type().map_err(|e| ApiError::Io(e.to_string()))?;
+                Ok((is_low_priority_dir_name(&name), name, path, ft))
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-        for entry in entries {
+        for (_, name_str, path, ft) in entries {
             if out.len() >= MAX_FILES {
                 return Ok(());
             }
 
-            let entry = entry.map_err(|e| ApiError::Io(e.to_string()))?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            let path = entry.path();
-            let ft = entry.file_type().map_err(|e| ApiError::Io(e.to_string()))?;
-
-            if SKIP_DIRS.contains(&&*name_str) {
-                continue;
-            }
-
             let rel_child = if rel_prefix.is_empty() {
-                name_str.to_string()
+                name_str
             } else {
                 format!("{}/{}", rel_prefix, name_str)
             };
-
-            if ignored.contains(&rel_child) {
-                continue;
-            }
 
             // `file_type()` is lstat-based — for symlinks we need stat
             // (`metadata`) to see what the link actually points to.
@@ -402,7 +389,7 @@ impl FileService {
                         }
                     }
                 }
-                self.walk_dir(&path, &rel_child, ignored, out, visited, depth + 1)?;
+                self.walk_dir(&path, &rel_child, out, visited, depth + 1)?;
             } else if ft.is_file() || ft.is_symlink() {
                 out.push(rel_child);
             }
@@ -411,32 +398,8 @@ impl FileService {
     }
 }
 
-/// Ask git which paths it would ignore in this project. Returns an empty set
-/// when the project isn't a git repo or git isn't available. `--directory`
-/// collapses a wholly-ignored directory (e.g. `target/`, `dist/`) into one
-/// entry so the walker can prune it instead of descending and filtering.
-fn collect_ignored(project_path: &Path) -> HashSet<String> {
-    let mut set = HashSet::new();
-    let Ok(output) = Command::new("git")
-        .args([
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ])
-        .current_dir(project_path)
-        .output()
-    else {
-        return set;
-    };
-    if !output.status.success() {
-        return set;
-    }
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        set.insert(line.trim_end_matches('/').to_string());
-    }
-    set
+fn is_low_priority_dir_name(name: &str) -> bool {
+    LOW_PRIORITY_DIRS.contains(&name)
 }
 
 // ── Paste helpers ─────────────────────────────────────────────────

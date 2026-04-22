@@ -2,8 +2,8 @@ import { backend } from '$lib/api/backend'
 import { allProviders, directOptions } from '$lib/features/sessions/providers/catalog'
 import { createSession, getSessions } from '$lib/features/sessions/state/sessions.svelte'
 import type { Session } from '$lib/types/backend'
-import { addSessionTab } from '$lib/features/workbench/state.svelte'
-import type { SessionTab, TabId } from '$lib/features/workbench/state.svelte'
+import type { SessionTab, TabId } from '$lib/features/workbench/model'
+import { addSessionTab, openProject, restoreWorkspaceFromDisk } from '$lib/features/workbench/state.svelte'
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -36,7 +36,14 @@ async function resolveFreshSession(projectId: string): Promise<Session> {
   return createSession(projectId, 'fresh', 'Fresh')
 }
 
-export function ensureSessionSurface(projectId: string, sessionId: string, title: string, providerId: string): TabId {
+export async function ensureSessionSurface(
+  projectId: string,
+  sessionId: string,
+  title: string,
+  providerId: string
+): Promise<TabId> {
+  openProject(projectId)
+  await restoreWorkspaceFromDisk(projectId)
   return addSessionTab(projectId, sessionId, title, providerId)
 }
 
@@ -45,7 +52,7 @@ export async function ensureFreshSession(projectId: string): Promise<TabId> {
   // never create a second one; they resolve the existing session row
   // and reveal its tab instead.
   const session = await resolveFreshSession(projectId)
-  const tabId = ensureSessionSurface(projectId, session.id, session.title, session.provider_id)
+  const tabId = await ensureSessionSurface(projectId, session.id, session.title, session.provider_id)
 
   if (session.status === 'idle' || session.status === 'starting') {
     await waitForSessionReady(session.id)

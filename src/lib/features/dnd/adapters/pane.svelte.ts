@@ -6,15 +6,13 @@ import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
 import { backend } from '$lib/api/backend'
 import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
+import type { PaneSlot, PaneState, SplitDirection } from '$lib/features/workbench/model'
 import {
   canSplitPane,
   moveTabToPane,
   setActiveTab,
   setFocusedPane,
-  splitPaneAt,
-  type SplitDirection,
-  type PaneSlot,
-  type PaneState
+  splitPaneAt
 } from '$lib/features/workbench/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { toProjectRelativePath } from '$lib/utils/paths'
@@ -131,7 +129,7 @@ async function dispatchPaneDrop(
 
     if (item.kind === 'file') {
       if (item.projectId !== projectId || item.isDir) continue
-      openTextFile(projectId, item.path, { paneSlot: targetSlot })
+      await openTextFile(projectId, item.path, { paneSlot: targetSlot })
       setFocusedPane(targetSlot)
       handled = true
       continue
@@ -157,7 +155,7 @@ async function dispatchPaneDrop(
           continue
         }
 
-        openTextFile(projectId, rel, { paneSlot: targetSlot })
+        await openTextFile(projectId, rel, { paneSlot: targetSlot })
         setFocusedPane(targetSlot)
         handled = true
       }

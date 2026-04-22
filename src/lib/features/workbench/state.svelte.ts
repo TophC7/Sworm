@@ -5,10 +5,31 @@
 // Replaces activeProjectId (from projects store) and activeSessionId
 // (from sessions store) with a richer per-pane model.
 
+import { backend } from '$lib/api/backend'
 import type { Session } from '$lib/types/backend'
+import { basename } from '$lib/utils/paths'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import { clearGitState } from '$lib/features/git/state.svelte'
 import { hideProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
+import { canLockTab, createPane } from '$lib/features/workbench/model'
+import type {
+  DiffSource,
+  PaneSlot,
+  PaneState,
+  PersistedTab,
+  PersistedWorkspaceV2,
+  ProjectWorkspace,
+  QuadLayout,
+  SessionTab,
+  SplitDirection,
+  SplitMode,
+  Tab,
+  TabId,
+  TextTab,
+  ToolTab,
+  DiffTab,
+  LauncherTab
+} from '$lib/features/workbench/model'
 import {
   deserializeWorkspace,
   flushAllWorkspaces,
@@ -21,179 +42,32 @@ import {
   tabToPersisted
 } from '$lib/features/workbench/persistence'
 
+export { canLockTab, createPane }
+export type {
+  DiffSource,
+  PaneSlot,
+  PaneState,
+  PersistedTab,
+  PersistedWorkspaceV2,
+  ProjectWorkspace,
+  QuadLayout,
+  SessionTab,
+  SplitDirection,
+  SplitMode,
+  Tab,
+  TabId,
+  TextTab,
+  ToolTab,
+  DiffTab,
+  LauncherTab
+}
+
 // Statuses that warrant a legacy bootstrap tab — used only when no
 // persisted workspace blob exists for the project (i.e. first-time
 // open after upgrading from a pre-recovery build). Once a workspace
 // has been restored we trust the saved layout and let the user
 // re-open historical sessions explicitly.
 const BOOTSTRAP_STATUSES = new Set(['idle', 'starting', 'running'])
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type TabId = string
-
-export type PaneSlot = 'sole' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
-export type SplitDirection = 'left' | 'right' | 'up' | 'down'
-
-export interface SessionTab {
-  kind: 'session'
-  id: TabId
-  sessionId: string
-  title: string
-  providerId: string
-  locked: boolean
-}
-
-export interface WorkingDiffSource {
-  kind: 'working'
-  staged: boolean
-  scopePath: string | null
-  revealNonce: number
-}
-
-export interface CommitDiffSource {
-  kind: 'commit'
-  commitHash: string
-  shortHash: string
-  message: string
-}
-
-export interface StashDiffSource {
-  kind: 'stash'
-  stashIndex: number
-  message: string
-}
-
-export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource
-
-export interface DiffTab {
-  kind: 'diff'
-  id: TabId
-  source: DiffSource
-  initialFile: string | null
-  temporary: boolean
-  locked: boolean
-}
-
-export interface TextTab {
-  kind: 'text'
-  id: TabId
-  /** Absolute-in-project path. `null` means an unsaved "new file" buffer
-   *  that must go through a save-as before it can be persisted. */
-  filePath: string | null
-  fileName: string
-  temporary: boolean
-  locked: boolean
-  /** Git ref for read-only snapshots (e.g. "abc1234" or "stash@{0}"). */
-  gitRef?: string
-  /** Display label for the snapshot (e.g. "abc1234" or "stash-0"). */
-  refLabel?: string
-}
-
-export interface ToolTab {
-  kind: 'tool'
-  id: TabId
-  tool: 'notification-test'
-  label: string
-  temporary: boolean
-  locked: boolean
-}
-
-/**
- * The "new tab" picker tab. Replaces the old `showNewSession` flag so the
- * picker participates in normal tab routing: `activeTabId` alone decides
- * what the pane renders, eliminating the dual-source-of-truth bug where
- * the picker could stick around over another tab's content.
- *
- * Launcher tabs are per-pane (one max) and are never persisted — on restore
- * the empty-pane fallback in `workbench/Pane.svelte` still shows the picker for
- * panes that end up with zero tabs.
- */
-export interface LauncherTab {
-  kind: 'launcher'
-  id: TabId
-  locked: boolean
-  // Fixed false to keep `tab.temporary` checks (double-click to promote,
-  // temp-replacement in addContentTab) well-typed without special-casing.
-  temporary: false
-}
-
-export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab
-
-export interface PaneState {
-  slot: PaneSlot
-  tabs: TabId[]
-  activeTabId: TabId | null
-}
-
-export type SplitMode = 'single' | 'horizontal' | 'vertical' | 'quad'
-export type QuadLayout = 'top' | 'bottom' | 'left' | 'right' | null
-
-export interface ProjectWorkspace {
-  projectId: string
-  tabs: Tab[]
-  panes: PaneState[]
-  splitMode: SplitMode
-  quadLayout: QuadLayout
-  // Per-project pane focus. Lived on the global scope in earlier
-  // versions, which meant switching projects silently applied the
-  // other project's focus slot to layouts that didn't have that slot.
-  focusedPaneSlot: PaneSlot
-}
-
-// ---------------------------------------------------------------------------
-// Persisted shapes (versioned)
-// ---------------------------------------------------------------------------
-
-export type PersistedTab =
-  | { kind: 'session'; sessionId: string; title: string; providerId: string; locked: boolean }
-  | {
-      kind: 'text'
-      filePath: string
-      gitRef?: string
-      refLabel?: string
-      temporary: boolean
-      locked: boolean
-    }
-  | {
-      kind: 'diff'
-      source:
-        | {
-            kind: 'working'
-            staged: boolean
-            scopePath?: string | null
-          }
-        | {
-            kind: 'commit'
-            commitHash: string
-            shortHash: string
-            message: string
-          }
-        | {
-            kind: 'stash'
-            stashIndex: number
-            message: string
-          }
-      initialFile: string | null
-      temporary: boolean
-      locked: boolean
-    }
-  | { kind: 'tool'; tool: 'notification-test'; label: string; temporary: boolean; locked: boolean }
-
-export interface PersistedWorkspaceV2 {
-  version: 2
-  focusedPaneSlot: PaneSlot
-  splitMode: SplitMode
-  quadLayout: QuadLayout
-  panes: Array<{
-    slot: PaneSlot
-    activeTabIndex: number
-    tabIndices: number[]
-  }>
-  tabs: PersistedTab[]
-}
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -264,10 +138,6 @@ function diffSourcesEqual(a: DiffSource, b: DiffSource): boolean {
       return _exhaustive
     }
   }
-}
-
-export function createPane(slot: PaneSlot): PaneState {
-  return { slot, tabs: [], activeTabId: null }
 }
 
 function clonePane(pane: PaneState): PaneState {
@@ -430,6 +300,30 @@ function removeTabIds(ws: ProjectWorkspace, tabIds: Set<TabId>) {
   }
 
   ws.tabs = ws.tabs.filter((tab) => !tabIds.has(tab.id))
+}
+
+function setClosedTabsForProject(projectId: string, tabs: PersistedTab[]) {
+  const next = new Map(closedTabs)
+  if (tabs.length > 0) next.set(projectId, tabs)
+  else next.delete(projectId)
+  closedTabs = next
+}
+
+function popClosedTabForProject(projectId: string): PersistedTab | null {
+  const list = closedTabs.get(projectId)
+  if (!list || list.length === 0) return null
+  const [head, ...rest] = list
+  setClosedTabsForProject(projectId, rest)
+  return head
+}
+
+function pruneClosedSessionTabs(projectId: string, sessionIds: Set<string>) {
+  const list = closedTabs.get(projectId)
+  if (!list) return
+
+  const filtered = list.filter((tab) => tab.kind !== 'session' || sessionIds.has(tab.sessionId))
+  if (filtered.length === list.length) return
+  setClosedTabsForProject(projectId, filtered)
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +716,7 @@ export function addStashTab(
 }
 
 export function addTextTab(projectId: string, filePath: string, temporary = true): TabId {
-  const fileName = filePath.split('/').pop() ?? filePath
+  const fileName = basename(filePath)
   return addContentTab(
     projectId,
     'text',
@@ -868,7 +762,7 @@ export function addUntitledTextTab(projectId: string): TabId {
 export function renameTextTab(projectId: string, tabId: TabId, newFilePath: string) {
   const ws = getWorkspace(projectId)
   if (!ws) return
-  const fileName = newFilePath.split('/').pop() ?? newFilePath
+  const fileName = basename(newFilePath)
   ws.tabs = ws.tabs.map((t) => {
     if (t.id !== tabId || t.kind !== 'text') return t
     return { ...t, filePath: newFilePath, fileName }
@@ -884,7 +778,7 @@ export function addReadonlyTextTab(
   refLabel: string,
   temporary = true
 ): TabId {
-  const fileName = filePath.split('/').pop() ?? filePath
+  const fileName = basename(filePath)
   return addContentTab(
     projectId,
     'text',
@@ -962,16 +856,27 @@ export function addNotificationToolTab(projectId: string, temporary = false): Ta
   )
 }
 
-export function promoteTemporaryTab(tabId: TabId) {
-  const ws = activeProjectId ? getWorkspace(activeProjectId) : undefined
+export function promoteTab(projectId: string, tabId: TabId): void {
+  const ws = getWorkspace(projectId)
   if (!ws) return
 
-  ws.tabs = ws.tabs.map((t) => {
-    if (t.id !== tabId || t.kind === 'session') return t
-    if (t.temporary) return { ...t, temporary: false }
-    return t
-  })
+  const tab = findTab(ws, tabId)
+  if (!tab || tab.kind === 'session' || tab.kind === 'launcher' || !tab.temporary) return
+
+  ws.tabs = ws.tabs.map((candidate) => (candidate.id === tabId ? { ...candidate, temporary: false } : candidate))
   commitWorkspace(ws)
+}
+
+export function promoteTemporaryTab(tabId: TabId) {
+  if (!activeProjectId) return
+  promoteTab(activeProjectId, tabId)
+}
+
+export function promoteTabWhenReady(projectId: string, pendingTabId: TabId | Promise<TabId> | null | undefined): void {
+  if (!pendingTabId) return
+  void Promise.resolve(pendingTabId)
+    .then((tabId) => promoteTab(projectId, tabId))
+    .catch(() => {})
 }
 
 /**
@@ -990,9 +895,7 @@ export function promoteTemporaryTab(tabId: TabId) {
 export function promoteFocusedTab(projectId: string): void {
   const tab = getFocusedTab(projectId)
   if (!tab) return
-  if (tab.kind === 'session' || tab.kind === 'launcher') return
-  if (!tab.temporary) return
-  promoteTemporaryTab(tab.id)
+  promoteTab(projectId, tab.id)
 }
 
 export function closeTab(projectId: string, tabId: TabId) {
@@ -1010,9 +913,7 @@ export function closeTab(projectId: string, tabId: TabId) {
   const snapshot = tabToPersisted(tab)
   if (snapshot) {
     const list = closedTabs.get(projectId) ?? []
-    const next = new Map(closedTabs)
-    next.set(projectId, [snapshot, ...list].slice(0, MAX_CLOSED_TABS))
-    closedTabs = next
+    setClosedTabsForProject(projectId, [snapshot, ...list].slice(0, MAX_CLOSED_TABS))
   }
 
   // Dispose the frontend terminal manager. The PTY should already be
@@ -1046,46 +947,51 @@ export function closeTab(projectId: string, tabId: TabId) {
  * it via the normal add* function for that kind. Returns the new tab id,
  * or null when the stack is empty. Mirrors VSCode's Ctrl+Shift+T.
  */
-export function reopenLastClosedTab(projectId: string): TabId | null {
-  const list = closedTabs.get(projectId)
-  if (!list || list.length === 0) return null
-  const [head, ...rest] = list
-  const next = new Map(closedTabs)
-  next.set(projectId, rest)
-  closedTabs = next
+export async function reopenLastClosedTab(projectId: string): Promise<TabId | null> {
+  await restoreWorkspaceFromDisk(projectId)
 
-  switch (head.kind) {
-    case 'session':
-      return addSessionTab(projectId, head.sessionId, head.title, head.providerId)
-    case 'text':
-      return head.gitRef
-        ? addReadonlyTextTab(projectId, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)
-        : addTextTab(projectId, head.filePath, false)
-    case 'diff':
-      switch (head.source.kind) {
-        case 'working':
-          return addChangesTab(projectId, head.source.staged, head.source.scopePath ?? null, head.initialFile, false)
-        case 'commit':
-          return addCommitTab(
-            projectId,
-            head.source.commitHash,
-            head.source.shortHash,
-            head.source.message,
-            head.initialFile,
-            false
-          )
-        case 'stash':
-          return addStashTab(projectId, head.source.stashIndex, head.source.message, head.initialFile, false)
-        default: {
-          const _exhaustive: never = head.source
-          return _exhaustive
+  while (true) {
+    const head = popClosedTabForProject(projectId)
+    if (!head) return null
+
+    switch (head.kind) {
+      case 'session':
+        try {
+          await backend.sessions.get(head.sessionId)
+        } catch {
+          continue
         }
+        return addSessionTab(projectId, head.sessionId, head.title, head.providerId)
+      case 'text':
+        return head.gitRef
+          ? addReadonlyTextTab(projectId, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)
+          : addTextTab(projectId, head.filePath, false)
+      case 'diff':
+        switch (head.source.kind) {
+          case 'working':
+            return addChangesTab(projectId, head.source.staged, head.source.scopePath ?? null, head.initialFile, false)
+          case 'commit':
+            return addCommitTab(
+              projectId,
+              head.source.commitHash,
+              head.source.shortHash,
+              head.source.message,
+              head.initialFile,
+              false
+            )
+          case 'stash':
+            return addStashTab(projectId, head.source.stashIndex, head.source.message, head.initialFile, false)
+          default: {
+            const _exhaustive: never = head.source
+            return _exhaustive
+          }
+        }
+      case 'tool':
+        return null
+      default: {
+        const _exhaustive: never = head
+        return _exhaustive
       }
-    case 'tool':
-      return null
-    default: {
-      const _exhaustive: never = head
-      return _exhaustive
     }
   }
 }
@@ -1560,6 +1466,7 @@ export function getQuadLayout(projectId: string): QuadLayout {
 export function syncSessionTabs(projectId: string, sessions: Session[]) {
   const ws = ensureWorkspace(projectId)
   const nextSessionIds = new Set(sessions.map((session) => session.id))
+  pruneClosedSessionTabs(projectId, nextSessionIds)
   const removedTabIds = new Set(
     ws.tabs.filter((tab) => tab.kind === 'session' && !nextSessionIds.has(tab.sessionId)).map((tab) => tab.id)
   )
@@ -1623,20 +1530,6 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
   if (hasEmptyPanes) {
     collapsePaneIfEmpty(projectId)
   }
-}
-
-/**
- * Which tab kinds support the "lock" feature.
- *
- * Only content surfaces where typing/editing is the primary interaction
- * benefit from a lock — a misclick in Monaco or an accidental keystroke
- * in xterm can do real damage. Diff tabs are read-only renders of git
- * state, and the launcher tab is a transient
- * picker. Locking any of them serves no purpose and just complicates
- * the mental model ("why is the lock icon different on this tab?").
- */
-export function canLockTab(tab: Tab): boolean {
-  return tab.kind === 'session' || tab.kind === 'text'
 }
 
 export function toggleTabLocked(projectId: string, tabId: TabId) {

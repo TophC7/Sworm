@@ -10,6 +10,8 @@
  * Icon SVGs live in /static/icons/bearded/.
  */
 
+import { basename } from '$lib/utils/paths'
+
 // Exact filename → icon name (lowercased keys for case-insensitive lookup)
 const fileNameMap: Record<string, string> = {
   'cargo.toml': 'cargo',
@@ -384,7 +386,7 @@ const ICON_BASE = '/icons/bearded'
  * Returns a URL path to the SVG in /static/icons/bearded/.
  */
 export function resolveFileIcon(filename: string): string {
-  const base = filename.includes('/') ? filename.split('/').pop()! : filename
+  const base = basename(filename)
   const lower = base.toLowerCase()
 
   // 1. Exact filename match

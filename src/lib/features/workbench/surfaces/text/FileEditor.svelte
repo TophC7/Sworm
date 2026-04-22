@@ -10,6 +10,7 @@
   import ContentToolbar from '$lib/components/layout/ContentToolbar.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
   import { filePathToLanguage, isBinaryFile, isMarkdownFile } from '$lib/features/editor/languageMap'
+  import { basename } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import {
@@ -178,7 +179,7 @@
   async function shouldUseLegacyNixLint(target: string): Promise<boolean> {
     try {
       const servers = await backend.lsp.listServers(projectId)
-      const fileName = target.split('/').pop() ?? target
+      const fileName = basename(target)
       const extension = normalizeExtension(target.includes('.') ? target.slice(target.lastIndexOf('.')) : '')
 
       const hasConnectedNixLsp = servers.some(

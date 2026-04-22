@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import { basename } from '$lib/utils/paths'
 import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
 import { isFormatterManagedLanguage } from '$lib/features/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/features/editor/languageMap'
@@ -321,7 +322,7 @@ class LspRegistry {
         const modelReady = await this.ensureFileModel(resource, context)
         if (!modelReady) return false
 
-        openTextFile(context.projectId, relativePath, {
+        await openTextFile(context.projectId, relativePath, {
           temporary: true,
           reveal: selectionOrPosition ? toEditorRevealTarget(selectionOrPosition) : null
         })
@@ -394,7 +395,7 @@ class LspRegistry {
         workspaceFolders: [
           {
             uri: modelPathToFileUri(instance.rootPath),
-            name: instance.rootPath.split('/').pop() ?? instance.rootPath
+            name: basename(instance.rootPath)
           }
         ]
       })) as { capabilities?: Record<string, unknown> } | null
@@ -849,7 +850,7 @@ function matchesSelectors(selectors: LspDocumentSelector[], model: MonacoModel):
   if (selectors.length === 0) return false
 
   const languageId = model.getLanguageId()
-  const fileName = model.uri.path.split('/').pop() ?? model.uri.path
+  const fileName = basename(model.uri.path)
   const extension = normalizeExtension(fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '')
 
   return selectors.some((selector) => {

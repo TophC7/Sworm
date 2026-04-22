@@ -4,6 +4,8 @@
 
   let {
     children,
+    // Mirrors --color-accent (src/app.css). Particles' canvas needs a
+    // literal hex; kept in sync with the accent token.
     particleColor = '#ffb59f',
     particleQuantity = 75
   }: {

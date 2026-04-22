@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { TabId } from '$lib/features/workbench/model'
   import GitGraph from '$lib/features/git/GitGraph.svelte'
   import GitFileTree from '$lib/features/git/GitFileTree.svelte'
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
@@ -33,10 +34,15 @@
     projectId: string
     projectPath: string
     onRefresh?: () => void
-    onFileClick?: (filePath: string, staged: boolean) => void
-    onPersistTab?: () => void
-    onCommitFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => void
-    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => void
+    onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
+    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
+    onCommitFileClick?: (
+      hash: string,
+      shortHash: string,
+      message: string,
+      filePath: string
+    ) => TabId | Promise<TabId> | void
+    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
     onViewAllChanges?: (staged: boolean) => void
   } = $props()
 

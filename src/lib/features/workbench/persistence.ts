@@ -6,6 +6,7 @@
 // than one debounce window of state.
 
 import { backend } from '$lib/api/backend'
+import { basename } from '$lib/utils/paths'
 import type {
   PaneSlot,
   PersistedTab,
@@ -14,7 +15,7 @@ import type {
   QuadLayout,
   SplitMode,
   Tab
-} from '$lib/features/workbench/state.svelte'
+} from '$lib/features/workbench/model'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -174,7 +175,7 @@ export function deserializeWorkspace(data: PersistedWorkspaceV2, generateTabId: 
         }
         break
       case 'text': {
-        const fileName = persisted.filePath.split('/').pop() ?? persisted.filePath
+        const fileName = basename(persisted.filePath)
         tab = {
           kind: 'text',
           id,

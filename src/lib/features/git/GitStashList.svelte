@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import type { TabId } from '$lib/features/workbench/model'
   import type { CommitFileChange, StashEntry } from '$lib/types/backend'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { parseStashMessage } from '$lib/features/git/git'
@@ -24,8 +25,8 @@
     projectPath: string
     branchColorMap?: Map<string, string>
     onMutate?: () => void
-    onFileClick?: (stashIndex: number, message: string, filePath: string) => void
-    onPersistTab?: () => void
+    onFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
+    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
   } = $props()
 
   let stashes = $state<StashEntry[]>([])
@@ -37,6 +38,7 @@
   })
   let collapsedDirs = new SvelteSet<string>()
   let currentPath = ''
+  let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
   // Drop confirmation
   let dropIndex = $state<number | null>(null)
@@ -229,10 +231,11 @@
                   onFileClick={(node) => {
                     if (expandedIndex !== null && node.change) {
                       const entry = stashes.find((s) => s.index === expandedIndex)
-                      onFileClick?.(expandedIndex, entry?.message ?? '', node.change.path)
+                      const openedTab = onFileClick?.(expandedIndex, entry?.message ?? '', node.change.path)
+                      pendingOpenedTab = openedTab == null ? null : Promise.resolve(openedTab)
                     }
                   }}
-                  onFileDblClick={() => onPersistTab?.()}
+                  onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
                 >
                   {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
                     {#if node.change}

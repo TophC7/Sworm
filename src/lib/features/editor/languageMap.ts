@@ -5,6 +5,7 @@
 // built-in Monarch tokenizers.
 
 import { getBuiltinLanguageForFilePath } from '$lib/features/builtins/catalog'
+import { basename } from '$lib/utils/paths'
 
 // Map of file extension (without dot) to Monaco language ID.
 const EXT_TO_LANG: Record<string, string> = {
@@ -199,14 +200,14 @@ const BINARY_EXTENSIONS = new Set([
 ])
 
 function getExtension(filePath: string): string {
-  const name = filePath.split('/').pop() ?? filePath
+  const name = basename(filePath)
   if (!name.includes('.')) return ''
   return (name.split('.').pop() ?? '').toLowerCase()
 }
 
 /** Resolve a file path to a Monaco language ID. */
 export function filePathToLanguage(filePath: string): string {
-  const fileName = filePath.split('/').pop() ?? filePath
+  const fileName = basename(filePath)
   const baseName = fileName.split('.').slice(0, -1).join('.') || fileName
   const extensionLanguage = getBuiltinLanguageForFilePath(filePath)
   if (extensionLanguage) return extensionLanguage

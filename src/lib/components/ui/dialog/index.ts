@@ -11,3 +11,9 @@ export const DialogRoot = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
 export const DialogClose = DialogPrimitive.Close
 export const DialogPortal = DialogPrimitive.Portal
+/**
+ * Raw bits-ui Dialog.Content — no default styling/inner div. Use when
+ * the dialog needs full control over its layout (e.g. command palette
+ * positioned near the top). Prefer DialogContent for standard modals.
+ */
+export const DialogContentRaw = DialogPrimitive.Content

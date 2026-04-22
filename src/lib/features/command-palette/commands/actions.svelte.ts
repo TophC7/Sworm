@@ -40,10 +40,10 @@ export async function reloadView(): Promise<void> {
   window.location.reload()
 }
 
-export function newEmptyFile(): void {
+export async function newEmptyFile(): Promise<void> {
   const projectId = getActiveProjectId()
   if (!projectId) return
-  createUntitledTextSurface(projectId)
+  await createUntitledTextSurface(projectId)
 }
 
 export async function newTerminalSession(): Promise<void> {
@@ -70,10 +70,10 @@ export async function closeActiveTab(): Promise<void> {
   }
 }
 
-export function reopenTab(): void {
+export async function reopenTab(): Promise<void> {
   const projectId = getActiveProjectId()
   if (!projectId) return
-  reopenLastClosedTab(projectId)
+  await reopenLastClosedTab(projectId)
 }
 
 export function openProjectPicker(): void {

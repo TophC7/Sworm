@@ -6,10 +6,11 @@
     children,
     class: className,
     gradientSize = 200,
-    gradientColor = '#1c1917',
+    // Defaults track design tokens — see src/app.css (@theme).
+    gradientColor = 'var(--color-ground)',
     gradientOpacity = 0.8,
-    gradientFrom = '#ffb59f',
-    gradientTo = '#763724',
+    gradientFrom = 'var(--color-accent)',
+    gradientTo = 'var(--color-warm)',
     disabled = false,
     onclick
   }: {

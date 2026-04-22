@@ -10,8 +10,8 @@
     ContextMenuSeparator
   } from '$lib/components/ui/context-menu'
   import { getSessions, updateSessionInList } from '$lib/features/sessions/state/sessions.svelte'
-  import type { PaneSlot, Tab, TabId } from '$lib/features/workbench/state.svelte'
-  import { canLockTab, promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/features/workbench/state.svelte'
+  import { canLockTab, type PaneSlot, type Tab, type TabId } from '$lib/features/workbench/model'
+  import { promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/features/workbench/state.svelte'
   import { tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'

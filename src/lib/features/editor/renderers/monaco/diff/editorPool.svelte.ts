@@ -221,41 +221,53 @@ export class DiffEditorPool {
   }
 
   /**
-   * Return an editor to the pool. If the editor has focus, the release
-   * is deferred to the next blur — never yank state out from under an
-   * active typist. Past the `MAX_UNUSED` cap, the editor is disposed
-   * instead of warehoused.
+   * Return an editor to the pool. Detach the model synchronously so the
+   * caller (DiffModelStore) can safely dispose the TextModels — otherwise
+   * Monaco throws "TextModel got disposed before DiffEditorWidget model
+   * got reset". If the editor has focus, only the DOM reparenting is
+   * deferred to the next blur so we don't yank the host container out
+   * from under an active selection. Past the `MAX_UNUSED` cap, the
+   * editor is disposed instead of warehoused.
    */
   release(ref: PoolRef): void {
     if (!this.used.has(ref)) return
-    // The DiffEditor's focus state is split between its two inner
-    // editors — check both sides before yanking state.
+
+    // Detach the model first — MUST happen synchronously. A pooled
+    // editor holding a model will fire updates when the model's content
+    // changes, and if the row's store has already disposed those
+    // models, Monaco raises the dispose-ordering error above.
+    ref.editor.setModel(null)
+
+    // Focus state is split across the DiffEditor's two inner editors.
+    // Defer only the DOM reparenting if either has focus — selection
+    // state lives on the editor widget, not the (now-null) model.
     const modified = ref.editor.getModifiedEditor()
     const original = ref.editor.getOriginalEditor()
     if (modified.hasTextFocus() || original.hasTextFocus()) {
       const offMod = modified.onDidBlurEditorText(() => {
         offMod.dispose()
         offOrig.dispose()
-        this.release(ref)
+        this.parkReleasedRef(ref)
       })
       const offOrig = original.onDidBlurEditorText(() => {
         offMod.dispose()
         offOrig.dispose()
-        this.release(ref)
+        this.parkReleasedRef(ref)
       })
       return
     }
+    this.parkReleasedRef(ref)
+  }
+
+  /**
+   * Move a released ref's container back to parking and mark it
+   * unused. Split out so the focus-deferred path reuses it after blur.
+   */
+  private parkReleasedRef(ref: PoolRef): void {
+    if (!this.used.has(ref)) return
     this.used.delete(ref)
     ref.inUse = false
-
-    // Detach the model first. A pooled editor holding a model will
-    // fire updates when the model's content changes, which can crash
-    // the editor if the row's host has already been torn down.
-    ref.editor.setModel(null)
-
-    // Move the whole container back to parking BEFORE the row's host
-    // gets destroyed by Svelte. Keeping the container in-document
-    // preserves Monaco's layout state — `display: none` would trigger
+    // Keep the container in-document — `display: none` would trigger
     // a full layout invalidation on re-acquire.
     getParking().appendChild(ref.container)
     this.unused.push(ref)

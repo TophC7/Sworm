@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Tab, PaneState } from '$lib/features/workbench/state.svelte'
+  import type { PaneState, Tab } from '$lib/features/workbench/model'
   import { setFocusedPane, getFocusedPaneSlot } from '$lib/features/workbench/state.svelte'
   import { paneDndUi, paneDropObserver } from '$lib/features/dnd/adapters/pane.svelte'
   import DropOverlay from '$lib/features/dnd/DropOverlay.svelte'

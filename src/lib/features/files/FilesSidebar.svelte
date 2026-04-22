@@ -13,13 +13,14 @@
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import { RotateCw } from '$lib/icons/lucideExports'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
+  import type { TabId } from '$lib/features/workbench/model'
   import {
     deleteTextPath,
     openTextFile,
     openTextInFresh,
     renameTextPath
   } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { promoteFocusedTab } from '$lib/features/workbench/state.svelte'
+  import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { getFocusedTab } from '$lib/features/workbench/state.svelte'
   import { copyToClipboard } from '$lib/utils/clipboard'
@@ -72,6 +73,7 @@
   } | null>(null)
   let activeCollision = $state<FilePasteCollision | null>(null)
   let collisionRenameValue = $state('')
+  let pendingFileOpen = $state<Promise<TabId> | null>(null)
 
   const sourceAttachmentCache = new Map<string, ReturnType<typeof fileTreeDragSource>>()
   const directoryAttachmentCache = new Map<string, ReturnType<typeof fileTreeDirectoryDropTarget>>()
@@ -317,7 +319,7 @@
   }
 
   function handleFileClick(filePath: string) {
-    openTextFile(projectId, filePath)
+    pendingFileOpen = openTextFile(projectId, filePath)
   }
 
   // Active file from the focused editor tab
@@ -471,7 +473,7 @@
     }
     try {
       await backend.files.rename(projectPath, renameFilePath, renameValue)
-      renameTextPath(projectId, renameFilePath, renameValue)
+      await renameTextPath(projectId, renameFilePath, renameValue)
       await loadFiles()
     } catch (e) {
       notify.error('Rename failed', errMessage(e))
@@ -490,7 +492,7 @@
     if (!deleteFilePath) return
     try {
       await backend.files.delete(projectPath, deleteFilePath)
-      deleteTextPath(projectId, deleteFilePath)
+      await deleteTextPath(projectId, deleteFilePath)
       await loadFiles()
     } catch (e) {
       notify.error('Delete failed', errMessage(e))
@@ -589,7 +591,7 @@
           onFileClick={(node) => {
             if (node.change?.path) handleFileClick(node.change.path)
           }}
-          onFileDblClick={() => promoteFocusedTab(projectId)}
+          onFileDblClick={() => promoteTabWhenReady(projectId, pendingFileOpen)}
           onFileContextMenu={handleFileContextMenu}
           dndEnabled={true}
           {dndSourceAttachment}

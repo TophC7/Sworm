@@ -14,7 +14,7 @@
     refreshActivityMap
   } from '$lib/features/activity-map/state.svelte'
   import { timeAgo } from '$lib/utils/date'
-  import { parentPath } from '$lib/utils/path'
+  import { parentPath } from '$lib/utils/paths'
   import { RefreshCw } from '$lib/icons/lucideExports'
   import type { DiscoveredProject } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
