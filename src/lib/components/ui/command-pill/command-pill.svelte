@@ -27,8 +27,8 @@
   import { cn } from '$lib/utils/cn'
   import { SearchIcon } from '$lib/icons/lucideExports'
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
-  import { splitShortcut } from '$lib/utils/keybindings.svelte'
-  import { getEffectiveSpec } from '$lib/stores/shortcutOverrides.svelte'
+  import { splitShortcut } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
+  import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import type { HTMLButtonAttributes } from 'svelte/elements'
 
   let {

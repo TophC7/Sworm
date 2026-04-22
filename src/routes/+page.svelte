@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { preloadBuiltinCatalog } from '$lib/builtins/catalog'
-  import EmptyState from '$lib/components/EmptyState.svelte'
-  import ProjectView from '$lib/components/ProjectView.svelte'
-  import { getActiveProject, getProjects, loadProjects } from '$lib/stores/projects.svelte'
-  import { loadProviders } from '$lib/stores/providers.svelte'
-  import { restoreAppShellState } from '$lib/workbench/state.svelte'
-  import { isProjectPickerOverride } from '$lib/stores/ui.svelte'
+  import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
+  import EmptyState from '$lib/features/app-shell/project-picker/EmptyState.svelte'
+  import ProjectView from '$lib/features/app-shell/ProjectView.svelte'
+  import { getActiveProject, getProjects, loadProjects } from '$lib/features/projects/state.svelte'
+  import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
+  import { restoreAppShellState } from '$lib/features/workbench/state.svelte'
+  import { isProjectPickerOverride } from '$lib/features/app-shell/project-picker/state.svelte'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
 
   let activeProject = $derived(getActiveProject())
