@@ -13,17 +13,39 @@
     projectId: string
     projectPath: string
   } = $props()
+
+  type RenderedTextTab = Pick<TextTab, 'id' | 'filePath' | 'gitRef' | 'refLabel'>
+
+  function snapshotTab(tab: TextTab): RenderedTextTab {
+    return {
+      id: tab.id,
+      filePath: tab.filePath,
+      gitRef: tab.gitRef,
+      refLabel: tab.refLabel
+    }
+  }
+
+  // Keep the last concrete tab props around until this branch unmounts.
+  // Without this, a split-pane close can null out `tab` before the keyed
+  // FileEditor subtree finishes tearing down, and Svelte ends up reading
+  // `tab.id` during destruction.
+  let renderedTab = $state<RenderedTextTab | null>(null)
+
+  $effect.pre(() => {
+    if (!tab) return
+    renderedTab = snapshotTab(tab)
+  })
 </script>
 
-{#if tab}
-  {#key tab.id}
+{#if renderedTab}
+  {#key renderedTab.id}
     <FileEditor
-      tabId={tab.id}
-      filePath={tab.filePath}
+      tabId={renderedTab.id}
+      filePath={renderedTab.filePath}
       {projectPath}
       {projectId}
-      gitRef={tab.gitRef}
-      refLabel={tab.refLabel}
+      gitRef={renderedTab.gitRef}
+      refLabel={renderedTab.refLabel}
     />
   {/key}
 {/if}

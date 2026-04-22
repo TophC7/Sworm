@@ -6,39 +6,175 @@
     <title>Sworm</title>
     <script>
       ;(() => {
+        let overlay
+        let detailPre
+        let copyButton
+
+        // FIXME: This global runtime error overlay is intentionally loud for
+        // local development. Remove it for release builds or gate it behind a
+        // dev-only flag before shipping.
+        const ensureOverlay = () => {
+          if (overlay instanceof HTMLDivElement && detailPre instanceof HTMLPreElement) {
+            overlay.hidden = false
+            return { overlay, detailPre, copyButton }
+          }
+
+          overlay = document.createElement('div')
+          overlay.id = 'sworm-startup-error'
+          overlay.setAttribute('role', 'dialog')
+          overlay.setAttribute('aria-live', 'assertive')
+          overlay.setAttribute('aria-label', 'Runtime error')
+          overlay.style.position = 'fixed'
+          overlay.style.inset = '16px'
+          overlay.style.zIndex = '999999'
+          overlay.style.display = 'flex'
+          overlay.style.flexDirection = 'column'
+          overlay.style.gap = '12px'
+          overlay.style.padding = '18px'
+          overlay.style.boxSizing = 'border-box'
+          overlay.style.border = '1px solid rgba(255, 118, 114, 0.55)'
+          overlay.style.borderRadius = '12px'
+          overlay.style.background = 'rgba(26, 21, 19, 0.98)'
+          overlay.style.boxShadow = '0 16px 48px rgba(0, 0, 0, 0.5)'
+          overlay.style.color = '#fff3ef'
+
+          const header = document.createElement('div')
+          header.style.display = 'flex'
+          header.style.flexWrap = 'wrap'
+          header.style.alignItems = 'center'
+          header.style.justifyContent = 'space-between'
+          header.style.gap = '12px'
+
+          const titleGroup = document.createElement('div')
+          titleGroup.style.display = 'flex'
+          titleGroup.style.flexDirection = 'column'
+          titleGroup.style.gap = '8px'
+          titleGroup.style.minWidth = '0'
+
+          const title = document.createElement('div')
+          title.textContent = 'Runtime Error Overlay'
+          title.style.font = '700 16px/1.2 Lexend, sans-serif'
+          title.style.color = '#fff3ef'
+
+          const fixme = document.createElement('div')
+          fixme.textContent = 'FIXME: remove for release or gate behind dev'
+          fixme.style.display = 'inline-flex'
+          fixme.style.alignItems = 'center'
+          fixme.style.width = 'fit-content'
+          fixme.style.padding = '4px 8px'
+          fixme.style.border = '1px solid rgba(255, 229, 114, 0.45)'
+          fixme.style.borderRadius = '999px'
+          fixme.style.background = 'rgba(255, 229, 114, 0.12)'
+          fixme.style.color = '#ffeea5'
+          fixme.style.font = '600 11px/1.2 Lexend, sans-serif'
+          fixme.style.letterSpacing = '0.08em'
+          fixme.style.textTransform = 'uppercase'
+
+          titleGroup.append(title, fixme)
+
+          const actions = document.createElement('div')
+          actions.style.display = 'flex'
+          actions.style.flexWrap = 'wrap'
+          actions.style.gap = '8px'
+          actions.style.alignItems = 'center'
+
+          const makeButton = (label, options = {}) => {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.textContent = label
+            button.style.appearance = 'none'
+            button.style.border = options.border || '1px solid rgba(58, 50, 46, 1)'
+            button.style.borderRadius = '8px'
+            button.style.background = options.background || 'rgba(47, 41, 38, 1)'
+            button.style.color = options.color || '#e2e2e2'
+            button.style.padding = '8px 12px'
+            button.style.font = '500 12px/1.2 Lexend, sans-serif'
+            button.style.cursor = 'pointer'
+            button.style.transition = 'filter 120ms ease'
+            button.onmouseenter = () => {
+              button.style.filter = 'brightness(1.08)'
+            }
+            button.onmouseleave = () => {
+              button.style.filter = ''
+            }
+            return button
+          }
+
+          copyButton = makeButton('Copy error', {
+            border: '1px solid rgba(255, 181, 159, 0.35)',
+            background: 'rgba(255, 181, 159, 0.14)',
+            color: '#ffddd3'
+          })
+          copyButton.onclick = async () => {
+            const text = detailPre instanceof HTMLPreElement ? detailPre.textContent || '' : ''
+            if (!text) return
+
+            let copied = false
+            try {
+              if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(text)
+                copied = true
+              }
+            } catch {}
+
+            if (!copied) {
+              const selection = window.getSelection()
+              const range = document.createRange()
+              range.selectNodeContents(detailPre)
+              selection?.removeAllRanges()
+              selection?.addRange(range)
+              copied = document.execCommand('copy')
+              selection?.removeAllRanges()
+            }
+
+            copyButton.textContent = copied ? 'Copied' : 'Copy failed'
+            window.setTimeout(() => {
+              if (copyButton) copyButton.textContent = 'Copy error'
+            }, 1500)
+          }
+
+          const dismissButton = makeButton('Dismiss')
+          dismissButton.onclick = () => {
+            if (overlay) overlay.hidden = true
+          }
+
+          actions.append(copyButton, dismissButton)
+          header.append(titleGroup, actions)
+
+          detailPre = document.createElement('pre')
+          detailPre.style.margin = '0'
+          detailPre.style.flex = '1'
+          detailPre.style.minHeight = '0'
+          detailPre.style.overflow = 'auto'
+          detailPre.style.padding = '14px'
+          detailPre.style.whiteSpace = 'pre-wrap'
+          detailPre.style.font = '12px/1.5 monospace'
+          detailPre.style.color = '#fff3ef'
+          detailPre.style.background = 'rgba(54, 19, 19, 0.92)'
+          detailPre.style.border = '1px solid rgba(255, 118, 114, 0.35)'
+          detailPre.style.borderRadius = '8px'
+
+          overlay.append(header, detailPre)
+
+          const mount = () => {
+            if (!document.body || !overlay) return
+            if (!overlay.isConnected) document.body.appendChild(overlay)
+          }
+
+          if (document.body) {
+            mount()
+          } else {
+            document.addEventListener('DOMContentLoaded', mount, { once: true })
+          }
+
+          return { overlay, detailPre, copyButton }
+        }
+
         const render = (label, detail) => {
           console.error(`[sworm] ${label}`, detail)
           window.__SWORM_LAST_CLIENT_ERROR__ = { label, ...detail }
 
-          let pre = document.getElementById('sworm-startup-error')
-          if (!(pre instanceof HTMLPreElement)) {
-            pre = document.createElement('pre')
-            pre.id = 'sworm-startup-error'
-            pre.style.position = 'fixed'
-            pre.style.inset = '16px'
-            pre.style.zIndex = '999999'
-            pre.style.margin = '0'
-            pre.style.padding = '16px'
-            pre.style.overflow = 'auto'
-            pre.style.whiteSpace = 'pre-wrap'
-            pre.style.font = '12px/1.45 monospace'
-            pre.style.color = '#fff3ef'
-            pre.style.background = 'rgba(54, 19, 19, 0.96)'
-            pre.style.border = '1px solid rgba(255, 118, 114, 0.55)'
-            pre.style.borderRadius = '12px'
-            pre.style.boxSizing = 'border-box'
-            if (document.body) {
-              document.body.appendChild(pre)
-            } else {
-              document.addEventListener(
-                'DOMContentLoaded',
-                () => {
-                  document.body.appendChild(pre)
-                },
-                { once: true }
-              )
-            }
-          }
+          const { detailPre, copyButton } = ensureOverlay()
 
           const lines = [
             `${label}`,
@@ -50,7 +186,8 @@
             detail.reasonText || ''
           ].filter(Boolean)
 
-          pre.textContent = lines.join('\n')
+          detailPre.textContent = lines.join('\n')
+          if (copyButton) copyButton.textContent = 'Copy error'
         }
 
         // Benign spec-mandated warnings browsers fire during ResizeObserver
