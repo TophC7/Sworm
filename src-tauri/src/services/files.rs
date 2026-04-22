@@ -11,10 +11,12 @@ const MAX_DEPTH: usize = 50;
 /// TODO: replace this heuristic with configurable hidden-file defaults in the
 /// file explorer.
 const LOW_PRIORITY_DIRS: &[&str] = &[
+    ".bun",
     ".git",
     "node_modules",
     ".next",
     ".nuxt",
+    ".svelte-kit",
     "target",
     "dist",
     "build",
@@ -317,9 +319,10 @@ impl FileService {
     /// Filesystem-first: walks the real directory tree so the explorer reflects
     /// disk state (deleted files don't linger, newly created files appear
     /// immediately). No filtering — the explorer shows everything on disk —
-    /// but bulky generated trees are traversed last so the 25k file cap is
-    /// spent on likely-user-authored paths first. `.gitignore` is a git-tree
-    /// concern and should only prune git views.
+    /// but the traversal prioritizes visible project paths first, then hidden
+    /// paths, then bulky generated trees so the 25k file cap is spent on
+    /// likely-user-authored files first. `.gitignore` is a git-tree concern
+    /// and should only prune git views.
     pub fn list_all(&self, project_path: &Path) -> Result<Vec<String>, ApiError> {
         let mut out = Vec::new();
         let mut visited = HashSet::new();
@@ -358,7 +361,7 @@ impl FileService {
                 Ok((is_low_priority_dir_name(&name), name, path, ft))
             })
             .collect::<Result<Vec<_>, ApiError>>()?;
-        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        entries.sort_by(|a, b| entry_priority(a.0, &a.1).cmp(&entry_priority(b.0, &b.1)));
 
         for (_, name_str, path, ft) in entries {
             if out.len() >= MAX_FILES {
@@ -400,6 +403,21 @@ impl FileService {
 
 fn is_low_priority_dir_name(name: &str) -> bool {
     LOW_PRIORITY_DIRS.contains(&name)
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+fn entry_priority(is_low_priority: bool, name: &str) -> (u8, &str) {
+    let bucket = if is_low_priority {
+        2
+    } else if is_hidden_name(name) {
+        1
+    } else {
+        0
+    };
+    (bucket, name)
 }
 
 // ── Paste helpers ─────────────────────────────────────────────────
