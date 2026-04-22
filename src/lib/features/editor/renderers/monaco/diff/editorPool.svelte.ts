@@ -91,12 +91,68 @@ const MAX_UNUSED = 6
  * `{ enabled }` alone resets the tuning fields. Built via a factory so
  * the toggle can flip `enabled` without repeating the tuning everywhere.
  */
-function hideUnchangedOpts(enabled: boolean) {
+export function hideUnchangedOpts(enabled: boolean) {
   return {
     enabled,
     contextLineCount: 3,
     minimumLineCount: 3,
     revealLineCount: 20
+  }
+}
+
+/**
+ * Base DiffEditor options shared by the live pool and the off-screen
+ * height preloader. Measurement-only consumers spread the result and
+ * override the handful of keys that differ (scrollbar visibility,
+ * contextmenu) — keeping the 30+ shared keys in one place.
+ */
+export function createDiffOptions(settings: DiffEditorSettings): DiffOptions {
+  return {
+    renderSideBySide: settings.renderSideBySide,
+    wordWrap: settings.wordWrap ? 'on' : 'off',
+    fontSize: settings.fontSize,
+    // The outer scroll container owns Y — per-row internal scrollbars
+    // are hidden and wheel events bubble up. Matches VSCode's
+    // multi-diff scroll forwarding.
+    scrollbar: {
+      vertical: 'hidden',
+      horizontal: 'auto',
+      handleMouseWheel: false,
+      verticalScrollbarSize: 0,
+      horizontalScrollbarSize: 6,
+      useShadows: false,
+      alwaysConsumeMouseWheel: false
+    },
+    scrollBeyondLastLine: false,
+    automaticLayout: false,
+    // Collapses unchanged regions with inline "Show X more lines"
+    // affordances. For pure adds/deletes there are no unchanged
+    // regions, so this is a no-op.
+    hideUnchangedRegions: hideUnchangedOpts(true),
+    renderOverviewRuler: false,
+    overviewRulerBorder: false,
+    overviewRulerLanes: 0,
+    lineNumbers: 'on',
+    glyphMargin: false,
+    folding: false,
+    fontFamily: "'Monocraft Nerd Font', monospace",
+    fontLigatures: false,
+    lineHeight: 20,
+    minimap: { enabled: false },
+    smoothScrolling: true,
+    padding: { top: 0, bottom: 0 },
+    renderLineHighlight: 'none',
+    selectionHighlight: false,
+    occurrencesHighlight: 'off',
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    parameterHints: { enabled: false },
+    contextmenu: true,
+    originalEditable: false,
+    readOnly: true,
+    renderMarginRevertIcon: false,
+    diffWordWrap: settings.wordWrap ? 'on' : 'off',
+    enableSplitViewResizing: false
   }
 }
 
@@ -362,57 +418,7 @@ export class DiffEditorPool {
   }
 
   private buildOptions(): DiffOptions {
-    return {
-      renderSideBySide: this.settings.renderSideBySide,
-      wordWrap: this.settings.wordWrap ? 'on' : 'off',
-      fontSize: this.settings.fontSize,
-      // The outer scroll container owns Y — per-row internal scrollbars
-      // are hidden and wheel events bubble up. Matches VSCode's
-      // multi-diff scroll forwarding.
-      scrollbar: {
-        vertical: 'hidden',
-        horizontal: 'auto',
-        handleMouseWheel: false,
-        verticalScrollbarSize: 0,
-        horizontalScrollbarSize: 6,
-        useShadows: false,
-        alwaysConsumeMouseWheel: false
-      },
-      scrollBeyondLastLine: false,
-      automaticLayout: false,
-      // Collapses unchanged regions with inline "Show X more lines"
-      // affordances. For pure adds/deletes there are no unchanged
-      // regions, so this is a no-op.
-      hideUnchangedRegions: hideUnchangedOpts(true),
-      renderOverviewRuler: false,
-      overviewRulerBorder: false,
-      overviewRulerLanes: 0,
-      lineNumbers: 'on',
-      glyphMargin: false,
-      folding: false,
-      fontFamily: "'Monocraft Nerd Font', monospace",
-      fontLigatures: false,
-      lineHeight: 20,
-      minimap: { enabled: false },
-      smoothScrolling: true,
-      padding: { top: 0, bottom: 0 },
-      renderLineHighlight: 'none',
-      selectionHighlight: false,
-      occurrencesHighlight: 'off',
-      quickSuggestions: false,
-      suggestOnTriggerCharacters: false,
-      parameterHints: { enabled: false },
-      contextmenu: true,
-      // DiffEditor-specific:
-      originalEditable: false,
-      // This is a viewer, not an editor. Leaving the modified side writable
-      // causes Monaco to spin up edit-only contributions like SuggestWidget,
-      // which can race with pool disposal during collapse-all / trim bursts.
-      readOnly: true,
-      renderMarginRevertIcon: false,
-      diffWordWrap: this.settings.wordWrap ? 'on' : 'off',
-      enableSplitViewResizing: false
-    }
+    return createDiffOptions(this.settings)
   }
 
   private scheduleTrim(): void {

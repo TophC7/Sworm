@@ -39,10 +39,13 @@
   const scroll = useDiffScroll()
 
   let host = $state<HTMLDivElement | null>(null)
-  // Seed deferred until the acquire effect runs so Svelte's initial
-  // derived warning doesn't trip. Overridden from `entry.height` once
-  // the store is available.
-  let height = $state(240)
+  // Seed placeholder height. Matches VSCode's MultiDiffEditor default
+  // (`lastTemplateData.contentHeight = 500`) — closer to typical diff
+  // row heights than the old 240 value, so the one-shot seed → real
+  // transition is smaller on first-view files the preloader hasn't
+  // finished yet. Overridden from `entry.height` (preloader-populated
+  // or cached from a prior mount) once the store is available.
+  let height = $state(500)
   let visible = $state(false)
 
   // Ownership state — purely imperative, not reactive.
@@ -171,18 +174,20 @@
       // display height, so max(modifiedContentHeight, originalContentHeight)
       // is the row's true content height.
       //
-      // We measure on FOUR signals because Monaco updates content
-      // height at several distinct moments:
-      //   1. Synchronously after setModel (rough initial value)
-      //   2. Layout pass on the next frame (stabilized dimensions)
-      //   3. onDidContentSizeChange (text / view-zone churn)
-      //   4. onDidUpdateDiff (hideUnchangedRegions widgets materialize
-      //      AFTER the initial content-size event, so without this
-      //      the row stays short until a later resize)
+      // Measurement is gated on the first `onDidUpdateDiff` event.
+      // Until Monaco's worker has computed the diff, `getContentHeight`
+      // returns the full modified file — committing that would grow
+      // the host to full-file size, force Monaco to paint every line,
+      // then shrink back when `hideUnchangedRegions` collapses the
+      // unchanged body. Gating on diff-ready guarantees the first
+      // committed measurement is the real diff height.
       const modifiedEd = ref.editor.getModifiedEditor()
       const originalEd = ref.editor.getOriginalEditor()
 
+      let diffReady = false
+
       const measureAndSync = () => {
+        if (!diffReady) return
         const h = Math.max(modifiedEd.getContentHeight(), originalEd.getContentHeight())
         if (h <= 0) return
 
@@ -199,12 +204,41 @@
         ref.editor.layout({ width: hostEl.clientWidth, height: h })
       }
       currentMeasureAndSync = measureAndSync
-      measureAndSync()
-      requestAnimationFrame(measureAndSync)
+
+      // Safety net: if `onDidUpdateDiff` never fires (malformed models,
+      // empty models, Monaco worker wedge) flip the gate after 800ms so
+      // the row isn't stuck at the seed height forever. Normal paths
+      // beat this easily — the worker typically settles within a frame
+      // or two.
+      const safetyTimer = window.setTimeout(() => {
+        if (diffReady) return
+        diffReady = true
+        measureAndSync()
+      }, 800)
+      const safetyOff = { dispose: () => window.clearTimeout(safetyTimer) }
 
       const sizeOffMod = modifiedEd.onDidContentSizeChange(measureAndSync)
       const sizeOffOrig = originalEd.onDidContentSizeChange(measureAndSync)
-      const diffOff = ref.editor.onDidUpdateDiff(measureAndSync)
+      // `onDidUpdateDiff` fires when Monaco's diff worker completes —
+      // but the `hideUnchangedRegions` widgets materialize on a later
+      // paint, so reading `getContentHeight()` at this exact moment
+      // still returns the uncollapsed full-file height. Waiting two
+      // animation frames gives the layout pipeline time to apply the
+      // widgets, so the FIRST committed measurement is the real
+      // post-collapse height rather than a brief overshoot.
+      const diffOff = ref.editor.onDidUpdateDiff(() => {
+        if (diffReady) {
+          measureAndSync()
+          return
+        }
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (diffReady) return
+            diffReady = true
+            measureAndSync()
+          })
+        })
+      })
       // `hideUnchangedRegions` and folding change visible line count
       // without necessarily firing `onDidContentSizeChange`. This is
       // the dedicated event for that transition — without it, expanding
@@ -240,7 +274,7 @@
       const roOff = { dispose: () => ro.disconnect() }
 
       currentRef = ref
-      currentDisposables = [sizeOffMod, sizeOffOrig, diffOff, hiddenOffMod, hiddenOffOrig, roOff]
+      currentDisposables = [sizeOffMod, sizeOffOrig, diffOff, hiddenOffMod, hiddenOffOrig, roOff, safetyOff]
     })()
 
     return () => {
