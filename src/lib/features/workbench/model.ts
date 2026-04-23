@@ -76,7 +76,29 @@ export interface LauncherTab {
   temporary: false
 }
 
-export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab
+export type TaskRunStatus = 'starting' | 'running' | 'exited' | 'failed'
+
+export interface TaskTab {
+  kind: 'task'
+  id: TabId
+  /** Frontend-generated UUID used as the PTY key for the live run. */
+  runId: string
+  /** Stable task id from .sworm/tasks.json; used to re-resolve on restart. */
+  taskId: string
+  /** Active editor path captured when the run was launched. */
+  activeFilePath: string | null
+  /** Cached label from the task definition (display-only; refreshes on reload). */
+  label: string
+  /** Cached Lucide icon name. */
+  icon: string | null
+  /** Optional group label used by the launcher and menus. */
+  group: string | null
+  status: TaskRunStatus
+  exitCode: number | null
+  locked: boolean
+}
+
+export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -149,5 +171,5 @@ export function createPane(slot: PaneSlot): PaneState {
 }
 
 export function canLockTab(tab: Tab): boolean {
-  return tab.kind === 'session' || tab.kind === 'text'
+  return tab.kind === 'session' || tab.kind === 'text' || tab.kind === 'task'
 }

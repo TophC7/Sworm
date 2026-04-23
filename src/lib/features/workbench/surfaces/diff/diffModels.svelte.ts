@@ -53,6 +53,13 @@ export interface DiffModelEntry {
   oldPath: string | null
   /** Mounted diff bodies currently using these models. */
   retainCount: number
+  /**
+   * Entry left the active file set (or the whole store is tearing
+   * down). Keep it around until the final retainer unbinds Monaco;
+   * disposing the TextModels earlier trips Monaco's diff-editor
+   * dispose-ordering invariant.
+   */
+  pendingRemoval: boolean
 }
 
 export class DiffModelStore {
@@ -72,17 +79,19 @@ export class DiffModelStore {
   sync(files: FileDiff[]): void {
     const nextPaths = new Set(files.map((f) => f.path))
 
-    // Dispose stale entries first — rows left out of the new set.
+    // Stale rows may still have a mounted diff body or a queued height
+    // preload retaining their models. Mark them for removal now, but
+    // defer the actual model disposal until the last retainer releases.
     for (const [path, entry] of this.entries) {
       if (!nextPaths.has(path)) {
-        this.disposeModels(entry)
-        this.entries.delete(path)
+        this.retire(path, entry)
       }
     }
 
     for (const file of files) {
       const existing = this.entries.get(file.path)
       if (existing) {
+        existing.pendingRemoval = false
         this.applyContent(existing, file)
         continue
       }
@@ -111,12 +120,15 @@ export class DiffModelStore {
 
   release(path: string): void {
     const entry = this.entries.get(path)
-    if (!entry || entry.binary) return
+    if (!entry) return
     if (entry.retainCount > 0) {
       entry.retainCount -= 1
     }
     if (entry.retainCount === 0) {
       this.disposeModels(entry)
+      if (entry.pendingRemoval) {
+        this.entries.delete(path)
+      }
     }
   }
 
@@ -144,10 +156,9 @@ export class DiffModelStore {
 
   /** Dispose every model. Call on viewer teardown / project switch. */
   dispose(): void {
-    for (const entry of this.entries.values()) {
-      this.disposeModels(entry)
+    for (const [path, entry] of this.entries) {
+      this.retire(path, entry)
     }
-    this.entries.clear()
   }
 
   private build(file: FileDiff): DiffModelEntry {
@@ -166,7 +177,8 @@ export class DiffModelStore {
       deletions: file.deletions,
       status: file.status,
       oldPath: file.oldPath,
-      retainCount: 0
+      retainCount: 0,
+      pendingRemoval: false
     }
   }
 
@@ -209,6 +221,13 @@ export class DiffModelStore {
     entry.modified?.dispose()
     entry.original = null
     entry.modified = null
+  }
+
+  private retire(path: string, entry: DiffModelEntry): void {
+    entry.pendingRemoval = true
+    if (entry.retainCount > 0) return
+    this.disposeModels(entry)
+    this.entries.delete(path)
   }
 
   private reconcileSide(current: ITextModel | null, next: string, lang: string, m: Monaco): ITextModel {

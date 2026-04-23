@@ -7,6 +7,7 @@ import { invoke, Channel } from '@tauri-apps/api/core'
 import type {
   AppInfo,
   CommitDetail,
+  ConfigSchemaEntry,
   DiscoveredProject,
   DiffSource,
   FileDiff,
@@ -30,7 +31,8 @@ import type {
   ProviderConfig,
   LspEvent,
   LspServerConfig,
-  LspServerSettingsEntry
+  LspServerSettingsEntry,
+  TaskDefinition
 } from '$lib/types/backend'
 
 export const backend = {
@@ -398,6 +400,65 @@ export const backend = {
   builtins: {
     getCatalog(): Promise<BuiltinCatalog> {
       return invoke<BuiltinCatalog>('builtins_get_catalog')
+    }
+  },
+
+  configSchemas: {
+    list(): Promise<ConfigSchemaEntry[]> {
+      return invoke<ConfigSchemaEntry[]>('config_schemas_list')
+    }
+  },
+
+  tasks: {
+    /** Return the parsed task list for a project. Empty array when no `.sworm/tasks.json` exists. */
+    list(projectId: string): Promise<TaskDefinition[]> {
+      return invoke<TaskDefinition[]>('tasks_list', { projectId })
+    },
+    createOutputChannel(onOutput: (data: number[]) => void): Channel<number[]> {
+      const output = new Channel<number[]>()
+      output.onmessage = onOutput
+      return output
+    },
+    createEventChannel(onEvent: (event: PtyEvent) => void): Channel<PtyEvent> {
+      const events = new Channel<PtyEvent>()
+      events.onmessage = onEvent
+      return events
+    },
+    /**
+     * Spawn a task in a PTY. `runId` is a frontend-generated UUID used
+     * as the PTY key for subsequent write/resize/stop calls.
+     */
+    start(
+      runId: string,
+      projectId: string,
+      taskId: string,
+      activeFilePath: string | null,
+      cols: number,
+      rows: number,
+      onOutput: (data: number[]) => void,
+      onEvent: (event: PtyEvent) => void
+    ): Promise<void> {
+      const output = backend.tasks.createOutputChannel(onOutput)
+      const events = backend.tasks.createEventChannel(onEvent)
+      return invoke<void>('tasks_start', {
+        runId,
+        projectId,
+        taskId,
+        activeFilePath,
+        cols,
+        rows,
+        output,
+        events
+      })
+    },
+    write(runId: string, data: Uint8Array): Promise<void> {
+      return invoke<void>('tasks_write', { runId, data: Array.from(data) })
+    },
+    resize(runId: string, cols: number, rows: number): Promise<void> {
+      return invoke<void>('tasks_resize', { runId, cols, rows })
+    },
+    stop(runId: string): Promise<void> {
+      return invoke<void>('tasks_stop', { runId })
     }
   },
 

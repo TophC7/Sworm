@@ -10,6 +10,7 @@ use crate::services::{
     providers::ProviderService,
     pty::{PtyService, TranscriptBatcher},
     sessions::SessionService,
+    tasks::TaskService,
     transcript::TranscriptService,
     workspace_state::{AppStateKvService, WorkspaceStateService},
 };
@@ -44,6 +45,7 @@ pub struct AppState {
     pub transcript_batcher: Arc<TranscriptBatcher>,
     pub workspace_state: WorkspaceStateService,
     pub app_state_kv: AppStateKvService,
+    pub tasks: TaskService,
     /// Tracks project IDs with Nix evaluations in progress to prevent concurrent runs.
     pub nix_eval_locks: Mutex<HashSet<String>>,
     /// Per-cwd locks serializing Codex thread binding to avoid cross-binding races.
@@ -110,6 +112,7 @@ impl AppState {
             transcript_batcher,
             workspace_state: WorkspaceStateService::new(),
             app_state_kv: AppStateKvService::new(),
+            tasks: TaskService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),
             codex_bind_locks: Arc::new(Mutex::new(HashMap::new())),
             activity_map_cache: Mutex::new(None),

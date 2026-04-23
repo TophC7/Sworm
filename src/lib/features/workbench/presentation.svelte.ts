@@ -2,6 +2,7 @@ import { canLockTab, type Tab } from '$lib/features/workbench/model'
 import { getDiffTabTitle } from '$lib/features/workbench/surfaces/diff/service.svelte'
 import { getLauncherTitle } from '$lib/features/workbench/surfaces/launcher/service.svelte'
 import { getSessionProviderIcon, getSessionTabTitle } from '$lib/features/workbench/surfaces/session/service.svelte'
+import { getTaskTabIcon, getTaskTabTitle } from '$lib/features/workbench/surfaces/task/service.svelte'
 import { getTextTabFileName, getTextTabTitle } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { getToolTabTitle } from '$lib/features/workbench/surfaces/tool/service.svelte'
 import { getSurfaceKind, isSurfacePreview, type SurfaceKind } from '$lib/features/workbench/surfaces'
@@ -10,7 +11,10 @@ export interface TabPresentation {
   surfaceKind: SurfaceKind
   title: string
   preview: boolean
+  /** Image URL for session provider icons (rendered via `<img>`). */
   providerIcon: string | null
+  /** Kebab-case Lucide icon name for task tabs (rendered via LucideIcon). */
+  lucideIcon: string | null
   fileName: string | null
   lockable: boolean
 }
@@ -25,6 +29,7 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         title: getLauncherTitle(),
         preview: false,
         providerIcon: null,
+        lucideIcon: null,
         fileName: null,
         lockable: false
       }
@@ -35,6 +40,7 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         title: getSessionTabTitle(tab),
         preview: false,
         providerIcon: getSessionProviderIcon(tab),
+        lucideIcon: null,
         fileName: null,
         lockable: canLockTab(tab)
       }
@@ -45,6 +51,7 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         title: getTextTabTitle(tab),
         preview: isSurfacePreview(tab),
         providerIcon: null,
+        lucideIcon: null,
         fileName: getTextTabFileName(tab),
         lockable: canLockTab(tab)
       }
@@ -57,6 +64,7 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         title: getDiffTabTitle(tab),
         preview: isSurfacePreview(tab),
         providerIcon: null,
+        lucideIcon: null,
         fileName: null,
         lockable: false
       }
@@ -67,8 +75,20 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         title: getToolTabTitle(tab),
         preview: isSurfacePreview(tab),
         providerIcon: null,
+        lucideIcon: null,
         fileName: null,
         lockable: false
+      }
+    case 'task':
+      if (tab.kind !== 'task') throw new Error('Invalid task tab presentation request')
+      return {
+        surfaceKind,
+        title: getTaskTabTitle(tab),
+        preview: false,
+        providerIcon: null,
+        lucideIcon: getTaskTabIcon(tab),
+        fileName: null,
+        lockable: canLockTab(tab)
       }
     default: {
       const _exhaustive: never = surfaceKind

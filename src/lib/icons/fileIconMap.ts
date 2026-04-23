@@ -10,7 +10,16 @@
  * Icon SVGs live in /static/icons/bearded/.
  */
 
-import { basename } from '$lib/utils/paths'
+import { basename, dirname } from '$lib/utils/paths'
+
+// Parent-directory rules — matched before the filename map so that
+// conflicting names (e.g. `tasks.json` in both `.vscode/` and
+// `.sworm/`) pick the right icon based on context. `parent` matches
+// the immediate parent directory; `ext` is the file extension
+// (lowercase, no leading dot).
+const parentDirRules: Array<{ parent: string; ext: string; icon: string }> = [
+  { parent: '.sworm', ext: 'json', icon: 'sworm' }
+]
 
 // Exact filename → icon name (lowercased keys for case-insensitive lookup)
 const fileNameMap: Record<string, string> = {
@@ -382,12 +391,31 @@ const extMap: Record<string, string> = {
 const ICON_BASE = '/icons/bearded'
 
 /**
- * Resolve the icon path for a given filename.
- * Returns a URL path to the SVG in /static/icons/bearded/.
+ * Resolve the icon path for a given filename or relative path.
+ *
+ * Accepts either a bare basename (`tasks.json`) or a path-like value
+ * (`.sworm/tasks.json`). When a path is given, parent-directory rules
+ * run first so directory context can override the generic filename
+ * mapping.
  */
 export function resolveFileIcon(filename: string): string {
   const base = basename(filename)
   const lower = base.toLowerCase()
+
+  // 0. Parent-directory + extension match (path-aware callers only).
+  //    Scoped to the immediate parent so `deep/nested/.sworm/x.json`
+  //    still matches but an unrelated `.sworm.json` file in a random
+  //    folder does not.
+  if (filename.includes('/')) {
+    const parent = basename(dirname(filename)).toLowerCase()
+    const lastDot = lower.lastIndexOf('.')
+    const ext = lastDot !== -1 ? lower.slice(lastDot + 1) : ''
+    for (const rule of parentDirRules) {
+      if (parent === rule.parent && ext === rule.ext) {
+        return `${ICON_BASE}/${rule.icon}.svg`
+      }
+    }
+  }
 
   // 1. Exact filename match
   if (fileNameMap[lower]) {

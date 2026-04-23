@@ -7,6 +7,7 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button'
   import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
+  import { registerSchema, unregisterSchema } from '$lib/features/editor/schemas/registry'
   import { CircleAlert } from '$lib/icons/lucideExports'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
@@ -42,24 +43,7 @@
       .replace(/^-+|-+$/g, '') || 'settings'
   )
   const modelUri = $derived(`file:///__sworm_settings__/${editorSlug}.json`)
-  const schemaUri = $derived(`sworm-settings://schemas/${editorSlug}.schema.json`)
-
-  interface JsonSchemaAssociation {
-    uri: string
-    fileMatch?: string[]
-    schema: unknown
-  }
-
-  interface JsonDiagnosticsOptions {
-    validate?: boolean
-    allowComments?: boolean
-    comments?: 'error' | 'warning' | 'ignore'
-    trailingCommas?: 'error' | 'warning' | 'ignore'
-    schemaRequest?: 'error' | 'warning' | 'ignore'
-    schemaValidation?: 'error' | 'warning' | 'ignore'
-    enableSchemaRequest?: boolean
-    schemas?: JsonSchemaAssociation[]
-  }
+  const registryId = $derived(`settings:${editorSlug}`)
 
   function seedValue(): string {
     if (value.trim()) return value
@@ -84,7 +68,13 @@
       validationError = null
 
       const resource = m.Uri.parse(modelUri)
-      registerSchema(m, resource.toString())
+      if (schema) {
+        registerSchema({
+          id: registryId,
+          fileMatch: [resource.toString()],
+          schema
+        })
+      }
 
       m.editor.getModel(resource)?.dispose()
       model = m.editor.createModel(seeded, 'json', resource)
@@ -135,63 +125,13 @@
     return () => {
       disposed = true
       ready = false
-      if (monaco) {
-        unregisterSchema(monaco)
-      }
+      unregisterSchema(registryId)
       editor?.dispose()
       editor = null
       model?.dispose()
       model = null
     }
   })
-
-  function jsonDefaults(m: typeof import('monaco-editor')) {
-    return (
-      m.languages.json as unknown as {
-        jsonDefaults: {
-          diagnosticsOptions?: JsonDiagnosticsOptions
-          setDiagnosticsOptions(options: JsonDiagnosticsOptions): void
-        }
-      }
-    ).jsonDefaults
-  }
-
-  function registerSchema(m: typeof import('monaco-editor'), resourceUri: string) {
-    if (!schema) return
-    const defaults = jsonDefaults(m)
-
-    const plainSchema = JSON.parse(JSON.stringify(schema)) as unknown
-    const current = defaults.diagnosticsOptions ?? {}
-    const existing = current.schemas ?? []
-    const filtered = existing.filter((entry) => entry.uri !== schemaUri)
-
-    defaults.setDiagnosticsOptions({
-      ...current,
-      validate: current.validate ?? true,
-      allowComments: current.allowComments ?? true,
-      schemas: [
-        ...filtered,
-        {
-          uri: schemaUri,
-          fileMatch: [resourceUri],
-          schema: plainSchema
-        }
-      ]
-    })
-  }
-
-  function unregisterSchema(m: typeof import('monaco-editor')) {
-    const defaults = jsonDefaults(m)
-    const current = defaults.diagnosticsOptions ?? {}
-    const existing = current.schemas ?? []
-
-    defaults.setDiagnosticsOptions({
-      ...current,
-      validate: current.validate ?? true,
-      allowComments: current.allowComments ?? true,
-      schemas: existing.filter((entry) => entry.uri !== schemaUri)
-    })
-  }
 
   async function errorMarkers(): Promise<import('monaco-editor').editor.IMarker[]> {
     if (!monaco || !model) return []

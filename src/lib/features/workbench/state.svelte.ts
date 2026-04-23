@@ -9,6 +9,7 @@ import { backend } from '$lib/api/backend'
 import type { Session } from '$lib/types/backend'
 import { basename } from '$lib/utils/paths'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
+import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 import { clearGitState } from '$lib/features/git/state.svelte'
 import { hideProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
 import { canLockTab, createPane } from '$lib/features/workbench/model'
@@ -25,6 +26,8 @@ import type {
   SplitMode,
   Tab,
   TabId,
+  TaskRunStatus,
+  TaskTab,
   TextTab,
   ToolTab,
   DiffTab,
@@ -56,6 +59,8 @@ export type {
   SplitMode,
   Tab,
   TabId,
+  TaskRunStatus,
+  TaskTab,
   TextTab,
   ToolTab,
   DiffTab,
@@ -289,6 +294,10 @@ function removeTabIds(ws: ProjectWorkspace, tabIds: Set<TabId>) {
     const tab = findTab(ws, tabId)
     if (tab?.kind === 'session') {
       sessionRegistry.dispose(tab.sessionId)
+      continue
+    }
+    if (tab?.kind === 'task') {
+      taskRegistry.dispose(tab.runId)
     }
   }
 
@@ -363,6 +372,10 @@ export async function closeProject(projectId: string): Promise<void> {
     for (const tab of ws.tabs) {
       if (tab.kind === 'session') {
         sessionRegistry.dispose(tab.sessionId)
+        continue
+      }
+      if (tab.kind === 'task') {
+        taskRegistry.dispose(tab.runId)
       }
     }
     const next = new Map(workspaces)
@@ -505,6 +518,108 @@ export async function flushPersistencePending(): Promise<void> {
 // Tab operations
 // ---------------------------------------------------------------------------
 
+export interface TaskTabInit {
+  runId: string
+  taskId: string
+  activeFilePath: string | null
+  label: string
+  icon: string | null
+  group: string | null
+}
+
+/**
+ * Add a new task tab. Always creates a fresh tab (non-singleton
+ * behavior) — callers that want singleton focus-on-rerun should use
+ * `findTaskTabByTaskId` first and skip the create when a live run
+ * already exists.
+ */
+export function addTaskTab(projectId: string, init: TaskTabInit): TabId {
+  const ws = ensureWorkspace(projectId)
+  const tab: TaskTab = {
+    kind: 'task',
+    id: generateTabId(),
+    runId: init.runId,
+    taskId: init.taskId,
+    activeFilePath: init.activeFilePath,
+    label: init.label,
+    icon: init.icon,
+    group: init.group,
+    status: 'starting',
+    exitCode: null,
+    locked: false
+  }
+
+  ws.tabs = [...ws.tabs, tab]
+  const pane = activePaneOf(ws)
+  pane.tabs = [...pane.tabs, tab.id]
+  pane.activeTabId = tab.id
+  ws.focusedPaneSlot = pane.slot
+  commitWorkspace(ws)
+
+  return tab.id
+}
+
+/** Find an existing task tab by its source task id. Used to enforce
+ * singleton semantics on rerun: if a live tab exists for this task,
+ * focus it instead of spawning a new one. */
+export function findTaskTabByTaskId(projectId: string, taskId: string): TaskTab | null {
+  const ws = getWorkspace(projectId)
+  if (!ws) return null
+  return (
+    ws.tabs.find(
+      (t): t is TaskTab => t.kind === 'task' && t.taskId === taskId && t.status !== 'exited' && t.status !== 'failed'
+    ) ?? null
+  )
+}
+
+/** Update a task tab's lifecycle status and optional exit code. */
+export function setTaskTabStatus(
+  projectId: string,
+  tabId: TabId,
+  status: TaskRunStatus,
+  exitCode: number | null = null
+): void {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.id !== tabId || t.kind !== 'task') return t
+    return { ...t, status, exitCode }
+  })
+  commitWorkspace(ws)
+}
+
+/**
+ * Rebind a singleton task tab to a fresh runId for restart. Resets
+ * lifecycle status and caches the latest label/icon in case the task
+ * definition changed since the tab was created.
+ */
+export function resetTaskTabForRestart(
+  projectId: string,
+  tabId: TabId,
+  nextRunId: string,
+  latest: { activeFilePath: string | null; label: string; icon: string | null; group: string | null }
+): void {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.id !== tabId || t.kind !== 'task') return t
+    return {
+      ...t,
+      runId: nextRunId,
+      activeFilePath: latest.activeFilePath,
+      label: latest.label,
+      icon: latest.icon,
+      group: latest.group,
+      status: 'starting',
+      exitCode: null
+    }
+  })
+  const pane = findPaneForTab(ws, tabId) ?? activePaneOf(ws)
+  pane.activeTabId = tabId
+  ws.focusedPaneSlot = pane.slot
+  commitWorkspace(ws)
+}
+
 export function addSessionTab(projectId: string, sessionId: string, title: string, providerId: string): TabId {
   const ws = ensureWorkspace(projectId)
   // Check if a tab for this session already exists
@@ -573,7 +688,7 @@ function addContentTab(
   if (temporary) {
     const existingTempId = pane.tabs.find((id) => {
       const t = findTab(ws, id)
-      return t?.kind === kind && t.kind !== 'session' && t.temporary
+      return t?.kind === kind && t.kind !== 'session' && t.kind !== 'task' && t.temporary
     })
 
     if (existingTempId) {
@@ -861,7 +976,7 @@ export function promoteTab(projectId: string, tabId: TabId): void {
   if (!ws) return
 
   const tab = findTab(ws, tabId)
-  if (!tab || tab.kind === 'session' || tab.kind === 'launcher' || !tab.temporary) return
+  if (!tab || tab.kind === 'session' || tab.kind === 'launcher' || tab.kind === 'task' || !tab.temporary) return
 
   ws.tabs = ws.tabs.map((candidate) => (candidate.id === tabId ? { ...candidate, temporary: false } : candidate))
   commitWorkspace(ws)
@@ -921,6 +1036,8 @@ export function closeTab(projectId: string, tabId: TabId) {
   // ensures the xterm instance and channels are cleaned up.
   if (tab.kind === 'session') {
     sessionRegistry.dispose(tab.sessionId)
+  } else if (tab.kind === 'task') {
+    taskRegistry.dispose(tab.runId)
   }
 
   // Remove from pane

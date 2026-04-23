@@ -1,6 +1,7 @@
 pub mod activity_map;
 pub mod app;
 pub mod builtins;
+pub mod config_schemas;
 pub mod dnd;
 pub mod files;
 pub mod formatting;
@@ -13,5 +14,6 @@ pub mod providers;
 pub mod pty;
 pub mod sessions;
 pub mod settings;
+pub mod tasks;
 pub mod transcript;
 pub mod workspace;

@@ -10,6 +10,7 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import { ensureMonacoFormatters } from '$lib/features/editor/renderers/monaco/core/formatters'
 import { ensureMonacoLsp } from '$lib/features/editor/lsp/registry'
 import { registerSwormTheme, SWORM_SHIKI_THEME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
+import { attachMonaco } from '$lib/features/editor/schemas/registry'
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
@@ -149,6 +150,10 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
       { keybinding: KeyCode.F1, command: '-editor.action.quickCommand' },
       { keybinding: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyO, command: '-editor.action.quickOutline' }
     ])
+
+    // Flush any JSON schemas that were registered before Monaco
+    // finished loading (bootstrap runs before the first editor mount).
+    attachMonaco(monaco)
   })().catch((err) => {
     // Allow retry on next editor mount if Shiki fails to load
     initPromise = null

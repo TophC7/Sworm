@@ -88,6 +88,11 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       // the empty-pane fallback in workbench/Pane.svelte covers the "no active tab"
       // case by rendering NewSessionView inline.
       return null
+    case 'task':
+      // Tasks are ephemeral runs. Their PTY is tied to a live runId
+      // that dies with the process, so persisting the tab across
+      // restarts would resurrect a dead handle.
+      return null
     default: {
       // Exhaustiveness: any new Tab kind forces the compiler to add a
       // case above. Without this the default path would silently drop

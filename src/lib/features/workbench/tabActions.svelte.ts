@@ -56,6 +56,17 @@ export async function closeTabWithChecks(projectId: string, tabId: TabId): Promi
     }
   }
 
+  if (tab.kind === 'task' && (tab.status === 'running' || tab.status === 'starting')) {
+    // Stop failures shouldn't block the close — if the PTY is already
+    // gone the backend swallows the error; any real error surfaces as
+    // a toast but we still tear down the tab to avoid orphaning it.
+    try {
+      await backend.tasks.stop(tab.runId)
+    } catch (err) {
+      notify.error('Stop task failed', getErrorMessage(err))
+    }
+  }
+
   closeTab(projectId, tabId)
   collapsePaneIfEmpty(projectId)
   return true

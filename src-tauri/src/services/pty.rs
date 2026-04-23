@@ -80,6 +80,9 @@ impl PtyService {
     /// Spawn a new PTY running the given command.
     ///
     /// If a PTY already exists for this session_id, it is killed first.
+    /// When `persist_transcript` is false, PTY output bypasses the
+    /// transcript sink. Use this for ephemeral runs like tasks whose
+    /// session_id has no backing row in the `sessions` table.
     pub fn spawn(
         &self,
         session_id: String,
@@ -91,6 +94,7 @@ impl PtyService {
         rows: u16,
         output_channel: tauri::ipc::Channel<Vec<u8>>,
         event_channel: tauri::ipc::Channel<PtyEvent>,
+        persist_transcript: bool,
         on_exit: Option<Box<dyn FnOnce(&str, Option<i32>) + Send>>,
     ) -> Result<(), String> {
         if self.is_alive(&session_id) {
@@ -176,7 +180,11 @@ impl PtyService {
             .name(format!("pty-reader-{}", &session_id))
             .spawn(move || {
                 let mut buf = [0u8; 4096];
-                let sink = sink_for_thread.lock().clone();
+                let sink = if persist_transcript {
+                    sink_for_thread.lock().clone()
+                } else {
+                    None
+                };
 
                 loop {
                     if shutdown.load(Ordering::Relaxed) {
@@ -192,10 +200,9 @@ impl PtyService {
                         Ok(n) => {
                             let chunk = &buf[..n];
 
-                            // Always hand bytes to the transcript sink,
-                            // even if the frontend channel is gone —
-                            // that's what lets sessions survive webview
-                            // reloads and produce durable transcripts.
+                            // Ephemeral runs (tasks) skip the transcript
+                            // sink because they have no `sessions` row
+                            // to anchor the FK in `session_entries`.
                             if let Some(sink) = sink.as_ref() {
                                 sink(&sid_for_thread, chunk);
                             }

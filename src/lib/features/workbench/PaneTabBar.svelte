@@ -14,10 +14,16 @@
   import { promoteTemporaryTab, setActiveTab, toggleTabLocked } from '$lib/features/workbench/state.svelte'
   import { tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
+  import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
+  import { findTask } from '$lib/features/tasks/state.svelte'
+  import { openTaskTab, reportTaskStatus } from '$lib/features/tasks/service.svelte'
+  import { notify } from '$lib/features/notifications/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { FileDiff, BellIcon, Lock, Plus } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
+  import LucideIcon from '$lib/icons/LucideIcon.svelte'
+  import { TerminalIcon } from '$lib/icons/lucideExports'
   import { tick } from 'svelte'
   import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getTabPresentation } from '$lib/features/workbench/presentation.svelte'
@@ -133,6 +139,35 @@
   function handleToggleLock(tabId: TabId) {
     toggleTabLocked(projectId, tabId)
   }
+
+  async function handleTaskStop(tab: Tab) {
+    if (tab.kind !== 'task') return
+    const manager = taskRegistry.get(tab.runId)
+    await runNotifiedTask(
+      async () => {
+        if (manager) {
+          await manager.stopProcess()
+          return
+        }
+        await backend.tasks.stop(tab.runId)
+        reportTaskStatus(projectId, tab.id, 'exited', null)
+      },
+      {
+        loading: { title: 'Stopping task', description: tab.label },
+        error: { title: 'Stop task failed' }
+      }
+    )
+  }
+
+  async function handleTaskRestart(tab: Tab) {
+    if (tab.kind !== 'task') return
+    const def = findTask(projectId, tab.taskId)
+    if (!def) {
+      notify.error('Cannot restart task', `Task "${tab.taskId}" is no longer defined in .sworm/tasks.json`)
+      return
+    }
+    await openTaskTab(projectId, def, { activeFilePath: tab.activeFilePath })
+  }
 </script>
 
 <TabStrip variant="pane" ariaLabel="Pane tabs" class={isFocused ? 'border-edge' : 'border-edge/50'}>
@@ -165,10 +200,22 @@
               <FileDiff size={14} class="shrink-0 text-accent" />
             {:else if surfaceKind === 'tool'}
               <BellIcon size={14} class="shrink-0 text-accent" />
-            {:else if surfaceKind === 'text' && presentation.fileName}
-              <FileIcon filename={presentation.fileName} size={14} />
+            {:else if tab.kind === 'text' && presentation.fileName}
+              <!-- Pass the full relative path so the resolver can apply
+                   directory-aware rules (e.g. .sworm/*.json → sworm icon).
+                   Falls back to the basename for unsaved "Untitled" tabs. -->
+              <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
             {:else if surfaceKind === 'launcher'}
               <Plus size={14} class="shrink-0 text-accent" />
+            {:else if surfaceKind === 'task'}
+              <!-- Task icon comes from .sworm/tasks.json. Any Lucide name
+                   is valid; fall back to the terminal glyph when the
+                   dynamic loader can't find a match. -->
+              {#if presentation.lucideIcon}
+                <LucideIcon name={presentation.lucideIcon} size={14} class="shrink-0 text-accent" />
+              {:else}
+                <TerminalIcon size={14} class="shrink-0 text-accent" />
+              {/if}
             {:else if presentation.providerIcon}
               <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
             {/if}
@@ -186,6 +233,12 @@
         {#if tab.kind === 'session' && session}
           <ContextMenuItem onclick={() => (isRunning ? void stopSessionFromMenu(tab) : handleRestartFromMenu(tab))}>
             {isRunning ? 'Stop' : 'Restart'}
+          </ContextMenuItem>
+        {/if}
+        {#if tab.kind === 'task'}
+          {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
+          <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
+            {taskRunning ? 'Stop' : 'Restart'}
           </ContextMenuItem>
         {/if}
         {#if canLockTab(tab)}

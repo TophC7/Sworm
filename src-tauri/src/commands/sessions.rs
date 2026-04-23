@@ -420,6 +420,7 @@ pub fn session_start(
         rows,
         output,
         events,
+        true,
         Some(on_exit),
     );
 

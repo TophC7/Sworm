@@ -312,6 +312,31 @@ export interface FilePasteCollision {
   destination: string
 }
 
+// JSON Schema for a project-scoped config file (e.g. .sworm/tasks.json).
+// Schemas are derived from Rust types via schemars so they can't drift
+// from the deserialization contract.
+export interface ConfigSchemaEntry {
+  id: string
+  fileMatch: string[]
+  schema: unknown
+}
+
+// Mirror of Rust `TaskDefinition` (src-tauri/src/models/task.rs).
+// camelCase here matches the `#[serde(rename_all = "camelCase")]` on
+// the source type.
+export interface TaskDefinition {
+  id: string
+  label: string
+  command: string
+  cwd?: string
+  env?: Record<string, string>
+  icon?: string
+  group?: string
+  singleton?: boolean
+  clearOnRerun?: boolean
+  confirm?: boolean
+}
+
 export interface FileEntryStat {
   isDir: boolean
 }

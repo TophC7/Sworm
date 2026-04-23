@@ -30,6 +30,7 @@ pub fn pty_demo_start(
             rows,
             output,
             events,
+            true,
             None, // no on_exit callback for demo PTY
         )
         .map_err(|e| ApiError::Pty(e))

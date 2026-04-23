@@ -14,16 +14,22 @@
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
   import { HistoryIcon, PencilIcon } from '$lib/icons/lucideExports'
+  import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import { cn } from '$lib/utils/cn'
   import {
     getAppCommandGroups,
     getEditorCommandGroups,
+    getTaskCommandGroups,
     type Command as CommandType,
     type CommandConfirm,
     type FileCallbacks
   } from '$lib/features/command-palette/commands/index.svelte'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/features/command-palette/commands/recents.svelte'
-  import { isCommandPaletteOpen, setCommandPaletteOpen } from '$lib/features/command-palette/state.svelte'
+  import {
+    consumePendingInitialSearch,
+    isCommandPaletteOpen,
+    setCommandPaletteOpen
+  } from '$lib/features/command-palette/state.svelte'
   import { isTextEditorFocused } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
   import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { splitShortcut } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
@@ -50,12 +56,15 @@
   let open = $derived(isCommandPaletteOpen())
   let search = $state('')
 
-  // Detect `>` prefix — switches to editor command mode
+  // Prefix modes: `>` routes to editor commands, `!` routes to tasks.
+  // Default (no prefix) shows app commands + Recent.
   let isEditorMode = $derived(search.startsWith('>'))
-  let filterQuery = $derived(isEditorMode ? search.slice(1).trim() : search.trim())
+  let isTaskMode = $derived(search.startsWith('!'))
+  let filterQuery = $derived(isEditorMode || isTaskMode ? search.slice(1).trim() : search.trim())
 
   let appGroups = $derived(getAppCommandGroups({ onNewProject, onSettings }))
   let editorGroups = $derived(getEditorCommandGroups())
+  let taskGroups = $derived(getTaskCommandGroups())
 
   // Filter commands by the query (case-insensitive substring on label, keywords, id)
   function matchesQuery(query: string, label: string, keywords: string[], id: string): boolean {
@@ -72,7 +81,7 @@
   // duplicates across Recent + its source section.
   let recentGroup = $derived.by<import('$lib/features/command-palette/commands/index.svelte').CommandGroup | null>(
     () => {
-      if (isEditorMode) return null
+      if (isEditorMode || isTaskMode) return null
       const ids = getRecentCommandIds()
       if (ids.length === 0) return null
       const byId = new Map<string, CommandType>()
@@ -91,7 +100,7 @@
   )
 
   let activeGroups = $derived.by(() => {
-    const source = isEditorMode ? editorGroups : appGroups
+    const source = isEditorMode ? editorGroups : isTaskMode ? taskGroups : appGroups
     const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
     if (!filterQuery) return withRecents
 
@@ -115,9 +124,16 @@
 
   // Set initial search when palette opens/closes. untrack prevents
   // re-running when isTextEditorFocused changes while already open.
+  // A pending search (from openCommandPaletteWithSearch, e.g. the
+  // "Show Tasks" command) wins over the editor-focus fallback.
   $effect(() => {
     if (open) {
-      search = untrack(() => isTextEditorFocused()) ? '> ' : ''
+      const queued = untrack(() => consumePendingInitialSearch())
+      if (queued !== null) {
+        search = queued
+      } else {
+        search = untrack(() => isTextEditorFocused()) ? '> ' : ''
+      }
     } else {
       search = ''
     }
@@ -127,7 +143,10 @@
     // Strip the `recent:` prefix we add when cloning into the Recent group
     // so both entry points record under the original command id.
     const baseId = cmd.id.startsWith('recent:') ? cmd.id.slice('recent:'.length) : cmd.id
-    if (!isEditorMode) recordRecentCommand(baseId)
+    // Task entries and editor-mode entries are excluded from Recent:
+    // task lists already live behind `!`, and editor commands are
+    // context-specific so a stale recent could fire in the wrong tab.
+    if (!isEditorMode && !isTaskMode) recordRecentCommand(baseId)
     setCommandPaletteOpen(false)
     search = ''
     // Tick delay so the dialog closes before the handler fires
@@ -145,7 +164,10 @@
     >
       <div class={cn('w-full max-w-xl overflow-hidden rounded-xl border border-edge', 'bg-raised shadow-popover')}>
         <Command vimBindings={false} shouldFilter={false}>
-          <CommandInput placeholder={isEditorMode ? 'Editor command...' : 'Type a command...'} bind:value={search} />
+          <CommandInput
+            placeholder={isEditorMode ? 'Editor command...' : isTaskMode ? 'Run task...' : 'Type a command...'}
+            bind:value={search}
+          />
           <CommandList class="max-h-[50vh] [scroll-padding-block:0.5rem]">
             <CommandEmpty />
 
@@ -162,6 +184,12 @@
                       <Icon />
                     {:else if cmd.iconSrc}
                       <img src={cmd.iconSrc} alt="" class="h-4 w-4 shrink-0 opacity-60" />
+                    {:else if cmd.lucideIcon}
+                      <!-- LucideIcon lazy-loads a Svelte chunk per icon name.
+                           Callers pass a fallback (e.g. 'terminal') at command
+                           build time so invalid names degrade to no icon rather
+                           than layout shift. -->
+                      <LucideIcon name={cmd.lucideIcon} size={16} class="shrink-0 opacity-60" />
                     {/if}
                     {#if cmd.subtitle}
                       <span class="truncate">{cmd.label}</span>
@@ -214,10 +242,14 @@
               <Kbd>↵</Kbd>
               run
             </span>
-            {#if !isEditorMode}
+            {#if !isEditorMode && !isTaskMode}
               <span class="flex items-center gap-1.5">
                 <Kbd>&gt;</Kbd>
-                editor mode
+                editor
+              </span>
+              <span class="flex items-center gap-1.5">
+                <Kbd>!</Kbd>
+                tasks
               </span>
             {/if}
           </div>

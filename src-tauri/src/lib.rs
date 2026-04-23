@@ -58,6 +58,8 @@ pub fn run() {
             commands::app::clipboard_read_files,
             // Builtins commands
             commands::builtins::builtins_get_catalog,
+            // Config schema commands (drives Monaco autocomplete for .sworm/*.json)
+            commands::config_schemas::config_schemas_list,
             // Drag and drop commands
             commands::dnd::dnd_save_dropped_bytes,
             // Project commands
@@ -91,6 +93,12 @@ pub fn run() {
             commands::sessions::session_archive,
             commands::sessions::session_unarchive,
             commands::sessions::session_list_archived,
+            // Task commands (project-scoped .sworm/tasks.json)
+            commands::tasks::tasks_list,
+            commands::tasks::tasks_start,
+            commands::tasks::tasks_write,
+            commands::tasks::tasks_resize,
+            commands::tasks::tasks_stop,
             // Transcript / liveness commands (recovery)
             commands::transcript::session_transcript_get,
             commands::transcript::session_is_alive,

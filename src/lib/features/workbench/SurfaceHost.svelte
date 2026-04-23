@@ -3,6 +3,7 @@
   import type { Tab } from '$lib/features/workbench/model'
   import LauncherSurface from '$lib/features/workbench/surfaces/launcher/LauncherSurface.svelte'
   import SessionSurface from '$lib/features/workbench/surfaces/session/SessionSurface.svelte'
+  import TaskSurface from '$lib/features/workbench/surfaces/task/TaskSurface.svelte'
   import TextSurface from '$lib/features/workbench/surfaces/text/TextSurface.svelte'
   import DiffSurface from '$lib/features/workbench/surfaces/diff/DiffSurface.svelte'
   import ToolSurface from '$lib/features/workbench/surfaces/tool/ToolSurface.svelte'
@@ -40,4 +41,6 @@
   <DiffSurface tab={activeTab} {projectId} {projectPath} />
 {:else if activeTab.kind === 'tool'}
   <ToolSurface tab={activeTab} />
+{:else if activeTab.kind === 'task'}
+  <TaskSurface tab={activeTab} {projectId} />
 {/if}

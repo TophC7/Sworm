@@ -97,7 +97,7 @@
       }}
     >
       {@render indentGuides(depth)}
-      <FileIcon filename={node.name} size={14} />
+      <FileIcon filename={node.path} size={14} />
       <span class="min-w-0 flex-1 truncate">{node.name}</span>
       {#if fileTrailing}
         {@render fileTrailing(node)}

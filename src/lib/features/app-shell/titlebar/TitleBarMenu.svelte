@@ -84,12 +84,5 @@
     <DropdownMenuItem onclick={zoomIn}>Zoom In</DropdownMenuItem>
     <DropdownMenuItem onclick={zoomOut}>Zoom Out</DropdownMenuItem>
     <DropdownMenuItem onclick={zoomReset}>Reset Zoom</DropdownMenuItem>
-
-    <DropdownMenuSeparator />
-
-    <DropdownMenuItem disabled>
-      <span>Tasks</span>
-      <span class="ml-auto text-2xs text-muted italic">coming soon</span>
-    </DropdownMenuItem>
   </DropdownMenuContent>
 </DropdownMenuRoot>

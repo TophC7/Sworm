@@ -1,6 +1,7 @@
 pub mod activity_map;
 pub mod builtins;
 pub mod codex_state;
+pub mod config_schemas;
 pub mod credentials;
 pub mod db;
 pub mod env;
@@ -14,6 +15,7 @@ pub mod providers;
 pub mod pty;
 pub mod sessions;
 pub mod settings;
+pub mod tasks;
 pub mod transcript;
 pub mod workspace;
 pub mod workspace_state;

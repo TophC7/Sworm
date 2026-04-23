@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "dev",
+      "label": "Dev Server",
+      "command": "bun run dev",
+      "singleton": true,
+      "clearOnRerun": false,
+      "icon": "play",
+      "group": "serve"
+    },
+    {
+      "id": "check",
+      "label": "Typecheck",
+      "command": "bun run check",
+      "icon": "check",
+      "group": "build"
+    }
+  ]
+}

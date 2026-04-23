@@ -19,6 +19,7 @@
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/setup.svelte'
+  import { initProjectSchemas } from '$lib/features/project-config/bootstrap'
   import {
     getDirtyTextSurfaceCount,
     hasAnyDirtyTextSurfaces
@@ -99,6 +100,14 @@
     }
 
     const cleanupShortcuts = setupGlobalShortcuts()
+
+    // Fetch project-scoped JSON schemas (tasks, settings, ...) from
+    // the backend and push them into the Monaco registry. Fire-and-
+    // forget: schemas apply whenever they arrive, and a missing schema
+    // just means no autocomplete, not a broken editor.
+    initProjectSchemas().catch((err) => {
+      console.warn('Failed to initialize project config schemas:', err)
+    })
 
     return () => {
       cleanupShortcuts()
