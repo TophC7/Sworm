@@ -9,11 +9,13 @@
     attachIndentRainbow,
     isIndentRainbowEnabled
   } from '$lib/features/editor/renderers/monaco/text/indentRainbow.svelte'
+  import { acquireTextModel, type TextModelHandle } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { attachLspModel, detachLspModel } from '$lib/features/editor/lsp/registry'
   import {
     registerMountedTextSurface,
     takePendingTextReveal,
-    unregisterMountedTextSurface
+    unregisterMountedTextSurface,
+    type MountedTextSurfaceController
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
@@ -30,6 +32,7 @@
     uriPath = null,
     projectId = null,
     projectPath = null,
+    filePath = null,
     lspEnabled = true
   }: {
     tabId: string
@@ -42,6 +45,7 @@
     uriPath?: string | null
     projectId?: string | null
     projectPath?: string | null
+    filePath?: string | null
     lspEnabled?: boolean
   } = $props()
 
@@ -49,16 +53,19 @@
   let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
   let monaco: typeof import('monaco-editor') | null = null
   let model: import('monaco-editor').editor.ITextModel | null = null
+  let modelHandle: TextModelHandle | null = null
   let indentRainbow:
     | import('$lib/features/editor/renderers/monaco/text/indentRainbow.svelte').IndentRainbowHandle
     | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
   let lastReportedValue = ''
+  let pendingAdoptedValue: string | null = null
 
   onMount(() => {
     let disposed = false
     let resizeObserver: ResizeObserver | null = null
+    let mountedController: MountedTextSurfaceController | null = null
     async function init() {
       const { initMonaco } = await import('$lib/features/editor/renderers/monaco/core/monacoEnv')
       const m = await import('monaco-editor')
@@ -66,12 +73,29 @@
 
       monaco = m
       await initMonaco(m)
+      if (disposed || !containerEl) return
 
-      const targetUri = uriPath ? m.Uri.file(uriPath) : null
-      // LSP navigation can preload a target model before the editor tab exists.
-      model = targetUri
-        ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri))
-        : m.editor.createModel(value, language)
+      modelHandle = readonly
+        ? null
+        : acquireTextModel({
+            monaco: m,
+            projectId,
+            tabId,
+            filePath,
+            uriPath,
+            value,
+            language
+          })
+
+      if (modelHandle) {
+        model = modelHandle.model
+      } else {
+        const targetUri = uriPath ? m.Uri.file(uriPath) : null
+        // LSP navigation can preload a target model before the editor tab exists.
+        model = targetUri
+          ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri))
+          : m.editor.createModel(value, language)
+      }
 
       editor = m.editor.create(containerEl, {
         model,
@@ -115,12 +139,15 @@
         padding: { top: 12, bottom: 12 }
       })
 
+      const retainedViewState = modelHandle?.restoreViewState()
+      if (retainedViewState) editor.restoreViewState(retainedViewState)
+
       if (lspEnabled && model && projectId && projectPath) {
         void attachLspModel(model, { projectId, projectPath })
       }
 
       if (editor) {
-        registerMountedTextSurface(tabId, {
+        mountedController = {
           focus: () => {
             if (locked) return
             editor?.focus()
@@ -135,7 +162,8 @@
             editor.setPosition(target)
             editor.revealPositionInCenter(target)
           }
-        })
+        }
+        registerMountedTextSurface(projectId, tabId, mountedController)
 
         const revealTarget = takePendingTextReveal(tabId)
         if (revealTarget?.kind === 'range') {
@@ -147,7 +175,11 @@
         }
       }
 
-      lastReportedValue = value
+      lastReportedValue = model.getValue()
+      if (lastReportedValue !== value && onchange) {
+        pendingAdoptedValue = lastReportedValue
+        onchange(lastReportedValue)
+      }
       editor.onDidChangeModelContent(() => {
         if (editor && onchange) {
           lastReportedValue = editor.getValue()
@@ -188,10 +220,17 @@
       if (editor) {
         onTextEditorDestroy(editor)
         indentRainbow?.dispose()
-        if (model) detachLspModel(model)
-        unregisterMountedTextSurface(tabId)
+        if (modelHandle && editor) modelHandle.saveViewState(editor.saveViewState())
+        const shouldDetachLsp = model != null && lspEnabled && (modelHandle ? modelHandle.refCount <= 1 : true)
+        if (shouldDetachLsp && model) detachLspModel(model)
+        if (mountedController) unregisterMountedTextSurface(tabId, mountedController)
         editor.dispose()
-        model?.dispose()
+        if (modelHandle) {
+          modelHandle.release()
+          modelHandle = null
+        } else {
+          model?.dispose()
+        }
       }
       resizeObserver?.disconnect()
       editor = null
@@ -203,8 +242,15 @@
   // Skip when the value originated from the editor itself (typing).
   $effect(() => {
     if (!editor) return
+    if (pendingAdoptedValue !== null) {
+      if (value === pendingAdoptedValue) pendingAdoptedValue = null
+      else return
+    }
     if (value === lastReportedValue) return
-    if (value !== editor.getValue()) editor.setValue(value)
+    if (value !== editor.getValue()) {
+      lastReportedValue = value
+      editor.setValue(value)
+    }
   })
 
   $effect(() => {

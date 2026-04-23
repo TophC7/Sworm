@@ -473,7 +473,7 @@
     }
     try {
       await backend.files.rename(projectPath, renameFilePath, renameValue)
-      await renameTextPath(projectId, renameFilePath, renameValue)
+      await renameTextPath(projectId, projectPath, renameFilePath, renameValue)
       await loadFiles()
     } catch (e) {
       notify.error('Rename failed', errMessage(e))

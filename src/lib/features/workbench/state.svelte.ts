@@ -81,6 +81,7 @@ const BOOTSTRAP_STATUSES = new Set(['idle', 'starting', 'running'])
 let openProjectIds = $state<string[]>([])
 let activeProjectId = $state<string | null>(null)
 let workspaces = $state<Map<string, ProjectWorkspace>>(new Map())
+const projectCloseListeners = new Set<(projectId: string) => void>()
 
 // LIFO per-project stack of recently closed tabs for Ctrl+Shift+T. Not
 // persisted — a fresh app launch has nothing to reopen beyond what
@@ -99,6 +100,16 @@ let untitledCounter = 0
 function activeFocusedSlot(): PaneSlot {
   const ws = activeProjectId ? workspaces.get(activeProjectId) : undefined
   return ws?.focusedPaneSlot ?? 'sole'
+}
+
+function notifyProjectClosed(projectId: string): void {
+  for (const listener of projectCloseListeners) {
+    try {
+      listener(projectId)
+    } catch (error) {
+      console.warn('project-close-listener:', error)
+    }
+  }
 }
 
 // Restore state per project. `null` = restored (no promise pending);
@@ -347,6 +358,11 @@ export function getActiveProjectId(): string | null {
   return activeProjectId
 }
 
+export function onProjectClosed(listener: (projectId: string) => void): () => void {
+  projectCloseListeners.add(listener)
+  return () => projectCloseListeners.delete(listener)
+}
+
 export function openProject(projectId: string) {
   if (!openProjectIds.includes(projectId)) {
     openProjectIds = [...openProjectIds, projectId]
@@ -391,6 +407,7 @@ export async function closeProject(projectId: string): Promise<void> {
   if (activeProjectId === projectId) {
     activeProjectId = openProjectIds.length > 0 ? openProjectIds[openProjectIds.length - 1] : null
   }
+  notifyProjectClosed(projectId)
   persistAppShellSnapshot()
 }
 

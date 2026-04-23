@@ -16,15 +16,22 @@
     projectPath: string
   } = $props()
 
-  type RenderedTextTab = Pick<TextTab, 'id' | 'filePath' | 'gitRef' | 'refLabel'>
+  interface RenderedTextTab extends Pick<TextTab, 'id' | 'filePath' | 'gitRef' | 'refLabel'> {
+    initialTemporary: boolean
+  }
 
   function snapshotTab(tab: TextTab): RenderedTextTab {
     return {
       id: tab.id,
       filePath: tab.filePath,
       gitRef: tab.gitRef,
-      refLabel: tab.refLabel
+      refLabel: tab.refLabel,
+      initialTemporary: tab.temporary
     }
+  }
+
+  function renderedTabChanged(current: RenderedTextTab, next: TextTab): boolean {
+    return current.filePath !== next.filePath || current.gitRef !== next.gitRef || current.refLabel !== next.refLabel
   }
 
   // Keep the last concrete tab props around until this branch unmounts.
@@ -35,6 +42,7 @@
 
   $effect.pre(() => {
     if (!tab) return
+    if (renderedTab?.id === tab.id && !renderedTabChanged(renderedTab, tab)) return
     renderedTab = snapshotTab(tab)
   })
 </script>
@@ -48,6 +56,7 @@
       {projectId}
       gitRef={renderedTab.gitRef}
       refLabel={renderedTab.refLabel}
+      initialTemporary={renderedTab.initialTemporary}
       {locked}
     />
   {/key}

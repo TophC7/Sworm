@@ -12,7 +12,11 @@ import { notify } from '$lib/features/notifications/state.svelte'
 import { getSessions, updateSessionInList } from '$lib/features/sessions/state/sessions.svelte'
 import type { TabId } from '$lib/features/workbench/state.svelte'
 import { closeTab, collapsePaneIfEmpty, getAllTabs, getFocusedTab } from '$lib/features/workbench/state.svelte'
-import { isTextSurfaceDirty } from '$lib/features/workbench/surfaces/text/service.svelte'
+import {
+  clearTextSurfaceDirty,
+  discardTextSurfaceBuffer,
+  isTextSurfaceDirty
+} from '$lib/features/workbench/surfaces/text/service.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
 /**
@@ -32,7 +36,8 @@ export async function closeTabWithChecks(projectId: string, tabId: TabId): Promi
   if (!tab) return false
   if (tab.locked) return false
 
-  if (tab.kind === 'text' && isTextSurfaceDirty(projectId, tab.id)) {
+  const textDirty = tab.kind === 'text' && isTextSurfaceDirty(projectId, tab.id)
+  if (textDirty) {
     const proceed = await confirmAsync({
       title: 'Unsaved changes',
       message: `${tab.fileName} has unsaved changes. Close and lose them?`,
@@ -67,7 +72,12 @@ export async function closeTabWithChecks(projectId: string, tabId: TabId): Promi
     }
   }
 
+  if (tab.kind === 'text' && (textDirty || tab.filePath == null)) {
+    discardTextSurfaceBuffer(projectId, tab)
+  }
+
   closeTab(projectId, tabId)
+  if (tab.kind === 'text') clearTextSurfaceDirty(projectId, tab.id)
   collapsePaneIfEmpty(projectId)
   return true
 }

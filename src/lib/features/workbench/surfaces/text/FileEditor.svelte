@@ -14,11 +14,14 @@
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import {
-    clearTextSurfaceDirty,
+    clearTextSurfaceDirtyIfClosed,
+    discardTextSurfaceBuffer,
+    isTextSurfaceDirty,
+    markTextSurfaceSaved,
     openTextInFresh,
     setTextSurfaceDirty
   } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { renameTextTab } from '$lib/features/workbench/state.svelte'
+  import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
 
@@ -29,6 +32,7 @@
     projectId,
     gitRef,
     refLabel,
+    initialTemporary = false,
     locked = false
   }: {
     tabId: string
@@ -40,6 +44,7 @@
     gitRef?: string
     /** Display label for the snapshot (e.g. "abc1234"). */
     refLabel?: string
+    initialTemporary?: boolean
     locked?: boolean
   } = $props()
 
@@ -69,6 +74,18 @@
   // re-run on every keystroke.
   let debouncedEdit = $state('')
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  // Inactive dirty tabs remount from the retained Monaco model; don't
+  // clear their dirty flag before the model has had a chance to reattach.
+  let retainedDirtyPending = $state(false)
+  let promotedOnEdit = $state(false)
+  let promoteTimer: ReturnType<typeof setTimeout> | null = null
+  $effect.pre(() => {
+    const project = projectId
+    const id = tabId
+    untrack(() => {
+      retainedDirtyPending = isTextSurfaceDirty(project, id)
+    })
+  })
   $effect(() => {
     if (debounceTimer) clearTimeout(debounceTimer)
     const snapshot = editContent
@@ -158,8 +175,10 @@
     error = null
     try {
       await backend.files.write(projectPath, targetRel, editContent)
+      markTextSurfaceSaved(projectId, targetRel, editContent)
       content = editContent
       if (filePath == null) {
+        discardTextSurfaceBuffer(projectId, { id: tabId, filePath: null })
         // Promote the tab to the real path. The filePath effect will
         // reload, but editContent already matches so no flash.
         renameTextTab(projectId, tabId, targetRel)
@@ -239,7 +258,20 @@
   }
 
   function handleEditorChange(value: string) {
-    if (!isReadonly) editContent = value
+    retainedDirtyPending = false
+    if (isReadonly) return
+    editContent = value
+    if (initialTemporary && !promotedOnEdit) {
+      promotedOnEdit = true
+      const project = projectId
+      const id = tabId
+      // Keep the first edit's Monaco update isolated from the workspace
+      // commit that flips preview chrome to persistent chrome.
+      promoteTimer = setTimeout(() => {
+        promoteTimer = null
+        promoteTab(project, id)
+      }, 0)
+    }
   }
 
   // Re-load when filePath or gitRef changes (including initial mount)
@@ -268,9 +300,17 @@
   $effect(() => {
     const project = projectId
     const id = tabId
-    return () => clearTextSurfaceDirty(project, id)
+    return () => {
+      clearTextSurfaceDirtyIfClosed(project, id)
+    }
   })
   $effect(() => {
+    if (dirty) {
+      retainedDirtyPending = false
+      setTextSurfaceDirty(projectId, tabId, true)
+      return
+    }
+    if (retainedDirtyPending) return
     setTextSurfaceDirty(projectId, tabId, dirty)
   })
 </script>
@@ -370,6 +410,7 @@
               wordWrap={true}
               onchange={handleEditorChange}
               uriPath={lspUriPath}
+              {filePath}
               {projectId}
               {projectPath}
               lspEnabled={!isReadonly}
@@ -395,6 +436,7 @@
           wordWrap={isMarkdown}
           onchange={handleEditorChange}
           uriPath={lspUriPath}
+          {filePath}
           {projectId}
           {projectPath}
           lspEnabled={!isReadonly}
