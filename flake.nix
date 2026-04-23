@@ -173,15 +173,26 @@
             }
           );
 
+          # Registering inode/directory makes Sworm show up in Nautilus's
+          # "Open With Other Application" dialog for folders, and the
+          # jumplist Action appears on GNOME dock right-clicks.
+          # %F gets filled with the selected folder path(s) at launch;
+          # main.rs parses argv[1] and opens that path as a project.
           desktopFile = pkgs.writeText "sworm.desktop" ''
             [Desktop Entry]
             Name=Sworm
             Comment=Agentic Development Environment
-            Exec=sworm
+            Exec=sworm %F
             Icon=sworm
             Terminal=false
             Type=Application
             Categories=Development;IDE;
+            MimeType=inode/directory;
+            Actions=open-folder;
+
+            [Desktop Action open-folder]
+            Name=Open Folder in Sworm
+            Exec=sworm %F
           '';
 
           # Phase 2: build the app against pre-built deps (only recompiles sworm crate)

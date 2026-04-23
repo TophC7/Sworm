@@ -26,6 +26,23 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
             path
         )));
     }
+    if !p.is_dir() {
+        return Err(ApiError::InvalidArgument(format!(
+            "Path is not a directory: {}",
+            path
+        )));
+    }
+
+    let db = state.db.lock();
+    if let Some(existing) = state
+        .projects
+        .list(db.conn())
+        .map_err(ApiError::Database)?
+        .into_iter()
+        .find(|project| same_project_directory(project.path.as_str(), p))
+    {
+        return Ok(existing);
+    }
 
     // Detect git info if available — not required
     let (branch, base_ref) = if state.git.is_git_repo(p) {
@@ -40,8 +57,6 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
 
-    let db = state.db.lock();
-
     state
         .projects
         .add(
@@ -52,6 +67,21 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
             base_ref.as_deref(),
         )
         .map_err(|e| ApiError::Database(e))
+}
+
+fn same_project_directory(existing_path: &str, requested: &Path) -> bool {
+    if Path::new(existing_path) == requested {
+        return true;
+    }
+
+    let Ok(requested_canonical) = requested.canonicalize() else {
+        return false;
+    };
+    let Ok(existing_canonical) = Path::new(existing_path).canonicalize() else {
+        return false;
+    };
+
+    existing_canonical == requested_canonical
 }
 
 /// List all projects.

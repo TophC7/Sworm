@@ -3,8 +3,8 @@
   "tasks": [
     {
       "id": "dev",
-      "label": "Dev Server",
-      "command": "bun run dev",
+      "label": "Tauri Dev",
+      "command": "bun app:dev",
       "singleton": true,
       "clearOnRerun": false,
       "icon": "play",

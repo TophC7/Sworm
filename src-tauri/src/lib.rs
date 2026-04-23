@@ -5,7 +5,8 @@ mod models;
 mod services;
 
 use app_state::AppState;
-use tauri::Manager;
+use commands::app::{first_dir_arg, PendingOpen};
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -27,7 +28,20 @@ pub fn run() {
         // use different identifiers) each get their own lock — allowing
         // dogfooding Sworm-in-Sworm without the two instances fighting
         // over the same SQLite DB.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // Subsequent-launch path: Nautilus "Open With" on an already-
+            // running Sworm re-invokes the binary, lands here. Stash the
+            // path and wake the frontend so it can drain it via the
+            // app_take_pending_open_path command.
+            if let Some(path) = first_dir_arg(&argv, Some(std::path::Path::new(&cwd))) {
+                if let Some(pending) = app.try_state::<PendingOpen>() {
+                    if let Ok(mut slot) = pending.0.lock() {
+                        *slot = Some(path.clone());
+                    }
+                }
+                let _ = app.emit("sworm://pending-open-changed", ());
+                tracing::info!("Second-instance argv opened path: {}", path);
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
@@ -40,6 +54,22 @@ pub fn run() {
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             app.manage(state);
+
+            // First-launch argv capture: cold-start from Nautilus
+            // passes the folder as argv[1]. Park it for the frontend
+            // to drain in onMount. The single-instance callback above
+            // handles the warm-start case.
+            let pending = PendingOpen::default();
+            let argv: Vec<String> = std::env::args().collect();
+            let cwd = std::env::current_dir().ok();
+            if let Some(path) = first_dir_arg(&argv, cwd.as_deref()) {
+                if let Ok(mut slot) = pending.0.lock() {
+                    *slot = Some(path.clone());
+                }
+                tracing::info!("First-launch argv opened path: {}", path);
+            }
+            app.manage(pending);
+
             tracing::info!("AppState initialized");
 
             Ok(())
@@ -56,6 +86,7 @@ pub fn run() {
             commands::app::env_probe,
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
+            commands::app::app_take_pending_open_path,
             // Builtins commands
             commands::builtins::builtins_get_catalog,
             // Config schema commands (drives Monaco autocomplete for .sworm/*.json)

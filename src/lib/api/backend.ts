@@ -68,6 +68,13 @@ export const backend = {
     /** Read file URIs from the system clipboard. Returns null if none. */
     clipboardReadFiles(): Promise<{ op: 'copy' | 'cut'; paths: string[] } | null> {
       return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
+    },
+    /**
+     * Drain the "open this folder" path queued by argv (Nautilus "Open With"
+     * or CLI invocation). Returns null when nothing is queued.
+     */
+    takePendingOpenPath(): Promise<string | null> {
+      return invoke<string | null>('app_take_pending_open_path')
     }
   },
 
