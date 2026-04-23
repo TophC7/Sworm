@@ -17,7 +17,8 @@
     PackageIcon,
     ArrowUp,
     ArrowDown,
-    RotateCw
+    RotateCw,
+    SquareArrowOutUpRight
   } from '$lib/icons/lucideExports'
   import type { Snippet } from 'svelte'
 
@@ -25,6 +26,7 @@
     filePath,
     targetType,
     isStaged,
+    canOpenFile = true,
     children,
     onOpenChanges,
     onOpenFile,
@@ -46,6 +48,7 @@
     filePath: string | null
     targetType: 'file' | 'directory' | null
     isStaged: boolean
+    canOpenFile?: boolean
     children: Snippet
     onOpenChanges: () => void
     onOpenFile: () => void
@@ -78,10 +81,12 @@
         <FileDiff size={14} class="shrink-0 text-muted" />
         <span>Open Changes</span>
       </ContextMenuItem>
-      <ContextMenuItem onclick={onOpenFile}>
-        <Eye size={14} class="shrink-0 text-muted" />
-        <span>Open File</span>
-      </ContextMenuItem>
+      {#if canOpenFile}
+        <ContextMenuItem onclick={onOpenFile}>
+          <SquareArrowOutUpRight size={14} class="shrink-0 text-muted" />
+          <span>Open File</span>
+        </ContextMenuItem>
+      {/if}
       <ContextMenuItem onclick={onOpenFileHead}>
         <Eye size={14} class="shrink-0 text-muted" />
         <span>Open File (HEAD)</span>
@@ -89,10 +94,12 @@
 
       <ContextMenuSeparator />
 
-      <ContextMenuItem destructive onclick={onDiscard}>
-        <Trash2 size={14} class="shrink-0" />
-        <span>Discard Changes</span>
-      </ContextMenuItem>
+      {#if !isStaged}
+        <ContextMenuItem destructive onclick={onDiscard}>
+          <Trash2 size={14} class="shrink-0" />
+          <span>Discard Changes</span>
+        </ContextMenuItem>
+      {/if}
       {#if isStaged}
         <ContextMenuItem onclick={onUnstage}>
           <MinusCircle size={14} class="shrink-0 text-muted" />
@@ -133,10 +140,12 @@
       </ContextMenuItem>
     {:else if filePath && targetType === 'directory'}
       <!-- ── Folder menu ── -->
-      <ContextMenuItem destructive onclick={onDiscard}>
-        <Trash2 size={14} class="shrink-0" />
-        <span>Discard Changes</span>
-      </ContextMenuItem>
+      {#if !isStaged}
+        <ContextMenuItem destructive onclick={onDiscard}>
+          <Trash2 size={14} class="shrink-0" />
+          <span>Discard Changes</span>
+        </ContextMenuItem>
+      {/if}
       {#if isStaged}
         <ContextMenuItem onclick={onUnstage}>
           <MinusCircle size={14} class="shrink-0 text-muted" />

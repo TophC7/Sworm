@@ -88,11 +88,18 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
   if (initPromise) return initPromise
 
   initPromise = (async () => {
-    const [{ createHighlighter }, { shikiToMonaco }] = await Promise.all([import('shiki'), import('@shikijs/monaco')])
+    const [{ createHighlighter, createJavaScriptRegexEngine }, { shikiToMonaco }] = await Promise.all([
+      import('shiki'),
+      import('@shikijs/monaco')
+    ])
 
     const highlighter = await createHighlighter({
       themes: [SWORM_SHIKI_THEME],
-      langs: [...SHIKI_LANGUAGES]
+      langs: [...SHIKI_LANGUAGES],
+      // Prefer the pure-JS engine here. The default Oniguruma wasm
+      // path has been crashing inside Tauri/WebView during Monaco
+      // background tokenization with out-of-bounds memory errors.
+      engine: createJavaScriptRegexEngine({ forgiving: true })
     })
 
     for (const lang of SHIKI_LANGUAGES) {

@@ -36,7 +36,7 @@
     onStatusChange={onSessionStatusChange}
   />
 {:else if activeTab.kind === 'text'}
-  <TextSurface tab={activeTab} {projectId} {projectPath} />
+  <TextSurface tab={activeTab} {projectId} {projectPath} locked={activeTab.locked} />
 {:else if activeTab.kind === 'diff'}
   <DiffSurface tab={activeTab} {projectId} {projectPath} />
 {:else if activeTab.kind === 'tool'}

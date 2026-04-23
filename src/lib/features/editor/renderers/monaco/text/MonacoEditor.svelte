@@ -16,6 +16,7 @@
     unregisterMountedTextSurface
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
+  import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { onMount } from 'svelte'
 
   let {
@@ -23,6 +24,7 @@
     value = '',
     language = 'plaintext',
     readonly = false,
+    locked = false,
     wordWrap = false,
     onchange,
     uriPath = null,
@@ -34,6 +36,7 @@
     value?: string
     language?: string
     readonly?: boolean
+    locked?: boolean
     wordWrap?: boolean
     onchange?: (value: string) => void
     uriPath?: string | null
@@ -73,7 +76,7 @@
       editor = m.editor.create(containerEl, {
         model,
         theme: SWORM_THEME_NAME,
-        readOnly: readonly,
+        readOnly: readonly || locked,
         minimap: { enabled: false },
         fontSize: 13,
         lineHeight: 20,
@@ -118,7 +121,10 @@
 
       if (editor) {
         registerMountedTextSurface(tabId, {
-          focus: () => editor?.focus(),
+          focus: () => {
+            if (locked) return
+            editor?.focus()
+          },
           reveal: (target) => {
             if (!editor) return
             if (target.kind === 'range') {
@@ -158,6 +164,21 @@
       // Observe after creation so the first layout() is correct
       resizeObserver = new ResizeObserver(() => editor?.layout())
       resizeObserver.observe(containerEl)
+
+      // Grab keyboard focus on first mount so freshly opened file tabs
+      // start in "type now" state without requiring a click. Surface
+      // only mounts when its tab is active, so this runs exactly when
+      // the user expects it. Modal guard keeps palette/settings focus.
+      // Double-try: immediate focus covers the fast path, the rAF
+      // retry covers the case where Monaco's textarea isn't attached
+      // until after the next layout tick.
+      if (!disposed && !locked && !isAnyModalOpen()) {
+        editor.focus()
+        requestAnimationFrame(() => {
+          if (disposed || locked) return
+          editor?.focus()
+        })
+      }
     }
 
     void init()
@@ -193,7 +214,7 @@
   })
 
   $effect(() => {
-    editor?.updateOptions({ readOnly: readonly })
+    editor?.updateOptions({ readOnly: readonly || locked })
   })
 
   $effect(() => {

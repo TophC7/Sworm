@@ -24,15 +24,23 @@ export async function getHighlighter(): Promise<Highlighter> {
   if (highlighterInstance) return highlighterInstance
 
   if (!highlighterPromise) {
-    highlighterPromise = import('shiki').then(async ({ createHighlighter, createCssVariablesTheme }) => {
-      const theme = createCssVariablesTheme({
-        name: SHIKI_THEME_NAME,
-        variablePrefix: '--shiki-'
-      })
-      const h = await createHighlighter({ themes: [theme], langs: [] })
-      highlighterInstance = h
-      return h
-    })
+    highlighterPromise = import('shiki').then(
+      async ({ createHighlighter, createCssVariablesTheme, createJavaScriptRegexEngine }) => {
+        const theme = createCssVariablesTheme({
+          name: SHIKI_THEME_NAME,
+          variablePrefix: '--shiki-'
+        })
+        const h = await createHighlighter({
+          themes: [theme],
+          langs: [],
+          // Match the Monaco integration and avoid the Oniguruma wasm
+          // engine path that has been crashing in the desktop runtime.
+          engine: createJavaScriptRegexEngine({ forgiving: true })
+        })
+        highlighterInstance = h
+        return h
+      }
+    )
   }
 
   return highlighterPromise

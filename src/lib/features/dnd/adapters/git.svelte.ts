@@ -7,7 +7,7 @@ import type { GitChange } from '$lib/types/backend'
 
 interface GitSourceArgs {
   projectId: string
-  change: GitChange
+  changes: Pick<GitChange, 'path' | 'staged'>[] | (() => Pick<GitChange, 'path' | 'staged'>[])
 }
 
 interface GitDropZoneArgs {
@@ -50,22 +50,21 @@ function extractFiles(payload: DragPayload, projectId: string, staged: boolean):
 export function gitChangeDragSource(args: GitSourceArgs) {
   return (element: HTMLElement) => {
     const onDragStart = (event: DragEvent) => {
+      const changes = typeof args.changes === 'function' ? args.changes() : args.changes
       const transfer = event.dataTransfer
-      if (!transfer) {
+      if (!transfer || changes.length === 0) {
         event.preventDefault()
         return
       }
 
       const payload: DragPayload = {
         source: 'internal',
-        items: [
-          {
-            kind: 'git-change',
-            path: args.change.path,
-            staged: args.change.staged,
-            projectId: args.projectId
-          }
-        ]
+        items: changes.map((change) => ({
+          kind: 'git-change',
+          path: change.path,
+          staged: change.staged,
+          projectId: args.projectId
+        }))
       }
 
       LocalTransfer.set(payload)

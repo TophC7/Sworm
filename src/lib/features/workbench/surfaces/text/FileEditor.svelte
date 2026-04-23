@@ -28,7 +28,8 @@
     projectPath,
     projectId,
     gitRef,
-    refLabel
+    refLabel,
+    locked = false
   }: {
     tabId: string
     /** `null` = unsaved "Untitled" buffer. First save triggers save-as. */
@@ -39,6 +40,7 @@
     gitRef?: string
     /** Display label for the snapshot (e.g. "abc1234"). */
     refLabel?: string
+    locked?: boolean
   } = $props()
 
   let isReadonly = $derived(!!gitRef)
@@ -364,6 +366,7 @@
               value={editContent}
               {language}
               readonly={isReadonly}
+              {locked}
               wordWrap={true}
               onchange={handleEditorChange}
               uriPath={lspUriPath}
@@ -388,6 +391,7 @@
           value={editContent}
           {language}
           readonly={isReadonly}
+          {locked}
           wordWrap={isMarkdown}
           onchange={handleEditorChange}
           uriPath={lspUriPath}

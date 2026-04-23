@@ -6,6 +6,9 @@
 
   type NodeAttachment = (element: HTMLElement) => void | (() => void)
   const noopAttachment: NodeAttachment = () => () => {}
+  const rowActionsHiddenClass = 'group-hover/tree-row:hidden group-has-[:focus-visible]/tree-row:hidden'
+  const rowActionsVisibleClass =
+    'hidden items-center gap-0.5 group-hover/tree-row:flex group-has-[:focus-visible]/tree-row:flex'
 
   let {
     nodes,
@@ -17,6 +20,7 @@
     onFileDblClick,
     onFileContextMenu,
     fileTrailing,
+    rowActions,
     dndEnabled = false,
     dndSourceAttachment,
     dndDirectoryAttachment,
@@ -31,6 +35,7 @@
     onFileDblClick?: (node: FileTreeNode<T>) => void
     onFileContextMenu?: (e: MouseEvent, node: FileTreeNode<T>) => void
     fileTrailing?: Snippet<[FileTreeNode<T>]>
+    rowActions?: Snippet<[FileTreeNode<T>]>
     dndEnabled?: boolean
     dndSourceAttachment?: (node: FileTreeNode<T>) => NodeAttachment | null
     dndDirectoryAttachment?: (node: FileTreeNode<T>) => NodeAttachment | null
@@ -51,28 +56,42 @@
     {@const dropActive = dndEnabled ? (dndIsDropActive?.(node.path) ?? false) : false}
     <TreeNode expanded={!isCollapsed(node.path)} {depth}>
       {#snippet label()}
-        <button
-          class="relative flex w-full cursor-pointer items-center gap-1 border-none py-0.5 text-left text-sm text-muted transition-colors hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none {dropActive
-            ? 'bg-accent/14 text-bright'
-            : 'bg-transparent'}"
-          style="padding-left: {depth * 12 + 10}px"
-          draggable={sourceAttachment !== null}
-          {@attach sourceAttachment ?? noopAttachment}
+        <div
+          class="group/tree-row relative flex min-h-[22px] w-full items-center text-sm transition-colors {dropActive
+            ? 'bg-accent/15 text-bright'
+            : 'text-muted hover:bg-surface'}"
+          role="presentation"
           {@attach targetAttachment ?? noopAttachment}
-          onclick={() => onToggleDir(node.path)}
           oncontextmenu={(e) => {
             if (onFileContextMenu) {
               onFileContextMenu(e, node)
             }
           }}
         >
-          {@render indentGuides(depth)}
-          <FileIcon filename={node.name} folder expanded={!isCollapsed(node.path)} size={14} />
-          <span class="truncate">{node.name}</span>
-          {#if hasDirChanges?.(node.path)}
-            <span class="mr-2 ml-auto size-1.5 shrink-0 rounded-full bg-accent"></span>
+          <button
+            class="relative flex min-h-[22px] min-w-0 flex-1 cursor-pointer items-center gap-1 border-none bg-transparent py-0.5 text-left text-inherit focus-visible:shadow-focus-ring focus-visible:outline-none"
+            style="padding-left: {depth * 12 + 10}px"
+            draggable={sourceAttachment !== null}
+            {@attach sourceAttachment ?? noopAttachment}
+            onclick={() => onToggleDir(node.path)}
+          >
+            {@render indentGuides(depth)}
+            <FileIcon filename={node.name} folder expanded={!isCollapsed(node.path)} size={15} />
+            <span class="truncate">{node.name}</span>
+          </button>
+          {#if rowActions || hasDirChanges?.(node.path)}
+            <div class="mr-2 ml-1 flex shrink-0 items-center justify-end">
+              {#if hasDirChanges?.(node.path)}
+                <span class="size-1.5 shrink-0 rounded-full bg-accent {rowActions ? rowActionsHiddenClass : ''}"></span>
+              {/if}
+              {#if rowActions}
+                <div class={rowActionsVisibleClass}>
+                  {@render rowActions(node)}
+                </div>
+              {/if}
+            </div>
           {/if}
-        </button>
+        </div>
       {/snippet}
       {#each node.children as child (child.path)}
         {@render renderNode(child, depth + 1)}
@@ -81,28 +100,44 @@
   {:else if node.change}
     {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
     {@const active = isActive?.(node.change.path) ?? false}
-    <button
-      class="relative flex w-full cursor-pointer items-center gap-1.5 border-none py-0.5 text-left text-sm transition-colors hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none {active
+    <div
+      class="group/tree-row relative flex min-h-[22px] w-full items-center text-sm transition-colors {active
         ? 'bg-accent/10 text-bright'
-        : 'bg-transparent text-fg'}"
-      style="padding-left: {depth * 12 + 10}px"
-      draggable={sourceAttachment !== null}
-      {@attach sourceAttachment ?? noopAttachment}
-      onclick={() => onFileClick?.(node)}
-      ondblclick={() => onFileDblClick?.(node)}
+        : 'text-fg hover:bg-surface'}"
+      role="presentation"
       oncontextmenu={(e) => {
         if (onFileContextMenu) {
           onFileContextMenu(e, node)
         }
       }}
     >
-      {@render indentGuides(depth)}
-      <FileIcon filename={node.path} size={14} />
-      <span class="min-w-0 flex-1 truncate">{node.name}</span>
-      {#if fileTrailing}
-        {@render fileTrailing(node)}
+      <button
+        class="relative flex min-h-[22px] min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent py-0.5 text-left text-inherit focus-visible:shadow-focus-ring focus-visible:outline-none"
+        style="padding-left: {depth * 12 + 10}px"
+        draggable={sourceAttachment !== null}
+        {@attach sourceAttachment ?? noopAttachment}
+        onclick={() => onFileClick?.(node)}
+        ondblclick={() => onFileDblClick?.(node)}
+      >
+        {@render indentGuides(depth)}
+        <FileIcon filename={node.path} size={15} />
+        <span class="min-w-0 flex-1 truncate">{node.name}</span>
+      </button>
+      {#if fileTrailing || rowActions}
+        <div class="mr-2 ml-1 flex shrink-0 items-center justify-end">
+          {#if fileTrailing}
+            <div class={rowActions ? rowActionsHiddenClass : ''}>
+              {@render fileTrailing(node)}
+            </div>
+          {/if}
+          {#if rowActions}
+            <div class={rowActionsVisibleClass}>
+              {@render rowActions(node)}
+            </div>
+          {/if}
+        </div>
       {/if}
-    </button>
+    </div>
   {/if}
 {/snippet}
 

@@ -4,12 +4,14 @@
 
   let {
     tab = null,
+    locked = false,
     projectId,
     projectPath
   }: {
     // SurfaceHost can clear the active tab before this branch fully tears
     // down, so tolerate a transient null during close.
     tab: TextTab | null
+    locked?: boolean
     projectId: string
     projectPath: string
   } = $props()
@@ -46,6 +48,7 @@
       {projectId}
       gitRef={renderedTab.gitRef}
       refLabel={renderedTab.refLabel}
+      {locked}
     />
   {/key}
 {/if}

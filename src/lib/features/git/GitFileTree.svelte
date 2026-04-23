@@ -17,7 +17,16 @@
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
   import { Textarea } from '$lib/components/ui/input'
-  import { ChevronDown, FileDiff, MinusCircle, PackageIcon, PlusCircle, Trash2 } from '$lib/icons/lucideExports'
+  import {
+    ChevronDown,
+    FileDiff,
+    MinusCircle,
+    PackageIcon,
+    PlusCircle,
+    SquareArrowOutUpRight,
+    Trash2,
+    Undo2Icon
+  } from '$lib/icons/lucideExports'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
@@ -73,17 +82,29 @@
     onFetch?: () => void
   } = $props()
 
+  type GitTreeTargetType = 'file' | 'directory'
+  type GitTreeActionKind = 'stage' | 'unstage' | 'discard'
+
+  interface GitTreeTarget {
+    path: string
+    type: GitTreeTargetType
+  }
+
+  interface PendingGitConfirm {
+    action: GitTreeActionKind
+    target: GitTreeTarget
+  }
+
   let collapsedDirs = new SvelteSet<string>()
   let committing = $state(false)
 
   let contextFilePath = $state<string | null>(null)
-  let contextTargetType = $state<'file' | 'directory' | null>(null)
+  let contextTargetType = $state<GitTreeTargetType | null>(null)
   let contextIsStaged = $state(false)
+  let contextCanOpenFile = $state(false)
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
-  let discardConfirmOpen = $state(false)
-  let discardTarget = $state<string | null>(null)
-  let discardTargetType = $state<'file' | 'directory' | null>(null)
+  let pendingGitConfirm = $state<PendingGitConfirm | null>(null)
   const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
 
@@ -109,6 +130,7 @@
 
   let stagedTree = $derived(buildFileTree(stagedFiles))
   let unstagedTree = $derived(buildFileTree(unstagedFiles))
+  let hasChanges = $derived(stagedTree.length > 0 || unstagedTree.length > 0)
 
   let canCommit = $derived(commitMessage.trim().length > 0 && stagedFiles.length > 0 && !committing)
 
@@ -131,17 +153,80 @@
     contextFilePath = node.change?.path ?? node.path
     contextTargetType = node.type
     contextIsStaged = staged
+    contextCanOpenFile = canOpenActualFile(node)
   }
 
   function resetContextTarget() {
     contextFilePath = null
     contextTargetType = null
     contextIsStaged = false
+    contextCanOpenFile = false
   }
 
   function getFilesUnderPath(dirPath: string, staged: boolean): string[] {
     const changes = staged ? stagedFiles : unstagedFiles
     return changes.filter((c) => c.path.startsWith(dirPath + '/')).map((c) => c.path)
+  }
+
+  function makeTreeTarget(node: FileTreeNode<GitChange>): GitTreeTarget {
+    return {
+      path: node.change?.path ?? node.path,
+      type: node.type
+    }
+  }
+
+  function canOpenActualFile(node: FileTreeNode<GitChange>): boolean {
+    return node.type === 'file' && node.change?.status !== 'D'
+  }
+
+  function describeFileCount(count: number): string {
+    return `${count} file${count === 1 ? '' : 's'}`
+  }
+
+  function getActionFiles(target: GitTreeTarget, action: GitTreeActionKind): string[] {
+    if (target.type === 'file') return [target.path]
+    return getFilesUnderPath(target.path, action === 'unstage')
+  }
+
+  function describeActionTarget(target: GitTreeTarget, action: GitTreeActionKind): string {
+    if (target.type === 'file') return target.path
+    const count = getActionFiles(target, action).length
+    return `${describeFileCount(count)} under ${target.path}`
+  }
+
+  function getConfirmTitle(action: GitTreeActionKind): string {
+    switch (action) {
+      case 'stage':
+        return 'Stage Changes?'
+      case 'unstage':
+        return 'Unstage Changes?'
+      case 'discard':
+        return 'Revert Changes?'
+    }
+  }
+
+  function getConfirmLabel(action: GitTreeActionKind): string {
+    switch (action) {
+      case 'stage':
+        return 'Stage'
+      case 'unstage':
+        return 'Unstage'
+      case 'discard':
+        return 'Revert'
+    }
+  }
+
+  function getConfirmMessage(confirm: PendingGitConfirm): string {
+    const subject = describeActionTarget(confirm.target, confirm.action)
+    if (confirm.action === 'discard') {
+      return `This will permanently revert unstaged changes for ${subject}. This cannot be undone.`
+    }
+    return `${getConfirmLabel(confirm.action)} changes for ${subject}?`
+  }
+
+  function queueGitConfirm(action: GitTreeActionKind, target: GitTreeTarget): void {
+    if (getActionFiles(target, action).length === 0) return
+    pendingGitConfirm = { action, target }
   }
 
   function trackOpenedTab(openedTab: TabId | Promise<TabId> | void): void {
@@ -152,9 +237,17 @@
     pendingOpenedTab = Promise.resolve(openedTab)
   }
 
+  async function openActualFile(filePath: string) {
+    try {
+      await openTextFile(projectId, filePath, { temporary: false })
+    } catch (e) {
+      notify.error('Open file failed', errMessage(e))
+    }
+  }
+
   function handleCtxOpenFile() {
     if (!contextFilePath) return
-    openTextFile(projectId, contextFilePath)
+    void openActualFile(contextFilePath)
   }
 
   function handleCtxOpenChanges() {
@@ -176,36 +269,55 @@
   }
 
   function handleCtxStage() {
-    if (!contextFilePath) return
-    const files = contextTargetType === 'directory' ? getFilesUnderPath(contextFilePath, false) : [contextFilePath]
-    void runGitAction(projectId, projectPath, (path) => backend.git.stageFiles(path, files))
+    if (!contextFilePath || !contextTargetType) return
+    queueGitConfirm('stage', { path: contextFilePath, type: contextTargetType })
   }
 
   function handleCtxUnstage() {
-    if (!contextFilePath) return
-    const files = contextTargetType === 'directory' ? getFilesUnderPath(contextFilePath, true) : [contextFilePath]
-    void runGitAction(projectId, projectPath, (path) => backend.git.unstageFiles(path, files))
+    if (!contextFilePath || !contextTargetType) return
+    queueGitConfirm('unstage', { path: contextFilePath, type: contextTargetType })
   }
 
   function handleCtxDiscard() {
-    if (!contextFilePath) return
-    discardTarget = contextFilePath
-    discardTargetType = contextTargetType
-    discardConfirmOpen = true
+    if (!contextFilePath || !contextTargetType) return
+    queueGitConfirm('discard', { path: contextFilePath, type: contextTargetType })
   }
 
-  async function confirmDiscard() {
-    if (!discardTarget) return
-    const files =
-      discardTargetType === 'directory' ? getFilesUnderPath(discardTarget, contextIsStaged) : [discardTarget]
+  async function confirmGitAction() {
+    const confirm = pendingGitConfirm
+    if (!confirm) return
+    pendingGitConfirm = null
+    const files = getActionFiles(confirm.target, confirm.action)
+    if (files.length === 0) return
+    const description =
+      confirm.target.type === 'file'
+        ? confirm.target.path
+        : `${describeFileCount(files.length)} under ${confirm.target.path}`
+
     try {
-      await runGitAction(projectId, projectPath, (path) => backend.git.discardFiles(path, files))
+      await runGitAction(projectId, projectPath, (path) => {
+        switch (confirm.action) {
+          case 'stage':
+            return backend.git.stageFiles(path, files)
+          case 'unstage':
+            return backend.git.unstageFiles(path, files)
+          case 'discard':
+            return backend.git.discardFiles(path, files)
+        }
+      })
+      notify.success(
+        confirm.action === 'discard'
+          ? 'Changes reverted'
+          : confirm.action === 'stage'
+            ? 'Changes staged'
+            : 'Changes unstaged',
+        description
+      )
     } catch (e) {
-      notify.error('Discard failed', errMessage(e))
-    } finally {
-      discardConfirmOpen = false
-      discardTarget = null
-      discardTargetType = null
+      notify.error(
+        confirm.action === 'discard' ? 'Revert failed' : confirm.action === 'stage' ? 'Stage failed' : 'Unstage failed',
+        errMessage(e)
+      )
     }
   }
 
@@ -260,12 +372,22 @@
     }
   }
 
-  function gitSourceAttachment(node: FileTreeNode<GitChange>) {
-    if (!node.change) return null
-    const key = `${projectId}:${node.change.path}:${node.change.staged}`
+  function gitSourceAttachment(node: FileTreeNode<GitChange>, staged: boolean) {
+    const hasChanges =
+      node.type === 'file' ? node.change !== undefined : getFilesUnderPath(node.path, staged).length > 0
+    if (!hasChanges) return null
+    const key = `${projectId}:${staged ? 'staged' : 'unstaged'}:${node.type}:${node.path}`
     const cached = gitSourceAttachmentCache.get(key)
     if (cached) return cached
-    const attachment = gitChangeDragSource({ projectId, change: node.change })
+    const attachment = gitChangeDragSource({
+      projectId,
+      changes: () =>
+        node.type === 'file'
+          ? node.change
+            ? [node.change]
+            : []
+          : getFilesUnderPath(node.path, staged).map((path) => ({ path, staged }))
+    })
     gitSourceAttachmentCache.set(key, attachment)
     return attachment
   }
@@ -332,7 +454,7 @@
       {#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
         {@const net = (node.change.additions ?? 0) - (node.change.deletions ?? 0)}
         {#if net !== 0}
-          <span class="shrink-0 pr-2 font-mono {net > 0 ? 'text-success' : 'text-danger'}">
+          <span class="shrink-0 font-mono {net > 0 ? 'text-success' : 'text-danger'}">
             {net > 0 ? '+' : ''}{net}
           </span>
         {:else}
@@ -345,84 +467,123 @@
   {/snippet}
 
   {#snippet fileGroup(label: string, tree: FileTreeNode<GitChange>[], keySuffix: string, isStaged: boolean)}
-    {#if tree.length > 0}
-      <div class="py-1">
-        <div class="group/hdr relative flex items-center px-2.5 py-1" {@attach gitZoneAttachment(isStaged)}>
+    {#if hasChanges}
+      {@const fileCount = countFiles(tree)}
+      <div class="relative py-1" {@attach gitZoneAttachment(isStaged)}>
+        {#snippet rowActions(node: FileTreeNode<GitChange>)}
+          {@const target = makeTreeTarget(node)}
+          {#if !isStaged}
+            <IconButton
+              tooltip="Revert changes"
+              tooltipSide="bottom"
+              tone="danger"
+              onclick={() => queueGitConfirm('discard', target)}
+            >
+              <Undo2Icon size={13} />
+            </IconButton>
+          {/if}
+          {#if isStaged}
+            <IconButton
+              tooltip="Unstage changes"
+              tooltipSide="bottom"
+              onclick={() => queueGitConfirm('unstage', target)}
+            >
+              <MinusCircle size={13} />
+            </IconButton>
+          {:else}
+            <IconButton tooltip="Stage changes" tooltipSide="bottom" onclick={() => queueGitConfirm('stage', target)}>
+              <PlusCircle size={13} />
+            </IconButton>
+          {/if}
+          {#if node.type === 'file' && canOpenActualFile(node)}
+            <IconButton
+              tooltip="Open actual file"
+              tooltipSide="bottom"
+              onclick={() => void openActualFile(target.path)}
+            >
+              <SquareArrowOutUpRight size={13} />
+            </IconButton>
+          {/if}
+        {/snippet}
+
+        <div class="group/hdr relative flex items-center px-2.5 py-1">
           <span class="text-xs font-medium tracking-wide text-muted uppercase">
-            {label} ({countFiles(tree)})
+            {label} ({fileCount})
           </span>
-          <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
-            {#if isStaged && onUnstageAll}
-              <IconButton
-                tooltip="Unstage all"
-                tooltipSide="bottom"
-                class="rounded p-0.5 text-muted hover:text-fg"
-                onclick={() => onUnstageAll?.()}
-              >
-                <MinusCircle size={13} />
-              </IconButton>
-            {/if}
-            {#if !isStaged && onStageAll}
-              <IconButton
-                tooltip="Stage all"
-                tooltipSide="bottom"
-                class="rounded p-0.5 text-muted hover:text-fg"
-                onclick={() => onStageAll?.()}
-              >
-                <PlusCircle size={13} />
-              </IconButton>
-            {/if}
-            {#if !isStaged && onStashAll}
-              <IconButton
-                tooltip="Stash all"
-                tooltipSide="bottom"
-                class="rounded p-0.5 text-muted hover:text-fg"
-                onclick={() => onStashAll?.()}
-              >
-                <PackageIcon size={13} />
-              </IconButton>
-            {/if}
-            {#if !isStaged && onDiscardAll}
-              <IconButton
-                tooltip="Discard all changes"
-                tooltipSide="bottom"
-                class="rounded p-0.5 text-muted hover:text-danger"
-                onclick={() => onDiscardAll?.()}
-              >
-                <Trash2 size={13} />
-              </IconButton>
-            {/if}
-            {#if onViewAllChanges}
-              <IconButton
-                tooltip="View all {label.toLowerCase()} diffs"
-                tooltipSide="bottom"
-                class="rounded p-0.5 text-muted hover:text-fg"
-                onclick={() => onViewAllChanges?.(isStaged)}
-              >
-                <FileDiff size={13} />
-              </IconButton>
-            {/if}
-          </div>
+          {#if fileCount > 0}
+            <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
+              {#if isStaged && onUnstageAll}
+                <IconButton tooltip="Unstage all" tooltipSide="bottom" onclick={() => onUnstageAll?.()}>
+                  <MinusCircle size={13} />
+                </IconButton>
+              {/if}
+              {#if !isStaged && onStageAll}
+                <IconButton tooltip="Stage all" tooltipSide="bottom" onclick={() => onStageAll?.()}>
+                  <PlusCircle size={13} />
+                </IconButton>
+              {/if}
+              {#if !isStaged && onStashAll}
+                <IconButton tooltip="Stash all" tooltipSide="bottom" onclick={() => onStashAll?.()}>
+                  <PackageIcon size={13} />
+                </IconButton>
+              {/if}
+              {#if !isStaged && onDiscardAll}
+                <IconButton
+                  tooltip="Discard all changes"
+                  tooltipSide="bottom"
+                  class="rounded p-0.5 text-muted hover:text-danger"
+                  onclick={() => onDiscardAll?.()}
+                >
+                  <Trash2 size={13} />
+                </IconButton>
+              {/if}
+              {#if onViewAllChanges}
+                <IconButton
+                  tooltip="View all {label.toLowerCase()} diffs"
+                  tooltipSide="bottom"
+                  onclick={() => onViewAllChanges?.(isStaged)}
+                >
+                  <FileDiff size={13} />
+                </IconButton>
+              {/if}
+            </div>
+          {/if}
           <DropOverlay
             visible={isGitDropZoneActive(projectId, isStaged)}
             zone="merge"
             label={isStaged ? 'Stage' : 'Unstage'}
           />
         </div>
-        <FileTreeItems
-          nodes={tree}
-          isCollapsed={(path) => collapsedDirs.has(getDirKey(keySuffix, path))}
-          onToggleDir={(path) => toggleDir(keySuffix, path)}
-          onFileClick={(node) => {
-            if (!node.change) return
-            trackOpenedTab(onFileClick?.(node.change.path, node.change.staged))
-          }}
-          onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
-          onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
-          {fileTrailing}
-          dndEnabled={true}
-          dndSourceAttachment={gitSourceAttachment}
-        />
+        {#if tree.length > 0}
+          <FileTreeItems
+            nodes={tree}
+            isCollapsed={(path) => collapsedDirs.has(getDirKey(keySuffix, path))}
+            onToggleDir={(path) => toggleDir(keySuffix, path)}
+            onFileClick={(node) => {
+              if (!node.change) return
+              trackOpenedTab(onFileClick?.(node.change.path, node.change.staged))
+            }}
+            onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
+            onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
+            {fileTrailing}
+            {rowActions}
+            dndEnabled={true}
+            dndSourceAttachment={(node) => gitSourceAttachment(node, isStaged)}
+          />
+        {:else}
+          <div class="px-2.5 pt-2">
+            <div
+              class="rounded-xl border-2 border-dashed px-3 py-3 text-sm transition-colors {isGitDropZoneActive(
+                projectId,
+                isStaged
+              )
+                ? 'border-accent bg-accent/10 text-bright'
+                : 'border-edge bg-ground/50 text-subtle'}"
+            >
+              {isStaged ? 'Drop files here to stage them.' : 'Drop files here to unstage them.'}
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
   {/snippet}
@@ -431,6 +592,7 @@
     filePath={contextFilePath}
     targetType={contextTargetType}
     isStaged={contextIsStaged}
+    canOpenFile={contextCanOpenFile}
     onOpenChanges={handleCtxOpenChanges}
     onOpenFile={handleCtxOpenFile}
     onOpenFileHead={handleCtxOpenFileHead}
@@ -448,7 +610,7 @@
     onCopyFullPatch={handleCtxCopyFullPatch}
     onResetTarget={resetContextTarget}
   >
-    {#if stagedTree.length === 0 && unstagedTree.length === 0}
+    {#if !hasChanges}
       <div class="px-2.5 py-2 text-sm text-subtle">No changes.</div>
     {/if}
 
@@ -458,13 +620,12 @@
 </div>
 
 <ConfirmDialog
-  open={discardConfirmOpen}
-  title="Discard Changes?"
-  message="This will permanently discard changes for {discardTarget}. This cannot be undone."
-  confirmLabel="Discard"
-  onConfirm={confirmDiscard}
+  open={pendingGitConfirm !== null}
+  title={pendingGitConfirm ? getConfirmTitle(pendingGitConfirm.action) : 'Confirm Git Action'}
+  message={pendingGitConfirm ? getConfirmMessage(pendingGitConfirm) : ''}
+  confirmLabel={pendingGitConfirm ? getConfirmLabel(pendingGitConfirm.action) : 'Confirm'}
+  onConfirm={confirmGitAction}
   onCancel={() => {
-    discardConfirmOpen = false
-    discardTarget = null
+    pendingGitConfirm = null
   }}
 />

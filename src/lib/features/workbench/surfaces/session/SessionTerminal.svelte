@@ -5,6 +5,8 @@
   import type { Session, SessionStatus } from '$lib/types/backend'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import type { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
+  import { getActiveSessionId } from '$lib/features/workbench/state.svelte'
+  import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
 
   let {
     session,
@@ -70,6 +72,27 @@
     })
   }
 
+  // Give xterm focus once attach settles. Bridges the gap the layout-
+  // level focus effect can't cover: on a brand-new session tab the
+  // effect fires before attach resolves, so `manager.terminal` is
+  // still null and focus() no-ops. Calling here runs after xterm
+  // actually exists. Modal-open guard keeps the command palette /
+  // settings dialog keyboard focus intact. The active-session check
+  // prevents a slow attach from stealing focus if the user has since
+  // moved to a different pane/tab. Double-try (now + next frame)
+  // because xterm's inner textarea isn't always in the DOM the instant
+  // open() returns — first call covers the fast path, rAF covers the
+  // slow path after layout/fit.
+  function focusIfCurrent(mgr: TerminalSessionManager) {
+    if (isAnyModalOpen()) return
+    if (mgr.sessionId !== getActiveSessionId()) return
+    mgr.focus()
+    requestAnimationFrame(() => {
+      if (mgr.sessionId !== getActiveSessionId()) return
+      mgr.focus()
+    })
+  }
+
   // loadTranscript must complete before attachLive so live bytes can't
   // reorder ahead of history. Auto-start is reserved for genuinely
   // fresh sessions — restored tabs stay historical until the user
@@ -87,9 +110,14 @@
     if (gen !== attachGen) return
     attachedSessionId = nextSession.id
     bindManager(nextManager)
+    // Once xterm's DOM is attached focus is safe; the later branches
+    // will re-try as state transitions (resume, startPty) complete, so
+    // a transient focus steal during those awaits self-heals.
+    focusIfCurrent(nextManager)
 
     if (nextManager.isPtyActive()) {
       isHistorical = false
+      focusIfCurrent(nextManager)
       return
     }
 
@@ -106,6 +134,7 @@
 
     if (resumed) {
       isHistorical = false
+      focusIfCurrent(nextManager)
       return
     }
 
@@ -118,6 +147,8 @@
     isHistorical = false
     try {
       await nextManager.startPty(nextSession)
+      if (gen !== attachGen) return
+      focusIfCurrent(nextManager)
     } catch (startError) {
       if (gen !== attachGen) return
       error = String(startError)
