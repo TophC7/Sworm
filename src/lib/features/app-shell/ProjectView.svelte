@@ -29,6 +29,9 @@
   } = $props()
 
   let gitSummary = $derived(getGitSummary(project.id))
+  // Unique changed-path count for the sidebar rail badge. `changes` lists a
+  // file twice when it has both staged and unstaged edits, so count by path.
+  let gitChangeCount = $derived(gitSummary ? new Set(gitSummary.changes.map((c) => c.path)).size : 0)
   let sidebarCollapsed = $derived(isSidebarCollapsed())
   let sidebarWidth = $derived(getSidebarWidth())
   let sidebarView = $derived(getSidebarView())
@@ -87,7 +90,7 @@
 <!-- Horizontal layout: sidebar-rail | sidebar-content | resize | panes -->
 <div class="flex min-h-0 flex-1 overflow-hidden">
   <!-- Sidebar rail: always visible -->
-  <SidebarRail />
+  <SidebarRail {gitChangeCount} />
 
   <!-- Sidebar content + pane grid (resize handle relative to this container) -->
   <div class="flex min-h-0 flex-1 overflow-hidden" bind:this={layoutEl}>

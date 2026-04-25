@@ -22,6 +22,7 @@
     setTextSurfaceDirty
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
+  import { getGitSummary } from '$lib/features/git/state.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
 
@@ -68,6 +69,15 @@
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
   let lspUriPath = $derived(filePath != null && !gitRef ? `${projectPath}/${filePath}` : null)
+  let gitSummary = $derived(getGitSummary(projectId))
+  let gitDiffRevision = $derived(
+    filePath == null || gitRef
+      ? ''
+      : (gitSummary?.changes ?? [])
+          .filter((change) => change.path === filePath)
+          .map((change) => `${change.status}:${change.staged}:${change.additions ?? ''}:${change.deletions ?? ''}`)
+          .join('|')
+  )
   let mode = $state<Mode>('split')
 
   // Debounce preview updates in split mode so the markdown parser doesn't
@@ -414,6 +424,7 @@
               {projectId}
               {projectPath}
               lspEnabled={!isReadonly}
+              {gitDiffRevision}
             />
           {/key}
         </ResizablePane>
@@ -440,6 +451,7 @@
           {projectId}
           {projectPath}
           lspEnabled={!isReadonly}
+          {gitDiffRevision}
         />
       {/key}
     {/if}

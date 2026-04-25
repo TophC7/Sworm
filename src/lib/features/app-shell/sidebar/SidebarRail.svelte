@@ -9,8 +9,15 @@
   import { IconButton } from '$lib/components/ui/button'
   import { GitBranchIcon, BotMessageSquare, FolderOpen } from '$lib/icons/lucideExports'
 
+  let { gitChangeCount = 0 }: { gitChangeCount?: number } = $props()
+
   let activeView = $derived(getSidebarView())
   let collapsed = $derived(isSidebarCollapsed())
+
+  // Shown on the git icon when the working tree has changes. Over 99 we
+  // swap to ":D" — both as a playful signal that you have bigger problems
+  // than an exact count, and to keep the badge width bounded.
+  let gitBadgeLabel = $derived(gitChangeCount > 99 ? ':D' : String(gitChangeCount))
 
   function handleClick(view: SidebarView) {
     if (activeView === view) {
@@ -45,6 +52,14 @@
       >
         <view.icon size={16} />
       </IconButton>
+      {#if view.id === 'git' && gitChangeCount > 0}
+        <span
+          class="pointer-events-none absolute -top-0.5 -right-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 font-mono text-2xs leading-none font-semibold text-ground ring-1 ring-ground"
+          aria-label="{gitChangeCount} changed files"
+        >
+          {gitBadgeLabel}
+        </span>
+      {/if}
     </div>
   {/each}
 </div>

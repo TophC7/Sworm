@@ -175,6 +175,8 @@ pub fn run() {
             commands::git::git_discard_files,
             commands::git::git_get_full_patch,
             commands::git::git_get_path_patch,
+            commands::git::git_get_quick_diff_data,
+            commands::git::git_stage_file_content,
             commands::git::git_commit,
             commands::git::git_undo_last_commit,
             commands::git::git_push,

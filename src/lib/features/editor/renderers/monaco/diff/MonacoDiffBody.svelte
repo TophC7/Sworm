@@ -11,15 +11,53 @@
   import DiffBinaryPlaceholder from '$lib/features/workbench/surfaces/diff/DiffBinaryPlaceholder.svelte'
   import { getDiffEditorPool, type PoolRef } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { useDiffScroll } from '$lib/features/editor/renderers/monaco/diff/scrollContext.svelte'
+  import {
+    registerSwormDiffGutterContext,
+    SWORM_DIFF_GIT_ACTIONS_CONTEXT,
+    SWORM_DIFF_STAGED_CONTEXT
+  } from '$lib/features/editor/renderers/monaco/diff/gitGutterMenu'
   import type { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import {
+    runDiffGitLineAction,
+    titleForDiffGitLineAction,
+    type DiffGitLineAction
+  } from '$lib/features/workbench/surfaces/diff/diffGitLineActions'
+  import {
+    lineChangeIntersectsRanges,
+    lineChangesOutsideRanges,
+    selectedLineChanges,
+    toLineSelectionRanges,
+    type LineChange,
+    type LineSelectionRange
+  } from '$lib/features/git/lineChanges'
+  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import type { GitStatusKind } from '$lib/types/backend'
 
   type IDiffEditorViewState = import('monaco-editor').editor.IDiffEditorViewState
+  type ICodeEditor = import('monaco-editor').editor.ICodeEditor
+  type ILineChange = import('monaco-editor').editor.ILineChange
+  type IDisposable = { dispose(): void }
+  type ContextKey<T> = { set(value: T): void; reset(): void }
+  type DiffEditorWithRootContext = PoolRef['editor'] & {
+    _contextKeyService?: {
+      createKey<T>(key: string, defaultValue: T): ContextKey<T>
+    }
+  }
+
+  interface GitActionContext {
+    projectId: string
+    projectPath: string
+    staged: boolean
+    status: GitStatusKind
+  }
 
   let {
     path,
     store,
     hideUnchanged = true,
     hideUnchangedCommandSeq = 0,
+    gitActionContext = null,
     onExpandedUnchangedChange
   }: {
     path: string
@@ -32,6 +70,7 @@
      */
     hideUnchanged?: boolean
     hideUnchangedCommandSeq?: number
+    gitActionContext?: GitActionContext | null
     onExpandedUnchangedChange?: (expanded: boolean) => void
   } = $props()
 
@@ -53,6 +92,7 @@
   let currentDisposables: Array<{ dispose(): void }> = []
   let currentAcquireSeq = 0
   let currentMeasureAndSync: (() => void) | null = null
+  let currentLineChanges: LineChange[] = []
 
   // Monaco serializes collapsed unchanged-region state into
   // `viewState.modelState`. That fights the row-level toggle, whose
@@ -69,6 +109,99 @@
 
   function syncExpandedUnchangedState(ref: PoolRef, hide: boolean) {
     onExpandedUnchangedChange?.(pool.hasExpandedUnchanged(ref, hide))
+  }
+
+  function bindDiffGutterContextKeys(ref: PoolRef, context: GitActionContext | null): IDisposable {
+    const rootContextService = (ref.editor as DiffEditorWithRootContext)._contextKeyService
+    if (!rootContextService) return { dispose: () => {} }
+
+    // Monaco's public IStandaloneDiffEditor.createContextKey() binds to the
+    // modified editor. DiffEditorGutter reads the diff widget root context, so
+    // these toolbar predicates must be created on the internal root service.
+    const hasGitActionsContext = rootContextService.createKey<boolean>(SWORM_DIFF_GIT_ACTIONS_CONTEXT, false)
+    const stagedContext = rootContextService.createKey<boolean>(SWORM_DIFF_STAGED_CONTEXT, false)
+    hasGitActionsContext.set(Boolean(context))
+    stagedContext.set(Boolean(context?.staged))
+
+    return {
+      dispose: () => {
+        hasGitActionsContext.reset()
+        stagedContext.reset()
+      }
+    }
+  }
+
+  function toLineChange(change: ILineChange): LineChange {
+    return {
+      originalStartLineNumber: change.originalStartLineNumber,
+      originalEndLineNumber: change.originalEndLineNumber,
+      modifiedStartLineNumber: change.modifiedStartLineNumber,
+      modifiedEndLineNumber: change.modifiedEndLineNumber
+    }
+  }
+
+  function selectionRanges(editor: ICodeEditor): LineSelectionRange[] {
+    return toLineSelectionRanges(editor.getSelections() ?? [])
+  }
+
+  function hasSelectedChanges(ranges: readonly LineSelectionRange[], modifiedLineCount: number): boolean {
+    return currentLineChanges.some((change) => lineChangeIntersectsRanges(change, ranges, modifiedLineCount))
+  }
+
+  async function runLineAction(action: DiffGitLineAction, changes: readonly LineChange[]) {
+    const context = gitActionContext
+    const entry = store.get(path)
+    if (!context || !entry) return
+    if (changes.length === 0 && action !== 'revert') {
+      notify.info('No changes selected', 'The selected range does not contain a diff hunk.')
+      return
+    }
+
+    try {
+      await runDiffGitLineAction(
+        {
+          projectId: context.projectId,
+          projectPath: context.projectPath,
+          filePath: path,
+          status: context.status
+        },
+        entry,
+        action,
+        changes
+      )
+    } catch (error) {
+      notify.error(`${titleForDiffGitLineAction(action)} failed`, getErrorMessage(error))
+    }
+  }
+
+  async function runSelectedAction(action: DiffGitLineAction) {
+    const ref = currentRef
+    if (!ref) return
+
+    const modifiedEditor = ref.editor.getModifiedEditor()
+    const model = modifiedEditor.getModel()
+    const modifiedLineCount = model?.getLineCount() ?? 1
+    const ranges = selectionRanges(modifiedEditor)
+    const entry = store.get(path)
+    const content = entry
+      ? {
+          originalContent: entry.originalContent,
+          modifiedContent: entry.modifiedContent
+        }
+      : undefined
+
+    if (action === 'revert') {
+      if (!hasSelectedChanges(ranges, modifiedLineCount)) {
+        notify.info('No changes selected', 'The selected range does not contain a diff hunk.')
+        return
+      }
+      const remaining = lineChangesOutsideRanges(currentLineChanges, ranges, modifiedLineCount, content)
+      await runLineAction(action, remaining)
+      return
+    }
+
+    const selected = selectedLineChanges(currentLineChanges, ranges, modifiedLineCount, content)
+    await runLineAction(action, selected)
   }
 
   // Flipping the hideUnchanged prop OR clicking the row action while
@@ -186,6 +319,10 @@
 
       let diffReady = false
 
+      const updateLineChanges = () => {
+        currentLineChanges = (ref.editor.getLineChanges() ?? []).map(toLineChange)
+      }
+
       const measureAndSync = () => {
         if (!diffReady) return
         const h = Math.max(modifiedEd.getContentHeight(), originalEd.getContentHeight())
@@ -213,6 +350,7 @@
       const safetyTimer = window.setTimeout(() => {
         if (diffReady) return
         diffReady = true
+        updateLineChanges()
         measureAndSync()
       }, 800)
       const safetyOff = { dispose: () => window.clearTimeout(safetyTimer) }
@@ -227,6 +365,7 @@
       // widgets, so the FIRST committed measurement is the real
       // post-collapse height rather than a brief overshoot.
       const diffOff = ref.editor.onDidUpdateDiff(() => {
+        updateLineChanges()
         if (diffReady) {
           measureAndSync()
           return
@@ -249,6 +388,52 @@
       }
       const hiddenOffMod = modifiedEd.onDidChangeHiddenAreas(syncHiddenAreas)
       const hiddenOffOrig = originalEd.onDidChangeHiddenAreas(syncHiddenAreas)
+      const actionDisposables: IDisposable[] = []
+      if (gitActionContext) {
+        if (gitActionContext.staged) {
+          actionDisposables.push(
+            modifiedEd.addAction({
+              id: 'sworm.diff.unstageSelectedRanges',
+              label: 'Unstage Selected Ranges',
+              contextMenuGroupId: '2_git',
+              contextMenuOrder: 1,
+              run: () => runSelectedAction('unstage')
+            })
+          )
+        } else {
+          actionDisposables.push(
+            modifiedEd.addAction({
+              id: 'sworm.diff.stageSelectedRanges',
+              label: 'Stage Selected Ranges',
+              contextMenuGroupId: '2_git',
+              contextMenuOrder: 1,
+              run: () => runSelectedAction('stage')
+            }),
+            modifiedEd.addAction({
+              id: 'sworm.diff.revertSelectedRanges',
+              label: 'Revert Selected Ranges',
+              contextMenuGroupId: '2_git',
+              contextMenuOrder: 2,
+              run: () => runSelectedAction('revert')
+            })
+          )
+        }
+      }
+
+      const contextKeyOff = bindDiffGutterContextKeys(ref, gitActionContext)
+
+      const gutterContextOff =
+        gitActionContext && retainedEntry.modified
+          ? registerSwormDiffGutterContext(retainedEntry.modified.uri.toString(), {
+              projectId: gitActionContext.projectId,
+              projectPath: gitActionContext.projectPath,
+              filePath: path,
+              status: gitActionContext.status,
+              staged: gitActionContext.staged,
+              store,
+              getLineChanges: () => currentLineChanges
+            })
+          : null
 
       // Re-layout Monaco on ANY host size change. With
       // `automaticLayout: false`, Monaco doesn't observe its own
@@ -274,7 +459,19 @@
       const roOff = { dispose: () => ro.disconnect() }
 
       currentRef = ref
-      currentDisposables = [sizeOffMod, sizeOffOrig, diffOff, hiddenOffMod, hiddenOffOrig, roOff, safetyOff]
+      updateLineChanges()
+      currentDisposables = [
+        sizeOffMod,
+        sizeOffOrig,
+        diffOff,
+        hiddenOffMod,
+        hiddenOffOrig,
+        ...actionDisposables,
+        contextKeyOff,
+        ...(gutterContextOff ? [gutterContextOff] : []),
+        roOff,
+        safetyOff
+      ]
     })()
 
     return () => {
@@ -293,6 +490,7 @@
         currentRef = null
         currentDisposables = []
         currentMeasureAndSync = null
+        currentLineChanges = []
       }
       store.release(path)
     }
@@ -302,5 +500,5 @@
 {#if store.get(path)?.binary}
   <DiffBinaryPlaceholder reason="Binary file — content not shown" />
 {:else}
-  <div bind:this={host} class="w-full" style:height="{height}px"></div>
+  <div bind:this={host} class="relative w-full" style:height="{height}px"></div>
 {/if}

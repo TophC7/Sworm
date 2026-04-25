@@ -58,4 +58,5 @@
   idPrefix="changes-file"
   {projectId}
   {projectPath}
+  workingStaged={staged}
 />

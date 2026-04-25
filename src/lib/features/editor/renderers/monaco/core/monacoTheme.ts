@@ -164,6 +164,9 @@ const EDITOR_COLORS: Record<string, string> = {
   'editorSuggestWidget.highlightForeground': '#ffb59f',
   'editorHoverWidget.background': '#262220',
   'editorHoverWidget.border': '#3a322e',
+  'menu.separatorBackground': '#3a322e',
+  'toolbar.hoverBackground': '#2f2926',
+  'toolbar.activeBackground': '#3c3532',
 
   'editor.findMatchBackground': '#7c2d1540',
   'editor.findMatchHighlightBackground': '#7c2d1520',

@@ -9,6 +9,10 @@
     attachIndentRainbow,
     isIndentRainbowEnabled
   } from '$lib/features/editor/renderers/monaco/text/indentRainbow.svelte'
+  import {
+    attachGitHunkReview,
+    type GitHunkReviewHandle
+  } from '$lib/features/editor/renderers/monaco/text/gitHunkReview'
   import { acquireTextModel, type TextModelHandle } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { attachLspModel, detachLspModel } from '$lib/features/editor/lsp/registry'
   import {
@@ -33,7 +37,8 @@
     projectId = null,
     projectPath = null,
     filePath = null,
-    lspEnabled = true
+    lspEnabled = true,
+    gitDiffRevision = ''
   }: {
     tabId: string
     value?: string
@@ -47,16 +52,18 @@
     projectPath?: string | null
     filePath?: string | null
     lspEnabled?: boolean
+    gitDiffRevision?: string
   } = $props()
 
   let containerEl = $state<HTMLDivElement | null>(null)
-  let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
-  let monaco: typeof import('monaco-editor') | null = null
-  let model: import('monaco-editor').editor.ITextModel | null = null
+  let editor = $state<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null)
+  let monaco = $state<typeof import('monaco-editor') | null>(null)
+  let model = $state<import('monaco-editor').editor.ITextModel | null>(null)
   let modelHandle: TextModelHandle | null = null
   let indentRainbow:
     | import('$lib/features/editor/renderers/monaco/text/indentRainbow.svelte').IndentRainbowHandle
     | null = null
+  let gitHunkReview: GitHunkReviewHandle | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
   let lastReportedValue = ''
@@ -219,6 +226,8 @@
       disposed = true
       if (editor) {
         onTextEditorDestroy(editor)
+        gitHunkReview?.dispose()
+        gitHunkReview = null
         indentRainbow?.dispose()
         if (modelHandle && editor) modelHandle.saveViewState(editor.saveViewState())
         const shouldDetachLsp = model != null && lspEnabled && (modelHandle ? modelHandle.refCount <= 1 : true)
@@ -265,6 +274,30 @@
 
   $effect(() => {
     editor?.updateOptions({ wordWrap: wordWrap ? 'on' : 'off' })
+  })
+
+  $effect(() => {
+    const revision = gitDiffRevision
+    if (!editor || !monaco || !model || readonly || !projectId || !projectPath || !filePath) {
+      gitHunkReview?.dispose()
+      gitHunkReview = null
+      return
+    }
+
+    if (!gitHunkReview) {
+      gitHunkReview = attachGitHunkReview({
+        monaco,
+        editor,
+        model,
+        projectId,
+        projectPath,
+        filePath,
+        language
+      })
+    }
+
+    void revision
+    void gitHunkReview.refreshBase()
   })
 
   $effect(() => {

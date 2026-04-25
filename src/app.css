@@ -252,6 +252,171 @@
   --shiki-token-link: #9effef; /* cyan — urls, links */
 }
 
+/* ── Monaco dirty-diff gutter and peek ─────────────────────────────── */
+
+.monaco-editor .sworm-dirty-diff-glyph {
+  margin-left: 5px;
+  cursor: pointer;
+  z-index: 5;
+  opacity: 1;
+}
+
+.monaco-editor .sworm-dirty-diff-glyph::before {
+  position: absolute;
+  left: -2px;
+  width: 0;
+  height: 100%;
+  content: '';
+}
+
+.monaco-editor .sworm-dirty-diff-add,
+.monaco-editor .sworm-dirty-diff-modify {
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+
+.monaco-editor .sworm-dirty-diff-add.primary {
+  border-left-color: var(--color-success);
+}
+
+.monaco-editor .sworm-dirty-diff-add.primary::before {
+  background: var(--color-success);
+}
+
+.monaco-editor .sworm-dirty-diff-modify.primary {
+  border-left-color: var(--color-accent);
+}
+
+.monaco-editor .sworm-dirty-diff-modify.primary::before {
+  background: var(--color-accent);
+}
+
+.monaco-editor .sworm-dirty-diff-add.secondary {
+  border-left-color: color-mix(in srgb, var(--color-success) 42%, transparent);
+}
+
+.monaco-editor .sworm-dirty-diff-add.secondary::before {
+  background: color-mix(in srgb, var(--color-success) 42%, transparent);
+}
+
+.monaco-editor .sworm-dirty-diff-modify.secondary {
+  border-left-color: color-mix(in srgb, var(--color-accent) 42%, transparent);
+}
+
+.monaco-editor .sworm-dirty-diff-modify.secondary::before {
+  background: color-mix(in srgb, var(--color-accent) 42%, transparent);
+}
+
+.monaco-editor .sworm-dirty-diff-delete::after {
+  position: absolute;
+  bottom: -4px;
+  box-sizing: border-box;
+  width: 4px;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  content: '';
+  pointer-events: none;
+}
+
+.monaco-editor .sworm-dirty-diff-delete.primary::after {
+  border-left: 4px solid var(--color-danger);
+}
+
+.monaco-editor .sworm-dirty-diff-delete.secondary::after {
+  border-left: 4px solid color-mix(in srgb, var(--color-danger) 46%, transparent);
+}
+
+.monaco-editor .margin-view-overlays .sworm-dirty-diff-glyph:hover::before {
+  left: -6px;
+  width: 6px;
+}
+
+.sworm-dirty-diff-peek {
+  @apply overflow-hidden border-y border-edge bg-surface text-base text-fg;
+  box-sizing: border-box;
+  pointer-events: auto;
+  z-index: 10;
+}
+
+.sworm-dirty-diff-peek.primary {
+  border-top-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-edge));
+  border-bottom-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-edge));
+}
+
+.sworm-dirty-diff-peek.secondary {
+  border-top-color: color-mix(in srgb, var(--color-muted) 65%, var(--color-edge));
+  border-bottom-color: color-mix(in srgb, var(--color-muted) 65%, var(--color-edge));
+}
+
+.sworm-dirty-diff-peek-body {
+  min-height: 80px;
+}
+
+/* Monaco's built-in diff hunk toolbar uses VS Code workbench variables that
+   standalone Monaco does not provide. Define them here and tighten the action
+   bar so the gutter divider breaks cleanly around the buttons. */
+.monaco-diff-editor {
+  --vscode-editorGutter-itemBackground: var(--color-surface);
+  --vscode-editorGutter-itemGlyphForeground: var(--color-muted);
+  --vscode-toolbar-hoverBackground: var(--color-raised);
+  --vscode-menu-separatorBackground: var(--color-edge);
+}
+
+.monaco-diff-editor .gutter .gutterItem .background {
+  border-left-color: var(--color-edge);
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .actions-container {
+  box-sizing: border-box;
+  width: 20px;
+  height: auto;
+  padding: 2px 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar.vertical .actions-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .action-item,
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .action-label {
+  width: 16px;
+  height: 16px;
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .action-label {
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
+  border-radius: 2px;
+  color: var(--color-muted);
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .action-label.codicon {
+  font-size: 12px;
+}
+
+.monaco-diff-editor .gutter .gutterItem .buttons .monaco-toolbar .monaco-action-bar .action-label.codicon-add {
+  color: var(--color-success);
+}
+
+.monaco-diff-editor
+  .gutter
+  .gutterItem
+  .buttons
+  .monaco-toolbar
+  .monaco-action-bar
+  .action-label.codicon-discard:hover {
+  color: var(--color-danger-bright);
+}
+
 /* ── Markdown preview: Shiki code blocks ──────────────────────────── */
 
 .shiki-block pre.shiki {

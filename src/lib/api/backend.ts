@@ -14,6 +14,7 @@ import type {
   EnvProbeResult,
   FileEntryStat,
   FilePasteCollision,
+  GitQuickDiffData,
   GitSummary,
   GraphCommit,
   GeneralSettings,
@@ -260,6 +261,12 @@ export const backend = {
     },
     getPathPatch(path: string, files: string[], staged: boolean | null = null): Promise<string | null> {
       return invoke<string | null>('git_get_path_patch', { path, files, staged })
+    },
+    getQuickDiffData(projectPath: string, filePath: string): Promise<GitQuickDiffData> {
+      return invoke<GitQuickDiffData>('git_get_quick_diff_data', { projectPath, filePath })
+    },
+    stageFileContent(projectPath: string, filePath: string, content: string | null): Promise<void> {
+      return invoke<void>('git_stage_file_content', { projectPath, filePath, content })
     },
     commit(path: string, message: string): Promise<string> {
       return invoke<string>('git_commit', { path, message })

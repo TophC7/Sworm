@@ -150,6 +150,9 @@ export function createDiffOptions(settings: DiffEditorSettings): DiffOptions {
     contextmenu: true,
     originalEditable: false,
     readOnly: true,
+    // Monaco's built-in diff gutter owns the VS Code-style hunk/selection toolbar.
+    // Sworm contributes Git actions to that menu in gitGutterMenu.ts.
+    renderGutterMenu: true,
     renderMarginRevertIcon: false,
     diffWordWrap: settings.wordWrap ? 'on' : 'off',
     enableSplitViewResizing: false
@@ -213,11 +216,13 @@ export class DiffEditorPool {
       this.monacoPromise = (async () => {
         // Both imports are dynamic so Monaco + the env bootstrap land
         // in a lazy chunk together, matching `MonacoEditor.svelte`.
-        const [{ initMonaco }, m] = await Promise.all([
+        const [{ initMonaco }, m, { ensureSwormDiffGutterMenu }] = await Promise.all([
           import('$lib/features/editor/renderers/monaco/core/monacoEnv'),
-          import('monaco-editor')
+          import('monaco-editor'),
+          import('$lib/features/editor/renderers/monaco/diff/gitGutterMenu')
         ])
         await initMonaco(m)
+        ensureSwormDiffGutterMenu(m)
         // Apply the Sworm theme globally so every editor we construct
         // inherits it. `createDiffEditor` doesn't take a theme in its
         // options; this is the standard Monaco pattern.

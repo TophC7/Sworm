@@ -274,6 +274,12 @@ export interface CommitFileChange {
   deletions: number
 }
 
+export interface GitQuickDiffData {
+  indexContent: string | null
+  headContent: string | null
+  hasIndexChanges: boolean
+}
+
 // ── Monaco multi-file diff payload ──────────────
 //
 // Mirrors `src-tauri/src/models/file_diff.rs`. One `FileDiff` per

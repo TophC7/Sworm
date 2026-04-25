@@ -25,6 +25,7 @@
     idPrefix = 'diff',
     projectId = '',
     projectPath = '',
+    workingStaged = null,
     commitHash = null,
     stashIndex = null
   }: {
@@ -36,6 +37,7 @@
     idPrefix?: string
     projectId?: string
     projectPath?: string
+    workingStaged?: boolean | null
     commitHash?: string | null
     stashIndex?: number | null
   } = $props()
@@ -280,6 +282,7 @@
         {idPrefix}
         {projectId}
         {projectPath}
+        {workingStaged}
         {commitHash}
         {stashIndex}
         onToggle={toggleFile}

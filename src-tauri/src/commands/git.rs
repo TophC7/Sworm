@@ -1,8 +1,11 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::file_diff::{DiffSource, FileDiff};
-use crate::services::git::{CommitDetail, GitSummary, GraphCommit, StashEntry};
+use crate::services::git::{CommitDetail, GitSummary, GraphCommit, StashEntry, MAX_CONTENT_BYTES};
+use serde::Serialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// Reject anything that isn't a hex commit hash (40-char full or 7+ short).
 pub(crate) fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
@@ -49,11 +52,14 @@ fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), Api
     let normalized = candidate
         .canonicalize()
         .or_else(|_| {
-            candidate
-                .parent()
-                .unwrap_or(&candidate)
-                .canonicalize()
-                .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
+            // Path may not exist yet (e.g. staging a new file). Canonicalize
+            // the parent and re-attach the file name; reject if the path has
+            // no concrete final segment to anchor the parent walk.
+            let parent = candidate.parent().unwrap_or(&candidate).canonicalize()?;
+            let name = candidate.file_name().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing file name")
+            })?;
+            Ok::<PathBuf, std::io::Error>(parent.join(name))
         })
         .map_err(|e| ApiError::InvalidArgument(format!("Invalid file path: {}", e)))?;
 
@@ -61,6 +67,200 @@ fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), Api
         return Err(ApiError::InvalidArgument(
             "File path must stay within the project root".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitQuickDiffData {
+    pub index_content: Option<String>,
+    pub head_content: Option<String>,
+    pub has_index_changes: bool,
+}
+
+fn git_show_raw_text(repo: &Path, spec: &str) -> Option<String> {
+    let output = Command::new("git")
+        // Quick-diff bases feed hunk staging/reverting, so they must be the
+        // actual blob text, not display-only textconv output.
+        .args(["--no-optional-locks", "show", "--no-textconv", spec])
+        .current_dir(repo)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+    if output.stdout.len() > MAX_CONTENT_BYTES {
+        return None;
+    }
+
+    String::from_utf8(output.stdout).ok()
+}
+
+fn git_file_mode(repo: &Path, file_path: &str) -> Result<String, ApiError> {
+    let index = Command::new("git")
+        .args(["--no-optional-locks", "ls-files", "-s", "--"])
+        .arg(file_path)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("Failed to read git index: {}", e)))?;
+
+    if index.status.success() {
+        let line = String::from_utf8_lossy(&index.stdout);
+        if let Some(mode) = line.split_whitespace().next() {
+            if !mode.is_empty() {
+                return Ok(mode.to_string());
+            }
+        }
+    }
+
+    let head = Command::new("git")
+        .args(["--no-optional-locks", "ls-tree", "HEAD", "--"])
+        .arg(file_path)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("Failed to read HEAD tree: {}", e)))?;
+
+    if head.status.success() {
+        let line = String::from_utf8_lossy(&head.stdout);
+        if let Some(mode) = line.split_whitespace().next() {
+            if !mode.is_empty() {
+                return Ok(mode.to_string());
+            }
+        }
+    }
+
+    if let Some(mode) = git_worktree_file_mode(repo, file_path)? {
+        return Ok(mode);
+    }
+
+    Ok("100644".to_string())
+}
+
+#[cfg(unix)]
+fn git_worktree_file_mode(repo: &Path, file_path: &str) -> Result<Option<String>, ApiError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = match std::fs::symlink_metadata(repo.join(file_path)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ApiError::Internal(format!(
+                "Failed to read worktree file mode: {}",
+                error
+            )));
+        }
+    };
+
+    if metadata.file_type().is_symlink() {
+        return Ok(Some("120000".to_string()));
+    }
+
+    if metadata.permissions().mode() & 0o111 != 0 {
+        return Ok(Some("100755".to_string()));
+    }
+
+    Ok(Some("100644".to_string()))
+}
+
+#[cfg(not(unix))]
+fn git_worktree_file_mode(_repo: &Path, _file_path: &str) -> Result<Option<String>, ApiError> {
+    Ok(None)
+}
+
+fn git_hash_object(repo: &Path, file_path: &str, content: &str) -> Result<String, ApiError> {
+    let mut child = Command::new("git")
+        .args(["hash-object", "--stdin", "-w", "--path"])
+        .arg(file_path)
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| ApiError::Internal(format!("Failed to spawn git hash-object: {}", e)))?;
+
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| ApiError::Internal("Failed to open git hash-object stdin".to_string()))?;
+    stdin
+        .write_all(content.as_bytes())
+        .map_err(|e| ApiError::Internal(format!("Failed to write git object content: {}", e)))?;
+    let _ = child.stdin.take();
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| ApiError::Internal(format!("Failed to finish git hash-object: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ApiError::Internal(format!(
+            "git hash-object failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr)
+            }
+        )));
+    }
+
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if hash.is_empty() {
+        return Err(ApiError::Internal(
+            "git hash-object returned an empty object id".to_string(),
+        ));
+    }
+
+    Ok(hash)
+}
+
+fn git_update_index_blob(repo: &Path, file_path: &str, content: &str) -> Result<(), ApiError> {
+    let mode = git_file_mode(repo, file_path)?;
+    let hash = git_hash_object(repo, file_path, content)?;
+    let output = Command::new("git")
+        .args(["update-index", "--add", "--cacheinfo"])
+        .arg(mode)
+        .arg(hash)
+        .arg(file_path)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("Failed to update git index: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ApiError::Internal(format!(
+            "git update-index failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr)
+            }
+        )));
+    }
+
+    Ok(())
+}
+
+fn git_remove_index_path(repo: &Path, file_path: &str) -> Result<(), ApiError> {
+    let output = Command::new("git")
+        .args(["update-index", "--force-remove", "--"])
+        .arg(file_path)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("Failed to remove path from git index: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ApiError::Internal(format!(
+            "git update-index --force-remove failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr)
+            }
+        )));
     }
 
     Ok(())
@@ -200,6 +400,45 @@ pub fn git_get_path_patch(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
     Ok(state.git.get_path_patch(Path::new(&path), &files, staged))
+}
+
+/// Return Git bases used by the live editor dirty-diff gutter.
+#[tauri::command]
+pub fn git_get_quick_diff_data(
+    project_path: String,
+    file_path: String,
+) -> Result<GitQuickDiffData, ApiError> {
+    validated_project_file(&project_path, &file_path)?;
+
+    let repo = Path::new(&project_path);
+    let index_spec = format!(":{}", file_path);
+    let head_spec = format!("HEAD:{}", file_path);
+    let index_content = git_show_raw_text(repo, &index_spec);
+    let head_content = git_show_raw_text(repo, &head_spec);
+    // Derive instead of spawning `git diff --cached --quiet`. Mode-only
+    // changes aren't reflected, but the dirty-diff editor is text-only.
+    let has_index_changes = index_content != head_content;
+    Ok(GitQuickDiffData {
+        index_content,
+        head_content,
+        has_index_changes,
+    })
+}
+
+/// Replace a single path's index blob with caller-supplied text content.
+/// This mirrors VS Code's hunk staging strategy: synthesize the desired
+/// index file content on the frontend, then update only Git's index here.
+#[tauri::command]
+pub fn git_stage_file_content(
+    project_path: String,
+    file_path: String,
+    content: Option<String>,
+) -> Result<(), ApiError> {
+    validated_project_file(&project_path, &file_path)?;
+    match content {
+        Some(content) => git_update_index_blob(Path::new(&project_path), &file_path, &content),
+        None => git_remove_index_path(Path::new(&project_path), &file_path),
+    }
 }
 
 /// Create a commit with the given message.
@@ -358,4 +597,35 @@ pub fn git_clone_in_place(
         .git
         .clone_in_place(Path::new(&path), &url)
         .map_err(ApiError::Internal)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn worktree_file_mode_preserves_executable_bit() {
+        use super::git_worktree_file_mode;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = std::env::temp_dir().join(format!(
+            "sworm-git-mode-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&repo).expect("create temp repo dir");
+
+        let script = repo.join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").expect("write script");
+        let mut permissions = fs::metadata(&script)
+            .expect("read script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("mark script executable");
+
+        let mode = git_worktree_file_mode(&repo, "script.sh").expect("read worktree mode");
+        fs::remove_dir_all(&repo).expect("remove temp repo dir");
+
+        assert_eq!(mode.as_deref(), Some("100755"));
+    }
 }

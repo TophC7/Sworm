@@ -26,6 +26,7 @@
     idPrefix?: string
     projectId?: string
     projectPath?: string
+    workingStaged?: boolean | null
     commitHash?: string | null
     stashIndex?: number | null
     onToggle: (path: string) => void
@@ -40,6 +41,7 @@
     idPrefix = 'diff',
     projectId = '',
     projectPath = '',
+    workingStaged = null,
     commitHash = null,
     stashIndex = null,
     onToggle
@@ -179,6 +181,9 @@
         {store}
         {hideUnchanged}
         {hideUnchangedCommandSeq}
+        gitActionContext={projectId && projectPath && workingStaged !== null
+          ? { projectId, projectPath, staged: workingStaged, status: file.status }
+          : null}
         onExpandedUnchangedChange={handleExpandedUnchangedChange}
       />
     {:else}

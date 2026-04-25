@@ -71,7 +71,7 @@ pub struct StashEntry {
 }
 
 /// Hard limit on file content sent over IPC to prevent OOM on large files.
-const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
+pub(crate) const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
 /// Git service using the system git CLI.
 pub struct GitService;
