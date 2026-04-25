@@ -1,4 +1,4 @@
-// Monaco environment bootstrap — imported once as a side-effect before
+// Monaco environment bootstrap. Imported once as a side effect before
 // any editor mounts. Sets up workers, Shiki tokenization for languages
 // Monaco lacks (Nix, Svelte, Fish), theme, and keybinding overrides.
 
@@ -8,6 +8,7 @@ import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import { ensureMonacoFormatters } from '$lib/features/editor/renderers/monaco/core/formatters'
+import { attachMonacoKeybindingOverrides } from '$lib/features/editor/renderers/monaco/core/keybindings'
 import { ensureMonacoLsp } from '$lib/features/editor/lsp/registry'
 import { registerSwormTheme, SWORM_SHIKI_THEME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
 import { attachMonaco } from '$lib/features/editor/schemas/registry'
@@ -157,6 +158,7 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
       { keybinding: KeyCode.F1, command: '-editor.action.quickCommand' },
       { keybinding: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyO, command: '-editor.action.quickOutline' }
     ])
+    attachMonacoKeybindingOverrides(monaco)
 
     // Flush any JSON schemas that were registered before Monaco
     // finished loading (bootstrap runs before the first editor mount).

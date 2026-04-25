@@ -27,6 +27,7 @@
     PaintbrushIcon,
     SaveIcon,
     ChevronRight,
+    KeyboardIcon,
     LoaderCircle,
     PackageIcon,
     SettingsIcon,
@@ -44,6 +45,7 @@
   const versionPromise: Promise<string | null> = getVersion().catch(() => null)
   import GeneralView from '$lib/features/settings/views/GeneralView.svelte'
   import JsonSettingsEditorView from '$lib/features/settings/views/JsonSettingsEditorView.svelte'
+  import KeyboardShortcutsView from '$lib/features/settings/views/KeyboardShortcutsView.svelte'
   import LanguageSettingsView from '$lib/features/settings/views/LanguageSettingsView.svelte'
   import NixView from '$lib/features/settings/views/NixView.svelte'
   import ProvidersView from '$lib/features/settings/views/ProvidersView.svelte'
@@ -54,13 +56,14 @@
 
   // NAV //
 
-  type View = 'appearance' | 'providers' | 'window' | string
+  type View = 'appearance' | 'keyboard-shortcuts' | 'providers' | 'window' | string
   type NavIcon = { kind: 'lucide'; icon: Component } | { kind: 'file'; filename: string } | { kind: 'mask' }
   type NavItem = { id: View; label: string; icon: NavIcon }
   type NavSection = { title: string; items: NavItem[] }
 
   const GENERAL_ITEMS: NavItem[] = [
     { id: 'appearance', label: 'Appearance', icon: { kind: 'lucide', icon: PaintbrushIcon } },
+    { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: { kind: 'lucide', icon: KeyboardIcon } },
     { id: 'providers', label: 'Providers', icon: { kind: 'lucide', icon: PackageIcon } },
     { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow } }
   ]
@@ -246,6 +249,8 @@
           <ScrollArea class="flex-1">
             {#if active === 'appearance'}
               <GeneralView />
+            {:else if active === 'keyboard-shortcuts'}
+              <KeyboardShortcutsView />
             {:else if active === 'providers'}
               <ProvidersView {onSaving} {onSaved} />
             {:else if active === 'window'}

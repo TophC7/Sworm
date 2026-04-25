@@ -1,42 +1,50 @@
-import type { CommandGroup, FileCallbacks } from './types'
-import { getFileCommands } from './file.svelte'
-import { getSessionCommands } from './sessions.svelte'
-import { getGitCommands } from './git.svelte'
-import { getTaskAppCommands, getTaskPaletteGroups } from './tasks.svelte'
-import { getViewCommands } from './view.svelte'
-import { getNotificationCommands } from './notifications.svelte'
+import type { CommandGroup } from './types'
+import { getProjects } from '$lib/features/projects/state.svelte'
+import { getOpenProjectIds, openProject } from '$lib/features/workbench/state.svelte'
 import { getEditorCommands } from './editor.svelte'
+import { getTaskPaletteGroups } from './tasks.svelte'
+import { getVisibleAppPaletteCommands, toPaletteCommand } from './registry.svelte'
+import { FolderClockIcon } from '$lib/icons/lucideExports'
 
-export type { Command, CommandConfirm, CommandGroup, FileCallbacks } from './types'
+export type { Command, CommandGroup } from './types'
 
-/**
- * App-level command groups (shown when search has no `>` prefix).
- * Called inside $derived so reactive reads in each module are tracked.
- */
-export function getAppCommandGroups(callbacks: FileCallbacks): CommandGroup[] {
+function getRecentProjectGroups(): CommandGroup[] {
+  const openIds = getOpenProjectIds()
+  const recent = getProjects().filter((project) => !openIds.includes(project.id))
+  if (recent.length === 0) return []
   return [
-    ...getFileCommands(callbacks),
-    ...getSessionCommands(),
-    ...getTaskAppCommands(),
-    ...getGitCommands(),
-    ...getViewCommands(),
-    ...getNotificationCommands()
-  ].filter((g) => g.commands.length > 0)
+    {
+      heading: 'Recent Projects',
+      commands: recent.map((project) => ({
+        id: `recent-${project.id}`,
+        label: project.name,
+        subtitle: project.path,
+        icon: FolderClockIcon,
+        keywords: [project.name, project.path],
+        onSelect: () => openProject(project.id)
+      }))
+    }
+  ]
 }
 
-/**
- * Editor command groups (shown when search starts with `>`).
- * Only populated when an editor tab is/was recently focused.
- */
+export function getAppCommandGroups(): CommandGroup[] {
+  const visibleDefinitions = getVisibleAppPaletteCommands()
+  const groups = new Map<string, CommandGroup>()
+
+  for (const definition of visibleDefinitions) {
+    const command = toPaletteCommand(definition)
+    const existing = groups.get(definition.group)
+    if (existing) existing.commands.push(command)
+    else groups.set(definition.group, { heading: definition.group, commands: [command] })
+  }
+
+  return [...Array.from(groups.values()), ...getRecentProjectGroups()].filter((group) => group.commands.length > 0)
+}
+
 export function getEditorCommandGroups(): CommandGroup[] {
   return getEditorCommands().filter((g) => g.commands.length > 0)
 }
 
-/**
- * Task palette groups (shown when search starts with `!`). Returns
- * one group per task `group` field, with an ungrouped "Tasks" bucket
- * for entries that don't specify one.
- */
 export function getTaskCommandGroups(): CommandGroup[] {
   return getTaskPaletteGroups().filter((g) => g.commands.length > 0)
 }

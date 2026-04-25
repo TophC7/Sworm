@@ -9,6 +9,7 @@
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { refreshGit, runGitAction } from '$lib/features/git/state.svelte'
+  import { forcePushWithLease, undoLastCommit } from '$lib/features/git/actions.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
   import { GitBranchIcon, RotateCw } from '$lib/icons/lucideExports'
@@ -51,7 +52,6 @@
 
   // Confirmation dialog state
   let showDiscardConfirm = $state(false)
-  let showUndoCommitConfirm = $state(false)
 
   // Commit-message textarea content, owned here so an undo-commit can
   // push the previous commit message back into the editor without
@@ -152,11 +152,7 @@
   }
 
   async function handleUndoLastCommit() {
-    showUndoCommitConfirm = false
-    // Thread the returned commit message back into the textarea so the
-    // user can edit or re-commit. Undefined means the task threw, in
-    // which case the notification already explained the failure.
-    const message = await handleGitAction('undoLastCommit', (path) => backend.git.undoLastCommit(path))
+    const message = await undoLastCommit(projectId, projectPath)
     if (typeof message === 'string' && message.length > 0) {
       commitMessage = message
     }
@@ -167,7 +163,7 @@
   }
 
   async function handlePushForceWithLease() {
-    await handleGitAction('forcePush', (path) => backend.git.pushForceWithLease(path))
+    await forcePushWithLease(projectId, projectPath)
   }
 
   async function handlePull() {
@@ -275,7 +271,7 @@
             onUnstageAll={handleUnstageAll}
             onDiscardAll={() => (showDiscardConfirm = true)}
             onStashAll={handleStashAll}
-            onUndoLastCommit={() => (showUndoCommitConfirm = true)}
+            onUndoLastCommit={handleUndoLastCommit}
             onPush={handlePush}
             onPushForceWithLease={handlePushForceWithLease}
             onPull={handlePull}
@@ -306,13 +302,4 @@
   confirmLabel="Discard All"
   onConfirm={handleDiscardAll}
   onCancel={() => (showDiscardConfirm = false)}
-/>
-
-<ConfirmDialog
-  open={showUndoCommitConfirm}
-  title="Undo Last Commit?"
-  message="This will soft-reset to HEAD~1. Your changes will be preserved as staged files."
-  confirmLabel="Undo Commit"
-  onConfirm={handleUndoLastCommit}
-  onCancel={() => (showUndoCommitConfirm = false)}
 />

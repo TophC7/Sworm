@@ -1,4 +1,4 @@
-// Editor command group — surfaces Monaco actions in the app command palette.
+// Editor command group surfaces Monaco actions in the app command palette.
 //
 // Only returns commands when an editor tab is focused (the actions
 // store is populated on editor focus and cleared on blur/unmount).
@@ -17,6 +17,7 @@ export function getEditorCommands(): CommandGroup[] {
         id: `editor:${a.id}`,
         label: a.label,
         keywords: a.id.split('.'),
+        defaultKeybindings: a.defaultKeybindings,
         onSelect: a.run
       }))
     }

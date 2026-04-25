@@ -5,10 +5,12 @@
 // editor command set.
 
 import type { editor } from 'monaco-editor'
+import { getMonacoDefaultKeybindings } from '$lib/features/editor/renderers/monaco/core/keybindings'
 
 export interface EditorAction {
   id: string
   label: string
+  defaultKeybindings: string[]
   run: () => void
 }
 
@@ -49,7 +51,12 @@ function populateActions(editorInstance: editor.IStandaloneCodeEditor) {
       if (HIDDEN_ACTIONS.has(action.id)) return false
       return !HIDDEN_PREFIXES.some((prefix) => action.id.startsWith(prefix))
     })
-    .map((action) => ({ id: action.id, label: action.label, run: () => action.run() }))
+    .map((action) => ({
+      id: action.id,
+      label: action.label,
+      defaultKeybindings: getMonacoDefaultKeybindings(action.id),
+      run: () => action.run()
+    }))
 }
 
 export function registerTextEditorActions(editorInstance: editor.IStandaloneCodeEditor) {

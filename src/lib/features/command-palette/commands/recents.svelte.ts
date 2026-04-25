@@ -17,7 +17,7 @@ function load(): string[] {
       return parsed.filter((v): v is string => typeof v === 'string').slice(0, MAX_RECENTS)
     }
   } catch {
-    // Corrupt entry -- treat as empty so the palette still opens.
+    // Corrupt entry: treat as empty so the palette still opens.
   }
   return []
 }

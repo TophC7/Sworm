@@ -4,9 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import { disposeAll } from '$lib/features/sessions/terminal/sessionRegistry'
-  import { backend } from '$lib/api/backend'
   import CommandCenter from '$lib/features/command-palette/CommandCenter.svelte'
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
@@ -14,22 +12,20 @@
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
   import { TooltipProvider } from '$lib/components/ui/tooltip'
-  import { addProject } from '$lib/features/projects/state.svelte'
   import { getWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/setup.svelte'
+  import { openProjectDirectory, openSettings } from '$lib/features/app-actions/actions.svelte'
   import { initProjectSchemas } from '$lib/features/project-config/bootstrap'
   import {
     getDirtyTextSurfaceCount,
     hasAnyDirtyTextSurfaces
   } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { flushPersistencePending, getActiveSessionId, openProject } from '$lib/features/workbench/state.svelte'
+  import { flushPersistencePending, getActiveSessionId } from '$lib/features/workbench/state.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
-
-  let projectError = $state<string | null>(null)
 
   // Keep xterm's textarea focus aligned with the active session.
   //
@@ -114,23 +110,11 @@
       unlisten.then((cleanup) => cleanup()).catch(() => {})
     }
   })
-
-  async function handleNewProject() {
-    try {
-      const path = await backend.projects.selectDirectory()
-      if (path) {
-        const project = await addProject(path)
-        openProject(project.id)
-      }
-    } catch (e) {
-      projectError = `Failed to add project:\n${e}`
-    }
-  }
 </script>
 
 <TooltipProvider delayDuration={300}>
   <div class="flex h-screen flex-col overflow-hidden">
-    <TitleBar onNewProject={handleNewProject} onSettings={() => setSettingsOpen(true)} />
+    <TitleBar onNewProject={openProjectDirectory} onSettings={openSettings} />
 
     <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {@render children()}
@@ -143,20 +127,8 @@
        main app so IconButtons inside them (e.g. Settings close) find a
        provider without needing a per-surface one. Nested providers
        confuse bits-ui's cross-tooltip coordination. -->
-  <CommandCenter onNewProject={handleNewProject} onSettings={() => setSettingsOpen(true)} />
+  <CommandCenter />
   <SettingsDialog open={isSettingsOpen()} onClose={() => setSettingsOpen(false)} />
   <NotificationsSurface />
   <ConfirmHost />
 </TooltipProvider>
-
-{#if projectError}
-  <ConfirmDialog
-    open={true}
-    title="Project Error"
-    message={projectError}
-    confirmLabel="Close"
-    showCancel={false}
-    onCancel={() => (projectError = null)}
-    onConfirm={() => (projectError = null)}
-  />
-{/if}

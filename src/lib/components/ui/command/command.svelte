@@ -5,20 +5,29 @@
 
   let {
     class: className,
+    value = $bindable(''),
     children,
     ...rest
   }: {
     class?: string
-    children?: Snippet
     value?: string
+    children?: Snippet
     onValueChange?: (value: string) => void
     shouldFilter?: boolean
     loop?: boolean
     label?: string
     vimBindings?: boolean
+    disablePointerSelection?: boolean
+    onkeydown?: (event: KeyboardEvent) => void
+    onpointermovecapture?: (event: PointerEvent) => void
+    onpointerleavecapture?: (event: PointerEvent) => void
   } = $props()
 </script>
 
-<Command.Root class={cn('flex h-full w-full flex-col overflow-hidden rounded-xl bg-raised', className)} {...rest}>
+<Command.Root
+  bind:value
+  class={cn('flex h-full w-full flex-col overflow-hidden rounded-xl bg-raised', className)}
+  {...rest}
+>
   {#if children}{@render children()}{/if}
 </Command.Root>

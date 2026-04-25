@@ -1,5 +1,4 @@
 <script lang="ts">
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import StageView from '$lib/components/layout/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { MagicCard } from '$lib/components/ui/magic-card'
@@ -8,9 +7,8 @@
   import { allProviders, directOptions, type ProviderMeta } from '$lib/features/sessions/providers/catalog'
   import { getActiveProjectId } from '$lib/features/projects/state.svelte'
   import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
-  import { createAndOpenSession, hasRunningSessions } from '$lib/features/sessions/state/sessions.svelte'
   import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/service.svelte'
-  import type { ProviderStatus } from '$lib/types/backend'
+  import { createSessionWithSharedWorkspaceWarning } from '$lib/features/app-actions/actions.svelte'
   import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 
   let { onCreated }: { onCreated?: () => void } = $props()
@@ -19,9 +17,6 @@
   let activeProjectId = $derived(getActiveProjectId())
   // Pre-compute Map for O(1) provider status lookups
   let providerMap = $derived(new Map(connectedProviders.map((p) => [p.id, p])))
-
-  let sharedWarningOpen = $state(false)
-  let pendingProvider = $state<ProviderStatus | null>(null)
 
   async function handleSelect(provider: (typeof allProviders)[number]) {
     if (!activeProjectId) return
@@ -33,13 +28,8 @@
       return
     }
 
-    if (hasRunningSessions()) {
-      pendingProvider = status
-      sharedWarningOpen = true
-      return
-    }
-
-    await doCreateSession(status)
+    const created = await createSessionWithSharedWorkspaceWarning(status.id, provider.label)
+    if (created) onCreated?.()
   }
 
   async function doOpenFresh() {
@@ -52,21 +42,6 @@
       }
     })
     if (tabId) onCreated?.()
-  }
-
-  async function doCreateSession(provider: ProviderStatus) {
-    if (!activeProjectId) return
-    const created = await runNotifiedTask(
-      () => createAndOpenSession(activeProjectId, provider.id, `${provider.label} session`),
-      {
-        loading: { title: `Starting ${provider.label} session` },
-        error: {
-          title: `Failed to start ${provider.label} session`,
-          description: (error) => getErrorMessage(error)
-        }
-      }
-    )
-    if (created) onCreated?.()
   }
 </script>
 
@@ -157,21 +132,3 @@
     {/each}
   </div>
 </StageView>
-
-<ConfirmDialog
-  open={sharedWarningOpen}
-  title="Shared Workspace Warning"
-  message="Another session is already running in this project.\n\nSessions in the same project share the same working tree and branch.\nChanges made by one session may conflict with another."
-  confirmLabel="Start Anyway"
-  onCancel={() => {
-    sharedWarningOpen = false
-    pendingProvider = null
-  }}
-  onConfirm={() => {
-    sharedWarningOpen = false
-    if (pendingProvider) {
-      void doCreateSession(pendingProvider)
-      pendingProvider = null
-    }
-  }}
-/>

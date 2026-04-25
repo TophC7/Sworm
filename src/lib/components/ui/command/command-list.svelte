@@ -5,14 +5,16 @@
 
   let {
     class: className,
+    ref = $bindable(null),
     children,
     ...rest
   }: {
     class?: string
+    ref?: HTMLElement | null
     children?: Snippet
   } = $props()
 </script>
 
-<Command.List class={cn('max-h-[300px] overflow-x-hidden overflow-y-auto p-1', className)} {...rest}>
+<Command.List bind:ref class={cn('max-h-[300px] overflow-x-hidden overflow-y-auto p-1', className)} {...rest}>
   {#if children}{@render children()}{/if}
 </Command.List>

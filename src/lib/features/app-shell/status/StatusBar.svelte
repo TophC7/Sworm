@@ -7,6 +7,8 @@
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
+  import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
+  import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
   import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
 
   let sessions = $derived(getSessions())
@@ -14,6 +16,9 @@
   let zoom = $derived(getZoomLevel())
   let activeProjectId = $derived(getActiveProjectId())
   let gitSummary = $derived(activeProjectId ? getGitSummary(activeProjectId) : null)
+  let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
+  let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))
+  let zoomInShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-in', ['Ctrl+=', 'Ctrl++'])[0]))
 </script>
 
 <footer
@@ -53,7 +58,7 @@
     {/if}
 
     <div class="flex items-center gap-0.5 text-muted">
-      <IconButton tooltip="Zoom out" shortcut="Ctrl+-" onclick={zoomOut}>
+      <IconButton tooltip="Zoom out" shortcut={zoomOutShortcut} onclick={zoomOut}>
         <Minus size={10} />
       </IconButton>
       <TooltipRoot>
@@ -63,9 +68,14 @@
         >
           {Math.round(zoom * 100)}%
         </TooltipTrigger>
-        <TooltipContent>Reset zoom <kbd class="ml-2 font-mono text-xs text-subtle">Ctrl+0</kbd></TooltipContent>
+        <TooltipContent>
+          Reset zoom
+          {#if zoomResetShortcut}
+            <kbd class="ml-2 font-mono text-xs text-subtle">{zoomResetShortcut}</kbd>
+          {/if}
+        </TooltipContent>
       </TooltipRoot>
-      <IconButton tooltip="Zoom in" shortcut="Ctrl+=" onclick={zoomIn}>
+      <IconButton tooltip="Zoom in" shortcut={zoomInShortcut} onclick={zoomIn}>
         <Plus size={10} />
       </IconButton>
     </div>

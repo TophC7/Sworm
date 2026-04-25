@@ -19,3 +19,13 @@ declare module 'monaco-editor/esm/vs/platform/contextkey/common/contextkey.js' {
     and(...expr: unknown[]): unknown
   }
 }
+
+declare module 'monaco-editor/esm/vs/editor/standalone/browser/standaloneServices.js' {
+  export const StandaloneServices: {
+    get(service: unknown): unknown
+  }
+}
+
+declare module 'monaco-editor/esm/vs/platform/keybinding/common/keybinding.js' {
+  export const IKeybindingService: unknown
+}
