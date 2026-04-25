@@ -26,8 +26,8 @@
     projectId: string
   } = $props()
 
-  let sessions = $derived(getSessions())
-  let archivedSessions = $derived(getArchivedSessions())
+  let sessions = $derived(getSessions(projectId))
+  let archivedSessions = $derived(getArchivedSessions(projectId))
 
   // Delete confirmation
   let deleteConfirmOpen = $state(false)

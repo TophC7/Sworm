@@ -11,10 +11,10 @@
   import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
   import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
 
-  let sessions = $derived(getSessions())
+  let activeProjectId = $derived(getActiveProjectId())
+  let sessions = $derived(activeProjectId ? getSessions(activeProjectId) : [])
   let liveSessions = $derived(sessions.filter((s) => s.status === 'running'))
   let zoom = $derived(getZoomLevel())
-  let activeProjectId = $derived(getActiveProjectId())
   let gitSummary = $derived(activeProjectId ? getGitSummary(activeProjectId) : null)
   let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
   let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))

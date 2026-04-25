@@ -1,6 +1,6 @@
 // Session state module using Svelte 5 runes.
 //
-// Manages the session list for the active project (CRUD against the backend).
+// Manages per-project session lists (CRUD against the backend).
 // Active-session identity is derived from the workspace tab model.
 
 import { backend } from '$lib/api/backend'
@@ -8,19 +8,27 @@ import { removeSession as removeActivityEntry } from '$lib/features/sessions/sta
 import { addSessionTab, restoreWorkspaceFromDisk, syncSessionTabs } from '$lib/features/workbench/state.svelte'
 import type { Session } from '$lib/types/backend'
 
-let sessions = $state<Session[]>([])
-let archivedSessions = $state<Session[]>([])
+let sessionsByProject = $state<Map<string, Session[]>>(new Map())
+let archivedSessionsByProject = $state<Map<string, Session[]>>(new Map())
 
-export function getSessions() {
-  return sessions
+function setProjectSessions(projectId: string, nextSessions: Session[]) {
+  sessionsByProject = new Map(sessionsByProject).set(projectId, nextSessions)
 }
 
-export function getArchivedSessions() {
-  return archivedSessions
+function setProjectArchivedSessions(projectId: string, nextSessions: Session[]) {
+  archivedSessionsByProject = new Map(archivedSessionsByProject).set(projectId, nextSessions)
 }
 
-export function hasRunningSessions(): boolean {
-  return sessions.some((s) => s.status === 'running')
+export function getSessions(projectId: string): Session[] {
+  return sessionsByProject.get(projectId) ?? []
+}
+
+export function getArchivedSessions(projectId: string): Session[] {
+  return archivedSessionsByProject.get(projectId) ?? []
+}
+
+export function hasRunningSessions(projectId: string): boolean {
+  return getSessions(projectId).some((s) => s.status === 'running')
 }
 
 // --- Backend CRUD ---
@@ -33,20 +41,21 @@ export async function loadSessions(projectId: string) {
     // is idempotent, so the eager-open path (already restored) just
     // returns immediately.
     await restoreWorkspaceFromDisk(projectId)
-    sessions = await backend.sessions.list(projectId)
-    syncSessionTabs(projectId, sessions)
+    const nextSessions = await backend.sessions.list(projectId)
+    setProjectSessions(projectId, nextSessions)
+    syncSessionTabs(projectId, nextSessions)
   } catch (e) {
     console.error('Failed to load sessions:', e)
-    sessions = []
+    setProjectSessions(projectId, [])
   }
 }
 
 export async function loadArchivedSessions(projectId: string) {
   try {
-    archivedSessions = await backend.sessions.listArchived(projectId)
+    setProjectArchivedSessions(projectId, await backend.sessions.listArchived(projectId))
   } catch (e) {
     console.error('Failed to load archived sessions:', e)
-    archivedSessions = []
+    setProjectArchivedSessions(projectId, [])
   }
 }
 
@@ -75,8 +84,13 @@ export async function unarchiveSession(sessionId: string, projectId: string) {
   await loadArchivedSessions(projectId)
 }
 
-export function updateSessionInList(sessionId: string, updates: Partial<Session>) {
-  sessions = sessions.map((s) => (s.id === sessionId ? { ...s, ...updates } : s))
+export function updateSessionInList(projectId: string, sessionId: string, updates: Partial<Session>) {
+  const projectSessions = sessionsByProject.get(projectId)
+  if (!projectSessions || !projectSessions.some((session) => session.id === sessionId)) return
+  setProjectSessions(
+    projectId,
+    projectSessions.map((session) => (session.id === sessionId ? { ...session, ...updates } : session))
+  )
 }
 
 /** Create a session and open it as a tab in one step. */

@@ -6,7 +6,7 @@
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { allProviders, directOptions, type ProviderMeta } from '$lib/features/sessions/providers/catalog'
   import { getActiveProjectId } from '$lib/features/projects/state.svelte'
-  import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
+  import { getConnectedProviders, getProvidersLoading } from '$lib/features/sessions/providers/state.svelte'
   import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/service.svelte'
   import { createSessionWithSharedWorkspaceWarning } from '$lib/features/app-actions/actions.svelte'
   import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
@@ -14,6 +14,7 @@
   let { onCreated }: { onCreated?: () => void } = $props()
 
   let connectedProviders = $derived(getConnectedProviders())
+  let providersLoading = $derived(getProvidersLoading())
   let activeProjectId = $derived(getActiveProjectId())
   // Pre-compute Map for O(1) provider status lookups
   let providerMap = $derived(new Map(connectedProviders.map((p) => [p.id, p])))
@@ -63,10 +64,10 @@
             <span
               class="h-5 shrink-0 self-start {connected ? 'bg-fg' : 'bg-muted'}"
               style="
-								width: {Math.round(20 * provider.textAspect)}px;
-								-webkit-mask: url({provider.textIcon}) no-repeat center / contain;
-								mask: url({provider.textIcon}) no-repeat center / contain;
-							"
+                width: {Math.round(20 * provider.textAspect)}px;
+                -webkit-mask: url({provider.textIcon}) no-repeat center / contain;
+                mask: url({provider.textIcon}) no-repeat center / contain;
+              "
               role="img"
               aria-label={provider.label}
             ></span>
@@ -77,7 +78,7 @@
             >
           {/if}
           {#if !connected}
-            <span class="text-2xs text-muted italic">Not detected</span>
+            <span class="text-2xs text-muted italic">{providersLoading ? 'Detecting...' : 'Not detected'}</span>
           {:else if status?.version}
             <span class="text-2xs text-success">{status.version}</span>
           {/if}
@@ -116,7 +117,7 @@
     {/each}
   </div>
 
-  <!-- Divider — labeled "or" separator between agent and direct options -->
+  <!-- Divider between agent and direct options -->
   <BlurFade delay={0.1 + allProviders.length * 0.08} duration={0.4} direction="up" offset={8}>
     <div class="my-4 flex items-center gap-4">
       <Separator class="flex-1" />

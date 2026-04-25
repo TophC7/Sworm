@@ -27,7 +27,7 @@ async function waitForSessionReady(sessionId: string, timeoutMs = 8000): Promise
 }
 
 function findProjectSession(projectId: string, providerId: string): Session | null {
-  return getSessions().find((session) => session.project_id === projectId && session.provider_id === providerId) ?? null
+  return getSessions(projectId).find((session) => session.provider_id === providerId) ?? null
 }
 
 async function resolveFreshSession(projectId: string): Promise<Session> {

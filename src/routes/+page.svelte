@@ -12,7 +12,8 @@
   import { describeClientError, logClientError } from '$lib/utils/client-error'
 
   let activeProject = $derived(getActiveProject())
-  let showEmpty = $derived(isProjectPickerOverride() || !activeProject)
+  let bootstrapping = $state(true)
+  let showEmpty = $derived(!bootstrapping && (isProjectPickerOverride() || !activeProject))
   let bootstrapError = $state<string | null>(null)
 
   // Drain the argv-supplied path (from Nautilus "Open With" or a CLI
@@ -40,13 +41,17 @@
     void (async () => {
       try {
         await loadProjects()
-        void loadProviders()
-        await preloadBuiltinCatalog()
         const validIds = new Set(getProjects().map((project) => project.id))
         await restoreAppShellState(validIds)
         await consumePendingOpenPath()
+        bootstrapping = false
+        void loadProviders()
+        void preloadBuiltinCatalog().catch((error) => {
+          logClientError('builtin catalog preload failed', { error })
+        })
       } catch (error) {
         bootstrapError = describeClientError(error)
+        bootstrapping = false
         logClientError('startup bootstrap failed', {
           phase: '+page onMount',
           error,
@@ -77,6 +82,10 @@
       </p>
       <pre class="overflow-auto text-sm whitespace-pre-wrap text-fg">{bootstrapError}</pre>
     </div>
+  </div>
+{:else if bootstrapping && !activeProject}
+  <div class="flex min-h-0 flex-1 items-center justify-center bg-ground text-base text-muted">
+    Restoring workspace...
   </div>
 {:else if showEmpty}
   <EmptyState />

@@ -103,7 +103,7 @@ export async function createSessionWithSharedWorkspaceWarning(providerId: string
     return false
   }
 
-  if (hasRunningSessions()) {
+  if (hasRunningSessions(projectId)) {
     const proceed = await confirmAsync({
       title: 'Shared Workspace Warning',
       message:

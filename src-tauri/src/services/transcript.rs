@@ -159,11 +159,15 @@ impl TranscriptService {
         limit_bytes: Option<usize>,
     ) -> Result<Vec<u8>, String> {
         let limit = limit_bytes.unwrap_or(DEFAULT_TRANSCRIPT_TAIL_BYTES);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let mut stmt = conn
             .prepare(
                 "SELECT payload_json FROM session_entries
                  WHERE session_id = ?1 AND kind = 'output'
-                 ORDER BY created_at ASC, id ASC",
+                 ORDER BY created_at DESC, id DESC",
             )
             .map_err(|e| format!("transcript prepare failed: {}", e))?;
 
@@ -172,6 +176,7 @@ impl TranscriptService {
             .map_err(|e| format!("transcript query failed: {}", e))?;
 
         let mut entries: Vec<(i64, Vec<u8>)> = Vec::new();
+        let mut total = 0usize;
         for row in rows {
             let raw = match row {
                 Ok(r) => r,
@@ -181,48 +186,37 @@ impl TranscriptService {
                 }
             };
             match parse_payload(&raw) {
-                Ok(parsed) => entries.push(parsed),
+                Ok((seq, bytes)) => {
+                    total += bytes.len();
+                    entries.push((seq, bytes));
+                    if total >= limit {
+                        break;
+                    }
+                }
                 Err(err) => {
                     tracing::warn!("Skipping malformed transcript payload: {}", err);
                 }
             }
         }
-        // Belt-and-braces: rows should already arrive in seq order under
-        // a single writer, but the sort protects against millisecond
-        // collisions in created_at and any future multi-writer change.
+
+        // Rows are read newest-first so large transcripts don't require
+        // parsing the whole history. Sort the retained tail back into
+        // playback order before concatenating.
         entries.sort_by_key(|(seq, _)| *seq);
 
-        let total: usize = entries.iter().map(|(_, b)| b.len()).sum();
-        if total <= limit {
-            let mut out = Vec::with_capacity(total);
-            for (_, bytes) in entries {
-                out.extend_from_slice(&bytes);
-            }
-            return Ok(out);
-        }
-
-        // Tail window: walk back from the end until we've covered `limit`.
-        let mut tail: Vec<Vec<u8>> = Vec::new();
-        let mut acc = 0usize;
-        for (_, bytes) in entries.into_iter().rev() {
-            acc += bytes.len();
-            tail.push(bytes);
-            if acc >= limit {
-                break;
-            }
-        }
-        tail.reverse();
-
-        let overflow = acc.saturating_sub(limit);
+        let mut overflow = total.saturating_sub(limit);
         let mut out = Vec::with_capacity(limit);
-        let mut first = true;
-        for bytes in tail {
-            if first && overflow > 0 && bytes.len() > overflow {
+        for (_, bytes) in entries {
+            if overflow >= bytes.len() {
+                overflow -= bytes.len();
+                continue;
+            }
+            if overflow > 0 {
                 out.extend_from_slice(&bytes[overflow..]);
+                overflow = 0;
             } else {
                 out.extend_from_slice(&bytes);
             }
-            first = false;
         }
         Ok(out)
     }
@@ -364,4 +358,72 @@ fn parse_payload(raw: &str) -> Result<(i64, Vec<u8>), String> {
         .decode(chunk)
         .map_err(|e| format!("transcript chunk decode failed: {}", e))?;
     Ok((seq, bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_entries (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_chunk(conn: &Connection, id: &str, seq: i64, bytes: &[u8], created_at: &str) {
+        let payload = serde_json::json!({
+            "chunk": BASE64.encode(bytes),
+            "seq": seq,
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO session_entries (id, session_id, kind, payload_json, created_at)
+             VALUES (?1, 's1', 'output', ?2, ?3)",
+            rusqlite::params![id, payload, created_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn read_tail_returns_requested_suffix() {
+        let conn = test_conn();
+        insert_chunk(&conn, "a", 1, b"abc", "2026-01-01T00:00:00Z");
+        insert_chunk(&conn, "b", 2, b"def", "2026-01-01T00:00:01Z");
+        insert_chunk(&conn, "c", 3, b"ghi", "2026-01-01T00:00:02Z");
+
+        let bytes = TranscriptService::read_tail(&conn, "s1", Some(5)).unwrap();
+
+        assert_eq!(bytes, b"efghi");
+    }
+
+    #[test]
+    fn read_tail_preserves_playback_order() {
+        let conn = test_conn();
+        insert_chunk(&conn, "a", 1, b"one", "2026-01-01T00:00:00Z");
+        insert_chunk(&conn, "b", 2, b"two", "2026-01-01T00:00:01Z");
+        insert_chunk(&conn, "c", 3, b"three", "2026-01-01T00:00:02Z");
+
+        let bytes = TranscriptService::read_tail(&conn, "s1", Some(20)).unwrap();
+
+        assert_eq!(bytes, b"onetwothree");
+    }
+
+    #[test]
+    fn read_tail_zero_limit_returns_empty() {
+        let conn = test_conn();
+        insert_chunk(&conn, "a", 1, b"abc", "2026-01-01T00:00:00Z");
+
+        let bytes = TranscriptService::read_tail(&conn, "s1", Some(0)).unwrap();
+
+        assert!(bytes.is_empty());
+    }
 }

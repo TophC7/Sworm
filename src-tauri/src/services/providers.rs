@@ -184,36 +184,38 @@ impl ProviderService {
         binary_overrides: &HashMap<String, String>,
         detected_shell: Option<&str>,
     ) -> Vec<ProviderStatus> {
-        let mut results = Vec::new();
+        let mut results = std::thread::scope(|scope| {
+            let handles = PROVIDERS
+                .iter()
+                .map(|def| {
+                    let override_path = binary_overrides
+                        .get(&def.id.to_string())
+                        .map(String::as_str);
+                    (
+                        def,
+                        scope.spawn(move || {
+                            provider_status(def, merged_path, override_path, detected_shell)
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-        for def in PROVIDERS {
-            let override_path = binary_overrides
-                .get(&def.id.to_string())
-                .map(String::as_str);
+            handles
+                .into_iter()
+                .map(|(def, handle)| {
+                    handle.join().unwrap_or_else(|_| {
+                        errored_provider_status(def, "Provider detection panicked")
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
 
-            let status = if def.id == ProviderId::Terminal {
-                // Terminal is always available — it uses the user's login shell
-                let shell = detected_shell.unwrap_or("/bin/sh");
-                let shell_name = std::path::Path::new(shell)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("sh");
-                ProviderStatus {
-                    id: def.id,
-                    label: def.label.to_string(),
-                    status: ProviderConnectionStatus::Connected,
-                    version: Some(shell_name.to_string()),
-                    resolved_path: Some(shell.to_string()),
-                    message: None,
-                    install_hint: String::new(),
-                }
-            } else {
-                detect_provider(def, merged_path, override_path)
-            };
-
-            self.cache.insert(def.id.to_string(), status.clone());
-            results.push(status);
-        }
+        results.sort_by_key(|status| provider_order(status.id));
+        self.cache = results
+            .iter()
+            .cloned()
+            .map(|status| (status.id.to_string(), status))
+            .collect();
 
         results
     }
@@ -334,6 +336,51 @@ impl ProviderService {
         }
 
         args
+    }
+}
+
+fn provider_status(
+    definition: &ProviderDef,
+    merged_path: &str,
+    binary_override: Option<&str>,
+    detected_shell: Option<&str>,
+) -> ProviderStatus {
+    if definition.id != ProviderId::Terminal {
+        return detect_provider(definition, merged_path, binary_override);
+    }
+
+    let shell = detected_shell.unwrap_or("/bin/sh");
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sh");
+    ProviderStatus {
+        id: definition.id,
+        label: definition.label.to_string(),
+        status: ProviderConnectionStatus::Connected,
+        version: Some(shell_name.to_string()),
+        resolved_path: Some(shell.to_string()),
+        message: None,
+        install_hint: String::new(),
+    }
+}
+
+fn provider_order(id: ProviderId) -> usize {
+    PROVIDERS
+        .iter()
+        .position(|provider| provider.id == id)
+        .unwrap_or(usize::MAX)
+}
+
+fn errored_provider_status(definition: &ProviderDef, message: &str) -> ProviderStatus {
+    ProviderStatus {
+        id: definition.id,
+        label: definition.label.to_string(),
+        status: ProviderConnectionStatus::Error,
+        version: None,
+        resolved_path: None,
+        message: Some(message.to_string()),
+        install_hint: definition.install_hint.to_string(),
     }
 }
 

@@ -24,7 +24,7 @@
 
   let isFocused = $derived(getFocusedPaneSlot() === pane.slot)
 
-  let sessions = $derived(getSessions())
+  let sessions = $derived(getSessions(projectId))
   let activeTab = $derived(pane.activeTabId ? (tabs.find((tab) => tab.id === pane.activeTabId) ?? null) : null)
   let paneSession = $derived(
     activeTab?.kind === 'session' ? (sessions.find((session) => session.id === activeTab.sessionId) ?? null) : null
@@ -117,7 +117,7 @@
       onSessionCreated={handleSessionCreated}
       onSessionStatusChange={(status) => {
         if (!paneSession) return
-        updateSessionInList(paneSession.id, { status })
+        updateSessionInList(projectId, paneSession.id, { status })
         if (status === 'exited' || status === 'stopped') {
           void refreshGit(projectId, projectPath)
         }

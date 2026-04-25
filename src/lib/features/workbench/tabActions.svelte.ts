@@ -48,12 +48,12 @@ export async function closeTabWithChecks(projectId: string, tabId: TabId): Promi
   }
 
   if (tab.kind === 'session') {
-    const sessions = getSessions()
+    const sessions = getSessions(projectId)
     const session = sessions.find((s) => s.id === tab.sessionId)
     if (session && (session.status === 'running' || session.status === 'starting')) {
       try {
         await backend.sessions.stop(tab.sessionId)
-        updateSessionInList(tab.sessionId, { status: 'stopped' })
+        updateSessionInList(projectId, tab.sessionId, { status: 'stopped' })
       } catch (err) {
         notify.error('Stop session failed', getErrorMessage(err))
         return false

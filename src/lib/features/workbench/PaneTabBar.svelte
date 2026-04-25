@@ -45,7 +45,7 @@
     onNewSession?: () => void
   } = $props()
 
-  let sessions = $derived(getSessions())
+  let sessions = $derived(getSessions(projectId))
   let warningOpen = $state(false)
   let pendingSessionAction: (() => Promise<void>) | null = null
 
@@ -79,7 +79,7 @@
         } else {
           await backend.sessions.stop(tab.sessionId)
         }
-        updateSessionInList(tab.sessionId, { status: 'stopped' })
+        updateSessionInList(projectId, tab.sessionId, { status: 'stopped' })
       },
       {
         loading: { title: 'Stopping session', description: getTabPresentation(tab).title },
@@ -101,10 +101,10 @@
         const manager = sessionRegistry.getOrCreate(session.id)
         if (manager.isPtyActive()) {
           await manager.stopPty()
-          updateSessionInList(session.id, { status: 'stopped' })
+          updateSessionInList(projectId, session.id, { status: 'stopped' })
         }
         await manager.startPty(session)
-        updateSessionInList(session.id, { status: 'running' })
+        updateSessionInList(projectId, session.id, { status: 'running' })
       },
       {
         loading: { title: 'Restarting session', description: getTabPresentation(tab).title },
@@ -112,7 +112,7 @@
         error: {
           title: 'Restart session failed',
           description: (error) => {
-            updateSessionInList(session.id, { status: 'failed' })
+            updateSessionInList(projectId, session.id, { status: 'failed' })
             return getErrorMessage(error)
           }
         }

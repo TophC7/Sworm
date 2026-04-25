@@ -413,11 +413,13 @@ export async function closeProject(projectId: string): Promise<void> {
 
 export function selectProject(projectId: string | null) {
   if (projectId && openProjectIds.includes(projectId)) {
+    ensureWorkspace(projectId)
     activeProjectId = projectId
     // Selecting an already-open project tab is an implicit "I'm done
     // with the picker" — otherwise the override keeps EmptyState up
     // even after the user pinned a real tab.
     hideProjectPicker()
+    void restoreWorkspaceFromDisk(projectId)
   } else if (projectId === null) {
     activeProjectId = null
   }
@@ -489,10 +491,9 @@ export async function restoreWorkspaceFromDisk(projectId: string): Promise<void>
  * were open last session. Validates each project id against the
  * current project list so deleted projects don't resurrect.
  *
- * Workspace hydration runs *before* the active project is selected
- * so ProjectView never mounts against an empty workspace. If we
- * exposed an active project mid-restore the legacy bootstrap
- * heuristic would fire and duplicate the persisted tabs.
+ * The active workspace hydrates before activeProjectId flips so
+ * ProjectView never mounts against an empty workspace. Other open
+ * projects hydrate in the background after the first paint.
  */
 export async function restoreAppShellState(validProjectIds: Set<string>): Promise<void> {
   const { openProjectIds: savedOpen, activeProjectId: savedActive } = await loadPersistedAppShell()
@@ -507,19 +508,22 @@ export async function restoreAppShellState(validProjectIds: Set<string>): Promis
     return
   }
 
+  const desiredActive = savedActive && filteredOpen.includes(savedActive) ? savedActive : (filteredOpen[0] ?? null)
   openProjectIds = filteredOpen
-  for (const id of filteredOpen) {
-    ensureWorkspace(id)
+
+  if (desiredActive) {
+    ensureWorkspace(desiredActive)
+    await restoreWorkspaceFromDisk(desiredActive)
   }
 
-  // Hydrate every workspace before flipping the active project so
-  // ProjectView never mounts against empty state and triggers the
-  // legacy bootstrap heuristic.
-  await Promise.all(filteredOpen.map((id) => restoreWorkspaceFromDisk(id)))
-
-  const desiredActive = savedActive && filteredOpen.includes(savedActive) ? savedActive : (filteredOpen[0] ?? null)
   activeProjectId = desiredActive
   persistAppShellSnapshot()
+
+  for (const id of filteredOpen) {
+    if (id === desiredActive) continue
+    ensureWorkspace(id)
+    void restoreWorkspaceFromDisk(id)
+  }
 }
 
 /**
