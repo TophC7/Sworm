@@ -76,7 +76,7 @@ function sortTree(node: FileTreeNode<{ path: string }>): void {
  * Collapse directory chains where a directory has exactly one child
  * that is also a directory. "src" > "lib" becomes "src/lib".
  *
- * Fully immutable — returns new nodes rather than mutating inputs.
+ * Fully immutable; returns new nodes rather than mutating inputs.
  */
 function compactTree<T extends { path: string }>(nodes: FileTreeNode<T>[]): FileTreeNode<T>[] {
   return nodes.map((node) => {
@@ -104,4 +104,32 @@ export function countFiles(nodes: FileTreeNode<{ path: string }>[]): number {
     else count += countFiles(node.children)
   }
   return count
+}
+
+/** A flat row produced by [`flattenVisibleTree`]; node + indent depth. */
+export interface FlatTreeRow<T extends { path: string }> {
+  node: FileTreeNode<T>
+  depth: number
+}
+
+/**
+ * Flatten a tree into the ordered sequence of rows that are currently
+ * visible; i.e. the root nodes plus the children of any expanded
+ * directory. Used to feed a virtualized renderer.
+ */
+export function flattenVisibleTree<T extends { path: string }>(
+  nodes: FileTreeNode<T>[],
+  isCollapsed: (path: string) => boolean
+): FlatTreeRow<T>[] {
+  const out: FlatTreeRow<T>[] = []
+  const walk = (level: FileTreeNode<T>[], depth: number): void => {
+    for (const node of level) {
+      out.push({ node, depth })
+      if (node.type === 'directory' && !isCollapsed(node.path)) {
+        walk(node.children, depth + 1)
+      }
+    }
+  }
+  walk(nodes, 0)
+  return out
 }

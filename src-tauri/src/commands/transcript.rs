@@ -18,7 +18,10 @@ pub fn session_transcript_get(
     limit_bytes: Option<usize>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    let db = state.db.lock();
+    // Transcript reads are large and frequent; route through the
+    // reader pool so a long writer (e.g. transcript flush) doesn't
+    // block the UI's tail fetch.
+    let db = state.db.read();
     let bytes = TranscriptService::read_tail(db.conn(), &session_id, limit_bytes)
         .map_err(ApiError::Database)?;
     Ok(BASE64.encode(bytes))

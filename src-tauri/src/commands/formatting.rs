@@ -39,7 +39,7 @@ fn load_project_formatter_context(
     state: &tauri::State<'_, AppState>,
     project_id: &str,
 ) -> Result<(String, HashMap<String, String>), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     let project = state
         .projects
         .get(db.conn(), project_id)

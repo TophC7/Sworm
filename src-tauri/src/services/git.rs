@@ -1,6 +1,9 @@
 use crate::models::file_diff::{DiffSource, FileDiff, GitStatus};
+use parking_lot::Mutex;
 use serde::Serialize;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// Git change entry from `git status --porcelain=v2`.
@@ -73,12 +76,71 @@ pub struct StashEntry {
 /// Hard limit on file content sent over IPC to prevent OOM on large files.
 pub(crate) const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
+/// TTL for the [`GitService::get_summary`] cache. Coalesces bursts of
+/// concurrent callers (status bar, sidebar, diff signature watchers,
+/// `runGitAction` chasers) into a single git CLI sweep without
+/// noticeably staling the UI.
+const SUMMARY_CACHE_TTL: Duration = Duration::from_millis(300);
+
+#[derive(Clone)]
+struct CachedSummary {
+    at: Instant,
+    summary: GitSummary,
+}
+
 /// Git service using the system git CLI.
-pub struct GitService;
+///
+/// Holds an in-memory TTL cache of [`GitSummary`] values keyed by
+/// project path. Mutating methods (`stage_*`, `commit`, `pull`, …) call
+/// [`Self::invalidate`] so the next read picks up fresh state.
+pub struct GitService {
+    summary_cache: Mutex<HashMap<PathBuf, CachedSummary>>,
+}
 
 impl GitService {
     pub fn new() -> Self {
-        Self
+        Self {
+            summary_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn cached_summary(&self, path: &Path) -> Option<GitSummary> {
+        let cache = self.summary_cache.lock();
+        let entry = cache.get(path)?;
+        if entry.at.elapsed() < SUMMARY_CACHE_TTL {
+            Some(entry.summary.clone())
+        } else {
+            None
+        }
+    }
+
+    fn store_summary(&self, path: &Path, summary: &GitSummary) {
+        self.summary_cache.lock().insert(
+            path.to_path_buf(),
+            CachedSummary {
+                at: Instant::now(),
+                summary: summary.clone(),
+            },
+        );
+    }
+
+    /// Drop any cached summary for `path`. Call after any mutation so the
+    /// next [`Self::get_summary`] reflects the new state. Public so
+    /// command-layer mutators that bypass [`Self::run_mutate`] (currently
+    /// hunk staging in `commands/git.rs`) can still invalidate.
+    pub fn invalidate(&self, path: &Path) {
+        self.summary_cache.lock().remove(path);
+    }
+
+    /// Wrapper around [`run_git_mutate`] that invalidates the summary
+    /// cache on success. Use this from any method that changes index or
+    /// working-tree state.
+    fn run_mutate(&self, path: &Path, args: &[&str]) -> Result<(), String> {
+        let result = run_git_mutate(path, args);
+        if result.is_ok() {
+            self.invalidate(path);
+        }
+        result
     }
 
     /// Check if a path is inside a git work tree.
@@ -147,9 +209,20 @@ impl GitService {
     }
 
     /// Get full git summary for a project path.
+    ///
+    /// Cached for [`SUMMARY_CACHE_TTL`] to coalesce concurrent callers
+    /// (status bar, sidebar, diff signature watchers) into a single
+    /// underlying CLI sweep. The four independent probes
+    /// (`current_branch`, `default_base_ref`, `ahead_behind`,
+    /// `get_changes`) run in parallel via `std::thread::scope` to cut
+    /// wall-clock latency on dirty trees.
     pub fn get_summary(&self, path: &Path) -> GitSummary {
+        if let Some(cached) = self.cached_summary(path) {
+            return cached;
+        }
+
         if !self.is_git_repo(path) {
-            return GitSummary {
+            let summary = GitSummary {
                 is_repo: false,
                 branch: None,
                 base_ref: None,
@@ -160,12 +233,23 @@ impl GitService {
                 unstaged_count: 0,
                 untracked_count: 0,
             };
+            self.store_summary(path, &summary);
+            return summary;
         }
 
-        let branch = self.current_branch(path);
-        let base_ref = self.default_base_ref(path);
-        let (ahead, behind) = self.ahead_behind(path, &branch, &base_ref);
-        let changes = self.get_changes(path);
+        let (branch, base_ref, ahead_behind, changes) = std::thread::scope(|s| {
+            let b = s.spawn(|| self.current_branch(path));
+            let r = s.spawn(|| self.default_base_ref(path));
+            let a = s.spawn(|| self.ahead_behind(path));
+            let c = s.spawn(|| self.get_changes(path));
+            (
+                b.join().unwrap_or(None),
+                r.join().unwrap_or(None),
+                a.join().unwrap_or((None, None)),
+                c.join().unwrap_or_default(),
+            )
+        });
+        let (ahead, behind) = ahead_behind;
 
         let staged_count = changes.iter().filter(|c| c.staged).count() as i32;
         let unstaged_count = changes
@@ -174,7 +258,7 @@ impl GitService {
             .count() as i32;
         let untracked_count = changes.iter().filter(|c| c.status == "?").count() as i32;
 
-        GitSummary {
+        let summary = GitSummary {
             is_repo: true,
             branch,
             base_ref,
@@ -184,7 +268,9 @@ impl GitService {
             staged_count,
             unstaged_count,
             untracked_count,
-        }
+        };
+        self.store_summary(path, &summary);
+        summary
     }
 
     /// Get changed files using porcelain v2 + numstat.
@@ -252,22 +338,24 @@ impl GitService {
             }
         }
 
-        // Get numstat for unstaged diff stats
-        merge_numstat(&mut changes, path, &["diff", "--numstat"], false);
+        // Numstat passes are conditional: skip the side that has no
+        // entries from the porcelain pass; `git diff` with no changes
+        // is still a process spawn we don't need to pay for.
+        let has_unstaged = changes.iter().any(|c| !c.staged && c.status != "?");
+        let has_staged = changes.iter().any(|c| c.staged);
 
-        // Get numstat for staged diff stats
-        merge_numstat(&mut changes, path, &["diff", "--cached", "--numstat"], true);
+        if has_unstaged {
+            merge_numstat(&mut changes, path, &["diff", "--numstat"], false);
+        }
+        if has_staged {
+            merge_numstat(&mut changes, path, &["diff", "--cached", "--numstat"], true);
+        }
 
         changes
     }
 
     /// Get ahead/behind counts relative to the tracking branch.
-    fn ahead_behind(
-        &self,
-        path: &Path,
-        _branch: &Option<String>,
-        _base: &Option<String>,
-    ) -> (Option<i32>, Option<i32>) {
+    fn ahead_behind(&self, path: &Path) -> (Option<i32>, Option<i32>) {
         let output = std::process::Command::new("git")
             .args([
                 "--no-optional-locks",
@@ -296,7 +384,7 @@ impl GitService {
 
     /// Get the combined patch for all working-tree changes (staged + unstaged).
     pub fn get_full_patch(&self, path: &Path) -> Option<String> {
-        // Run staged and unstaged diffs in parallel — both are independent reads.
+        // Run staged and unstaged diffs in parallel; both are independent reads.
         let (staged, unstaged) = std::thread::scope(|s| {
             let sh = s.spawn(|| run_diff(path, &["diff", "--cached"]));
             let uh = s.spawn(|| run_diff(path, &["diff"]));
@@ -435,10 +523,10 @@ impl GitService {
             parts[2].split(' ').map(|s| s.to_string()).collect()
         };
 
-        // 2. File stats — diff against first parent (like GitHub).
+        // 2. File stats; diff against first parent (like GitHub).
         //    For root commits, diff-tree --root shows everything as added.
         let diff_ref = if parents.is_empty() {
-            // Root commit — use diff-tree --root
+            // Root commit; use diff-tree --root
             String::new()
         } else {
             format!("{}^..{}", hash, hash)
@@ -534,7 +622,7 @@ impl GitService {
 
     /// Stage all changes (tracked + untracked).
     pub fn stage_all(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["add", "-A"])
+        self.run_mutate(path, &["add", "-A"])
     }
 
     /// Stage specific files or directories.
@@ -545,12 +633,12 @@ impl GitService {
         let mut args = vec!["add", "--"];
         let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
         args.extend(refs);
-        run_git_mutate(path, &args)
+        self.run_mutate(path, &args)
     }
 
     /// Unstage all staged changes back to the working tree.
     pub fn unstage_all(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["reset", "HEAD"])
+        self.run_mutate(path, &["reset", "HEAD"])
     }
 
     /// Unstage specific files or directories.
@@ -561,21 +649,21 @@ impl GitService {
         let mut args = vec!["reset", "HEAD", "--"];
         let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
         args.extend(refs);
-        run_git_mutate(path, &args)
+        self.run_mutate(path, &args)
     }
 
     /// Discard all unstaged changes and remove untracked files.
     pub fn discard_all(&self, path: &Path) -> Result<(), String> {
         // Restore tracked files to HEAD state
-        run_git_mutate(path, &["checkout", "--", "."])?;
+        self.run_mutate(path, &["checkout", "--", "."])?;
         // Remove untracked files and directories (but not ignored ones)
-        run_git_mutate(path, &["clean", "-fd"])
+        self.run_mutate(path, &["clean", "-fd"])
     }
 
     /// Discard changes for specific files or directories.
     /// Handles both tracked (checkout) and untracked (clean) files in one
     /// invocation each. Errors are ignored because a mixed set of paths
-    /// will always fail one of the two commands — e.g. checkout rejects
+    /// will always fail one of the two commands; e.g. checkout rejects
     /// untracked paths, clean is a no-op for tracked ones.
     pub fn discard_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
         if files.is_empty() {
@@ -585,18 +673,18 @@ impl GitService {
 
         let mut checkout_args = vec!["checkout", "--"];
         checkout_args.extend(refs.iter().copied());
-        let _ = run_git_mutate(path, &checkout_args);
+        let _ = self.run_mutate(path, &checkout_args);
 
         let mut clean_args = vec!["clean", "-fd", "--"];
         clean_args.extend(refs.iter().copied());
-        let _ = run_git_mutate(path, &clean_args);
+        let _ = self.run_mutate(path, &clean_args);
 
         Ok(())
     }
 
     /// Create a commit with the given message. Returns the new short hash.
     pub fn commit(&self, path: &Path, message: &str) -> Result<String, String> {
-        run_git_mutate(path, &["commit", "-m", message])?;
+        self.run_mutate(path, &["commit", "-m", message])?;
         // Read back the new commit hash
         let output = std::process::Command::new("git")
             .args(["rev-parse", "--short", "HEAD"])
@@ -632,28 +720,28 @@ impl GitService {
             String::new()
         };
 
-        run_git_mutate(path, &["reset", "--soft", "HEAD~1"])?;
+        self.run_mutate(path, &["reset", "--soft", "HEAD~1"])?;
         Ok(message)
     }
 
     /// Push current branch to its upstream remote.
     pub fn push(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["push"])
+        self.run_mutate(path, &["push"])
     }
 
     /// Push with --force-with-lease (safe force push).
     pub fn push_force_with_lease(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["push", "--force-with-lease"])
+        self.run_mutate(path, &["push", "--force-with-lease"])
     }
 
     /// Pull from the upstream remote (fetch + merge).
     pub fn pull(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["pull"])
+        self.run_mutate(path, &["pull"])
     }
 
     /// Fetch from all remotes.
     pub fn fetch(&self, path: &Path) -> Result<(), String> {
-        run_git_mutate(path, &["fetch", "--all"])
+        self.run_mutate(path, &["fetch", "--all"])
     }
 
     /// Stash all changes including untracked files.
@@ -663,7 +751,7 @@ impl GitService {
             args.push("-m");
             args.push(msg);
         }
-        run_git_mutate(path, &args)
+        self.run_mutate(path, &args)
     }
 
     /// Count stash entries without fetching per-entry file stats.
@@ -778,34 +866,29 @@ impl GitService {
     /// Pop (apply + drop) a stash entry by index.
     pub fn stash_pop(&self, path: &Path, index: usize) -> Result<(), String> {
         let stash_ref = format!("stash@{{{}}}", index);
-        run_git_mutate(path, &["stash", "pop", &stash_ref])
+        self.run_mutate(path, &["stash", "pop", &stash_ref])
     }
 
     /// Drop a stash entry by index without applying it.
     pub fn stash_drop(&self, path: &Path, index: usize) -> Result<(), String> {
         let stash_ref = format!("stash@{{{}}}", index);
-        run_git_mutate(path, &["stash", "drop", &stash_ref])
+        self.run_mutate(path, &["stash", "drop", &stash_ref])
     }
 
     /// Get all file diffs for a stash entry (including untracked files).
-    /// Initialize a new git repository.
+    /// Initialize a new git repository. Repo identity changes (now a
+    /// repo), so [`Self::run_mutate`]'s invalidation drops any stale
+    /// "not a repo" summary on next read.
     pub fn init(&self, path: &Path) -> Result<(), String> {
-        let output = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(path)
-            .output()
-            .map_err(|e| format!("git init failed: {}", e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-        Ok(())
+        self.run_mutate(path, &["init"])
     }
 
     /// Clone a repository into the given directory (in-place, no subfolder).
     ///
-    /// Uses `git clone <url> .` for empty dirs, or init + remote + fetch + checkout
-    /// for dirs with existing content.
+    /// Uses `git clone <url> .` for empty dirs, or init + remote + fetch +
+    /// checkout for dirs with existing content. Each step routes through
+    /// [`Self::run_mutate`] so the summary cache is invalidated even on
+    /// partial completion.
     pub fn clone_in_place(&self, path: &Path, url: &str) -> Result<(), String> {
         let has_content = path
             .read_dir()
@@ -817,15 +900,14 @@ impl GitService {
             });
 
         if !has_content {
-            return self.run_git_cmd(path, &["clone", url, "."]);
+            return self.run_mutate(path, &["clone", url, "."]);
         }
 
-        self.run_git_cmd(path, &["init"])?;
-        self.run_git_cmd(path, &["remote", "add", "origin", url])?;
-        self.run_git_cmd(path, &["fetch", "origin"])?;
-
+        self.run_mutate(path, &["init"])?;
+        self.run_mutate(path, &["remote", "add", "origin", url])?;
+        self.run_mutate(path, &["fetch", "origin"])?;
         let default_branch = self.detect_remote_default_branch(path);
-        self.run_git_cmd(
+        self.run_mutate(
             path,
             &[
                 "checkout",
@@ -834,19 +916,6 @@ impl GitService {
                 &format!("origin/{}", default_branch),
             ],
         )
-    }
-
-    fn run_git_cmd(&self, path: &Path, args: &[&str]) -> Result<(), String> {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(path)
-            .output()
-            .map_err(|e| format!("git {} failed: {}", args[0], e))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-        }
-        Ok(())
     }
 
     /// Read the default branch from the local ref set by fetch, avoiding a network call.
@@ -890,89 +959,112 @@ impl GitService {
         }
     }
 
-    fn working_diff_files(&self, path: &Path, staged_filter: Option<bool>) -> Vec<FileDiff> {
-        let changes = self.get_changes(path);
-        let mut seen_paths = std::collections::HashSet::<(String, bool)>::new();
-        let mut out = Vec::new();
-        for change in changes {
-            // Untracked files: only relevant for the unstaged view.
-            if change.status == "?" && matches!(staged_filter, Some(true)) {
-                continue;
-            }
-            // Explicit staged/unstaged filter.
-            if let Some(want) = staged_filter {
-                if change.status != "?" && change.staged != want {
-                    continue;
-                }
-            }
-            // A tracked file can appear twice (once staged, once unstaged).
-            // For the combined view (`staged_filter = None`) we keep both,
-            // but dedupe by (path, staged) to guard against porcelain oddities.
-            if !seen_paths.insert((change.path.clone(), change.staged)) {
-                continue;
-            }
-
-            let (old_content, new_content, binary) = self.working_file_contents(path, &change);
-            out.push(FileDiff {
+    /// Cheap index for the working tree: file list + metadata, no
+    /// content. Pair with [`Self::get_working_diff_file_content`] to
+    /// load each file lazily, avoiding a multi-megabyte payload to the
+    /// frontend before the user has expanded any row.
+    pub fn get_working_diff_index(&self, path: &Path, staged: bool) -> Vec<FileDiff> {
+        if !self.is_git_repo(path) {
+            return Vec::new();
+        }
+        filter_working_changes(self.get_changes(path), Some(staged))
+            .into_iter()
+            .map(|change| FileDiff {
                 path: change.path.clone(),
                 old_path: None,
                 status: GitStatus::from_code(&change.status),
                 lang: lang_from_path(&change.path).to_string(),
-                old_content,
-                new_content,
-                binary,
+                old_content: None,
+                new_content: None,
+                binary: false,
                 additions: change.additions,
                 deletions: change.deletions,
-            });
-        }
-        out
+            })
+            .collect()
+    }
+
+    /// Per-file content for a working-tree diff. Caller passes the
+    /// file's status (so deletions, additions, and untracked variants
+    /// pick the right read strategy) and the staged side.
+    pub fn get_working_diff_file_content(
+        &self,
+        path: &Path,
+        file_path: &str,
+        status: GitStatus,
+        staged: bool,
+    ) -> (Option<String>, Option<String>, bool) {
+        self.working_file_contents(path, file_path, status, staged)
+    }
+
+    fn working_diff_files(&self, path: &Path, staged_filter: Option<bool>) -> Vec<FileDiff> {
+        filter_working_changes(self.get_changes(path), staged_filter)
+            .into_iter()
+            .map(|change| {
+                let status = GitStatus::from_code(&change.status);
+                let (old_content, new_content, binary) =
+                    self.working_file_contents(path, &change.path, status, change.staged);
+                FileDiff {
+                    path: change.path.clone(),
+                    old_path: None,
+                    status,
+                    lang: lang_from_path(&change.path).to_string(),
+                    old_content,
+                    new_content,
+                    binary,
+                    additions: change.additions,
+                    deletions: change.deletions,
+                }
+            })
+            .collect()
     }
 
     fn working_file_contents(
         &self,
         path: &Path,
-        change: &GitChange,
+        file_path: &str,
+        status: GitStatus,
+        staged: bool,
     ) -> (Option<String>, Option<String>, bool) {
-        match change.status.as_str() {
-            "?" => {
+        match status {
+            GitStatus::Untracked => {
                 // Untracked file: no old side.
-                let blob = read_worktree_blob(path, &change.path);
+                let blob = read_worktree_blob(path, file_path);
                 match blob {
                     BlobResult::Text(s) => (None, Some(s), false),
                     BlobResult::Binary | BlobResult::Oversized => (None, None, true),
                     BlobResult::Missing => (None, None, false),
                 }
             }
-            "D" => {
+            GitStatus::Deleted => {
                 // Deletion: only an old side.
-                let old = if change.staged {
-                    read_git_show_blob(path, &format!("HEAD:{}", change.path))
+                let old = if staged {
+                    read_git_show_blob(path, &format!("HEAD:{}", file_path))
                 } else {
-                    read_git_show_blob(path, &format!(":{}", change.path))
+                    read_git_show_blob(path, &format!(":{}", file_path))
                 };
                 fold_single_side(old, true)
             }
-            "A" if change.staged => {
+            GitStatus::Added if staged => {
                 // Staged addition: index has it, HEAD does not.
-                let new = read_git_show_blob(path, &format!(":{}", change.path));
+                let new = read_git_show_blob(path, &format!(":{}", file_path));
                 fold_single_side(new, false)
             }
             _ => {
-                if change.staged {
-                    let old = read_git_show_blob(path, &format!("HEAD:{}", change.path));
-                    let new = read_git_show_blob(path, &format!(":{}", change.path));
+                if staged {
+                    let old = read_git_show_blob(path, &format!("HEAD:{}", file_path));
+                    let new = read_git_show_blob(path, &format!(":{}", file_path));
                     fold_both_sides(old, new)
                 } else {
                     // Unstaged: index vs worktree. Fall back to HEAD when
                     // the index doesn't have an entry (rare edge with
                     // intent-to-add files).
-                    let old = match read_git_show_blob(path, &format!(":{}", change.path)) {
+                    let old = match read_git_show_blob(path, &format!(":{}", file_path)) {
                         BlobResult::Missing => {
-                            read_git_show_blob(path, &format!("HEAD:{}", change.path))
+                            read_git_show_blob(path, &format!("HEAD:{}", file_path))
                         }
                         other => other,
                     };
-                    let new = read_worktree_blob(path, &change.path);
+                    let new = read_worktree_blob(path, file_path);
                     fold_both_sides(old, new)
                 }
             }
@@ -1043,7 +1135,7 @@ impl GitService {
 
         // `git stash show --name-status --numstat` lists both tracked and
         // (with -u) untracked changes in the stash. Untracked-only entries
-        // live on the third parent `stash@{N}^3` — we treat those as adds.
+        // live on the third parent `stash@{N}^3`; we treat those as adds.
         let status_out = std::process::Command::new("git")
             .args(["stash", "show", "-u", "-z", "--name-status", &stash_ref])
             .current_dir(path)
@@ -1345,6 +1437,37 @@ fn parse_name_status(text: &str) -> Vec<RevFileEntry> {
     out
 }
 
+/// Filter and dedupe `git status --porcelain` entries for a working-tree
+/// diff. `staged_filter`:
+///   * `None`: include both sides; dedupe by `(path, staged)` so a tracked
+///     file appearing as both staged and unstaged keeps both copies.
+///   * `Some(want)`: restrict to that side only; dedupe by `path` since
+///     only one copy survives.
+/// Untracked files always live on the unstaged side and are dropped from
+/// the staged-side filter.
+fn filter_working_changes(changes: Vec<GitChange>, staged_filter: Option<bool>) -> Vec<GitChange> {
+    let mut seen_str = std::collections::HashSet::<String>::new();
+    let mut seen_pair = std::collections::HashSet::<(String, bool)>::new();
+    let mut out = Vec::new();
+    for change in changes {
+        if change.status == "?" && matches!(staged_filter, Some(true)) {
+            continue;
+        }
+        if let Some(want) = staged_filter {
+            if change.status != "?" && change.staged != want {
+                continue;
+            }
+            if !seen_str.insert(change.path.clone()) {
+                continue;
+            }
+        } else if !seen_pair.insert((change.path.clone(), change.staged)) {
+            continue;
+        }
+        out.push(change);
+    }
+    out
+}
+
 /// Run a git command and return stdout as a String (empty on failure).
 fn run_git_capture(path: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
@@ -1359,7 +1482,7 @@ fn run_git_capture(path: &Path, args: &[&str]) -> String {
 
 /// Resolve a Monaco language id from a file path. Falls back to
 /// `plaintext` for unknown extensions and dotfiles we don't special-case.
-/// Kept intentionally narrow — add only languages that have real support
+/// Kept intentionally narrow; add only languages that have real support
 /// in the loaded Monaco bundle (see `src/lib/editor/monacoEnv.ts`).
 fn lang_from_path(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();

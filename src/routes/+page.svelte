@@ -35,8 +35,17 @@
   // skip projects the user has since deleted. The pending-open path
   // runs last so an explicit "Open in Sworm" always wins over the
   // persisted active project.
+  //
+  // Provider and builtin-catalog preloads are independent of the
+  // active-project boot and run in parallel from the very start so
+  // they're already warm by the time the user opens a session.
   onMount(() => {
     let unlisten: (() => void) | undefined
+
+    void loadProviders()
+    void preloadBuiltinCatalog().catch((error) => {
+      logClientError('builtin catalog preload failed', { error })
+    })
 
     void (async () => {
       try {
@@ -45,10 +54,6 @@
         await restoreAppShellState(validIds)
         await consumePendingOpenPath()
         bootstrapping = false
-        void loadProviders()
-        void preloadBuiltinCatalog().catch((error) => {
-          logClientError('builtin catalog preload failed', { error })
-        })
       } catch (error) {
         bootstrapError = describeClientError(error)
         bootstrapping = false

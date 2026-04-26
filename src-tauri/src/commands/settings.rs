@@ -29,7 +29,7 @@ pub struct SaveProviderConfigInput {
 
 #[tauri::command]
 pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     let general = SettingsService::get_general_settings(db.conn()).map_err(ApiError::Database)?;
     let formatting =
         SettingsService::get_formatting_settings(db.conn()).map_err(ApiError::Database)?;
@@ -65,7 +65,7 @@ pub fn settings_set_general(
     settings: GeneralSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<GeneralSettings, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     SettingsService::set_general_settings(db.conn(), &settings).map_err(ApiError::Database)?;
     Ok(settings)
 }
@@ -75,7 +75,7 @@ pub fn settings_set_formatting(
     formatting: FormattingSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<FormattingSettings, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     SettingsService::set_formatting_settings(db.conn(), &formatting).map_err(ApiError::Database)?;
     Ok(formatting)
 }
@@ -92,7 +92,7 @@ pub fn settings_set_provider_config(
         extra_args: config.extra_args,
     };
 
-    let db = state.db.lock();
+    let db = state.db.write();
     SettingsService::save_provider_config(db.conn(), &record).map_err(ApiError::Database)?;
     Ok(record)
 }

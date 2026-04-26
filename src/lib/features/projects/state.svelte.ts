@@ -57,9 +57,17 @@ export async function addProject(path: string): Promise<Project> {
   try {
     const project = await backend.projects.add(path)
     await loadProjects()
+    // Backfill git metadata async; the backend's synchronous `add`
+    // skips git probes so the picker doesn't stall. We refresh the
+    // project list when the backfill resolves so branch/base_ref
+    // appear reactively in the UI.
+    void backend.projects
+      .refreshGit(project.id)
+      .then(() => loadProjects())
+      .catch((error) => console.warn(`Failed to backfill git info for ${project.id}:`, error))
     return project
   } catch (e) {
-    // Backend rejected — likely a duplicate with a different path form.
+    // Backend rejected; likely a duplicate with a different path form.
     // Re-fetch and try exact match before giving up.
     await loadProjects()
     const found = projects.find((p) => p.path.replace(/\/+$/, '') === normalizedPath)

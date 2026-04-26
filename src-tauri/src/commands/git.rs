@@ -42,7 +42,7 @@ pub(crate) fn validated_git_rev(rev: &str) -> Result<(), ApiError> {
 
 /// Validate that `file_path` stays within `project_path` after canonicalization.
 ///
-/// Returns `Ok(())` on success — callers pass the original paths to the
+/// Returns `Ok(())` on success; callers pass the original paths to the
 /// service layer (git CLI resolves them relative to its `current_dir`).
 fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), ApiError> {
     let root = PathBuf::from(project_path)
@@ -304,6 +304,56 @@ pub fn diff_get_files(
     Ok(state.git.get_diff_files(Path::new(&path), &source))
 }
 
+/// Cheap working-tree diff index: file list + metadata, no content.
+/// Pair with [`diff_get_working_file`] to load each file's content
+/// lazily; keeps the initial payload small even when the working
+/// tree has hundreds of changed files.
+#[tauri::command]
+pub fn diff_get_working_index(
+    path: String,
+    staged: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FileDiff>, ApiError> {
+    Ok(state.git.get_working_diff_index(Path::new(&path), staged))
+}
+
+/// Working-tree per-file content. Returns the same shape as one
+/// `FileDiff` entry from [`diff_get_files`], but with only the
+/// requested file's content (rest of metadata fields populate from
+/// what the caller already has via the index).
+///
+/// Validates `file_path` stays within `path` before touching disk so
+/// a malicious or buggy frontend can't read arbitrary worktree files
+/// via `../` traversal. Mirrors the guard on `git_get_quick_diff_data`,
+/// `git_stage_file_content`, and `git_show_file`.
+#[tauri::command]
+pub fn diff_get_working_file(
+    path: String,
+    file_path: String,
+    status: crate::models::file_diff::GitStatus,
+    staged: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<DiffFileContent, ApiError> {
+    validated_project_file(&path, &file_path)?;
+    let (old_content, new_content, binary) =
+        state
+            .git
+            .get_working_diff_file_content(Path::new(&path), &file_path, status, staged);
+    Ok(DiffFileContent {
+        old_content,
+        new_content,
+        binary,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFileContent {
+    pub old_content: Option<String>,
+    pub new_content: Option<String>,
+    pub binary: bool,
+}
+
 /// Get commit graph data for visualization (all branches).
 #[tauri::command]
 pub fn git_get_graph(
@@ -428,17 +478,28 @@ pub fn git_get_quick_diff_data(
 /// Replace a single path's index blob with caller-supplied text content.
 /// This mirrors VS Code's hunk staging strategy: synthesize the desired
 /// index file content on the frontend, then update only Git's index here.
+///
+/// Invalidates the GitService summary cache on success so the very next
+/// `git_get_summary` reflects the new index state. Without this the 300ms
+/// TTL cache could serve a pre-stage summary to a frontend `refreshGit`
+/// chained immediately after, hiding the stage from the UI.
 #[tauri::command]
 pub fn git_stage_file_content(
     project_path: String,
     file_path: String,
     content: Option<String>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     validated_project_file(&project_path, &file_path)?;
-    match content {
-        Some(content) => git_update_index_blob(Path::new(&project_path), &file_path, &content),
-        None => git_remove_index_path(Path::new(&project_path), &file_path),
+    let repo = Path::new(&project_path);
+    let result = match content {
+        Some(content) => git_update_index_blob(repo, &file_path, &content),
+        None => git_remove_index_path(repo, &file_path),
+    };
+    if result.is_ok() {
+        state.git.invalidate(repo);
     }
+    result
 }
 
 /// Create a commit with the given message.
@@ -601,6 +662,17 @@ pub fn git_clone_in_place(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validated_project_file_rejects_traversal() {
+        use super::validated_project_file;
+        // /tmp is canonicalizable on every supported host. /etc/passwd
+        // is unrelated to /tmp so the traversal escape is detected.
+        let project = "/tmp";
+        assert!(validated_project_file(project, "ok.txt").is_ok());
+        assert!(validated_project_file(project, "../etc/passwd").is_err());
+        assert!(validated_project_file(project, "../../../../etc/passwd").is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn worktree_file_mode_preserves_executable_bit() {

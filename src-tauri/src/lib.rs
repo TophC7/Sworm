@@ -25,7 +25,7 @@ pub fn run() {
         // Single-instance lock: second launch focuses the existing window
         // instead of spinning up a parallel process. The plugin keys its
         // lock off the bundle identifier, so dev and prod builds (which
-        // use different identifiers) each get their own lock — allowing
+        // use different identifiers) each get their own lock; allowing
         // dogfooding Sworm-in-Sworm without the two instances fighting
         // over the same SQLite DB.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
@@ -96,6 +96,7 @@ pub fn run() {
             // Project commands
             commands::projects::project_select_directory,
             commands::projects::project_add,
+            commands::projects::project_refresh_git,
             commands::projects::project_list,
             commands::projects::project_get,
             commands::projects::project_remove,
@@ -166,6 +167,8 @@ pub fn run() {
             commands::git::git_get_graph,
             commands::git::git_get_commit_detail,
             commands::git::diff_get_files,
+            commands::git::diff_get_working_index,
+            commands::git::diff_get_working_file,
             // Git write commands
             commands::git::git_stage_all,
             commands::git::git_stage_files,
@@ -231,7 +234,7 @@ pub fn run() {
 ///
 /// Called before the Tauri runtime (and its threads) starts.
 /// `std::env::set_var` is safe here because no other threads exist yet;
-/// it will become `unsafe` in Rust 2024 edition — revisit when upgrading.
+/// it will become `unsafe` in Rust 2024 edition; revisit when upgrading.
 #[cfg(target_os = "linux")]
 fn configure_linux_runtime_env() {
     if let Some(backend) = preferred_gdk_backend(std::env::var_os("GDK_BACKEND")) {

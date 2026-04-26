@@ -5,7 +5,7 @@ use crate::services::activity_map::ActivityMapService;
 
 /// Read sworm projects under the db lock (consistent lock ordering).
 fn load_sworm_projects(state: &AppState) -> Result<Vec<(String, String)>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     state
         .projects
         .list(db.conn())

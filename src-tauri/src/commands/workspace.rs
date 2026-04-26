@@ -10,7 +10,7 @@ pub fn workspace_state_get(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     state
         .workspace_state
         .get(db.conn(), &project_id)
@@ -25,7 +25,7 @@ pub fn workspace_state_put(
     state_json: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     state
         .workspace_state
         .put(db.conn(), &project_id, &state_json)
@@ -39,7 +39,7 @@ pub fn app_state_get(
     key: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     state
         .app_state_kv
         .get(db.conn(), &key)
@@ -53,7 +53,7 @@ pub fn app_state_put(
     value_json: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     state
         .app_state_kv
         .put(db.conn(), &key, &value_json)

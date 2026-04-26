@@ -79,7 +79,7 @@
 
   let host = $state<HTMLDivElement | null>(null)
   // Seed placeholder height. Matches VSCode's MultiDiffEditor default
-  // (`lastTemplateData.contentHeight = 500`) — closer to typical diff
+  // (`lastTemplateData.contentHeight = 500`); closer to typical diff
   // row heights than the old 240 value, so the one-shot seed → real
   // transition is smaller on first-view files the preloader hasn't
   // finished yet. Overridden from `entry.height` (preloader-populated
@@ -87,7 +87,7 @@
   let height = $state(500)
   let visible = $state(false)
 
-  // Ownership state — purely imperative, not reactive.
+  // Ownership state; purely imperative, not reactive.
   let currentRef: PoolRef | null = null
   let currentDisposables: Array<{ dispose(): void }> = []
   let currentAcquireSeq = 0
@@ -248,6 +248,11 @@
   })
 
   $effect(() => {
+    // Subscribe to the store's version so lazy content arrivals
+    // re-trigger the mount effect. Without this, an entry whose
+    // content loads after the row first becomes visible would never
+    // pick up its models.
+    void store.version
     const entry = store.get(path)
     if (!visible || !host || !entry || entry.binary) return
     const retainedEntry = store.retain(path)
@@ -256,6 +261,8 @@
     const original = retainedEntry.original
     const modified = retainedEntry.modified
     if (!original || !modified) {
+      // Lazy entry; content not loaded yet. `retain` already
+      // kicked off the loader; we'll re-run when `version` bumps.
       store.release(path)
       return
     }
@@ -270,7 +277,7 @@
     void (async () => {
       const { ref, stickyReuse } = await pool.acquire(hostEl, path)
       if (seq !== currentAcquireSeq) {
-        // Visibility flipped while we awaited — release the acquired
+        // Visibility flipped while we awaited; release the acquired
         // editor rather than binding models we'll only tear down again.
         pool.release(ref)
         return
@@ -279,7 +286,7 @@
       // Clear any stale view zones from the previous model before
       // binding the new one. Swapping in a single call can leave
       // zones pointing at line numbers that don't exist in the new
-      // model — which surfaces as "Illegal value for lineNumber"
+      // model; which surfaces as "Illegal value for lineNumber"
       // from Monaco's hideUnchangedRegions machinery.
       ref.editor.setModel(null)
       // Seed the option before binding the model so Monaco constructs
@@ -292,7 +299,7 @@
         try {
           ref.editor.restoreViewState(stripModelState(retainedEntry.viewState))
         } catch {
-          // Malformed cached state — silent reset.
+          // Malformed cached state; silent reset.
         }
       }
 
@@ -309,7 +316,7 @@
       //
       // Measurement is gated on the first `onDidUpdateDiff` event.
       // Until Monaco's worker has computed the diff, `getContentHeight`
-      // returns the full modified file — committing that would grow
+      // returns the full modified file; committing that would grow
       // the host to full-file size, force Monaco to paint every line,
       // then shrink back when `hideUnchangedRegions` collapses the
       // unchanged body. Gating on diff-ready guarantees the first
@@ -345,7 +352,7 @@
       // Safety net: if `onDidUpdateDiff` never fires (malformed models,
       // empty models, Monaco worker wedge) flip the gate after 800ms so
       // the row isn't stuck at the seed height forever. Normal paths
-      // beat this easily — the worker typically settles within a frame
+      // beat this easily; the worker typically settles within a frame
       // or two.
       const safetyTimer = window.setTimeout(() => {
         if (diffReady) return
@@ -357,7 +364,7 @@
 
       const sizeOffMod = modifiedEd.onDidContentSizeChange(measureAndSync)
       const sizeOffOrig = originalEd.onDidContentSizeChange(measureAndSync)
-      // `onDidUpdateDiff` fires when Monaco's diff worker completes —
+      // `onDidUpdateDiff` fires when Monaco's diff worker completes ;
       // but the `hideUnchangedRegions` widgets materialize on a later
       // paint, so reading `getContentHeight()` at this exact moment
       // still returns the uncollapsed full-file height. Waiting two
@@ -380,7 +387,7 @@
       })
       // `hideUnchangedRegions` and folding change visible line count
       // without necessarily firing `onDidContentSizeChange`. This is
-      // the dedicated event for that transition — without it, expanding
+      // the dedicated event for that transition; without it, expanding
       // a collapsed region adds visible lines but the row doesn't grow.
       const syncHiddenAreas = () => {
         measureAndSync()
@@ -437,12 +444,12 @@
 
       // Re-layout Monaco on ANY host size change. With
       // `automaticLayout: false`, Monaco doesn't observe its own
-      // container — if we don't call layout() when the row grows
+      // container; if we don't call layout() when the row grows
       // vertically, Monaco's internal viewport stays at the stale
       // size and everything past that is clipped.
       //
       // Deferred to the next frame via RAF so that Monaco's layout()
-      // runs AFTER the observer callback returns — if layout() ran
+      // runs AFTER the observer callback returns; if layout() ran
       // synchronously it would re-dirty the sizes this same observer
       // is watching, which browsers report as
       // "ResizeObserver loop completed with undelivered notifications".
@@ -498,7 +505,7 @@
 </script>
 
 {#if store.get(path)?.binary}
-  <DiffBinaryPlaceholder reason="Binary file — content not shown" />
+  <DiffBinaryPlaceholder reason="Binary file; content not shown" />
 {:else}
   <div bind:this={host} class="relative w-full" style:height="{height}px"></div>
 {/if}

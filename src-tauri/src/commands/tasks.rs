@@ -126,7 +126,7 @@ fn project_path_for(
     project_id: &str,
     state: &tauri::State<'_, AppState>,
 ) -> Result<std::path::PathBuf, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     let project = state
         .projects
         .get(db.conn(), project_id)
@@ -137,7 +137,7 @@ fn project_path_for(
 
 fn build_task_env(project_id: &str, state: &tauri::State<'_, AppState>) -> HashMap<String, String> {
     let nix_env = {
-        let db = state.db.lock();
+        let db = state.db.read();
         NixService::load_env_vars(db.conn(), project_id).unwrap_or_default()
     };
 

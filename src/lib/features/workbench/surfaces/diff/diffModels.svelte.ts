@@ -1,6 +1,6 @@
 // Per-file Monaco model + view-state cache.
 //
-// Models (ITextModel) are heavy — tokenization, worker, text buffer.
+// Models (ITextModel) are heavy: tokenization, worker, text buffer.
 // Keeping one original+modified pair alive for every file in a large
 // diff trips Monaco's internal listener leak heuristic long before the
 // app is actually leaking. We therefore cache file data + view state
@@ -13,14 +13,18 @@
 //   - `retain(path)` / `release(path)` lazily create and dispose models.
 //   - `setViewState` / `setHeight` survive mount/unmount via this cache.
 
-import type { FileDiff } from '$lib/types/backend'
+import type { DiffFileContent, FileDiff } from '$lib/types/backend'
 
 type Monaco = typeof import('monaco-editor')
 type ITextModel = import('monaco-editor').editor.ITextModel
 type IDiffEditorViewState = import('monaco-editor').editor.IDiffEditorViewState
 
+/** Per-file content fetcher for lazy mode. Returns the same shape the
+ *  backend's per-file content endpoint produces (`DiffFileContent`). */
+export type DiffContentFetcher = (entry: DiffModelEntry) => Promise<DiffFileContent>
+
 export interface DiffModelEntry {
-  /** File identity — primary map key. */
+  /** File identity; primary map key. */
   path: string
   /** Cached pre-change content. `''` when the side is absent. */
   originalContent: string
@@ -32,7 +36,7 @@ export interface DiffModelEntry {
   modified: ITextModel | null
   /** Monaco language id resolved server-side. */
   lang: string
-  /** Binary / oversized — row should render a placeholder instead. */
+  /** Binary / oversized; row should render a placeholder instead. */
   binary: boolean
   /** Last saved view state (selections, scroll). Restored on re-acquire. */
   viewState: IDiffEditorViewState | null
@@ -40,7 +44,7 @@ export interface DiffModelEntry {
   height: number | null
   /**
    * Per-file override for Monaco's `hideUnchangedRegions`. Defaults to
-   * `true` — unchanged code is collapsed with inline "show more"
+   * `true`; unchanged code is collapsed with inline "show more"
    * affordances. Toggled by the per-row "expand all code" button.
    */
   hideUnchanged: boolean
@@ -60,15 +64,63 @@ export interface DiffModelEntry {
    * dispose-ordering invariant.
    */
   pendingRemoval: boolean
+  /**
+   * `true` once the entry has real content (or we know it's binary).
+   * `false` for lazy index entries waiting on the content loader. The
+   * eager `sync` path always sets this to `true`; only the index +
+   * loader flow uses `false`.
+   */
+  contentLoaded: boolean
+  /**
+   * Monotonic clock value updated on every `retain` / `get` / content
+   * load. Drives LRU eviction when the entry count exceeds
+   * [`MAX_LIVE_ENTRIES`].
+   */
+  lastAccess: number
 }
+
+/**
+ * Soft cap on the number of `DiffModelEntry` instances kept in memory.
+ * Each entry holds metadata + cached content strings (capped at the
+ * server's `MAX_CONTENT_BYTES` per side). When the count exceeds this,
+ * `sync` evicts the least-recently-used non-retained entries until
+ * back under the cap. Picked to comfortably cover even pathological
+ * commits (1000+ files) without unbounded growth on long review
+ * sessions that walk through many separate diffs.
+ */
+const MAX_LIVE_ENTRIES = 500
 
 export class DiffModelStore {
   private entries = new Map<string, DiffModelEntry>()
   private monaco: Monaco | null = null
+  private fetcher: DiffContentFetcher | null = null
+  // In-flight content loads keyed by path: dedupes concurrent requests.
+  private inflight = new Map<string, Promise<void>>()
+  // Monotonic access clock for LRU eviction.
+  private accessClock = 0
+  // Paths in the current `sync(files)` set. Used by `enforceCapacity`
+  // to refuse evicting any entry the UI still expects to render.
+  private currentPaths = new Set<string>()
+  /**
+   * Reactive bump counter. Incremented whenever a lazy content load
+   * resolves so consumer `$effect`s (e.g. `MonacoDiffBody`'s mount
+   * effect) re-fire and pick up the now-ready models.
+   */
+  version = $state(0)
 
   /** Attach the Monaco module once it's loaded. Idempotent. */
   attach(monaco: Monaco): void {
     this.monaco = monaco
+  }
+
+  /**
+   * Register a per-file content fetcher for the lazy/index flow.
+   * When set, `retain(path)` will fetch content for any entry that
+   * was synced without it. The fetcher is keyed by the entry, so
+   * callers can read `entry.path`, `entry.oldPath`, etc.
+   */
+  setContentFetcher(fetcher: DiffContentFetcher | null): void {
+    this.fetcher = fetcher
   }
 
   /**
@@ -78,11 +130,12 @@ export class DiffModelStore {
    */
   sync(files: FileDiff[]): void {
     const nextPaths = new Set(files.map((f) => f.path))
+    this.currentPaths = nextPaths
 
     // Stale rows may still have a mounted diff body or a queued height
     // preload retaining their models. Mark them for removal now, but
     // defer the actual model disposal until the last retainer releases.
-    for (const [path, entry] of this.entries) {
+    for (const [path, entry] of this.entries.entries()) {
       if (!nextPaths.has(path)) {
         this.retire(path, entry)
       }
@@ -97,24 +150,41 @@ export class DiffModelStore {
       }
       this.entries.set(file.path, this.build(file))
     }
+
+    // Cap memory growth on long review sessions: if the entry map
+    // outgrew `MAX_LIVE_ENTRIES` (e.g. user walked through several
+    // 200-file commits), evict least-recently-used non-retained
+    // entries until back under the cap.
+    this.enforceCapacity()
   }
 
   get(path: string): DiffModelEntry | null {
-    return this.entries.get(path) ?? null
+    const entry = this.entries.get(path)
+    if (entry) entry.lastAccess = ++this.accessClock
+    return entry ?? null
   }
 
   /**
    * Ensure a path has live Monaco models and mark them in-use. Mounted
    * diff bodies call this on attach and pair it with `release(path)` on
    * teardown so large diffs do not keep hundreds of dormant models live.
+   *
+   * For lazy-mode entries (no content yet), kicks off the content
+   * loader in the background. The returned entry will have
+   * `original`/`modified` = null until the load resolves; consumers
+   * should re-evaluate when `version` bumps.
    */
   retain(path: string): DiffModelEntry | null {
     const entry = this.entries.get(path)
     if (!entry) return null
-    if (!entry.binary) {
-      entry.retainCount += 1
-      this.ensureModels(entry)
+    entry.retainCount += 1
+    entry.lastAccess = ++this.accessClock
+    if (entry.binary) return entry
+    if (!entry.contentLoaded) {
+      this.kickoffContentLoad(entry)
+      return entry
     }
+    this.ensureModels(entry)
     return entry
   }
 
@@ -147,7 +217,7 @@ export class DiffModelStore {
    * a row remount (row collapsed then re-expanded, or file briefly
    * leaves then re-enters the viewport) picks up the user's last
    * choice instead of resetting to the default. The live row keeps
-   * its own `$state` mirror — this is the cross-mount cache only.
+   * its own `$state` mirror; this is the cross-mount cache only.
    */
   persistHideUnchangedPreference(path: string, hide: boolean): void {
     const e = this.entries.get(path)
@@ -178,7 +248,9 @@ export class DiffModelStore {
       status: file.status,
       oldPath: file.oldPath,
       retainCount: 0,
-      pendingRemoval: false
+      pendingRemoval: false,
+      contentLoaded: hasContent(file),
+      lastAccess: ++this.accessClock
     }
   }
 
@@ -192,11 +264,20 @@ export class DiffModelStore {
     entry.deletions = file.deletions
     entry.status = file.status
     entry.oldPath = file.oldPath
-    entry.originalContent = file.oldContent ?? ''
-    entry.modifiedContent = file.newContent ?? ''
+
+    const incoming = hasContent(file)
+    if (incoming) {
+      entry.originalContent = file.oldContent ?? ''
+      entry.modifiedContent = file.newContent ?? ''
+      entry.contentLoaded = true
+    }
+    // Else: keep cached content untouched. `sync` may be called from a
+    // re-fetch of the cheap index; we don't want to clobber loaded
+    // content with empty placeholders.
 
     if (file.binary) {
       entry.binary = true
+      entry.contentLoaded = true
       if (entry.retainCount === 0) {
         this.disposeModels(entry)
       }
@@ -204,7 +285,7 @@ export class DiffModelStore {
     }
 
     entry.binary = false
-    if (entry.retainCount > 0 || entry.original || entry.modified) {
+    if (entry.contentLoaded && (entry.retainCount > 0 || entry.original || entry.modified)) {
       this.ensureModels(entry)
     }
   }
@@ -242,4 +323,84 @@ export class DiffModelStore {
     }
     return current
   }
+
+  /**
+   * If the entry map exceeds [`MAX_LIVE_ENTRIES`], evict the oldest
+   * non-retained entries (ordered by `lastAccess` ascending) until
+   * back under the cap. Two exclusions:
+   *   1. Retained entries (a row, preloader, or queued measurement is
+   *      actively using them; disposing leaves dangling Monaco refs).
+   *   2. Paths in the current `sync(files)` set. Without this guard a
+   *      diff over `MAX_LIVE_ENTRIES` files would evict entries the UI
+   *      still wants to render, leaving blank rows when the user
+   *      scrolls past the viewport's retained set.
+   */
+  private enforceCapacity(): void {
+    if (this.entries.size <= MAX_LIVE_ENTRIES) return
+    const candidates: Array<{ path: string; entry: DiffModelEntry }> = []
+    for (const [path, entry] of this.entries) {
+      if (entry.retainCount === 0 && !this.currentPaths.has(path)) {
+        candidates.push({ path, entry })
+      }
+    }
+    candidates.sort((a, b) => a.entry.lastAccess - b.entry.lastAccess)
+    let toEvict = this.entries.size - MAX_LIVE_ENTRIES
+    for (const { path, entry } of candidates) {
+      if (toEvict <= 0) break
+      this.disposeModels(entry)
+      this.entries.delete(path)
+      toEvict -= 1
+    }
+  }
+
+  /**
+   * Kick off a per-file content load via the registered fetcher.
+   * No-op when there's no fetcher, when content is already loaded,
+   * or when a load is already in-flight. On success, bumps the path's
+   * own version so only this file's MonacoDiffBody re-fires.
+   */
+  private kickoffContentLoad(entry: DiffModelEntry): void {
+    if (entry.contentLoaded) return
+    if (this.inflight.has(entry.path)) return
+    const fetcher = this.fetcher
+    if (!fetcher) return
+
+    const promise = (async () => {
+      try {
+        const result = await fetcher(entry)
+        // Entry may have been retired while we were awaiting.
+        if (!this.entries.has(entry.path)) return
+        entry.contentLoaded = true
+        entry.lastAccess = ++this.accessClock
+        if (result.binary) {
+          entry.binary = true
+          if (entry.retainCount === 0) this.disposeModels(entry)
+        } else {
+          entry.binary = false
+          entry.originalContent = result.oldContent ?? ''
+          entry.modifiedContent = result.newContent ?? ''
+          if (entry.retainCount > 0) {
+            this.ensureModels(entry)
+          }
+        }
+        this.version++
+      } catch (err) {
+        console.error('Diff content load failed for', entry.path, err)
+      } finally {
+        this.inflight.delete(entry.path)
+      }
+    })()
+    this.inflight.set(entry.path, promise)
+  }
+}
+
+/**
+ * Heuristic: a `FileDiff` from the eager backend always has at least
+ * one content side populated (even if it's an empty string), or has
+ * `binary: true`. The lazy index path leaves both sides null with
+ * `binary: false`, which we use as the "needs loading" signal.
+ */
+function hasContent(file: FileDiff): boolean {
+  if (file.binary) return true
+  return file.oldContent !== null || file.newContent !== null
 }

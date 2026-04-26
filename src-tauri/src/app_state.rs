@@ -31,7 +31,11 @@ const TRANSCRIPT_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 /// Tauri's async command handlers. PtyService manages its own
 /// internal concurrency.
 pub struct AppState {
-    pub db: Mutex<DatabaseService>,
+    /// Database service. Internally manages a writer mutex + reader
+    /// pool, so an outer `Mutex` would only re-serialize the reads we
+    /// just split out. Arc keeps service handles cheap to clone for
+    /// background threads (transcript writer, etc).
+    pub db: Arc<DatabaseService>,
     pub projects: ProjectService,
     pub providers: Mutex<ProviderService>,
     pub sessions: SessionService,
@@ -59,13 +63,13 @@ impl AppState {
     /// Initialize all services. Database migrations run automatically.
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
         let db_path = db::resolve_db_path(app_handle)?;
-        let db_service = DatabaseService::new(db_path.clone())?;
+        let db_service = Arc::new(DatabaseService::new(db_path.clone())?);
 
         let sessions = SessionService::new();
 
-        // On startup there are no live PTYs — any "running" session is stale
+        // On startup there are no live PTYs; any "running" session is stale
         // from a crash, SIGKILL, or dev-mode hot-reload.
-        let _ = sessions.reset_stale_running(db_service.conn());
+        let _ = sessions.reset_stale_running(db_service.write().conn());
 
         let pty = PtyService::new();
 
@@ -98,7 +102,7 @@ impl AppState {
         }));
 
         Ok(Self {
-            db: Mutex::new(db_service),
+            db: db_service,
             projects: ProjectService::new(),
             providers: Mutex::new(ProviderService::new()),
             sessions,

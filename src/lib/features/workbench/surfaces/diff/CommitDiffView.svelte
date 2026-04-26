@@ -22,13 +22,13 @@
   let detail = $state<CommitDetail | null>(null)
   let files = $state<FileDiff[]>([])
   let copied = $state(false)
-  const loader = createTrackedAsyncLoad<string>()
-  let loading = $derived(loader.loading)
+  const commitLoad = createTrackedAsyncLoad<string>()
+  let loading = $derived(commitLoad.loading)
 
   $effect(() => {
     const hash = commitHash
     const path = projectPath
-    loader.run(hash, async (isCurrent) => {
+    commitLoad.run(hash, async (isCurrent) => {
       detail = null
       files = []
       const [d, f] = await Promise.all([

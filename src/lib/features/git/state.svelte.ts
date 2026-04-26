@@ -12,23 +12,30 @@ const GIT_POLL_INTERVAL_MS = 10_000
 
 let gitSummaries = $state<Map<string, GitSummary>>(new Map())
 
-// Polling intervals keyed by projectId — not reactive, internal bookkeeping
+// Polling intervals keyed by projectId; not reactive, internal bookkeeping
 const pollingIntervals = new Map<string, ReturnType<typeof setInterval>>()
 // Project paths needed for polling (since we poll by projectId but fetch by path)
 const projectPaths = new Map<string, string>()
+// Last serialized summary per project; used to short-circuit Map swaps
+// when the polled summary is byte-identical to the previous one. Avoids
+// invalidating every git-derived `$derived` (status bar, sidebar,
+// WorkingDiffView's changeSignature) on every 10s tick when the working
+// tree is idle.
+const summarySignatures = new Map<string, string>()
 
-// ---------------------------------------------------------------------------
-// Read
-// ---------------------------------------------------------------------------
+function signatureOf(summary: GitSummary): string {
+  // JSON.stringify is deterministic for a given object shape. The
+  // backend always emits keys in the same order, so this is a stable
+  // signature without needing a manual concat.
+  return JSON.stringify(summary)
+}
 
+// READ //
 export function getGitSummary(projectId: string): GitSummary | null {
   return gitSummaries.get(projectId) ?? null
 }
 
-// ---------------------------------------------------------------------------
-// Write
-// ---------------------------------------------------------------------------
-
+// WRITE //
 export async function refreshGit(projectId: string, projectPath?: string): Promise<void> {
   const path = projectPath ?? projectPaths.get(projectId)
   if (!path) return
@@ -38,6 +45,13 @@ export async function refreshGit(projectId: string, projectPath?: string): Promi
 
   try {
     const summary = await backend.git.getSummary(path)
+    const next = signatureOf(summary)
+    if (summarySignatures.get(projectId) === next) {
+      // Same payload as last fetch; skip the Map swap so consumers
+      // don't see a phantom invalidation.
+      return
+    }
+    summarySignatures.set(projectId, next)
     gitSummaries = new Map(gitSummaries).set(projectId, summary)
   } catch (e) {
     console.error(`Failed to refresh git for ${projectId}:`, e)
@@ -84,6 +98,7 @@ export async function runGitAction<T>(
 
 export function clearGitState(projectId: string) {
   stopGitPolling(projectId)
+  summarySignatures.delete(projectId)
   const next = new Map(gitSummaries)
   next.delete(projectId)
   gitSummaries = next

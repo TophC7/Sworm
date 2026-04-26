@@ -24,7 +24,7 @@ pub fn lsp_list_servers(
     state: tauri::State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     let env = if let Some(project_id) = project_id.as_deref() {
         let nix_env =
             NixService::load_env_vars(db.conn(), project_id).map_err(ApiError::Database)?;
@@ -65,7 +65,7 @@ pub fn lsp_set_server_config(
         settings_json: config.settings_json,
     };
 
-    let db = state.db.lock();
+    let db = state.db.write();
     SettingsService::save_lsp_server_config(db.conn(), &record).map_err(ApiError::Database)?;
     Ok(record)
 }
@@ -88,7 +88,7 @@ pub fn lsp_start(
             ))
         })?;
 
-    let db = state.db.lock();
+    let db = state.db.read();
     let project = state
         .projects
         .get(db.conn(), &project_id)

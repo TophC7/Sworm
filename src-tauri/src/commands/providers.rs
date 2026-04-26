@@ -7,7 +7,7 @@ use crate::services::settings::SettingsService;
 #[tauri::command]
 pub fn provider_list(state: tauri::State<'_, AppState>) -> Result<Vec<ProviderStatus>, ApiError> {
     let merged_path = state.env.merged_path.clone();
-    let db = state.db.lock();
+    let db = state.db.read();
     let overrides =
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 
@@ -21,7 +21,7 @@ pub fn provider_refresh(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {
     let merged_path = state.env.merged_path.clone();
-    let db = state.db.lock();
+    let db = state.db.read();
     let overrides =
         SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
 

@@ -14,7 +14,7 @@
   } from '$lib/features/editor/renderers/monaco/diff/scrollContext.svelte'
   import { getDiffEditorPool } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { getDiffHeightPreloader } from '$lib/features/editor/renderers/monaco/diff/heightPreloader.svelte'
-  import { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import { DiffModelStore, type DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
 
   let {
     files,
@@ -27,7 +27,8 @@
     projectPath = '',
     workingStaged = null,
     commitHash = null,
-    stashIndex = null
+    stashIndex = null,
+    contentFetcher = null
   }: {
     files: FileDiff[]
     loading?: boolean
@@ -40,10 +41,18 @@
     workingStaged?: boolean | null
     commitHash?: string | null
     stashIndex?: number | null
+    /**
+     * Optional per-file content fetcher. When provided, `files` may
+     * arrive without `oldContent`/`newContent` populated; the store
+     * fetches them lazily via this fetcher as rows are retained. Pass
+     * `null` for callers that ship full content eagerly (commit /
+     * stash diffs, where total payload is bounded by commit size).
+     */
+    contentFetcher?: DiffContentFetcher | null
   } = $props()
 
   let expandedFiles = $state<Set<string>>(new Set())
-  // Split (side-by-side) is the default — matches the prior UI.
+  // Split (side-by-side) is the default; matches the prior UI.
   let sideBySide = $state(true)
   let wrap = $state(false)
   let fontSize = $state(13)
@@ -63,6 +72,9 @@
 
   onMount(() => {
     let disposed = false
+    // Wire up the lazy fetcher before the first sync. Entries with no
+    // content arrive in `files` already, and `retain` triggers loads.
+    store.setContentFetcher(contentFetcher)
     void (async () => {
       const monaco = await pool.ready()
       if (disposed) return
@@ -86,6 +98,12 @@
     }
   })
 
+  // If the caller swaps the fetcher after mount (rare, but supported),
+  // propagate it without rebuilding the store.
+  $effect(() => {
+    store.setContentFetcher(contentFetcher)
+  })
+
   // Keep the model store in sync with the file list.
   $effect(() => {
     if (!storeReady) return
@@ -107,11 +125,17 @@
     for (const file of files) {
       const entry = store.get(file.path)
       if (!entry || entry.binary || entry.height != null) continue
+      // Skip lazy entries whose content hasn't arrived yet; the
+      // preloader needs live text models. Once content loads, the
+      // store bumps `version` and visible rows mount on demand; the
+      // preloader queue stays focused on already-resident content
+      // rather than fanning out to fetch every file up-front.
+      if (!entry.contentLoaded) continue
       preloader.preload({ monaco, store, path: file.path, settings })
     }
   }
 
-  // Propagate settings changes to the entire pool — both the editors
+  // Propagate settings changes to the entire pool; both the editors
   // currently mounted and the warm-but-parked ones. A row that reopens
   // later will get the new settings for free.
   $effect(() => {

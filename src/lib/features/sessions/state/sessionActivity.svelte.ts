@@ -1,20 +1,23 @@
-/**
- * Agent activity store.
- *
- * Tracks per-session activity state derived from PTY output classification.
- * Uses debouncing to prevent flicker: busy state is held for a minimum
- * duration even if the output goes neutral briefly.
- *
- * Activity states:
- *   working   — agent is thinking/executing (accent dot)
- *   waiting   — agent waiting for user input (yellow dot)
- *   completed — agent finished its work, PTY exited (green dot, dismisses on view)
- *   idle      — no activity / not running (no dot)
- */
+// Agent activity store.
+//
+// Tracks per-session activity state derived from PTY output
+// classification. Uses debouncing to prevent flicker: busy state is
+// held for a minimum duration even if the output goes neutral briefly.
+//
+// Activity states:
+//   working   - agent is thinking/executing (accent dot)
+//   waiting   - agent waiting for user input (yellow dot)
+//   completed - agent finished its work, PTY exited (green dot)
+//   idle      - no activity / not running (no dot)
+//
+// Reactivity uses [`ReactiveMap`] so each session has its own version.
+// A row dot in SessionHistoryView subscribes to its session's signal
+// only and never wakes for a sibling session's chunk.
 
 import { classifyActivity, type ActivitySignal } from '$lib/features/sessions/terminal/activityClassifier'
+import { ReactiveMap } from '$lib/utils/reactiveMap.svelte'
 
-// -- Types --
+// TYPES //
 
 export type AgentActivity = 'working' | 'waiting' | 'completed' | 'idle'
 
@@ -22,26 +25,26 @@ interface ActivityEntry {
   signal: ActivitySignal
   activity: AgentActivity
   updatedAt: number
-  /** Busy hold timer — prevents flicker on brief neutral gaps. */
+  // Busy hold timer: prevents flicker on brief neutral gaps.
   holdTimer: ReturnType<typeof setTimeout> | null
 }
 
-// -- Constants --
+// CONSTANTS //
 
-/** Minimum ms to hold "busy" display after last busy signal. */
+// Minimum ms to hold "busy" display after last busy signal.
 const BUSY_HOLD_MS = 2_000
 
-/** After this many ms of neutral output, drop back to idle. */
+// After this many ms of neutral output, drop back to idle.
 const NEUTRAL_TIMEOUT_MS = 6_000
 
-// -- State --
+// STATE //
 
-let entries = $state<Map<string, ActivityEntry>>(new Map())
+const activities = new ReactiveMap<string, ActivityEntry>()
 
-// -- Helpers --
+// HELPERS //
 
 function getOrCreate(sessionId: string): ActivityEntry {
-  let entry = entries.get(sessionId)
+  let entry = activities.get(sessionId)
   if (!entry) {
     entry = {
       signal: 'neutral',
@@ -49,28 +52,30 @@ function getOrCreate(sessionId: string): ActivityEntry {
       updatedAt: Date.now(),
       holdTimer: null
     }
-    entries.set(sessionId, entry)
-    entries = new Map(entries)
+    activities.set(sessionId, entry)
   }
   return entry
 }
 
-function updateEntry(sessionId: string, patch: Partial<ActivityEntry>) {
-  const entry = entries.get(sessionId)
+// Mutate an entry's signal/activity fields in place, refresh
+// `updatedAt`, and bump the session's signal so subscribed effects
+// re-run. Use for every change that consumers may observe.
+function updateEntry(sessionId: string, patch: Partial<Pick<ActivityEntry, 'signal' | 'activity'>>) {
+  const entry = activities.get(sessionId)
   if (!entry) return
   Object.assign(entry, patch, { updatedAt: Date.now() })
-  entries = new Map(entries)
+  activities.bumpKey(sessionId)
 }
 
 function clearHold(sessionId: string) {
-  const entry = entries.get(sessionId)
+  const entry = activities.get(sessionId)
   if (entry?.holdTimer) {
     clearTimeout(entry.holdTimer)
     entry.holdTimer = null
   }
 }
 
-// -- Public API --
+// PUBLIC API //
 
 /**
  * Feed a PTY output chunk for classification.
@@ -82,12 +87,7 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
 
   if (signal === 'busy') {
     clearHold(sessionId)
-    if (entry.activity !== 'working') {
-      updateEntry(sessionId, { signal, activity: 'working' })
-    } else {
-      entry.signal = signal
-      entry.updatedAt = Date.now()
-    }
+    updateEntry(sessionId, { signal, activity: 'working' })
     return
   }
 
@@ -97,22 +97,26 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
     return
   }
 
-  // Neutral: if currently working, hold for BUSY_HOLD_MS before dropping
+  // Neutral: if currently working, hold for BUSY_HOLD_MS before
+  // dropping. The timer mutation itself is internal state; consumers
+  // only read `.activity`, which doesn't change until the timer fires.
   if (entry.activity === 'working' && !entry.holdTimer) {
     entry.holdTimer = setTimeout(() => {
-      const current = entries.get(sessionId)
+      const current = activities.get(sessionId)
       if (current && current.activity === 'working') {
-        updateEntry(sessionId, { signal: 'neutral', activity: 'idle', holdTimer: null })
+        current.holdTimer = null
+        updateEntry(sessionId, { signal: 'neutral', activity: 'idle' })
       }
     }, BUSY_HOLD_MS)
   }
 
-  // If currently waiting, drop to idle after longer timeout
+  // If currently waiting, drop to idle after a longer timeout.
   if (entry.activity === 'waiting' && !entry.holdTimer) {
     entry.holdTimer = setTimeout(() => {
-      const current = entries.get(sessionId)
+      const current = activities.get(sessionId)
       if (current && current.activity === 'waiting') {
-        updateEntry(sessionId, { signal: 'neutral', activity: 'idle', holdTimer: null })
+        current.holdTimer = null
+        updateEntry(sessionId, { signal: 'neutral', activity: 'idle' })
       }
     }, NEUTRAL_TIMEOUT_MS)
   }
@@ -122,20 +126,25 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
 export function markCompleted(sessionId: string) {
   clearHold(sessionId)
   const entry = getOrCreate(sessionId)
-  // Only mark completed if the session was actually doing something
+  // Only transition completed if the session was actually doing something.
   if (entry.activity === 'working' || entry.activity === 'waiting') {
-    updateEntry(sessionId, { signal: 'neutral', activity: 'completed', holdTimer: null })
+    updateEntry(sessionId, { signal: 'neutral', activity: 'completed' })
   }
 }
 
-/** Get current activity for a session. Returns 'idle' if unknown. */
+/**
+ * Get current activity for a session. Returns 'idle' if unknown.
+ *
+ * Subscribes the calling effect to this session's signal only;
+ * activity changes for other sessions do not re-fire.
+ */
 export function getActivity(sessionId: string): AgentActivity {
-  return entries.get(sessionId)?.activity ?? 'idle'
+  void activities.keyVersion(sessionId)
+  return activities.get(sessionId)?.activity ?? 'idle'
 }
 
 /** Clean up timers for a session (call on session removal). */
 export function removeSession(sessionId: string) {
   clearHold(sessionId)
-  entries.delete(sessionId)
-  entries = new Map(entries)
+  activities.delete(sessionId)
 }

@@ -33,8 +33,8 @@ impl GitStatus {
     }
 }
 
-/// Where a diff is sourced from. One shape for every entry point —
-/// working tree, a commit, or a stash — so the frontend stays agnostic.
+/// Where a diff is sourced from. One shape for every entry point ;
+/// working tree, a commit, or a stash; so the frontend stays agnostic.
 ///
 /// `staged` on `Working` disambiguates index vs worktree. When `None`,
 /// the service returns *both* paths (staged + unstaged) merged. That

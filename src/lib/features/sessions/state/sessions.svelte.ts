@@ -31,11 +31,47 @@ export function hasRunningSessions(projectId: string): boolean {
   return getSessions(projectId).some((s) => s.status === 'running')
 }
 
-// --- Backend CRUD ---
+// SELECTORS //
 
+// Providers that aren't agent CLIs and shouldn't surface in history.
+const NON_AGENT_PROVIDERS = new Set<string>(['terminal', 'fresh'])
+
+function filterAgents(list: Session[]): Session[] {
+  return list.filter((s) => !NON_AGENT_PROVIDERS.has(s.provider_id))
+}
+
+function groupByProvider(list: Session[]): Map<string, Session[]> {
+  const groups = new Map<string, Session[]>()
+  for (const session of list) {
+    const existing = groups.get(session.provider_id)
+    if (existing) existing.push(session)
+    else groups.set(session.provider_id, [session])
+  }
+  return groups
+}
+
+// Component callers wrap these in `$derived`, so per-render memoization
+// already handles repeat reads against the same underlying array.
+export function getAgentSessions(projectId: string): Session[] {
+  return filterAgents(getSessions(projectId))
+}
+
+export function getArchivedAgentSessions(projectId: string): Session[] {
+  return filterAgents(getArchivedSessions(projectId))
+}
+
+export function getAgentSessionsGrouped(projectId: string): Map<string, Session[]> {
+  return groupByProvider(getAgentSessions(projectId))
+}
+
+export function getArchivedAgentSessionsGrouped(projectId: string): Map<string, Session[]> {
+  return groupByProvider(getArchivedAgentSessions(projectId))
+}
+
+// BACKEND CRUD //
 export async function loadSessions(projectId: string) {
   try {
-    // Hydrate the persisted workspace before reconciling — otherwise
+    // Hydrate the persisted workspace before reconciling; otherwise
     // the bootstrap heuristic in syncSessionTabs would race with the
     // restore and create duplicate session tabs. restoreWorkspaceFromDisk
     // is idempotent, so the eager-open path (already restored) just

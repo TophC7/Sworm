@@ -9,6 +9,7 @@ import type {
   CommitDetail,
   ConfigSchemaEntry,
   DiscoveredProject,
+  DiffFileContent,
   DiffSource,
   FileDiff,
   EnvProbeResult,
@@ -91,6 +92,14 @@ export const backend = {
     },
     add(path: string): Promise<Project> {
       return invoke<Project>('project_add', { path })
+    },
+    /**
+     * Re-probe git for a project and persist the resolved branch +
+     * base ref. Called immediately after `add` to backfill metadata
+     * that the synchronous insert deliberately skips.
+     */
+    refreshGit(id: string): Promise<Project> {
+      return invoke<Project>('project_refresh_git', { id })
     },
     openInTerminal(path: string): Promise<void> {
       return invoke<void>('project_open_in_terminal', { path })
@@ -184,7 +193,7 @@ export const backend = {
     },
     /**
      * Return whether the backend currently holds a live PTY for this
-     * session. Distinct from `status` — survives the truth even after
+     * session. Distinct from `status`; survives the truth even after
      * a crash/restart that left a stale "running" row.
      */
     isAlive(sessionId: string): Promise<boolean> {
@@ -235,6 +244,23 @@ export const backend = {
      */
     getDiffFiles(path: string, source: DiffSource): Promise<FileDiff[]> {
       return invoke<FileDiff[]>('diff_get_files', { path, source })
+    },
+    /**
+     * Cheap working-tree diff index; file list + metadata only,
+     * no content. Pair with [`getWorkingDiffFile`] to load each
+     * file lazily so a 200-file working tree doesn't ship a
+     * multi-megabyte payload before the user has expanded any row.
+     */
+    getWorkingDiffIndex(path: string, staged: boolean): Promise<FileDiff[]> {
+      return invoke<FileDiff[]>('diff_get_working_index', { path, staged })
+    },
+    getWorkingDiffFile(
+      path: string,
+      filePath: string,
+      status: FileDiff['status'],
+      staged: boolean
+    ): Promise<DiffFileContent> {
+      return invoke<DiffFileContent>('diff_get_working_file', { path, filePath, status, staged })
     },
 
     // Write operations

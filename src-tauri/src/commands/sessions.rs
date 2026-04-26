@@ -31,7 +31,7 @@ fn spawn_codex_bind_thread(
     thread::Builder::new()
         .name(format!("codex-bind-{}", &session_id))
         .spawn(move || {
-            // Serialize binding per cwd — prevents two sessions from racing
+            // Serialize binding per cwd; prevents two sessions from racing
             // to discover the same Codex thread. Released when this thread exits.
             let _guard = bind_lock.lock();
 
@@ -103,7 +103,7 @@ fn spawn_codex_bind_thread(
             drop(_guard);
             let mut locks = all_locks.lock();
             if let Some(arc) = locks.get(&cwd) {
-                // strong_count == 1 means only the map holds it — safe to remove.
+                // strong_count == 1 means only the map holds it; safe to remove.
                 if Arc::strong_count(arc) == 1 {
                     locks.remove(&cwd);
                 }
@@ -128,7 +128,7 @@ pub fn session_create(
         )));
     }
 
-    let db = state.db.lock();
+    let db = state.db.write();
     if provider_id == "fresh" {
         // Fresh is a project-scoped singleton tool: multiple frontend
         // entry points may "open" it, but they should all resolve the
@@ -175,7 +175,7 @@ pub fn session_list(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     let mut sessions = state
         .sessions
         .list_for_project(db.conn(), &project_id)
@@ -194,7 +194,9 @@ pub fn session_list(
 /// Get a single session.
 #[tauri::command]
 pub fn session_get(id: String, state: tauri::State<'_, AppState>) -> Result<Session, ApiError> {
-    let db = state.db.lock();
+    // Pure read; route through the reader pool so a concurrent
+    // write doesn't stall the UI's per-tab session fetch.
+    let db = state.db.read();
     state
         .sessions
         .get(db.conn(), &id)
@@ -212,7 +214,7 @@ pub fn session_start(
     events: tauri::ipc::Channel<PtyEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     let mut session = state
         .sessions
         .get(db.conn(), &session_id)
@@ -279,9 +281,9 @@ pub fn session_start(
         .update_status(db.conn(), &session_id, "starting")
         .map_err(ApiError::Database)?;
 
-    let db_path = db.db_path().clone();
+    let db_path = state.db.db_path().clone();
 
-    // Load Nix env before dropping db — needed for both PATH resolution and child env
+    // Load Nix env before dropping db; needed for both PATH resolution and child env
     let nix_env_vars =
         NixService::load_env_vars(db.conn(), &session.project_id).unwrap_or_else(|e| {
             tracing::warn!(
@@ -424,7 +426,7 @@ pub fn session_start(
         Some(on_exit),
     );
 
-    let db = state.db.lock();
+    let db = state.db.write();
     match &spawn_result {
         Ok(()) => {
             state
@@ -443,7 +445,7 @@ pub fn session_start(
                 spawn_codex_bind_thread(
                     session_id.clone(),
                     session.cwd.clone(),
-                    db.db_path().clone(),
+                    state.db.db_path().clone(),
                     started_at,
                     bind_lock,
                     Arc::clone(&state.codex_bind_locks),
@@ -490,10 +492,10 @@ pub fn session_resize(
 pub fn session_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
     // Persist whatever transcript bytes were still in-flight. Safe to
-    // call even when the session was never live — the batcher no-ops.
+    // call even when the session was never live; the batcher no-ops.
     state.transcript_batcher.flush(&session_id);
 
-    let db = state.db.lock();
+    let db = state.db.write();
     state
         .sessions
         .update_status(db.conn(), &session_id, "stopped")
@@ -511,7 +513,7 @@ pub fn session_reset(
 ) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
 
-    let db = state.db.lock();
+    let db = state.db.write();
     let session = state
         .sessions
         .get(db.conn(), &session_id)
@@ -555,7 +557,7 @@ pub fn session_remove(
     state.transcript_batcher.forget(&session_id);
     state.transcript.clear(&session_id);
 
-    let db = state.db.lock();
+    let db = state.db.write();
     state
         .sessions
         .remove(db.conn(), &session_id)
@@ -568,10 +570,10 @@ pub fn session_archive(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    // Stop the PTY if it's alive — archived sessions are never running
+    // Stop the PTY if it's alive; archived sessions are never running
     let _ = state.pty.kill(&session_id);
 
-    let db = state.db.lock();
+    let db = state.db.write();
 
     // Ensure the session exists before archiving
     let session = state
@@ -600,7 +602,7 @@ pub fn session_unarchive(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
 
     // Ensure the session exists before unarchiving
     let _session = state
@@ -621,7 +623,8 @@ pub fn session_list_archived(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, ApiError> {
-    let db = state.db.lock();
+    // Pure read; uses the reader pool.
+    let db = state.db.read();
     state
         .sessions
         .list_archived_for_project(db.conn(), &project_id)

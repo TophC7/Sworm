@@ -98,8 +98,9 @@ pub fn app_get_info() -> AppInfo {
 /// Database smoke test: open DB, run migrations, verify a query works.
 #[tauri::command]
 pub fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
-    let db = state.db.lock();
-    db.smoke_test()
+    state
+        .db
+        .smoke_test()
         .map_err(|e| ApiError::Database(e.to_string()))
 }
 
@@ -135,10 +136,10 @@ pub fn clipboard_copy_files(paths: Vec<String>, op: String) -> Result<(), ApiErr
     }
 
     let uris: Vec<String> = paths.iter().map(|p| format!("file://{}", p)).collect();
-    // GNOME/Nautilus format — verified against Nautilus 49.
-    // Format: "op\nuri1\nuri2" — NO trailing newline.
+    // GNOME/Nautilus format; verified against Nautilus 49.
+    // Format: "op\nuri1\nuri2"; NO trailing newline.
     let gnome_data = format!("{}\n{}", op, uris.join("\n"));
-    // Drag-and-drop compat — WITH trailing newline per RFC 2483 + Nautilus.
+    // Drag-and-drop compat; WITH trailing newline per RFC 2483 + Nautilus.
     let uri_list = format!("{}\n", uris.join("\n"));
 
     copy_files_wayland(&gnome_data, &uri_list)
@@ -186,7 +187,7 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
         get_contents, ClipboardType, Error as PasteError, MimeType, Seat,
     };
 
-    // Try x-special/gnome-copied-files first — it has op + uris.
+    // Try x-special/gnome-copied-files first; it has op + uris.
     let gnome = get_contents(
         ClipboardType::Regular,
         Seat::Unspecified,
@@ -206,7 +207,7 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
         Err(e) => return Err(ApiError::Internal(format!("clipboard read failed: {}", e))),
     }
 
-    // Fallback: text/uri-list — treat as copy.
+    // Fallback: text/uri-list; treat as copy.
     let uri_list = get_contents(
         ClipboardType::Regular,
         Seat::Unspecified,

@@ -15,7 +15,10 @@ pub async fn project_select_directory(app: tauri::AppHandle) -> Result<Option<St
 }
 
 /// Add a project from a local directory path.
-/// Detects branch/base if it's a git repo, but non-repo directories are allowed.
+/// Returns immediately with `default_branch = None`; the frontend
+/// follows up with [`project_refresh_git`] to backfill git metadata
+/// asynchronously so the picker doesn't stall on `git` CLI for new
+/// repos with slow filesystems.
 #[tauri::command]
 pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
     let p = Path::new(&path);
@@ -33,7 +36,7 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
         )));
     }
 
-    let db = state.db.lock();
+    let db = state.db.write();
     if let Some(existing) = state
         .projects
         .list(db.conn())
@@ -44,29 +47,57 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
         return Ok(existing);
     }
 
-    // Detect git info if available — not required
-    let (branch, base_ref) = if state.git.is_git_repo(p) {
-        (state.git.current_branch(p), state.git.default_base_ref(p))
-    } else {
-        (None, None)
-    };
-
     // Derive project name from directory
     let name = p
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
 
+    // Insert with empty git info; the frontend calls
+    // `project_refresh_git` right after to fill in `default_branch`
+    // and `base_ref` without blocking the picker.
     state
         .projects
-        .add(
-            db.conn(),
-            &name,
-            &path,
-            branch.as_deref(),
-            base_ref.as_deref(),
-        )
+        .add(db.conn(), &name, &path, None, None)
         .map_err(|e| ApiError::Database(e))
+}
+
+/// Re-probe git for a project and persist the resolved branch + base ref.
+/// Intended to run async after `project_add` so the initial insert
+/// returns instantly. Safe to call repeatedly: overwrites cached values.
+///
+/// Acquires the writer guard twice (once for the read, once for the
+/// write) instead of holding it across the git CLI probes. Holding the
+/// writer across `is_git_repo` + `current_branch` + `default_base_ref`
+/// would block every concurrent reader for the duration of three to
+/// five `git` spawns, defeating the read-pool split entirely.
+#[tauri::command]
+pub fn project_refresh_git(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Project, ApiError> {
+    let project_path = {
+        let db = state.db.read();
+        state
+            .projects
+            .get(db.conn(), &id)
+            .map_err(ApiError::Database)?
+            .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", id)))?
+            .path
+    };
+
+    let p = Path::new(&project_path);
+    let (branch, base_ref) = if state.git.is_git_repo(p) {
+        (state.git.current_branch(p), state.git.default_base_ref(p))
+    } else {
+        (None, None)
+    };
+
+    let db = state.db.write();
+    state
+        .projects
+        .update_git_info(db.conn(), &id, branch.as_deref(), base_ref.as_deref())
+        .map_err(ApiError::Database)
 }
 
 fn same_project_directory(existing_path: &str, requested: &Path) -> bool {
@@ -87,14 +118,17 @@ fn same_project_directory(existing_path: &str, requested: &Path) -> bool {
 /// List all projects.
 #[tauri::command]
 pub fn project_list(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, ApiError> {
-    let db = state.db.lock();
+    // Pure read; uses the reader pool so the picker stays
+    // responsive while a write (e.g. `project_refresh_git`) is in
+    // flight.
+    let db = state.db.read();
     state.projects.list(db.conn()).map_err(ApiError::Database)
 }
 
 /// Get a single project by ID.
 #[tauri::command]
 pub fn project_get(id: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     state
         .projects
         .get(db.conn(), &id)
@@ -108,7 +142,7 @@ pub fn project_get(id: String, state: tauri::State<'_, AppState>) -> Result<Proj
 /// DB rows, so no agent processes are orphaned.
 #[tauri::command]
 pub fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
 
     // Enumerate the project's sessions so we can kill live PTYs
     let sessions = state

@@ -116,6 +116,28 @@ impl ProjectService {
             .map_err(|e| format!("Failed to remove project: {}", e))?;
         Ok(())
     }
+
+    /// Update the cached git info (`default_branch`, `base_ref`) for a
+    /// project. Used by the async backfill that runs after `add` so
+    /// the initial insert can return without blocking on git CLIs.
+    /// `updated_at` is intentionally not touched; list ordering is
+    /// user-meaningful and shouldn't shuffle just because we resolved
+    /// metadata.
+    pub fn update_git_info(
+        &self,
+        conn: &Connection,
+        id: &str,
+        default_branch: Option<&str>,
+        base_ref: Option<&str>,
+    ) -> Result<Project, String> {
+        conn.execute(
+            "UPDATE projects SET default_branch = ?1, base_ref = ?2 WHERE id = ?3",
+            rusqlite::params![default_branch, base_ref, id],
+        )
+        .map_err(|e| format!("Failed to update project git info: {}", e))?;
+        self.get(conn, id)?
+            .ok_or_else(|| format!("Project not found after update: {}", id))
+    }
 }
 
 use rusqlite::OptionalExtension;

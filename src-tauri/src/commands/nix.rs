@@ -11,7 +11,7 @@ pub fn nix_detect(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixDetection, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     let project = state
         .projects
         .get(db.conn(), &project_id)
@@ -36,7 +36,7 @@ pub fn nix_select(
     nix_file: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixEnvRecord, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
 
     let project = state
         .projects
@@ -93,7 +93,7 @@ pub async fn nix_evaluate(
 
     // Load project path, nix_file, and user-configured timeout from DB
     let (project_path, nix_file, timeout_secs) = {
-        let db = state.db.lock();
+        let db = state.db.write();
         let project = state
             .projects
             .get(db.conn(), &project_id)
@@ -131,7 +131,7 @@ pub async fn nix_evaluate(
     .map_err(|e| ApiError::Internal(format!("Evaluation task panicked: {}", e)))?;
 
     // Save result to DB and return the updated record in one lock
-    let db = state.db.lock();
+    let db = state.db.write();
     match eval_result {
         Ok(env_vars) => {
             NixService::save_success(db.conn(), &project_id, &env_vars)
@@ -154,7 +154,7 @@ pub async fn nix_evaluate(
 /// Clear the Nix environment for a project.
 #[tauri::command]
 pub fn nix_clear(project_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
-    let db = state.db.lock();
+    let db = state.db.write();
     NixService::remove(db.conn(), &project_id).map_err(ApiError::Database)
 }
 
@@ -164,7 +164,7 @@ pub fn nix_status(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<NixEnvRecord>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
     NixService::get(db.conn(), &project_id).map_err(ApiError::Database)
 }
 
@@ -200,7 +200,7 @@ pub fn provider_list_for_project(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {
-    let db = state.db.lock();
+    let db = state.db.read();
 
     let merged_path = match NixService::load_env_vars(db.conn(), &project_id) {
         Ok(Some(nix_env)) => NixService::merged_path(&state.env.merged_path, &nix_env),

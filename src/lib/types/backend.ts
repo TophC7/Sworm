@@ -313,6 +313,14 @@ export interface FileDiff {
   deletions: number | null
 }
 
+// Per-file content payload for the lazy working-tree diff path.
+// Mirrors `DiffFileContent` in `src-tauri/src/commands/git.rs`.
+export interface DiffFileContent {
+  oldContent: string | null
+  newContent: string | null
+  binary: boolean
+}
+
 export interface FilePasteCollision {
   source: string
   destination: string

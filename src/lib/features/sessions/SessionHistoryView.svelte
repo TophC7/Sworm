@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
-    getSessions,
-    getArchivedSessions,
+    getAgentSessions,
+    getArchivedAgentSessions,
+    getAgentSessionsGrouped,
+    getArchivedAgentSessionsGrouped,
     loadArchivedSessions,
     archiveSession,
     unarchiveSession,
@@ -26,8 +28,13 @@
     projectId: string
   } = $props()
 
-  let sessions = $derived(getSessions(projectId))
-  let archivedSessions = $derived(getArchivedSessions(projectId))
+  // Filtered + grouped slices come from the sessions store as memoized
+  // selectors keyed by the underlying list reference. The component's
+  // own `$derived` still re-runs when the project's session list
+  // updates, but the work behind each call is O(1) on cache hits; no
+  // per-render `.filter()` + `.reduce()` over the whole session set.
+  let agentSessions = $derived(getAgentSessions(projectId))
+  let agentArchived = $derived(getArchivedAgentSessions(projectId))
 
   // Delete confirmation
   let deleteConfirmOpen = $state(false)
@@ -37,26 +44,6 @@
   $effect(() => {
     void loadArchivedSessions(projectId)
   })
-
-  // Filter out terminal and fresh — only track agent CLIs
-  let agentSessions = $derived(sessions.filter((s) => s.provider_id !== 'terminal' && s.provider_id !== 'fresh'))
-  let agentArchived = $derived(
-    archivedSessions.filter((s) => s.provider_id !== 'terminal' && s.provider_id !== 'fresh')
-  )
-
-  // Group sessions by provider
-  function groupByProvider(list: Session[]): Map<string, Session[]> {
-    const groups = new Map<string, Session[]>()
-    for (const session of list) {
-      const existing = groups.get(session.provider_id)
-      if (existing) {
-        existing.push(session)
-      } else {
-        groups.set(session.provider_id, [session])
-      }
-    }
-    return groups
-  }
 
   /**
    * Session dot class for session history.
@@ -82,8 +69,8 @@
     return 'bg-muted'
   }
 
-  let grouped = $derived(groupByProvider(agentSessions))
-  let archivedGrouped = $derived(groupByProvider(agentArchived))
+  let grouped = $derived(getAgentSessionsGrouped(projectId))
+  let archivedGrouped = $derived(getArchivedAgentSessionsGrouped(projectId))
 
   // Set of session ids whose tabs are pinned/locked. Derived once per
   // tab change so the per-row archive button can read O(1) instead of
@@ -152,7 +139,7 @@
         >
           {#if archived}
             <!--
-              Archived rows are not interactive on click — the only
+              Archived rows are not interactive on click; the only
               affordances are the hover restore + delete buttons. Render
               as a div so it doesn't appear focusable/clickable when it
               isn't.

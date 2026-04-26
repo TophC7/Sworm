@@ -1,4 +1,4 @@
-// Workspace state module — central tab + pane layout state.
+// Workspace state module; central tab + pane layout state.
 //
 // Manages which projects are open as tabs, which session/diff tabs exist
 // within each project, and which pane each tab is assigned to.
@@ -67,35 +67,32 @@ export type {
   LauncherTab
 }
 
-// Statuses that warrant a legacy bootstrap tab — used only when no
+// Statuses that warrant a legacy bootstrap tab; used only when no
 // persisted workspace blob exists for the project (i.e. first-time
 // open after upgrading from a pre-recovery build). Once a workspace
 // has been restored we trust the saved layout and let the user
 // re-open historical sessions explicitly.
 const BOOTSTRAP_STATUSES = new Set(['idle', 'starting', 'running'])
 
-// ---------------------------------------------------------------------------
-// Module state
-// ---------------------------------------------------------------------------
-
+// MODULE STATE //
 let openProjectIds = $state<string[]>([])
 let activeProjectId = $state<string | null>(null)
 let workspaces = $state<Map<string, ProjectWorkspace>>(new Map())
 const projectCloseListeners = new Set<(projectId: string) => void>()
 
 // LIFO per-project stack of recently closed tabs for Ctrl+Shift+T. Not
-// persisted — a fresh app launch has nothing to reopen beyond what
+// persisted; a fresh app launch has nothing to reopen beyond what
 // workspace restore already hydrates. Capped at 10 so a long session of
 // tab churn doesn't balloon.
 const MAX_CLOSED_TABS = 10
 let closedTabs = $state<Map<string, PersistedTab[]>>(new Map())
 
 // Monotonic counter for "Untitled-N" labels on new untitled text tabs.
-// Per process only; resets across reloads which is fine — there's no
+// Per process only; resets across reloads which is fine; there's no
 // user-meaningful numbering to preserve.
 let untitledCounter = 0
 
-// Active project's focused pane slot — derived so reads stay reactive
+// Active project's focused pane slot; derived so reads stay reactive
 // and per-project focus is preserved when switching projects.
 function activeFocusedSlot(): PaneSlot {
   const ws = activeProjectId ? workspaces.get(activeProjectId) : undefined
@@ -122,10 +119,7 @@ function isProjectRestored(projectId: string): boolean {
   return restoreState.get(projectId) === null
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+// HELPERS //
 let nextTabId = 0
 function generateTabId(): TabId {
   return `tab-${Date.now()}-${nextTabId++}`
@@ -156,13 +150,6 @@ function diffSourcesEqual(a: DiffSource, b: DiffSource): boolean {
   }
 }
 
-function clonePane(pane: PaneState): PaneState {
-  return {
-    ...pane,
-    tabs: [...pane.tabs]
-  }
-}
-
 function getWorkspace(projectId: string): ProjectWorkspace | undefined {
   return workspaces.get(projectId)
 }
@@ -170,25 +157,29 @@ function getWorkspace(projectId: string): ProjectWorkspace | undefined {
 /**
  * Trigger Svelte reactivity after mutating a workspace in place.
  *
- * Creates a shallow clone and replaces the Map entry so Svelte
- * sees a new reference. Call this once at the end of any function
- * that mutates workspace state.
+ * Clones the workspace, its `panes[]`, each individual pane object,
+ * and each pane's `tabs[]` before swapping the outer Map. Without the
+ * per-pane clone, in-place property mutations (e.g.
+ * `pane.activeTabId = id` from `setActiveTab`) leave consumers reading
+ * the same pane reference; Svelte's `$derived` short-circuits on
+ * reference equality and the UI never picks up the change. The clone
+ * is shallow per object, so it costs O(panes + total tabs) per commit.
  *
  * After committing, schedules a debounced workspace persist. This is
- * the single choke point for layout mutation, so persisting here is
- * the cheapest way to keep disk in sync with memory.
+ * the single choke point for layout mutation.
  */
 function commitWorkspace(ws: ProjectWorkspace) {
-  workspaces = new Map(workspaces).set(ws.projectId, {
+  const cloned: ProjectWorkspace = {
     ...ws,
-    tabs: [...ws.tabs],
-    panes: ws.panes.map(clonePane)
-  })
+    panes: ws.panes.map((pane) => ({ ...pane, tabs: [...pane.tabs] })),
+    tabs: [...ws.tabs]
+  }
+  workspaces = new Map(workspaces).set(ws.projectId, cloned)
   if (isProjectRestored(ws.projectId)) {
     const projectId = ws.projectId
     schedulePersistWorkspace(projectId, () => {
       // Skip writes for projects that were closed between the schedule
-      // and the debounce flush — the project row may be gone, and even
+      // and the debounce flush; the project row may be gone, and even
       // if it were still present, resurrecting its old layout is wrong.
       const latest = workspaces.get(projectId)
       if (!latest) return null
@@ -206,7 +197,7 @@ function persistAppShellSnapshot() {
 
 /**
  * Seed a launcher tab into the given pane. Used to maintain the invariant
- * that every live workspace has at least one tab — otherwise a freshly
+ * that every live workspace has at least one tab; otherwise a freshly
  * opened project (or a restored workspace whose user closed everything
  * last session) would render an empty tab strip with the picker
  * floating underneath, which is visually inconsistent with every other
@@ -240,7 +231,7 @@ function ensureWorkspace(projectId: string): ProjectWorkspace {
     // Fresh workspaces need a launcher tab so the user sees the picker as a
     // real tab (matching every other pane state) instead of a floating
     // overlay. The legacy bootstrap path in syncSessionTabs may replace
-    // or extend this later with session tabs — it's additive so it
+    // or extend this later with session tabs; it's additive so it
     // doesn't clobber the launcher tab.
     seedLauncherTab(ws, ws.panes[0])
     commitWorkspace(ws)
@@ -298,17 +289,42 @@ function resetToSinglePane(ws: ProjectWorkspace) {
   ws.focusedPaneSlot = 'sole'
 }
 
+/** Yield to the browser between dispose batches so a bulk close
+ *  (e.g. closing a project's whole tab strip) doesn't freeze the UI
+ *  while xterm/transcript teardown drains. */
+const TAB_DISPOSE_BATCH_SIZE = 4
+
+function runTabDisposeBatch(queue: Array<() => void>) {
+  const limit = Math.min(TAB_DISPOSE_BATCH_SIZE, queue.length)
+  for (let i = 0; i < limit; i++) {
+    try {
+      queue[i]()
+    } catch (error) {
+      console.warn('tab dispose:', error)
+    }
+  }
+  if (queue.length > TAB_DISPOSE_BATCH_SIZE) {
+    setTimeout(() => runTabDisposeBatch(queue.slice(TAB_DISPOSE_BATCH_SIZE)), 0)
+  }
+}
+
 function removeTabIds(ws: ProjectWorkspace, tabIds: Set<TabId>) {
   if (tabIds.size === 0) return
 
+  // Snapshot dispose targets BEFORE the tab list is mutated, but
+  // defer the actual `dispose()` calls until after this function has
+  // returned. Each dispose runs xterm.dispose + channel teardown +
+  // transcript flush; synchronous and not free. Closing 10+ tabs at
+  // once (e.g. quad-pane project close) was visibly stuttering paint.
+  const disposes: Array<() => void> = []
   for (const tabId of tabIds) {
     const tab = findTab(ws, tabId)
     if (tab?.kind === 'session') {
-      sessionRegistry.dispose(tab.sessionId)
-      continue
-    }
-    if (tab?.kind === 'task') {
-      taskRegistry.dispose(tab.runId)
+      const sessionId = tab.sessionId
+      disposes.push(() => sessionRegistry.dispose(sessionId))
+    } else if (tab?.kind === 'task') {
+      const runId = tab.runId
+      disposes.push(() => taskRegistry.dispose(runId))
     }
   }
 
@@ -318,8 +334,14 @@ function removeTabIds(ws: ProjectWorkspace, tabIds: Set<TabId>) {
       pane.tabs.filter((id) => !tabIds.has(id))
     )
   }
-
   ws.tabs = ws.tabs.filter((tab) => !tabIds.has(tab.id))
+
+  // Hand off the dispose queue to a deferred runner; `setTimeout(0)`
+  // yields to paint between batches, so the tab strip's visible
+  // update lands before the sessions get torn down.
+  if (disposes.length > 0) {
+    queueMicrotask(() => runTabDisposeBatch(disposes))
+  }
 }
 
 function setClosedTabsForProject(projectId: string, tabs: PersistedTab[]) {
@@ -346,10 +368,7 @@ function pruneClosedSessionTabs(projectId: string, sessionIds: Set<string>) {
   setClosedTabsForProject(projectId, filtered)
 }
 
-// ---------------------------------------------------------------------------
-// Project tab operations
-// ---------------------------------------------------------------------------
-
+// PROJECT TAB OPERATIONS //
 export function getOpenProjectIds(): string[] {
   return openProjectIds
 }
@@ -377,7 +396,7 @@ export function openProject(projectId: string) {
 }
 
 export async function closeProject(projectId: string): Promise<void> {
-  // Persist any pending mutations before we tear down — closing a
+  // Persist any pending mutations before we tear down; closing a
   // project mid-typing would otherwise lose the last debounce window.
   // Awaited so the producer runs against a still-live workspace entry;
   // otherwise it'd skip the write when it saw an already-deleted map.
@@ -416,7 +435,7 @@ export function selectProject(projectId: string | null) {
     ensureWorkspace(projectId)
     activeProjectId = projectId
     // Selecting an already-open project tab is an implicit "I'm done
-    // with the picker" — otherwise the override keeps EmptyState up
+    // with the picker"; otherwise the override keeps EmptyState up
     // even after the user pinned a real tab.
     hideProjectPicker()
     void restoreWorkspaceFromDisk(projectId)
@@ -487,13 +506,10 @@ export async function restoreWorkspaceFromDisk(projectId: string): Promise<void>
 }
 
 /**
- * Read the persisted app-shell state and reopen the projects that
- * were open last session. Validates each project id against the
- * current project list so deleted projects don't resurrect.
- *
- * The active workspace hydrates before activeProjectId flips so
- * ProjectView never mounts against an empty workspace. Other open
- * projects hydrate in the background after the first paint.
+ * Reopen projects that were open last session, filtering out any
+ * project ids the user has since deleted. Disk restore for the
+ * active project runs in the background so first paint is not
+ * blocked on JSON parse.
  */
 export async function restoreAppShellState(validProjectIds: Set<string>): Promise<void> {
   const { openProjectIds: savedOpen, activeProjectId: savedActive } = await loadPersistedAppShell()
@@ -513,7 +529,10 @@ export async function restoreAppShellState(validProjectIds: Set<string>): Promis
 
   if (desiredActive) {
     ensureWorkspace(desiredActive)
-    await restoreWorkspaceFromDisk(desiredActive)
+    // Background restore; `commitWorkspace` skips persistence while
+    // `isProjectRestored` is false, so this can't race-clobber the
+    // disk blob. The seeded launcher tab covers the visible gap.
+    void restoreWorkspaceFromDisk(desiredActive)
   }
 
   activeProjectId = desiredActive
@@ -535,10 +554,7 @@ export async function flushPersistencePending(): Promise<void> {
   await flushAllWorkspaces()
 }
 
-// ---------------------------------------------------------------------------
-// Tab operations
-// ---------------------------------------------------------------------------
-
+// TAB OPERATIONS //
 export interface TaskTabInit {
   runId: string
   taskId: string
@@ -550,7 +566,7 @@ export interface TaskTabInit {
 
 /**
  * Add a new task tab. Always creates a fresh tab (non-singleton
- * behavior) — callers that want singleton focus-on-rerun should use
+ * behavior); callers that want singleton focus-on-rerun should use
  * `findTaskTabByTaskId` first and skip the create when a live run
  * already exists.
  */
@@ -863,12 +879,8 @@ export function addTextTab(projectId: string, filePath: string, temporary = true
 }
 
 /**
- * Open a new unsaved text tab ("Untitled-N"). Always creates a fresh
- * tab — multiple Ctrl+N presses intentionally stack rather than
- * deduplicating, since each is a distinct scratch buffer.
- *
- * The tab promotes to a real file path on first save via
- * `renameTextTab`.
+ * Open a new unsaved text tab ("Untitled-N"). Multiple presses stack
+ * rather than dedupe; the tab promotes to a real path on first save.
  */
 export function addUntitledTextTab(projectId: string): TabId {
   const ws = ensureWorkspace(projectId)
@@ -926,7 +938,7 @@ export function addReadonlyTextTab(
 
 /**
  * Focus an existing launcher tab in the target pane, or create one if absent.
- * One launcher tab per pane maximum — the picker is a single surface, not a
+ * One launcher tab per pane maximum; the picker is a single surface, not a
  * stack of identical buffers.
  *
  * `paneSlot` defaults to the focused pane. Callers (e.g. PaneTabBar's +
@@ -1017,16 +1029,8 @@ export function promoteTabWhenReady(projectId: string, pendingTabId: TabId | Pro
 
 /**
  * Promote the focused pane's active tab to persistent, if it's a
- * temporary content tab. Centralised here because every sidebar needs
- * the same "double-click to pin" gesture, and duplicating the guard
- * inline at each call site (ProjectView, FilesSidebar, …) is exactly
- * how the Files tree ended up silently missing the feature: the Git
- * sidebar wired it, the Files sidebar didn't, and there was no shared
- * surface to fall off of. Callers now just invoke this directly.
- *
- * Sessions can't be "temporary" and launcher tabs are permanent picker
- * surfaces — both fall through unchanged, so this is safe to call
- * regardless of which tab kind happens to be focused.
+ * temporary content tab. Sessions and launcher tabs fall through
+ * unchanged, so callers can invoke this regardless of focused kind.
  */
 export function promoteFocusedTab(projectId: string): void {
   const tab = getFocusedTab(projectId)
@@ -1044,7 +1048,7 @@ export function closeTab(projectId: string, tabId: TabId) {
 
   // Push a restorable snapshot before teardown. `tabToPersisted` returns
   // null for tabs that can't be meaningfully reopened (unsaved new-file
-  // buffers, notification tool tabs) — those simply don't enter the
+  // buffers, notification tool tabs); those simply don't enter the
   // reopen stack.
   const snapshot = tabToPersisted(tab)
   if (snapshot) {
@@ -1070,11 +1074,11 @@ export function closeTab(projectId: string, tabId: TabId) {
   }
 
   // Remove from workspace tabs. Collapse-empty also commits, so skip
-  // the redundant commit here — collapsePaneIfEmpty will pick up the
+  // the redundant commit here; collapsePaneIfEmpty will pick up the
   // mutated `ws` and persist a single coherent snapshot.
   ws.tabs = ws.tabs.filter((t) => t.id !== tabId)
 
-  // Collapse splits that are now empty — otherwise closing the last tab
+  // Collapse splits that are now empty; otherwise closing the last tab
   // in a split pane leaves an orphan launcher surface the user has
   // to close manually.
   collapsePaneIfEmpty(projectId)
@@ -1184,10 +1188,7 @@ export function getAllTabs(projectId: string): Tab[] {
   return getWorkspace(projectId)?.tabs ?? []
 }
 
-// ---------------------------------------------------------------------------
-// Pane focus
-// ---------------------------------------------------------------------------
-
+// PANE FOCUS //
 export function getFocusedPaneSlot(): PaneSlot {
   return activeFocusedSlot()
 }
@@ -1237,10 +1238,7 @@ function deriveQuadLayout(ws: ProjectWorkspace): QuadLayout {
   return ws.quadLayout
 }
 
-// ---------------------------------------------------------------------------
-// Split pane operations
-// ---------------------------------------------------------------------------
-
+// SPLIT PANE OPERATIONS //
 /**
  * Split the current focused pane in a direction.
  * Returns the slot of the new pane, or null if already at max.
@@ -1532,7 +1530,7 @@ export function collapsePaneIfEmpty(projectId: string) {
   // Remove empty panes (keep at least one)
   const nonEmpty = ws.panes.filter((p) => p.tabs.length > 0)
   if (nonEmpty.length === 0) {
-    // Tabs exist but no pane owns them — orphan state recovery.
+    // Tabs exist but no pane owns them; orphan state recovery.
     // resetToSinglePane re-homes every tab, so we don't need to seed.
     resetToSinglePane(ws)
     commitWorkspace(ws)
@@ -1596,8 +1594,8 @@ export function getQuadLayout(projectId: string): QuadLayout {
  * Reconcile session tabs against the live sessions DB.
  *
  * Removes tabs whose sessions no longer exist and updates titles for
- * tabs whose sessions were renamed. The auto-create heuristic — adding
- * tabs for any active session — only fires when no persisted workspace
+ * tabs whose sessions were renamed. The auto-create heuristic; adding
+ * tabs for any active session; only fires when no persisted workspace
  * exists yet (legacy bootstrap), so we never silently re-spawn dead
  * tab layouts on top of a restored workspace.
  */
@@ -1625,7 +1623,7 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
 
   // Bootstrap heuristic: only fire when this project has *no* persisted
   // workspace blob (legacy upgrade path). Once we've consulted disk for
-  // this project — whether the blob existed or not — restored tabs are
+  // this project; whether the blob existed or not; restored tabs are
   // the source of truth. In particular, a user who intentionally closed
   // every tab must not have session tabs silently re-created on the
   // next sessions reload.
@@ -1661,7 +1659,7 @@ export function syncSessionTabs(projectId: string, sessions: Session[]) {
     ensureActiveTab(pane)
   }
 
-  // Single commit — collapsePaneIfEmpty also commits, so only call it
+  // Single commit; collapsePaneIfEmpty also commits, so only call it
   // when there are genuinely empty panes to avoid a redundant clone.
   const hasEmptyPanes = ws.panes.some((pane) => pane.tabs.length === 0)
   commitWorkspace(ws)
@@ -1686,10 +1684,7 @@ export function toggleTabLocked(projectId: string, tabId: TabId) {
   commitWorkspace(ws)
 }
 
-// ---------------------------------------------------------------------------
-// Derived session identity
-// ---------------------------------------------------------------------------
-
+// DERIVED SESSION IDENTITY //
 /** The active session is the session tab that's active in the focused pane. */
 export function getActiveSessionId(): string | null {
   const ws = activeProjectId ? getWorkspace(activeProjectId) : undefined

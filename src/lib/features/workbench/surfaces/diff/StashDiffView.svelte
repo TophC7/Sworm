@@ -21,15 +21,15 @@
 
   let stashEntry = $state<StashEntry | null>(null)
   let files = $state<FileDiff[]>([])
-  const loader = createTrackedAsyncLoad<number>()
-  let loading = $derived(loader.loading)
+  const stashLoad = createTrackedAsyncLoad<number>()
+  let loading = $derived(stashLoad.loading)
 
   let parsed = $derived(stashEntry ? parseStashMessage(stashEntry.message) : { branch: null, label: '' })
 
   $effect(() => {
     const idx = stashIndex
     const path = projectPath
-    loader.run(idx, async (isCurrent) => {
+    stashLoad.run(idx, async (isCurrent) => {
       stashEntry = null
       files = []
       const [list, f] = await Promise.all([
