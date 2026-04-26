@@ -23,6 +23,7 @@
   import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
   import { suspendKeybindings } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
   import ShortcutPreview from '$lib/features/command-palette/shortcuts/ShortcutPreview.svelte'
+  import { logicalKey } from '$lib/utils/keyboardEvent'
 
   let {
     open = false,
@@ -74,43 +75,45 @@
     releaseRecord = null
   }
 
-  function prettyKey(e: KeyboardEvent): string {
-    if (e.key === ' ') return 'Space'
-    if (e.key === 'Escape') return 'Esc'
-    if (e.key === '+') return '+'
-    if (e.key.length === 1) return e.key.toUpperCase()
-    return e.key
+  function prettyKey(key: string): string {
+    if (key === ' ') return 'Space'
+    if (key === 'Escape') return 'Esc'
+    if (key === '+') return '+'
+    if (key.length === 1) return key.toUpperCase()
+    return key
   }
 
   function strokeFromEvent(e: KeyboardEvent): string {
+    const key = logicalKey(e)
     const mods: string[] = []
     if (e.ctrlKey || e.metaKey) mods.push('Ctrl')
-    if (e.shiftKey && e.key !== '+') mods.push('Shift')
+    if (e.shiftKey && key !== '+') mods.push('Shift')
     if (e.altKey) mods.push('Alt')
-    return [...mods, prettyKey(e)].join('+')
+    return [...mods, prettyKey(key)].join('+')
   }
 
   function handleKeydown(e: KeyboardEvent) {
     if (!recording) return
-    if (e.key === 'Control' || e.key === 'Meta' || e.key === 'Shift' || e.key === 'Alt') return
+    const key = logicalKey(e)
+    if (key === 'Control' || key === 'Meta' || key === 'Shift' || key === 'Alt') return
     e.preventDefault()
     e.stopPropagation()
 
-    if (e.key === 'Escape') {
+    if (key === 'Escape') {
       stopRecording()
       return
     }
 
-    if (e.key === 'Enter' && captured) {
+    if (key === 'Enter' && captured) {
       stopRecording()
       return
     }
 
     const stroke = strokeFromEvent(e)
-    const hasModifier = e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.key !== '+')
-    const isFunctionKey = /^F\d+$/i.test(e.key)
+    const hasModifier = e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && key !== '+')
+    const isFunctionKey = /^F\d+$/i.test(key)
     if (!hasModifier && !isFunctionKey) {
-      rejectedHint = prettyKey(e)
+      rejectedHint = prettyKey(key)
       return
     }
 

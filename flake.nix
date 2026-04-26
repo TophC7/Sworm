@@ -153,6 +153,10 @@
 
             buildInputs = runtimeLibraries;
 
+            # cargo test spawns `git` from services::git tests; sandbox PATH
+            # is empty otherwise. Scoped to checkPhase to keep dep cache lean.
+            nativeCheckInputs = [ pkgs.git ];
+
             # The tauri CLI injects this feature automatically; raw cargo does not.
             # Without it, cfg(dev) stays active and assets are not embedded.
             cargoExtraArgs = "--features tauri/custom-protocol";

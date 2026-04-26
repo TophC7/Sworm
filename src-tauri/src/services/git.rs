@@ -1653,3 +1653,53 @@ fn merge_numstat(changes: &mut [GitChange], path: &Path, args: &[&str], staged: 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::file_diff::GitStatus;
+    use std::process::Command;
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Regression test: a working-tree deletion must surface the prior
+    /// content on the old side and `None` on the new side. Previous bug
+    /// returned both sides empty, leaving the diff body blank.
+    #[test]
+    fn deletion_unstaged_returns_old_side_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "sworm-del-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "t@t.com"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("foo.txt"), "alpha\nbeta\n").unwrap();
+        git(&dir, &["add", "foo.txt"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+        std::fs::remove_file(dir.join("foo.txt")).unwrap();
+
+        let svc = GitService::new();
+        let (old, new, binary) =
+            svc.get_working_diff_file_content(&dir, "foo.txt", GitStatus::Deleted, false);
+
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(old.as_deref(), Some("alpha\nbeta\n"));
+        assert_eq!(new, None);
+        assert!(!binary);
+    }
+}

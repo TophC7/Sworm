@@ -1,3 +1,5 @@
+import { logicalKey } from '$lib/utils/keyboardEvent'
+
 // Terminal keymap — single source of truth for keys consumed inside a
 // session terminal.
 //
@@ -34,30 +36,25 @@ export type KeyAction =
 /**
  * Per-provider behaviour. Add an entry only when an agent is known to
  * misbehave with the default; otherwise it falls through to
- * DEFAULT_PROFILE which lets xterm do its native encoding.
+ * DEFAULT_PROFILE.
  */
 interface ProviderProfile {
   /**
    * How to encode shift-modified Tab and Enter.
-   *   'legacy' — `\x1b[Z` and `\x1b\r`. Required by agents that read
-   *              keys via classic terminfo (Claude Code, Codex).
+   *   'legacy' — `\x1b[Z` and `\x1b\r`. Default; expected by classic
+   *              terminfo agents (Claude Code, Codex).
    *   'kitty'  — `\x1b[9;2u` and `\x1b[13;2u`. Required by agents that
    *              negotiate the kitty keyboard protocol and reject the
    *              legacy bytes (Gemini CLI).
-   *   'native' — Do not intercept. xterm encodes per its current
-   *              kitty-mode state, which is correct for plain shells
-   *              and most TUIs.
    */
-  shiftEncoding: 'legacy' | 'kitty' | 'native'
+  shiftEncoding: 'legacy' | 'kitty'
 }
 
-const DEFAULT_PROFILE: ProviderProfile = { shiftEncoding: 'native' }
+const DEFAULT_PROFILE: ProviderProfile = { shiftEncoding: 'legacy' }
 
 const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
-  claude_code: { shiftEncoding: 'legacy' },
-  codex: { shiftEncoding: 'legacy' },
   gemini: { shiftEncoding: 'kitty' }
-  // copilot, crush, fresh, terminal: rely on DEFAULT_PROFILE.
+  // claude_code, codex, copilot, crush, fresh, terminal: legacy default.
 }
 
 function profileFor(providerId: string | null): ProviderProfile {
@@ -114,16 +111,21 @@ export function resolveTerminalKey(ev: KeyboardEvent, providerId: string | null)
 
   const p = profileFor(providerId)
 
-  if (ev.key === 'Tab' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-    if (p.shiftEncoding === 'legacy') return { kind: 'send-pty', bytes: '\x1b[Z' }
+  // Match Shift+Tab / Shift+Enter via `logicalKey`: WebKitGTK regresses
+  // `event.key` to `'Unidentified'` when Shift is held with non-character
+  // keys, so a naive `ev.key === 'Tab'` check whiffs and the keystroke
+  // falls through to xterm without preventDefault, letting WebKit's
+  // default focus-traversal yank focus out of the terminal.
+  const key = logicalKey(ev)
+
+  if (key === 'Tab' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
     if (p.shiftEncoding === 'kitty') return { kind: 'send-pty', bytes: '\x1b[9;2u' }
-    return PASS
+    return { kind: 'send-pty', bytes: '\x1b[Z' }
   }
 
-  if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-    if (p.shiftEncoding === 'legacy') return { kind: 'send-pty', bytes: '\x1b\r' }
+  if (key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
     if (p.shiftEncoding === 'kitty') return { kind: 'send-pty', bytes: '\x1b[13;2u' }
-    return PASS
+    return { kind: 'send-pty', bytes: '\x1b\r' }
   }
 
   return PASS

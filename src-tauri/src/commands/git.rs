@@ -44,24 +44,34 @@ pub(crate) fn validated_git_rev(rev: &str) -> Result<(), ApiError> {
 ///
 /// Returns `Ok(())` on success; callers pass the original paths to the
 /// service layer (git CLI resolves them relative to its `current_dir`).
+///
+/// The candidate path may not exist on disk (deleted file, staged
+/// addition, or a deleted file whose parent directory was also removed).
+/// Walks up the candidate path until an ancestor canonicalizes
+/// successfully, then re-attaches the missing suffix. This anchors path
+/// resolution even when several leading segments are gone.
 fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), ApiError> {
     let root = PathBuf::from(project_path)
         .canonicalize()
         .map_err(|e| ApiError::InvalidArgument(format!("Invalid project path: {}", e)))?;
-    let candidate = root.join(file_path);
-    let normalized = candidate
-        .canonicalize()
-        .or_else(|_| {
-            // Path may not exist yet (e.g. staging a new file). Canonicalize
-            // the parent and re-attach the file name; reject if the path has
-            // no concrete final segment to anchor the parent walk.
-            let parent = candidate.parent().unwrap_or(&candidate).canonicalize()?;
-            let name = candidate.file_name().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing file name")
-            })?;
-            Ok::<PathBuf, std::io::Error>(parent.join(name))
-        })
-        .map_err(|e| ApiError::InvalidArgument(format!("Invalid file path: {}", e)))?;
+
+    let invalid = || ApiError::InvalidArgument("Invalid file path".to_string());
+    let mut cursor = root.join(file_path);
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let normalized = loop {
+        match cursor.canonicalize() {
+            Ok(mut anchor) => {
+                for segment in suffix.iter().rev() {
+                    anchor.push(segment);
+                }
+                break anchor;
+            }
+            Err(_) => {
+                suffix.push(cursor.file_name().ok_or_else(invalid)?.to_os_string());
+                cursor = cursor.parent().ok_or_else(invalid)?.to_path_buf();
+            }
+        }
+    };
 
     if !normalized.starts_with(&root) {
         return Err(ApiError::InvalidArgument(
@@ -671,6 +681,32 @@ mod tests {
         assert!(validated_project_file(project, "ok.txt").is_ok());
         assert!(validated_project_file(project, "../etc/passwd").is_err());
         assert!(validated_project_file(project, "../../../../etc/passwd").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validated_project_file_accepts_deleted_paths() {
+        use super::validated_project_file;
+        use std::fs;
+
+        let project = std::env::temp_dir().join(format!(
+            "sworm-validate-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&project).expect("create temp project");
+        let project_str = project.to_string_lossy().into_owned();
+
+        // File deleted, parent intact.
+        assert!(validated_project_file(&project_str, "missing.txt").is_ok());
+
+        // File and parent directory both missing — walk-up anchors to the project root.
+        assert!(validated_project_file(&project_str, "vanished/dir/file.txt").is_ok());
+
+        // Traversal still rejected even when the candidate doesn't exist.
+        assert!(validated_project_file(&project_str, "../etc/passwd").is_err());
+
+        fs::remove_dir_all(&project).expect("remove temp project");
     }
 
     #[cfg(unix)]

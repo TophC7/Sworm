@@ -383,11 +383,14 @@ export class DiffModelStore {
             this.ensureModels(entry)
           }
         }
-        this.version++
       } catch (err) {
         console.error('Diff content load failed for', entry.path, err)
       } finally {
         this.inflight.delete(entry.path)
+        // Bump unconditionally so the consumer effect re-runs even when
+        // the fetcher threw. Otherwise a row whose load failed stays
+        // parked at the placeholder height with no Monaco bound.
+        this.version++
       }
     })()
     this.inflight.set(entry.path, promise)

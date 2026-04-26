@@ -11,6 +11,7 @@ import {
   normalizeShortcutKey,
   splitShortcut
 } from '$lib/features/command-palette/shortcuts/spec'
+import { logicalKey } from '$lib/utils/keyboardEvent'
 import { closeTransientModals } from '$lib/utils/modalRegistry.svelte'
 
 export { formatShortcut, splitShortcut }
@@ -45,13 +46,17 @@ export function suspendKeybindings(): () => void {
 }
 
 function normalizeEvent(e: KeyboardEvent): string | null {
+  // Resolve via `logicalKey` so WebKitGTK's `'Unidentified'` regression
+  // on Shift-modified non-character keys (Tab, Enter, …) doesn't drop
+  // user-bound shortcuts on the floor.
+  const raw = logicalKey(e)
   const mods: string[] = []
   if (e.altKey) mods.push('alt')
   if (e.ctrlKey || e.metaKey) mods.push('ctrl')
-  if (e.shiftKey && e.key !== '+') mods.push('shift')
+  if (e.shiftKey && raw !== '+') mods.push('shift')
 
-  if (e.key === 'Control' || e.key === 'Meta' || e.key === 'Shift' || e.key === 'Alt') return null
-  const key = normalizeShortcutKey(e.key.length === 1 ? e.key.toLowerCase() : e.key)
+  if (raw === 'Control' || raw === 'Meta' || raw === 'Shift' || raw === 'Alt') return null
+  const key = normalizeShortcutKey(raw.length === 1 ? raw.toLowerCase() : raw)
   if (!key) return null
   return [...mods, key].join('+')
 }
