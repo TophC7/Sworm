@@ -28,6 +28,7 @@ import {
   reopenTab,
   rerunLastProjectTask,
   revealActiveProjectInFileManager,
+  showFiles,
   showTasks
 } from '$lib/features/app-actions/actions.svelte'
 import {
@@ -55,6 +56,7 @@ import {
   RefreshCwIcon,
   RotateCcwIcon,
   RotateCw,
+  SearchIcon,
   SettingsIcon,
   ShieldAlertIcon,
   SquareArrowOutUpRight,
@@ -236,6 +238,17 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       defaultKeybindings: ['Ctrl+T'],
       visible: () => activeProjectVisible() && hasConnectedProvider('terminal'),
       run: newTerminalSession
+    }),
+    appCommand({
+      id: 'files.show',
+      label: 'Go to File',
+      group: 'File',
+      icon: SearchIcon,
+      keywords: ['files', 'file', 'search', 'open', 'goto', 'quick', '/'],
+      defaultKeybindings: ['Ctrl+P'],
+      terminalPolicy: 'skip-shell-keeps-modals',
+      visible: activeProjectVisible,
+      run: showFiles
     }),
     appCommand({
       id: 'tasks.show',

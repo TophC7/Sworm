@@ -21,12 +21,16 @@
     getTaskCommandGroups,
     type Command as CommandType
   } from '$lib/features/command-palette/commands/index.svelte'
+  import { getFilePaletteGroups } from '$lib/features/command-palette/commands/files.svelte'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/features/command-palette/commands/recents.svelte'
   import {
     consumePendingInitialSearch,
     isCommandPaletteOpen,
     setCommandPaletteOpen
   } from '$lib/features/command-palette/state.svelte'
+  import { ensureProjectFiles } from '$lib/features/files/projectFiles.svelte'
+  import { getActiveProjectId } from '$lib/features/workbench/state.svelte'
+  import { getProjectById } from '$lib/features/projects/state.svelte'
   import { isTextEditorFocused } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { getShortcutCommand } from '$lib/features/command-palette/shortcuts/registry.svelte'
@@ -60,15 +64,42 @@
   let suppressPointerSelection = $state(false)
   let lastPointerPosition = $state<{ x: number; y: number } | null>(null)
 
-  // Prefix modes: `>` routes to editor commands, `!` routes to tasks.
-  // Default (no prefix) shows app commands + Recent.
-  let isEditorMode = $derived(search.startsWith('>'))
-  let isTaskMode = $derived(search.startsWith('!'))
-  let filterQuery = $derived(isEditorMode || isTaskMode ? search.slice(1).trim() : search.trim())
+  // Prefix modes: `>` routes to editor commands, `!` routes to tasks,
+  // `/` routes to project file lookup (Quick Open). Default (no prefix)
+  // shows app commands + Recent.
+  const PREFIX_MODES = {
+    '>': 'editor',
+    '!': 'task',
+    '/': 'files'
+  } as const
+  type PrefixChar = keyof typeof PREFIX_MODES
+  type PaletteMode = (typeof PREFIX_MODES)[PrefixChar] | 'default'
+  const MODE_PLACEHOLDERS: Record<PaletteMode, string> = {
+    editor: 'Editor command...',
+    task: 'Run task...',
+    files: 'Search files... (path:line)',
+    default: 'Type a command...'
+  }
+
+  let paletteMode = $derived<PaletteMode>(PREFIX_MODES[search[0] as PrefixChar] ?? 'default')
+  let isPrefixedMode = $derived(paletteMode !== 'default')
+  let filterQuery = $derived(isPrefixedMode ? search.slice(1).trim() : search.trim())
 
   let appGroups = $derived(getAppCommandGroups())
   let editorGroups = $derived(getEditorCommandGroups())
   let taskGroups = $derived(getTaskCommandGroups())
+  let activeProjectId = $derived(getActiveProjectId())
+  let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeProjectId, filterQuery) : [])
+
+  // Files mode reads from a per-project cache; warm it on entry so the
+  // first keystroke after typing `/` already sees results. Re-runs are
+  // cheap once the cache is populated (loadedAt short-circuits).
+  $effect(() => {
+    if (paletteMode !== 'files' || !activeProjectId) return
+    const project = getProjectById(activeProjectId)
+    if (!project) return
+    void ensureProjectFiles(activeProjectId, project.path)
+  })
   let scheduledRun = 0
   const COMMAND_NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'])
 
@@ -87,7 +118,7 @@
   // duplicates across Recent + its source section.
   let recentGroup = $derived.by<import('$lib/features/command-palette/commands/index.svelte').CommandGroup | null>(
     () => {
-      if (isEditorMode || isTaskMode) return null
+      if (isPrefixedMode) return null
       const ids = getRecentCommandIds()
       if (ids.length === 0) return null
       const byId = new Map<string, CommandType>()
@@ -106,7 +137,12 @@
   )
 
   let activeGroups = $derived.by(() => {
-    const source = isEditorMode ? editorGroups : isTaskMode ? taskGroups : appGroups
+    // Files mode is pre-filtered by getFilePaletteGroups (the source
+    // list can be 25k entries; client-side filtering would be wasted
+    // work). Skip the substring filter that the other modes use.
+    if (paletteMode === 'files') return fileGroups
+
+    const source = paletteMode === 'editor' ? editorGroups : paletteMode === 'task' ? taskGroups : appGroups
     const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
     if (!filterQuery) return withRecents
 
@@ -142,7 +178,9 @@
     // Task entries and editor-mode entries are excluded from Recent:
     // task lists already live behind `!`, and editor commands are
     // context-specific so a stale recent could fire in the wrong tab.
-    if (!isEditorMode && !isTaskMode) recordRecentCommand(baseId)
+    // Files mode hits aren't recorded — the recent list is for app
+    // commands, not arbitrary file paths.
+    if (!isPrefixedMode) recordRecentCommand(baseId)
     setCommandPaletteOpen(false)
     search = ''
     const runId = ++scheduledRun
@@ -276,10 +314,7 @@
           onpointerleavecapture={handleCommandPointerLeave}
           class="overflow-visible rounded-none"
         >
-          <CommandInput
-            placeholder={isEditorMode ? 'Editor command...' : isTaskMode ? 'Run task...' : 'Type a command...'}
-            bind:value={search}
-          />
+          <CommandInput placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
           <CommandList bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
             <CommandEmpty />
 
@@ -362,7 +397,7 @@
               <Kbd>↵</Kbd>
               run
             </span>
-            {#if !isEditorMode && !isTaskMode}
+            {#if !isPrefixedMode}
               <span class="flex items-center gap-1.5">
                 <Kbd>&gt;</Kbd>
                 editor
@@ -370,6 +405,10 @@
               <span class="flex items-center gap-1.5">
                 <Kbd>!</Kbd>
                 tasks
+              </span>
+              <span class="flex items-center gap-1.5">
+                <Kbd>/</Kbd>
+                files
               </span>
             {/if}
           </div>

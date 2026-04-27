@@ -11,6 +11,7 @@ import { basename } from '$lib/utils/paths'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 import { clearGitState } from '$lib/features/git/state.svelte'
+import { invalidateProjectFiles } from '$lib/features/files/projectFiles.svelte'
 import { hideProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
 import { canLockTab, createPane } from '$lib/features/workbench/model'
 import type {
@@ -419,6 +420,7 @@ export async function closeProject(projectId: string): Promise<void> {
   }
 
   clearGitState(projectId)
+  invalidateProjectFiles(projectId)
 
   openProjectIds = openProjectIds.filter((id) => id !== projectId)
   restoreState.delete(projectId)

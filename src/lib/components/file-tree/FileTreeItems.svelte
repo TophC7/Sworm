@@ -18,6 +18,7 @@
     nodes,
     isCollapsed,
     isActive,
+    isDimmed,
     hasDirChanges,
     onToggleDir,
     onFileClick,
@@ -33,6 +34,14 @@
     nodes: FileTreeNode<T>[]
     isCollapsed: (path: string) => boolean
     isActive?: (path: string) => boolean
+    /**
+     * Optional predicate driving the tree-filter "dim" effect. Returns
+     * true for rows that should fade out because they don't match the
+     * current filter query. Non-matching rows stay clickable so the
+     * surrounding structure remains navigable — matching VSCode's
+     * "Filter on Type" behavior rather than hiding non-matches.
+     */
+    isDimmed?: (node: FileTreeNode<T>) => boolean
     hasDirChanges?: (dirPath: string) => boolean
     onToggleDir: (path: string) => void
     onFileClick?: (node: FileTreeNode<T>) => void
@@ -69,10 +78,11 @@
   {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
   {@const targetAttachment = dndEnabled ? (dndDirectoryAttachment?.(node) ?? null) : null}
   {@const dropActive = dndEnabled ? (dndIsDropActive?.(node.path) ?? false) : false}
+  {@const dimmed = isDimmed?.(node) ?? false}
   <div
-    class="group/tree-row relative flex w-full items-center text-sm transition-colors {dropActive
+    class="group/tree-row relative flex w-full items-center text-sm transition-[color,background-color,opacity] {dropActive
       ? 'bg-accent/15 text-bright'
-      : 'text-muted hover:bg-surface'}"
+      : 'text-muted hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
     style:height="{ROW_HEIGHT_PX}px"
     role="presentation"
     {@attach targetAttachment ?? noopAttachment}
@@ -107,10 +117,11 @@
 {#snippet fileRow(node: FileTreeNode<T>, depth: number)}
   {@const sourceAttachment = dndEnabled ? (dndSourceAttachment?.(node) ?? null) : null}
   {@const active = node.change ? (isActive?.(node.change.path) ?? false) : false}
+  {@const dimmed = isDimmed?.(node) ?? false}
   <div
-    class="group/tree-row relative flex w-full items-center text-sm transition-colors {active
+    class="group/tree-row relative flex w-full items-center text-sm transition-[color,background-color,opacity] {active
       ? 'bg-accent/10 text-bright'
-      : 'text-fg hover:bg-surface'}"
+      : 'text-fg hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
     style:height="{ROW_HEIGHT_PX}px"
     role="presentation"
     oncontextmenu={(e) => onFileContextMenu?.(e, node)}

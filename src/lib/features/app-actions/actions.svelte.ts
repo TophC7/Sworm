@@ -144,6 +144,16 @@ export function showTasks(): void {
   openCommandPaletteWithSearch('! ')
 }
 
+/**
+ * Opens the command palette in file-search mode. Bound to Ctrl+P,
+ * mirroring VSCode's Quick Open. Trailing space matches the `> ` /
+ * `! ` convention so the prefix reads as a discrete mode token rather
+ * than a runtogether path query.
+ */
+export function showFiles(): void {
+  openCommandPaletteWithSearch('/ ')
+}
+
 export async function rerunLastProjectTask(): Promise<void> {
   const projectId = getActiveProjectId()
   if (!projectId) return

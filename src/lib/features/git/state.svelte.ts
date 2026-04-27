@@ -16,18 +16,37 @@ let gitSummaries = $state<Map<string, GitSummary>>(new Map())
 const pollingIntervals = new Map<string, ReturnType<typeof setInterval>>()
 // Project paths needed for polling (since we poll by projectId but fetch by path)
 const projectPaths = new Map<string, string>()
-// Last serialized summary per project; used to short-circuit Map swaps
-// when the polled summary is byte-identical to the previous one. Avoids
-// invalidating every git-derived `$derived` (status bar, sidebar,
-// WorkingDiffView's changeSignature) on every 10s tick when the working
-// tree is idle.
-const summarySignatures = new Map<string, string>()
+function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolean {
+  if (!a) return false
+  if (
+    a.is_repo !== b.is_repo ||
+    a.branch !== b.branch ||
+    a.base_ref !== b.base_ref ||
+    a.ahead !== b.ahead ||
+    a.behind !== b.behind ||
+    a.staged_count !== b.staged_count ||
+    a.unstaged_count !== b.unstaged_count ||
+    a.untracked_count !== b.untracked_count ||
+    a.changes.length !== b.changes.length
+  ) {
+    return false
+  }
 
-function signatureOf(summary: GitSummary): string {
-  // JSON.stringify is deterministic for a given object shape. The
-  // backend always emits keys in the same order, so this is a stable
-  // signature without needing a manual concat.
-  return JSON.stringify(summary)
+  for (let i = 0; i < a.changes.length; i++) {
+    const left = a.changes[i]
+    const right = b.changes[i]
+    if (
+      left.path !== right.path ||
+      left.status !== right.status ||
+      left.staged !== right.staged ||
+      left.additions !== right.additions ||
+      left.deletions !== right.deletions
+    ) {
+      return false
+    }
+  }
+
+  return true
 }
 
 // READ //
@@ -45,13 +64,9 @@ export async function refreshGit(projectId: string, projectPath?: string): Promi
 
   try {
     const summary = await backend.git.getSummary(path)
-    const next = signatureOf(summary)
-    if (summarySignatures.get(projectId) === next) {
-      // Same payload as last fetch; skip the Map swap so consumers
-      // don't see a phantom invalidation.
+    if (summariesEqual(gitSummaries.get(projectId), summary)) {
       return
     }
-    summarySignatures.set(projectId, next)
     gitSummaries = new Map(gitSummaries).set(projectId, summary)
   } catch (e) {
     console.error(`Failed to refresh git for ${projectId}:`, e)
@@ -98,7 +113,6 @@ export async function runGitAction<T>(
 
 export function clearGitState(projectId: string) {
   stopGitPolling(projectId)
-  summarySignatures.delete(projectId)
   const next = new Map(gitSummaries)
   next.delete(projectId)
   gitSummaries = next

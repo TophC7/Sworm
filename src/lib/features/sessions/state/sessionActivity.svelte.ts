@@ -67,6 +67,11 @@ function updateEntry(sessionId: string, patch: Partial<Pick<ActivityEntry, 'sign
   activities.bumpKey(sessionId)
 }
 
+function touchEntry(entry: ActivityEntry, signal: ActivitySignal) {
+  entry.signal = signal
+  entry.updatedAt = Date.now()
+}
+
 function clearHold(sessionId: string) {
   const entry = activities.get(sessionId)
   if (entry?.holdTimer) {
@@ -87,13 +92,21 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
 
   if (signal === 'busy') {
     clearHold(sessionId)
-    updateEntry(sessionId, { signal, activity: 'working' })
+    if (entry.activity !== 'working') {
+      updateEntry(sessionId, { signal, activity: 'working' })
+    } else {
+      touchEntry(entry, signal)
+    }
     return
   }
 
   if (signal === 'idle') {
     clearHold(sessionId)
-    updateEntry(sessionId, { signal, activity: 'waiting' })
+    if (entry.activity !== 'waiting') {
+      updateEntry(sessionId, { signal, activity: 'waiting' })
+    } else {
+      touchEntry(entry, signal)
+    }
     return
   }
 

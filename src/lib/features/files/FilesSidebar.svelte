@@ -1,7 +1,9 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
+  import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
+  import TreeFilterInput from '$lib/components/file-tree/TreeFilterInput.svelte'
   import ImportCollisionDialog from '$lib/features/files/ImportCollisionDialog.svelte'
   import FileContextMenu from '$lib/features/files/FileContextMenu.svelte'
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
@@ -12,6 +14,12 @@
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import { RotateCw } from '$lib/icons/lucideExports'
+  import {
+    ensureProjectFiles,
+    getProjectFilePaths,
+    isProjectFilesLoading,
+    refreshProjectFiles
+  } from '$lib/features/files/projectFiles.svelte'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
   import {
@@ -48,9 +56,17 @@
   } = $props()
 
   let expandedDirs = new SvelteSet<string>()
-  let loading = $state(true)
+  let filterQuery = $state('')
+
+  // Source-of-truth file paths come from the shared projectFiles
+  // store so the command palette's `/` mode and this sidebar see the
+  // same data and any mutation here invalidates both surfaces.
+  let paths = $derived(getProjectFilePaths(projectId))
+  let loading = $derived(isProjectFilesLoading(projectId) && paths.length === 0)
   let error = $state<string | null>(null)
-  let fileTree = $state<FileTreeNode<{ path: string }>[]>([])
+  let fileTree = $derived<FileTreeNode<{ path: string }>[]>(buildFileTree(paths.map((p) => ({ path: p }))))
+  let treeFilter = $derived(buildTreeFilter(fileTree, filterQuery))
+  let filterActive = $derived(filterQuery.trim().length > 0)
 
   let contextFilePath = $state<string | null>(null)
   let contextTargetType = $state<'file' | 'directory' | null>(null)
@@ -79,16 +95,12 @@
   const directoryAttachmentCache = new Map<string, ReturnType<typeof fileTreeDirectoryDropTarget>>()
 
   async function loadFiles() {
-    loading = true
     error = null
     try {
-      const paths = await backend.files.listAll(projectPath)
-      fileTree = buildFileTree(paths.map((p) => ({ path: p })))
+      await refreshProjectFiles(projectId, projectPath)
     } catch (e) {
       console.error('Failed to load files:', e)
       error = e instanceof Error ? e.message : String(e)
-    } finally {
-      loading = false
     }
   }
 
@@ -376,9 +388,10 @@
     if (projectPath !== prevProjectPath) {
       prevProjectPath = projectPath
       expandedDirs.clear()
+      filterQuery = ''
       clearAttachmentCaches()
       abortPendingTransfer()
-      loadFiles()
+      void ensureProjectFiles(projectId, projectPath)
     }
   })
 
@@ -551,62 +564,69 @@
     </IconButton>
   {/snippet}
 
-  <div
-    class="h-full overflow-y-auto text-base {isFileTreeDropActive(projectId, '.') ? 'bg-accent/6' : ''}"
-    {@attach rootDndAttachment()}
-  >
-    <FileContextMenu
-      filePath={contextFilePath}
-      targetType={contextTargetType}
-      onRevealInFolder={handleRevealInFolder}
-      onOpenInEditor={handleOpenInEditor}
-      onOpenInFresh={handleOpenInFresh}
-      onOpenDiff={handleOpenDiff}
-      onCut={handleCut}
-      onCopy={handleCopy}
-      onPaste={handlePaste}
-      onCopyPath={handleCopyPath}
-      onCopyRelativePath={handleCopyRelativePath}
-      onRename={handleRename}
-      onDelete={handleDelete}
-      onNewFile={handleNewFile}
-      onNewFolder={handleNewFolder}
-      onOpenExternal={handleOpenExternal}
-      onCopyProjectPath={handleCopyProjectPath}
-      onResetTarget={resetContextTarget}
+  <div class="flex h-full min-h-0 flex-col">
+    <TreeFilterInput bind:value={filterQuery} placeholder="Filter files..." ariaLabel="Filter files" />
+    <div
+      class="min-h-0 flex-1 overflow-y-auto text-base {isFileTreeDropActive(projectId, '.') ? 'bg-accent/6' : ''}"
+      {@attach rootDndAttachment()}
     >
-      {#if loading}
-        <div class="px-2.5 py-3 text-sm text-subtle">Loading files&hellip;</div>
-      {:else if error}
-        <div class="px-2.5 py-3 text-sm text-danger">{error}</div>
-      {:else if fileTree.length === 0}
-        <div class="px-2.5 py-3 text-sm text-subtle">No files found.</div>
-      {:else}
-        <FileTreeItems
-          nodes={fileTree}
-          isCollapsed={(path) => !expandedDirs.has(path)}
-          isActive={(path) => path === activeFilePath}
-          hasDirChanges={(path) => dirsWithChanges.has(path)}
-          onToggleDir={toggleDir}
-          onFileClick={(node) => {
-            if (node.change?.path) handleFileClick(node.change.path)
-          }}
-          onFileDblClick={() => promoteTabWhenReady(projectId, pendingFileOpen)}
-          onFileContextMenu={handleFileContextMenu}
-          dndEnabled={true}
-          {dndSourceAttachment}
-          {dndDirectoryAttachment}
-          dndIsDropActive={(path) => isFileTreeDropActive(projectId, path)}
-        >
-          {#snippet fileTrailing(node)}
-            {@const status = gitStatusMap.get(node.path)}
-            {#if status}
-              <GitStatusBadge {status} />
-            {/if}
-          {/snippet}
-        </FileTreeItems>
-      {/if}
-    </FileContextMenu>
+      <FileContextMenu
+        filePath={contextFilePath}
+        targetType={contextTargetType}
+        onRevealInFolder={handleRevealInFolder}
+        onOpenInEditor={handleOpenInEditor}
+        onOpenInFresh={handleOpenInFresh}
+        onOpenDiff={handleOpenDiff}
+        onCut={handleCut}
+        onCopy={handleCopy}
+        onPaste={handlePaste}
+        onCopyPath={handleCopyPath}
+        onCopyRelativePath={handleCopyRelativePath}
+        onRename={handleRename}
+        onDelete={handleDelete}
+        onNewFile={handleNewFile}
+        onNewFolder={handleNewFolder}
+        onOpenExternal={handleOpenExternal}
+        onCopyProjectPath={handleCopyProjectPath}
+        onResetTarget={resetContextTarget}
+      >
+        {#if loading}
+          <div class="px-2.5 py-3 text-sm text-subtle">Loading files&hellip;</div>
+        {:else if error}
+          <div class="px-2.5 py-3 text-sm text-danger">{error}</div>
+        {:else if fileTree.length === 0}
+          <div class="px-2.5 py-3 text-sm text-subtle">No files found.</div>
+        {:else}
+          <FileTreeItems
+            nodes={fileTree}
+            isCollapsed={(path) => {
+              if (filterActive && treeFilter.expand.has(path)) return false
+              return !expandedDirs.has(path)
+            }}
+            isActive={(path) => path === activeFilePath}
+            isDimmed={filterActive ? (node) => !treeFilter.matched.has(node.path) : undefined}
+            hasDirChanges={(path) => dirsWithChanges.has(path)}
+            onToggleDir={toggleDir}
+            onFileClick={(node) => {
+              if (node.change?.path) handleFileClick(node.change.path)
+            }}
+            onFileDblClick={() => promoteTabWhenReady(projectId, pendingFileOpen)}
+            onFileContextMenu={handleFileContextMenu}
+            dndEnabled={true}
+            {dndSourceAttachment}
+            {dndDirectoryAttachment}
+            dndIsDropActive={(path) => isFileTreeDropActive(projectId, path)}
+          >
+            {#snippet fileTrailing(node)}
+              {@const status = gitStatusMap.get(node.path)}
+              {#if status}
+                <GitStatusBadge {status} />
+              {/if}
+            {/snippet}
+          </FileTreeItems>
+        {/if}
+      </FileContextMenu>
+    </div>
   </div>
 </SidebarPanel>
 

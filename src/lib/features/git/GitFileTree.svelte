@@ -17,6 +17,7 @@
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
   import { Textarea } from '$lib/components/ui/input'
+  import TreeFilterInput from '$lib/components/file-tree/TreeFilterInput.svelte'
   import {
     ChevronDown,
     FileDiff,
@@ -38,6 +39,7 @@
     return e instanceof Error ? e.message : String(e)
   }
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
+  import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import { join } from '@tauri-apps/api/path'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { SvelteSet } from 'svelte/reactivity'
@@ -131,6 +133,15 @@
   let stagedTree = $derived(buildFileTree(stagedFiles))
   let unstagedTree = $derived(buildFileTree(unstagedFiles))
   let hasChanges = $derived(stagedTree.length > 0 || unstagedTree.length > 0)
+
+  // Tree filter shared across both Staged and Changes groups. The
+  // input below the commit area drives a single query; each group
+  // computes its own match/expand sets so dimming and auto-expand
+  // stay correct when the same path appears in only one group.
+  let filterQuery = $state('')
+  let filterActive = $derived(filterQuery.trim().length > 0)
+  let stagedFilter = $derived(buildTreeFilter(stagedTree, filterQuery))
+  let unstagedFilter = $derived(buildTreeFilter(unstagedTree, filterQuery))
 
   let canCommit = $derived(commitMessage.trim().length > 0 && stagedFiles.length > 0 && !committing)
 
@@ -449,6 +460,10 @@
     </div>
   </div>
 
+  {#if hasChanges}
+    <TreeFilterInput bind:value={filterQuery} placeholder="Filter changes..." ariaLabel="Filter changed files" />
+  {/if}
+
   {#snippet fileTrailing(node: FileTreeNode<GitChange>)}
     {#if node.change}
       {#if node.change.status !== 'D' && (node.change.additions != null || node.change.deletions != null)}
@@ -555,9 +570,14 @@
           />
         </div>
         {#if tree.length > 0}
+          {@const filter = isStaged ? stagedFilter : unstagedFilter}
           <FileTreeItems
             nodes={tree}
-            isCollapsed={(path) => collapsedDirs.has(getDirKey(keySuffix, path))}
+            isCollapsed={(path) => {
+              if (filterActive && filter.expand.has(path)) return false
+              return collapsedDirs.has(getDirKey(keySuffix, path))
+            }}
+            isDimmed={filterActive ? (node) => !filter.matched.has(node.path) : undefined}
             onToggleDir={(path) => toggleDir(keySuffix, path)}
             onFileClick={(node) => {
               if (!node.change) return
