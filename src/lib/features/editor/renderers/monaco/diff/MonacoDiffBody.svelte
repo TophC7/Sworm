@@ -78,13 +78,36 @@
   const scroll = useDiffScroll()
 
   let host = $state<HTMLDivElement | null>(null)
-  // Seed placeholder height. Matches VSCode's MultiDiffEditor default
-  // (`lastTemplateData.contentHeight = 500`); closer to typical diff
-  // row heights than the old 240 value, so the one-shot seed → real
-  // transition is smaller on first-view files the preloader hasn't
-  // finished yet. Overridden from `entry.height` (preloader-populated
-  // or cached from a prior mount) once the store is available.
-  let height = $state(500)
+  // Seed the host height from the best information available at mount.
+  // Order:
+  //   1. `entry.height` — preloader-populated or cached from a prior
+  //      mount; this is the real measured value.
+  //   2. Per-file estimate derived from numstat. With
+  //      `hideUnchangedRegions` enabled the visible row height is roughly
+  //      `max(additions, deletions) + small per-hunk context` lines, at
+  //      the configured 20px line height, plus diff-editor chrome.
+  //   3. Fixed fallback when the entry isn't in the store at all (only
+  //      possible if MonacoDiffBody is rendered standalone outside the
+  //      stack guard).
+  //
+  // A per-file seed is the difference between a smooth open and a
+  // cascade. With a fixed 500px seed, a long stack of small-diff rows
+  // all shrink into place once measurements complete; every shift moves
+  // neighbours, the IntersectionObserver re-fires on shifted rows, more
+  // editors mount, more measurements fire — positive feedback loop. A
+  // rough variable seed keeps the page approximately the right total
+  // height from first paint, so layout settles on the first measurement
+  // instead of cascading through every row.
+  function seedHeight(): number {
+    const entry = store.get(path)
+    if (!entry) return 500
+    if (entry.height != null) return entry.height
+    const a = entry.additions ?? 0
+    const d = entry.deletions ?? 0
+    const lines = Math.max(a, d) + 10
+    return Math.max(80, lines * 20 + 80)
+  }
+  let height = $state(seedHeight())
   let visible = $state(false)
 
   // Ownership state; purely imperative, not reactive.

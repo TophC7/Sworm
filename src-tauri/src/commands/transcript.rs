@@ -13,7 +13,7 @@ use base64::Engine;
 /// trailing window of that size is returned; otherwise the service
 /// default applies (~1 MiB).
 #[tauri::command]
-pub fn session_transcript_get(
+pub async fn session_transcript_get(
     session_id: String,
     limit_bytes: Option<usize>,
     state: tauri::State<'_, AppState>,
@@ -31,7 +31,7 @@ pub fn session_transcript_get(
 /// app process. Used by the terminal mount flow to decide between
 /// historical-only display and live attach.
 #[tauri::command]
-pub fn session_is_alive(
+pub async fn session_is_alive(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, ApiError> {

@@ -8,6 +8,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+// PTY reader buffer. PTYs deliver up to whatever the buffer holds in a
+// single read; a 4 KiB buffer fragments bursts into many small reads,
+// each of which used to fire its own IPC message. 64 KiB lets a typical
+// agent burst land in one or two reads.
+const PTY_READ_BUF_SIZE: usize = 64 * 1024;
+// Output coalescing tick. Tauri's `Channel<Vec<u8>>` serializes via
+// `serde_json` (Vec<u8> -> JSON array of numbers), which is parsed on
+// the webview's main thread. The flusher batches bytes per-session and
+// emits at most one IPC message per tick; 16 ms keeps perceived
+// latency below one frame at 60 Hz while collapsing typical bursts
+// into a single send. Going larger (32 ms) was tried and didn't move
+// the freeze needle — the dominant cost is downstream, in xterm's
+// per-session writeBuffer parsing across N concurrent sessions, not
+// in the IPC tick rate.
+const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
 /// Callback invoked whenever raw PTY bytes are read from the child.
 ///
 /// The transcript sink is responsible for durable persistence to disk.
@@ -179,12 +195,95 @@ impl PtyService {
         std::thread::Builder::new()
             .name(format!("pty-reader-{}", &session_id))
             .spawn(move || {
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; PTY_READ_BUF_SIZE];
                 let sink = if persist_transcript {
                     sink_for_thread.lock().clone()
                 } else {
                     None
                 };
+
+                // Output coalescing: reader appends bytes to `pending`;
+                // the flusher thread drains and emits one IPC message
+                // per tick. Single sender preserves byte order to xterm.
+                let pending: Arc<Mutex<Vec<u8>>> =
+                    Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
+                let flusher_stop = Arc::new(AtomicBool::new(false));
+
+                let pending_for_flusher = Arc::clone(&pending);
+                let flusher_stop_inner = Arc::clone(&flusher_stop);
+                let detached_for_flusher = Arc::clone(&detached);
+                let output_channel_for_flusher = output_channel.clone();
+                let sid_for_flusher = sid_for_thread.clone();
+
+                let flusher_handle = std::thread::Builder::new()
+                    .name(format!("pty-flusher-{}", &sid_for_thread))
+                    .spawn(move || {
+                        // Periodic stats so we can verify batching is
+                        // working when running an agent. Logged at info
+                        // level (visible by default) once per second
+                        // when there has been activity.
+                        let mut window_flushes: u64 = 0;
+                        let mut window_bytes: u64 = 0;
+                        let mut window_max_batch: usize = 0;
+                        let mut last_report = Instant::now();
+
+                        loop {
+                            std::thread::sleep(OUTPUT_FLUSH_INTERVAL);
+
+                            let bytes_opt: Option<Vec<u8>> = {
+                                let mut p = pending_for_flusher.lock();
+                                if p.is_empty() {
+                                    None
+                                } else {
+                                    Some(std::mem::take(&mut *p))
+                                }
+                            };
+
+                            if let Some(bytes) = bytes_opt {
+                                let n = bytes.len();
+                                if !detached_for_flusher.load(Ordering::Relaxed) {
+                                    if output_channel_for_flusher.send(bytes).is_err() {
+                                        detached_for_flusher.store(true, Ordering::Relaxed);
+                                        info!(
+                                            "Output channel closed for {}, continuing to drain",
+                                            sid_for_flusher
+                                        );
+                                    } else {
+                                        window_flushes += 1;
+                                        window_bytes += n as u64;
+                                        if n > window_max_batch {
+                                            window_max_batch = n;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if last_report.elapsed() >= Duration::from_secs(1) && window_flushes > 0
+                            {
+                                let secs = last_report.elapsed().as_secs_f64();
+                                info!(
+                                    "[pty-batcher {}] {:.0} flushes/s, {:.0} KiB/s, max batch {} B",
+                                    sid_for_flusher,
+                                    window_flushes as f64 / secs,
+                                    window_bytes as f64 / secs / 1024.0,
+                                    window_max_batch
+                                );
+                                window_flushes = 0;
+                                window_bytes = 0;
+                                window_max_batch = 0;
+                                last_report = Instant::now();
+                            }
+
+                            if flusher_stop_inner.load(Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                    })
+                    .map(Some)
+                    .unwrap_or_else(|err| {
+                        error!("Failed to spawn PTY flusher thread: {}", err);
+                        None
+                    });
 
                 loop {
                     if shutdown.load(Ordering::Relaxed) {
@@ -207,14 +306,12 @@ impl PtyService {
                                 sink(&sid_for_thread, chunk);
                             }
 
+                            // Append to the coalescing buffer. The
+                            // flusher thread is the single owner of the
+                            // IPC send path — keeping all sends serial
+                            // preserves byte order for xterm.
                             if !detached.load(Ordering::Relaxed) {
-                                if output_channel.send(chunk.to_vec()).is_err() {
-                                    detached.store(true, Ordering::Relaxed);
-                                    info!(
-                                        "Output channel closed for {}, continuing to drain",
-                                        sid_for_thread
-                                    );
-                                }
+                                pending.lock().extend_from_slice(chunk);
                             }
                         }
                         Err(err) => {
@@ -232,6 +329,16 @@ impl PtyService {
                             }
                             break;
                         }
+                    }
+                }
+
+                // Drain remaining bytes via the flusher BEFORE the Exit
+                // event; otherwise the JS side sees the exit notification
+                // before the tail of the program's last output.
+                flusher_stop.store(true, Ordering::Release);
+                if let Some(handle) = flusher_handle {
+                    if let Err(err) = handle.join() {
+                        warn!("PTY flusher thread panicked: {:?}", err);
                     }
                 }
 

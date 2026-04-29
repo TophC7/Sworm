@@ -6,7 +6,7 @@ use std::path::Path;
 
 /// Read the contents of a file inside a project.
 #[tauri::command]
-pub fn file_read(
+pub async fn file_read(
     project_path: String,
     file_path: String,
     state: tauri::State<'_, AppState>,
@@ -16,7 +16,7 @@ pub fn file_read(
 
 /// Write content to a file inside a project.
 #[tauri::command]
-pub fn file_write(
+pub async fn file_write(
     project_path: String,
     file_path: String,
     content: String,
@@ -29,7 +29,7 @@ pub fn file_write(
 
 /// Create a directory inside a project.
 #[tauri::command]
-pub fn file_create_dir(
+pub async fn file_create_dir(
     project_path: String,
     dir_path: String,
     state: tauri::State<'_, AppState>,
@@ -39,7 +39,7 @@ pub fn file_create_dir(
 
 /// Rename a file inside a project.
 #[tauri::command]
-pub fn file_rename(
+pub async fn file_rename(
     project_path: String,
     old_path: String,
     new_path: String,
@@ -52,7 +52,7 @@ pub fn file_rename(
 
 /// Return project-relative file metadata, or null if the path does not exist.
 #[tauri::command]
-pub fn file_stat(
+pub async fn file_stat(
     project_path: String,
     file_path: String,
     state: tauri::State<'_, AppState>,
@@ -64,7 +64,7 @@ pub fn file_stat(
 /// `op` is "copy" or "cut". Sources are absolute paths from the clipboard.
 /// Returns the list of new project-relative paths.
 #[tauri::command]
-pub fn file_paste(
+pub async fn file_paste(
     project_path: String,
     target_dir: String,
     op: String,
@@ -85,7 +85,7 @@ pub fn file_paste(
 }
 
 #[tauri::command]
-pub fn file_paste_collisions(
+pub async fn file_paste_collisions(
     project_path: String,
     target_dir: String,
     sources: Vec<String>,
@@ -98,7 +98,7 @@ pub fn file_paste_collisions(
 
 /// Delete a file or directory inside a project.
 #[tauri::command]
-pub fn file_delete(
+pub async fn file_delete(
     project_path: String,
     file_path: String,
     state: tauri::State<'_, AppState>,
@@ -108,7 +108,7 @@ pub fn file_delete(
 
 /// List all files in the project.
 #[tauri::command]
-pub fn files_list_all(
+pub async fn files_list_all(
     project_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {

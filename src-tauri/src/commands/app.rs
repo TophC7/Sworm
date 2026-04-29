@@ -82,13 +82,13 @@ pub struct ClipboardFiles {
 
 /// Trivial health check to prove the IPC bridge works.
 #[tauri::command]
-pub fn health_ping() -> String {
+pub async fn health_ping() -> String {
     "pong".to_string()
 }
 
 /// Return basic app metadata.
 #[tauri::command]
-pub fn app_get_info() -> AppInfo {
+pub async fn app_get_info() -> AppInfo {
     AppInfo {
         name: "Sworm".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -97,7 +97,7 @@ pub fn app_get_info() -> AppInfo {
 
 /// Database smoke test: open DB, run migrations, verify a query works.
 #[tauri::command]
-pub fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
+pub async fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
     state
         .db
         .smoke_test()
@@ -106,7 +106,7 @@ pub fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiErr
 
 /// Keyring smoke test: write/read/delete a test secret.
 #[tauri::command]
-pub fn keyring_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
+pub async fn keyring_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
     state
         .credentials
         .smoke_test()
@@ -127,7 +127,7 @@ pub fn env_probe(state: tauri::State<'_, AppState>) -> EnvProbeResult {
 ///
 /// `op` is "copy" or "cut".
 #[tauri::command]
-pub fn clipboard_copy_files(paths: Vec<String>, op: String) -> Result<(), ApiError> {
+pub async fn clipboard_copy_files(paths: Vec<String>, op: String) -> Result<(), ApiError> {
     if paths.is_empty() {
         return Err(ApiError::InvalidArgument("No paths provided".into()));
     }
@@ -176,7 +176,7 @@ fn copy_files_wayland(_gnome_data: &str, _uri_list: &str) -> Result<(), ApiError
 ///
 /// Returns `None` if the clipboard doesn't contain a recognizable file list.
 #[tauri::command]
-pub fn clipboard_read_files() -> Result<Option<ClipboardFiles>, ApiError> {
+pub async fn clipboard_read_files() -> Result<Option<ClipboardFiles>, ApiError> {
     read_clipboard_files()
 }
 

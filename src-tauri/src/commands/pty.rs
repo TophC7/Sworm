@@ -8,7 +8,7 @@ use crate::services::pty::PtyEvent;
 /// - `output`: receives raw PTY output bytes
 /// - `events`: receives structured lifecycle events
 #[tauri::command]
-pub fn pty_demo_start(
+pub async fn pty_demo_start(
     session_id: String,
     cols: u16,
     rows: u16,
@@ -38,7 +38,7 @@ pub fn pty_demo_start(
 
 /// Write data to a demo PTY session.
 #[tauri::command]
-pub fn pty_demo_write(
+pub async fn pty_demo_write(
     session_id: String,
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
@@ -51,7 +51,7 @@ pub fn pty_demo_write(
 
 /// Resize a demo PTY session.
 #[tauri::command]
-pub fn pty_demo_resize(
+pub async fn pty_demo_resize(
     session_id: String,
     cols: u16,
     rows: u16,
@@ -65,7 +65,7 @@ pub fn pty_demo_resize(
 
 /// Kill a demo PTY session.
 #[tauri::command]
-pub fn pty_demo_kill(
+pub async fn pty_demo_kill(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {

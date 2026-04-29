@@ -115,7 +115,7 @@ fn spawn_codex_bind_thread(
 
 /// Create a new session for a project.
 #[tauri::command]
-pub fn session_create(
+pub async fn session_create(
     project_id: String,
     provider_id: String,
     title: String,
@@ -171,7 +171,7 @@ pub fn session_create(
 /// running/starting but has no live PTY is marked as exited. This handles
 /// app crashes, force-quits, and tabs closed without a clean status flush.
 #[tauri::command]
-pub fn session_list(
+pub async fn session_list(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, ApiError> {
@@ -193,7 +193,10 @@ pub fn session_list(
 
 /// Get a single session.
 #[tauri::command]
-pub fn session_get(id: String, state: tauri::State<'_, AppState>) -> Result<Session, ApiError> {
+pub async fn session_get(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Session, ApiError> {
     // Pure read; route through the reader pool so a concurrent
     // write doesn't stall the UI's per-tab session fetch.
     let db = state.db.read();
@@ -206,7 +209,7 @@ pub fn session_get(id: String, state: tauri::State<'_, AppState>) -> Result<Sess
 
 /// Start a session: spawn the provider CLI in a PTY.
 #[tauri::command]
-pub fn session_start(
+pub async fn session_start(
     session_id: String,
     cols: u16,
     rows: u16,
@@ -465,7 +468,7 @@ pub fn session_start(
 
 /// Write input to a running session's PTY.
 #[tauri::command]
-pub fn session_write(
+pub async fn session_write(
     session_id: String,
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
@@ -475,7 +478,7 @@ pub fn session_write(
 
 /// Resize a running session's PTY.
 #[tauri::command]
-pub fn session_resize(
+pub async fn session_resize(
     session_id: String,
     cols: u16,
     rows: u16,
@@ -489,7 +492,10 @@ pub fn session_resize(
 
 /// Stop a running session.
 #[tauri::command]
-pub fn session_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn session_stop(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     let _ = state.pty.kill(&session_id);
     // Persist whatever transcript bytes were still in-flight. Safe to
     // call even when the session was never live; the batcher no-ops.
@@ -507,7 +513,7 @@ pub fn session_stop(session_id: String, state: tauri::State<'_, AppState>) -> Re
 /// Reset a session to fresh state (new deterministic ID, cleared history).
 /// Use when a session is stuck or its provider-side conversation is gone.
 #[tauri::command]
-pub fn session_reset(
+pub async fn session_reset(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
@@ -549,7 +555,7 @@ pub fn session_reset(
 /// but clearing here first avoids ferrying dead entries through the
 /// foreign-key path.
 #[tauri::command]
-pub fn session_remove(
+pub async fn session_remove(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
@@ -566,7 +572,7 @@ pub fn session_remove(
 
 /// Archive a session. Stops its PTY if running, then marks it archived.
 #[tauri::command]
-pub fn session_archive(
+pub async fn session_archive(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
@@ -598,7 +604,7 @@ pub fn session_archive(
 
 /// Unarchive a session. Restores it to the active session list.
 #[tauri::command]
-pub fn session_unarchive(
+pub async fn session_unarchive(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
@@ -619,7 +625,7 @@ pub fn session_unarchive(
 
 /// List archived sessions for a project.
 #[tauri::command]
-pub fn session_list_archived(
+pub async fn session_list_archived(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Session>, ApiError> {

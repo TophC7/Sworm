@@ -5,7 +5,9 @@ use crate::services::settings::SettingsService;
 
 /// List all providers with their detection status.
 #[tauri::command]
-pub fn provider_list(state: tauri::State<'_, AppState>) -> Result<Vec<ProviderStatus>, ApiError> {
+pub async fn provider_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ProviderStatus>, ApiError> {
     let merged_path = state.env.merged_path.clone();
     let db = state.db.read();
     let overrides =
@@ -17,7 +19,7 @@ pub fn provider_list(state: tauri::State<'_, AppState>) -> Result<Vec<ProviderSt
 
 /// Force re-detect all providers.
 #[tauri::command]
-pub fn provider_refresh(
+pub async fn provider_refresh(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {
     let merged_path = state.env.merged_path.clone();

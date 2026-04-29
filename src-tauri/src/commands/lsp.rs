@@ -20,7 +20,7 @@ pub struct SaveLspServerConfigInput {
 }
 
 #[tauri::command]
-pub fn lsp_list_servers(
+pub async fn lsp_list_servers(
     state: tauri::State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
@@ -50,7 +50,7 @@ pub fn lsp_list_servers(
 }
 
 #[tauri::command]
-pub fn lsp_set_server_config(
+pub async fn lsp_set_server_config(
     config: SaveLspServerConfigInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<LspServerConfigRecord, ApiError> {
@@ -71,7 +71,7 @@ pub fn lsp_set_server_config(
 }
 
 #[tauri::command]
-pub fn lsp_start(
+pub async fn lsp_start(
     session_id: String,
     project_id: String,
     server_definition_id: String,
@@ -121,7 +121,7 @@ pub fn lsp_start(
 }
 
 #[tauri::command]
-pub fn lsp_send(
+pub async fn lsp_send(
     session_id: String,
     message_json: String,
     state: tauri::State<'_, AppState>,
@@ -133,7 +133,10 @@ pub fn lsp_send(
 }
 
 #[tauri::command]
-pub fn lsp_stop(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn lsp_stop(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     state.lsp.kill(&session_id).map_err(ApiError::Internal)
 }
 

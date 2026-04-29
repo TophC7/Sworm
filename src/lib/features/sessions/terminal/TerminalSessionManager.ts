@@ -88,6 +88,25 @@ export class TerminalSessionManager {
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
 
+  // Deferred PTY bytes accumulated while this manager has no host
+  // container attached. Each agent session has its own xterm.Terminal,
+  // and even when the terminal isn't visible, `terminal.write` queues
+  // ANSI-parsing work that competes with every other session for the
+  // main thread. With N sessions all running TUI agents, the cumulative
+  // parser load freezes the UI even when payloads are small.
+  //
+  // Strategy: while detached, push bytes into `deferredBytes`. On the
+  // next `attach()`, concatenate and replay them in one xterm.write so
+  // the visible state catches up. Activity classification still runs
+  // on every chunk (it doesn't touch xterm) so the session-list dot
+  // stays accurate. The cap prevents a long-running unread session from
+  // pinning unbounded memory; over the cap we drop the oldest chunks
+  // (cursor positioning at the new head will redraw correctly when the
+  // agent emits its next full repaint, which TUIs do constantly).
+  private deferredBytes: Uint8Array[] = []
+  private deferredByteCount = 0
+  private static readonly DEFERRED_BYTES_CAP = 4 * 1024 * 1024
+
   constructor(sessionId: string) {
     this.sessionId = sessionId
   }
@@ -178,6 +197,11 @@ export class TerminalSessionManager {
       this.fitAndSyncSize()
     })
     this.resizeObserver.observe(container)
+
+    // Drain bytes that arrived while we were detached. One concatenated
+    // write minimizes xterm parser overhead vs. per-chunk replay; xterm
+    // chunks the work internally across frames anyway.
+    this.flushDeferredBytes()
 
     requestAnimationFrame(() => {
       this.fitTerminal()
@@ -300,8 +324,13 @@ export class TerminalSessionManager {
 
     const output = backend.sessions.createOutputChannel((data) => {
       const bytes = new Uint8Array(data)
-      this.terminal?.write(bytes)
-      // Feed output to activity classifier for agent state detection
+      // Detached managers buffer bytes and replay on next attach. See
+      // `deferredBytes`. Only the visible session pays xterm parser cost.
+      if (this.container) {
+        this.terminal?.write(bytes)
+      } else {
+        this.deferDetachedBytes(bytes)
+      }
       feedOutput(this.sessionId, session.provider_id, this.textDecoder.decode(bytes, { stream: true }))
     })
     const events = backend.sessions.createEventChannel((event) => {
@@ -386,10 +415,41 @@ export class TerminalSessionManager {
     this.hostEl = null
     this.eventListeners.clear()
     this.errorListeners.clear()
+    this.deferredBytes = []
+    this.deferredByteCount = 0
   }
 
   sendText(text: string): void {
     this.writeToPty(text)
+  }
+
+  private deferDetachedBytes(bytes: Uint8Array): void {
+    // Drop the head if we'd exceed the cap. Agents that drive TUIs
+    // emit full repaints (`\x1b[2J\x1b[H...`) frequently enough that a
+    // truncated head replays as a brief flash followed by the agent's
+    // next refresh, not a corrupted display.
+    while (
+      this.deferredByteCount + bytes.byteLength > TerminalSessionManager.DEFERRED_BYTES_CAP &&
+      this.deferredBytes.length > 0
+    ) {
+      const dropped = this.deferredBytes.shift()
+      if (dropped) this.deferredByteCount -= dropped.byteLength
+    }
+    this.deferredBytes.push(bytes)
+    this.deferredByteCount += bytes.byteLength
+  }
+
+  private flushDeferredBytes(): void {
+    if (this.deferredBytes.length === 0 || !this.terminal) return
+    const merged = new Uint8Array(this.deferredByteCount)
+    let offset = 0
+    for (const chunk of this.deferredBytes) {
+      merged.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    this.deferredBytes = []
+    this.deferredByteCount = 0
+    this.terminal.write(merged)
   }
 
   private async ensureTerminal(): Promise<void> {

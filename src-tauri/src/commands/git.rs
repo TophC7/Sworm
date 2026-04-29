@@ -278,7 +278,7 @@ fn git_remove_index_path(repo: &Path, file_path: &str) -> Result<(), ApiError> {
 
 /// Get git summary for a project path.
 #[tauri::command]
-pub fn git_get_summary(
+pub async fn git_get_summary(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<GitSummary, ApiError> {
@@ -287,7 +287,7 @@ pub fn git_get_summary(
 
 /// Get full commit detail (metadata + file list with stats).
 #[tauri::command]
-pub fn git_get_commit_detail(
+pub async fn git_get_commit_detail(
     path: String,
     hash: String,
     state: tauri::State<'_, AppState>,
@@ -301,7 +301,7 @@ pub fn git_get_commit_detail(
 /// regardless of whether the source is the working tree, a commit,
 /// or a stash. Replaces the mixed-shape `git_get_*_diffs` family.
 #[tauri::command]
-pub fn diff_get_files(
+pub async fn diff_get_files(
     path: String,
     source: DiffSource,
     state: tauri::State<'_, AppState>,
@@ -319,7 +319,7 @@ pub fn diff_get_files(
 /// lazily; keeps the initial payload small even when the working
 /// tree has hundreds of changed files.
 #[tauri::command]
-pub fn diff_get_working_index(
+pub async fn diff_get_working_index(
     path: String,
     staged: bool,
     state: tauri::State<'_, AppState>,
@@ -337,7 +337,7 @@ pub fn diff_get_working_index(
 /// via `../` traversal. Mirrors the guard on `git_get_quick_diff_data`,
 /// `git_stage_file_content`, and `git_show_file`.
 #[tauri::command]
-pub fn diff_get_working_file(
+pub async fn diff_get_working_file(
     path: String,
     file_path: String,
     status: crate::models::file_diff::GitStatus,
@@ -366,7 +366,7 @@ pub struct DiffFileContent {
 
 /// Get commit graph data for visualization (all branches).
 #[tauri::command]
-pub fn git_get_graph(
+pub async fn git_get_graph(
     path: String,
     limit: usize,
     state: tauri::State<'_, AppState>,
@@ -378,7 +378,10 @@ pub fn git_get_graph(
 
 /// Stage all changes (tracked + untracked).
 #[tauri::command]
-pub fn git_stage_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_stage_all(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     state
         .git
         .stage_all(Path::new(&path))
@@ -387,7 +390,7 @@ pub fn git_stage_all(path: String, state: tauri::State<'_, AppState>) -> Result<
 
 /// Stage specific files or directories.
 #[tauri::command]
-pub fn git_stage_files(
+pub async fn git_stage_files(
     path: String,
     files: Vec<String>,
     state: tauri::State<'_, AppState>,
@@ -400,7 +403,10 @@ pub fn git_stage_files(
 
 /// Unstage all staged changes.
 #[tauri::command]
-pub fn git_unstage_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_unstage_all(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     state
         .git
         .unstage_all(Path::new(&path))
@@ -409,7 +415,7 @@ pub fn git_unstage_all(path: String, state: tauri::State<'_, AppState>) -> Resul
 
 /// Unstage specific files or directories.
 #[tauri::command]
-pub fn git_unstage_files(
+pub async fn git_unstage_files(
     path: String,
     files: Vec<String>,
     state: tauri::State<'_, AppState>,
@@ -422,7 +428,10 @@ pub fn git_unstage_files(
 
 /// Discard all unstaged changes and untracked files.
 #[tauri::command]
-pub fn git_discard_all(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_discard_all(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     state
         .git
         .discard_all(Path::new(&path))
@@ -431,7 +440,7 @@ pub fn git_discard_all(path: String, state: tauri::State<'_, AppState>) -> Resul
 
 /// Discard changes for specific files or directories.
 #[tauri::command]
-pub fn git_discard_files(
+pub async fn git_discard_files(
     path: String,
     files: Vec<String>,
     state: tauri::State<'_, AppState>,
@@ -444,7 +453,7 @@ pub fn git_discard_files(
 
 /// Get the combined patch for all working-tree changes.
 #[tauri::command]
-pub fn git_get_full_patch(
+pub async fn git_get_full_patch(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
@@ -453,7 +462,7 @@ pub fn git_get_full_patch(
 
 /// Get patch for specific paths, optionally scoped to staged or unstaged only.
 #[tauri::command]
-pub fn git_get_path_patch(
+pub async fn git_get_path_patch(
     path: String,
     files: Vec<String>,
     staged: Option<bool>,
@@ -464,7 +473,7 @@ pub fn git_get_path_patch(
 
 /// Return Git bases used by the live editor dirty-diff gutter.
 #[tauri::command]
-pub fn git_get_quick_diff_data(
+pub async fn git_get_quick_diff_data(
     project_path: String,
     file_path: String,
 ) -> Result<GitQuickDiffData, ApiError> {
@@ -494,7 +503,7 @@ pub fn git_get_quick_diff_data(
 /// TTL cache could serve a pre-stage summary to a frontend `refreshGit`
 /// chained immediately after, hiding the stage from the UI.
 #[tauri::command]
-pub fn git_stage_file_content(
+pub async fn git_stage_file_content(
     project_path: String,
     file_path: String,
     content: Option<String>,
@@ -514,7 +523,7 @@ pub fn git_stage_file_content(
 
 /// Create a commit with the given message.
 #[tauri::command]
-pub fn git_commit(
+pub async fn git_commit(
     path: String,
     message: String,
     state: tauri::State<'_, AppState>,
@@ -534,7 +543,7 @@ pub fn git_commit(
 /// Undo the last commit (soft reset to HEAD~1). Returns the commit
 /// message so the frontend can restore it into the commit textarea.
 #[tauri::command]
-pub fn git_undo_last_commit(
+pub async fn git_undo_last_commit(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
@@ -546,13 +555,13 @@ pub fn git_undo_last_commit(
 
 /// Push current branch to upstream.
 #[tauri::command]
-pub fn git_push(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_push(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state.git.push(Path::new(&path)).map_err(ApiError::Internal)
 }
 
 /// Push with --force-with-lease.
 #[tauri::command]
-pub fn git_push_force_with_lease(
+pub async fn git_push_force_with_lease(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
@@ -564,13 +573,13 @@ pub fn git_push_force_with_lease(
 
 /// Pull from upstream (fetch + merge).
 #[tauri::command]
-pub fn git_pull(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_pull(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state.git.pull(Path::new(&path)).map_err(ApiError::Internal)
 }
 
 /// Fetch from all remotes.
 #[tauri::command]
-pub fn git_fetch(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_fetch(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state
         .git
         .fetch(Path::new(&path))
@@ -579,7 +588,7 @@ pub fn git_fetch(path: String, state: tauri::State<'_, AppState>) -> Result<(), 
 
 /// Stash all changes including untracked files.
 #[tauri::command]
-pub fn git_stash_all(
+pub async fn git_stash_all(
     path: String,
     message: Option<String>,
     state: tauri::State<'_, AppState>,
@@ -592,7 +601,10 @@ pub fn git_stash_all(
 
 /// Count stash entries (lightweight, no per-entry file stats).
 #[tauri::command]
-pub fn git_stash_count(path: String, state: tauri::State<'_, AppState>) -> Result<usize, ApiError> {
+pub async fn git_stash_count(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, ApiError> {
     state
         .git
         .stash_count(Path::new(&path))
@@ -601,7 +613,7 @@ pub fn git_stash_count(path: String, state: tauri::State<'_, AppState>) -> Resul
 
 /// List all stash entries.
 #[tauri::command]
-pub fn git_stash_list(
+pub async fn git_stash_list(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<StashEntry>, ApiError> {
@@ -610,7 +622,7 @@ pub fn git_stash_list(
 
 /// Pop a stash entry (apply + drop).
 #[tauri::command]
-pub fn git_stash_pop(
+pub async fn git_stash_pop(
     path: String,
     index: usize,
     state: tauri::State<'_, AppState>,
@@ -623,7 +635,7 @@ pub fn git_stash_pop(
 
 /// Drop a stash entry without applying.
 #[tauri::command]
-pub fn git_stash_drop(
+pub async fn git_stash_drop(
     path: String,
     index: usize,
     state: tauri::State<'_, AppState>,
@@ -637,7 +649,7 @@ pub fn git_stash_drop(
 /// Return file content at a specific git revision.
 /// Validates both the ref and file path before executing.
 #[tauri::command]
-pub fn git_show_file(
+pub async fn git_show_file(
     project_path: String,
     git_ref: String,
     file_path: String,
@@ -653,13 +665,13 @@ pub fn git_show_file(
 
 /// Initialize a new git repository in the given directory.
 #[tauri::command]
-pub fn git_init(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn git_init(path: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     state.git.init(Path::new(&path)).map_err(ApiError::Internal)
 }
 
 /// Clone a repository into the given directory (in-place, no subfolder).
 #[tauri::command]
-pub fn git_clone_in_place(
+pub async fn git_clone_in_place(
     path: String,
     url: String,
     state: tauri::State<'_, AppState>,

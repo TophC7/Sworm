@@ -7,7 +7,7 @@ use crate::services::settings::SettingsService;
 
 /// Detect Nix files in a project directory and return current selection.
 #[tauri::command]
-pub fn nix_detect(
+pub async fn nix_detect(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixDetection, ApiError> {
@@ -31,7 +31,7 @@ pub fn nix_detect(
 
 /// Select a Nix file for a project. Validates against detected files.
 #[tauri::command]
-pub fn nix_select(
+pub async fn nix_select(
     project_id: String,
     nix_file: String,
     state: tauri::State<'_, AppState>,
@@ -153,14 +153,17 @@ pub async fn nix_evaluate(
 
 /// Clear the Nix environment for a project.
 #[tauri::command]
-pub fn nix_clear(project_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn nix_clear(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     let db = state.db.write();
     NixService::remove(db.conn(), &project_id).map_err(ApiError::Database)
 }
 
 /// Get the current Nix environment status for a project.
 #[tauri::command]
-pub fn nix_status(
+pub async fn nix_status(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<NixEnvRecord>, ApiError> {
@@ -196,7 +199,7 @@ pub async fn nix_lint(
 
 /// Detect providers using the project's Nix-augmented PATH.
 #[tauri::command]
-pub fn provider_list_for_project(
+pub async fn provider_list_for_project(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {

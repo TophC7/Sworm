@@ -17,7 +17,7 @@ use crate::services::pty::PtyEvent;
 /// the file watcher so the frontend receives `tasks-changed` events
 /// when `.sworm/tasks.json` is modified externally.
 #[tauri::command]
-pub fn tasks_list(
+pub async fn tasks_list(
     project_id: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -37,7 +37,7 @@ pub fn tasks_list(
 /// (a UUID) so it can address subsequent write/resize/stop calls. The
 /// PTY service accepts any string as its key.
 #[tauri::command]
-pub fn tasks_start(
+pub async fn tasks_start(
     run_id: String,
     project_id: String,
     task_id: String,
@@ -92,7 +92,7 @@ pub fn tasks_start(
 }
 
 #[tauri::command]
-pub fn tasks_write(
+pub async fn tasks_write(
     run_id: String,
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
@@ -101,7 +101,7 @@ pub fn tasks_write(
 }
 
 #[tauri::command]
-pub fn tasks_resize(
+pub async fn tasks_resize(
     run_id: String,
     cols: u16,
     rows: u16,
@@ -111,7 +111,7 @@ pub fn tasks_resize(
 }
 
 #[tauri::command]
-pub fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     // Kill is a no-op-in-effect if the PTY already exited; swallow
     // the "no active PTY session" case so the frontend can call stop
     // on an already-exited tab without seeing a spurious error.

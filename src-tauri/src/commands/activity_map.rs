@@ -19,7 +19,7 @@ fn load_sworm_projects(state: &AppState) -> Result<Vec<(String, String)>, ApiErr
 /// and prevent deadlock. The scan runs outside the lock to avoid
 /// holding the mutex during filesystem I/O.
 #[tauri::command]
-pub fn activity_map_get(
+pub async fn activity_map_get(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, ApiError> {
     {
@@ -44,7 +44,7 @@ pub fn activity_map_get(
 /// The scan runs outside the lock to avoid holding the mutex during
 /// filesystem I/O.
 #[tauri::command]
-pub fn activity_map_refresh(
+pub async fn activity_map_refresh(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, ApiError> {
     let sworm_projects = load_sworm_projects(&state)?;

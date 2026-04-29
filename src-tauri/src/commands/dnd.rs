@@ -2,7 +2,10 @@ use crate::errors::ApiError;
 use uuid::Uuid;
 
 #[tauri::command]
-pub fn dnd_save_dropped_bytes(bytes: Vec<u8>, suggested_name: String) -> Result<String, ApiError> {
+pub async fn dnd_save_dropped_bytes(
+    bytes: Vec<u8>,
+    suggested_name: String,
+) -> Result<String, ApiError> {
     if bytes.is_empty() {
         return Err(ApiError::InvalidArgument(
             "Dropped image payload is empty".to_string(),

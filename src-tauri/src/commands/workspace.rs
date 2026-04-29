@@ -6,7 +6,7 @@ use crate::errors::ApiError;
 /// Read the persisted workspace blob for a project. Returns `None`
 /// when the project has never been saved (first open).
 #[tauri::command]
-pub fn workspace_state_get(
+pub async fn workspace_state_get(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
@@ -20,7 +20,7 @@ pub fn workspace_state_get(
 /// Persist the workspace blob for a project. The frontend owns the
 /// shape of `state_json` — this is an opaque string on the backend.
 #[tauri::command]
-pub fn workspace_state_put(
+pub async fn workspace_state_put(
     project_id: String,
     state_json: String,
     state: tauri::State<'_, AppState>,
@@ -35,7 +35,7 @@ pub fn workspace_state_put(
 /// Read a value from the app-state key/value store. Returns `None`
 /// when no entry exists for the key.
 #[tauri::command]
-pub fn app_state_get(
+pub async fn app_state_get(
     key: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
@@ -48,7 +48,7 @@ pub fn app_state_get(
 
 /// Write a value to the app-state key/value store.
 #[tauri::command]
-pub fn app_state_put(
+pub async fn app_state_put(
     key: String,
     value_json: String,
     state: tauri::State<'_, AppState>,

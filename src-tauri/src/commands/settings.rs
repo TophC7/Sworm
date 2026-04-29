@@ -28,7 +28,7 @@ pub struct SaveProviderConfigInput {
 }
 
 #[tauri::command]
-pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload, ApiError> {
+pub async fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload, ApiError> {
     let db = state.db.read();
     let general = SettingsService::get_general_settings(db.conn()).map_err(ApiError::Database)?;
     let formatting =
@@ -61,7 +61,7 @@ pub fn settings_get(state: tauri::State<'_, AppState>) -> Result<SettingsPayload
 }
 
 #[tauri::command]
-pub fn settings_set_general(
+pub async fn settings_set_general(
     settings: GeneralSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<GeneralSettings, ApiError> {
@@ -71,7 +71,7 @@ pub fn settings_set_general(
 }
 
 #[tauri::command]
-pub fn settings_set_formatting(
+pub async fn settings_set_formatting(
     formatting: FormattingSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<FormattingSettings, ApiError> {
@@ -81,7 +81,7 @@ pub fn settings_set_formatting(
 }
 
 #[tauri::command]
-pub fn settings_set_provider_config(
+pub async fn settings_set_provider_config(
     config: SaveProviderConfigInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<ProviderConfigRecord, ApiError> {

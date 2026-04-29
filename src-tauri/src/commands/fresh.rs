@@ -61,7 +61,7 @@ fn write_readonly_snapshot(
 
 /// Open a file in the running Fresh editor session for the project.
 #[tauri::command]
-pub fn editor_open_file(
+pub async fn editor_open_file(
     project_id: String,
     project_path: String,
     file_path: String,
@@ -75,7 +75,7 @@ pub fn editor_open_file(
 
 /// Open a file at a specific commit as a read-only snapshot in the editor.
 #[tauri::command]
-pub fn editor_open_at_commit(
+pub async fn editor_open_at_commit(
     project_id: String,
     project_path: String,
     commit_hash: String,
@@ -101,7 +101,7 @@ pub fn editor_open_at_commit(
 
 /// Open a file from a stash entry as a read-only snapshot in the editor.
 #[tauri::command]
-pub fn editor_open_at_stash(
+pub async fn editor_open_at_stash(
     project_id: String,
     project_path: String,
     stash_index: usize,

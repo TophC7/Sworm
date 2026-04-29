@@ -6,6 +6,6 @@
 use crate::services::config_schemas::{all_config_schemas, ConfigSchemaEntry};
 
 #[tauri::command]
-pub fn config_schemas_list() -> Vec<ConfigSchemaEntry> {
+pub async fn config_schemas_list() -> Vec<ConfigSchemaEntry> {
     all_config_schemas()
 }

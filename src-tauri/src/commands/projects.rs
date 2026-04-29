@@ -20,7 +20,10 @@ pub async fn project_select_directory(app: tauri::AppHandle) -> Result<Option<St
 /// asynchronously so the picker doesn't stall on `git` CLI for new
 /// repos with slow filesystems.
 #[tauri::command]
-pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
+pub async fn project_add(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Project, ApiError> {
     let p = Path::new(&path);
 
     if !p.exists() {
@@ -72,7 +75,7 @@ pub fn project_add(path: String, state: tauri::State<'_, AppState>) -> Result<Pr
 /// would block every concurrent reader for the duration of three to
 /// five `git` spawns, defeating the read-pool split entirely.
 #[tauri::command]
-pub fn project_refresh_git(
+pub async fn project_refresh_git(
     id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Project, ApiError> {
@@ -117,7 +120,7 @@ fn same_project_directory(existing_path: &str, requested: &Path) -> bool {
 
 /// List all projects.
 #[tauri::command]
-pub fn project_list(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, ApiError> {
+pub async fn project_list(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, ApiError> {
     // Pure read; uses the reader pool so the picker stays
     // responsive while a write (e.g. `project_refresh_git`) is in
     // flight.
@@ -127,7 +130,10 @@ pub fn project_list(state: tauri::State<'_, AppState>) -> Result<Vec<Project>, A
 
 /// Get a single project by ID.
 #[tauri::command]
-pub fn project_get(id: String, state: tauri::State<'_, AppState>) -> Result<Project, ApiError> {
+pub async fn project_get(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Project, ApiError> {
     let db = state.db.read();
     state
         .projects
@@ -141,7 +147,7 @@ pub fn project_get(id: String, state: tauri::State<'_, AppState>) -> Result<Proj
 /// Kills all live PTY sessions for the project before deleting
 /// DB rows, so no agent processes are orphaned.
 #[tauri::command]
-pub fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
+pub async fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
     let db = state.db.write();
 
     // Enumerate the project's sessions so we can kill live PTYs
@@ -170,7 +176,7 @@ pub fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Result<(
 /// common emulators. The child is fully detached (stdio nulled) so
 /// closing Sworm does not nuke the user's shell.
 #[tauri::command]
-pub fn project_open_in_terminal(path: String) -> Result<(), ApiError> {
+pub async fn project_open_in_terminal(path: String) -> Result<(), ApiError> {
     let p = Path::new(&path);
     if !p.exists() {
         return Err(ApiError::InvalidArgument(format!(
