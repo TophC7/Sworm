@@ -151,24 +151,21 @@ const FILENAME_TO_LANG: Record<string, string> = {
 
 // Binary extensions that should not be opened in the editor.
 // SVG is intentionally excluded — it's XML text, not binary.
-const BINARY_EXTENSIONS = new Set([
-  'png',
-  'jpg',
-  'jpeg',
-  'gif',
-  'bmp',
-  'ico',
-  'webp',
-  'avif',
-  'mp3',
-  'mp4',
-  'wav',
-  'ogg',
-  'webm',
-  'flac',
+//
+// Media subsets first: formats the WebView can render natively via
+// asset:// → <img>/<audio>/<video>. Anything not in a media subset
+// falls through to the generic "binary, cannot display" surface.
+export type MediaKind = 'image' | 'audio' | 'video'
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'avif'])
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus'])
+// mov/mkv playback is codec-dependent on Linux (WebKitGTK). Listed
+// optimistically; on decode failure the <video> element surfaces its
+// own error UI.
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'mkv'])
+
+const OTHER_BINARY_EXTENSIONS = new Set([
   'avi',
-  'mov',
-  'mkv',
   'pdf',
   'zip',
   'tar',
@@ -199,6 +196,13 @@ const BINARY_EXTENSIONS = new Set([
   'eot'
 ])
 
+const BINARY_EXTENSIONS = new Set<string>([
+  ...IMAGE_EXTENSIONS,
+  ...AUDIO_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
+  ...OTHER_BINARY_EXTENSIONS
+])
+
 function getExtension(filePath: string): string {
   const name = basename(filePath)
   if (!name.includes('.')) return ''
@@ -225,4 +229,12 @@ export function isBinaryFile(filePath: string): boolean {
 export function isMarkdownFile(filePath: string): boolean {
   const ext = getExtension(filePath)
   return ext === 'md' || ext === 'mdx'
+}
+
+export function mediaKind(filePath: string): MediaKind | null {
+  const ext = getExtension(filePath)
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio'
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video'
+  return null
 }

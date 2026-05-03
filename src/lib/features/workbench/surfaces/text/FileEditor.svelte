@@ -9,9 +9,10 @@
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import ContentToolbar from '$lib/components/layout/ContentToolbar.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
-  import { filePathToLanguage, isBinaryFile, isMarkdownFile } from '$lib/features/editor/languageMap'
+  import { filePathToLanguage, isBinaryFile, isMarkdownFile, mediaKind } from '$lib/features/editor/languageMap'
   import { basename } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
+  import MediaViewer from '$lib/features/workbench/surfaces/text/MediaViewer.svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import {
     clearTextSurfaceDirtyIfClosed,
@@ -66,6 +67,9 @@
   // there's no extension yet, so `plaintext` is the honest default.
   let isMarkdown = $derived(filePath != null && isMarkdownFile(filePath))
   let isBinary = $derived(filePath != null && isBinaryFile(filePath))
+  // Git snapshots have no on-disk path for asset:// to fetch, so media
+  // preview is gated to live (non-gitRef) files.
+  let mediaKindValue = $derived(filePath != null && !gitRef ? mediaKind(filePath) : null)
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
   let lspUriPath = $derived(filePath != null && !gitRef ? `${projectPath}/${filePath}` : null)
@@ -376,7 +380,7 @@
         </TooltipRoot>
       {/if}
 
-      {#if !isReadonly && !isUntitled}
+      {#if !isReadonly && !isUntitled && mediaKindValue == null}
         <IconButton tooltip="Open in Fresh" onclick={openInFresh}>
           <img src="/svg/fresh.svg" alt="Fresh" width={14} height={14} class="opacity-60" />
         </IconButton>
@@ -397,7 +401,9 @@
 
   <!-- Content -->
   <div class="min-h-0 flex-1">
-    {#if loading}
+    {#if mediaKindValue != null && filePath != null}
+      <MediaViewer {projectPath} {filePath} kind={mediaKindValue} />
+    {:else if loading}
       <div class="px-4 py-3 text-sm text-subtle">Loading&hellip;</div>
     {:else if isBinary}
       <div class="flex h-full items-center justify-center text-base text-subtle">
