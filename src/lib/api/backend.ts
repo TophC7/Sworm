@@ -6,6 +6,8 @@
 import { invoke, Channel } from '@tauri-apps/api/core'
 import type {
   AppInfo,
+  BranchOpState,
+  BranchSummary,
   CommitDetail,
   ConfigSchemaEntry,
   DiscoveredProject,
@@ -332,6 +334,87 @@ export const backend = {
     },
     cloneInPlace(path: string, url: string): Promise<void> {
       return invoke<void>('git_clone_in_place', { path, url })
+    },
+
+    /**
+     * Branch read + write surface. Each method maps one-to-one onto a
+     * `git_*` Tauri command in `src-tauri/src/commands/git.rs`. All
+     * mutating calls route through `run_mutate` server-side, so the
+     * summary cache invalidates and the StatusBar reflects the new
+     * state inside one poll cycle.
+     */
+    branch: {
+      list(path: string): Promise<BranchSummary[]> {
+        return invoke<BranchSummary[]>('git_list_branches', { path })
+      },
+      info(path: string, name: string): Promise<BranchSummary> {
+        return invoke<BranchSummary>('git_branch_info', { path, name })
+      },
+      commits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
+        return invoke<GraphCommit[]>('git_get_branch_commits', { path, branch, limit })
+      },
+      status(path: string): Promise<BranchOpState> {
+        return invoke<BranchOpState>('git_branch_status', { path })
+      },
+      diffAgainstHead(path: string, branch: string): Promise<FileDiff[]> {
+        return invoke<FileDiff[]>('git_diff_branch_against_head', { path, branch })
+      },
+      checkout(path: string, name: string): Promise<void> {
+        return invoke<void>('git_checkout_branch', { path, name })
+      },
+      checkoutRemoteAsLocal(path: string, remoteName: string, localName: string): Promise<void> {
+        return invoke<void>('git_checkout_remote_as_local', { path, remoteName, localName })
+      },
+      create(
+        path: string,
+        name: string,
+        base: string,
+        opts: { checkout?: boolean } = {}
+      ): Promise<void> {
+        return invoke<void>('git_create_branch', {
+          path,
+          name,
+          base,
+          checkout: opts.checkout ?? false
+        })
+      },
+      rename(path: string, oldName: string, newName: string): Promise<void> {
+        return invoke<void>('git_rename_branch', { path, oldName, newName })
+      },
+      delete(path: string, name: string, opts: { force?: boolean } = {}): Promise<void> {
+        return invoke<void>('git_delete_branch', { path, name, force: opts.force ?? false })
+      },
+      deleteRemote(path: string, remote: string, name: string): Promise<void> {
+        return invoke<void>('git_delete_remote_branch', { path, remote, name })
+      },
+      setUpstream(path: string, branch: string, upstream: string): Promise<void> {
+        return invoke<void>('git_set_upstream', { path, branch, upstream })
+      },
+      fastForward(path: string, name: string): Promise<void> {
+        return invoke<void>('git_fast_forward_branch', { path, name })
+      },
+      merge(path: string, source: string, opts: { noFf?: boolean } = {}): Promise<void> {
+        return invoke<void>('git_merge_into_current', {
+          path,
+          source,
+          noFf: opts.noFf ?? false
+        })
+      },
+      rebaseOnto(path: string, target: string): Promise<void> {
+        return invoke<void>('git_rebase_current_onto', { path, target })
+      },
+      rebaseContinue(path: string): Promise<void> {
+        return invoke<void>('git_rebase_continue', { path })
+      },
+      rebaseSkip(path: string): Promise<void> {
+        return invoke<void>('git_rebase_skip', { path })
+      },
+      rebaseAbort(path: string): Promise<void> {
+        return invoke<void>('git_rebase_abort', { path })
+      },
+      mergeAbort(path: string): Promise<void> {
+        return invoke<void>('git_merge_abort', { path })
+      }
     }
   },
 

@@ -280,7 +280,7 @@ export interface GitQuickDiffData {
   hasIndexChanges: boolean
 }
 
-// ── Monaco multi-file diff payload ──────────────
+// DIFF PAYLOAD //
 //
 // Mirrors `src-tauri/src/models/file_diff.rs`. One `FileDiff` per
 // changed file; the frontend pairs `oldContent`/`newContent` into two
@@ -362,7 +362,37 @@ export interface StashEntry {
   files: CommitFileChange[]
 }
 
-// ── Activity Map ────────────────────────────
+// BRANCHES //
+//
+// Mirror of `src-tauri/src/models/branch.rs`. The Rust types use
+// `#[serde(rename_all = "camelCase")]` so JSON keys match the TS
+// shape directly.
+
+export type BranchKind = 'local' | 'remote'
+
+export type BranchOpState = 'idle' | 'rebasing' | 'merging'
+
+export interface BranchCommitRef {
+  hash: string
+  shortHash: string
+  subject: string
+  author: string
+  /** ISO-8601 author date. */
+  date: string
+}
+
+export interface BranchSummary {
+  name: string
+  kind: BranchKind
+  /** True for the currently checked-out HEAD (one local row at most). */
+  isCurrent: boolean
+  upstream: string | null
+  ahead: number
+  behind: number
+  tip: BranchCommitRef
+}
+
+// ACTIVITY MAP //
 
 export interface DiscoveredProviderActivity {
   provider_id: string
@@ -380,7 +410,7 @@ export interface DiscoveredProject {
   providers: DiscoveredProviderActivity[]
 }
 
-// ── Nix Environment ─────────────────────────
+// NIX ENVIRONMENT //
 
 export type NixEnvStatus = 'pending' | 'evaluating' | 'ready' | 'error' | 'timeout'
 

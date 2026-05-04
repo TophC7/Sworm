@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize};
 
 /// Unified error type returned by all Tauri commands.
 ///
@@ -26,6 +26,12 @@ pub enum ApiError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Branch not fully merged: {branch}")]
+    BranchUnmerged { branch: String, message: String },
+
+    #[error("Working tree has uncommitted changes")]
+    DirtyWorktree { message: String },
 }
 
 impl Serialize for ApiError {
@@ -33,7 +39,23 @@ impl Serialize for ApiError {
     where
         S: serde::Serializer,
     {
-        // Serialize as a simple string so the frontend gets a readable message
+        if let ApiError::BranchUnmerged { branch, message } = self {
+            let mut state = serializer.serialize_struct("ApiError", 3)?;
+            state.serialize_field("kind", "branchUnmerged")?;
+            state.serialize_field("branch", branch)?;
+            state.serialize_field("message", message)?;
+            return state.end();
+        }
+
+        if let ApiError::DirtyWorktree { message } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "dirtyWorktree")?;
+            state.serialize_field("message", message)?;
+            return state.end();
+        }
+
+        // Keep legacy command errors as readable strings. Only typed
+        // branches that frontend code matches directly serialize as objects.
         serializer.serialize_str(&self.to_string())
     }
 }

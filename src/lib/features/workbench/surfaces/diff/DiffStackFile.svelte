@@ -4,7 +4,7 @@
 -->
 
 <script lang="ts">
-  import type { FileDiff, GitStatusKind } from '$lib/types/backend'
+  import type { FileDiff } from '$lib/types/backend'
   import type { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
   import {
     openCommitSnapshot,
@@ -16,6 +16,7 @@
   import { Separator } from '$lib/components/ui/separator'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import { ChevronRight, ChevronsDownUp, ChevronsUpDown, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
+  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/features/git/gitStatus'
 
   interface Props {
     file: FileDiff
@@ -47,17 +48,9 @@
     onToggle
   }: Props = $props()
 
-  const STATUS_DISPLAY: Record<GitStatusKind, { color: string; letter: string; label: string }> = {
-    added: { color: 'text-success', letter: 'A', label: 'Added' },
-    modified: { color: 'text-accent', letter: 'M', label: 'Modified' },
-    deleted: { color: 'text-danger', letter: 'D', label: 'Deleted' },
-    renamed: { color: 'text-accent', letter: 'R', label: 'Renamed' },
-    copied: { color: 'text-accent', letter: 'C', label: 'Copied' },
-    untracked: { color: 'text-success', letter: '?', label: 'Untracked' },
-    unmerged: { color: 'text-warning', letter: 'U', label: 'Unmerged' },
-    unknown: { color: 'text-muted', letter: ' ', label: 'Unknown' }
-  }
-  let statusDisplay = $derived(STATUS_DISPLAY[file.status])
+  let statusLetter = $derived(gitStatusDisplay(file.status))
+  let statusColor = $derived(gitStatusColor(file.status))
+  let statusLabel = $derived(gitStatusLabel(file.status))
 
   function openInEditor(filePath: string) {
     if (!projectId || !projectPath) return
@@ -77,7 +70,7 @@
   // Per-file "expand all unchanged code" toggle. Seeded from the store
   // (preference survives collapse/scroll) and mirrored back on toggle.
   // `file.path` is the `{#each}` key, so a path change recreates this
-  // component — initial-capture is correct. `hasExpandedUnchanged`
+  // component. Initial capture is correct. `hasExpandedUnchanged`
   // tracks Monaco's live state (may drift from the preference when the
   // user expands a region inside the editor). The command-seq is bumped
   // on toggle so MonacoDiffBody's effect re-fires even when the boolean
@@ -103,7 +96,7 @@
 
   // Reset the drift tracker when Monaco detaches. Once the row collapses
   // there is no live editor to report hidden-area state, so the tracker
-  // must snap back to mirror the preference — otherwise the next expand
+  // must snap back to mirror the preference. Otherwise the next expand
   // would start with a stale "drifted" flag and show the wrong toggle icon.
   $effect(() => {
     if (!expanded) hasExpandedUnchanged = !hideUnchanged
@@ -112,7 +105,10 @@
 
 {#snippet headerAction(Icon: typeof Eye, label: string, onclick: () => void)}
   <TooltipRoot delayDuration={300}>
-    <TooltipTrigger class="rounded p-1 text-muted transition-colors hover:bg-accent/15 hover:text-fg" {onclick}>
+    <TooltipTrigger
+      class="rounded p-1 text-muted transition-colors hover:bg-accent/15 hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
+      {onclick}
+    >
       <Icon size={12} />
     </TooltipTrigger>
     <TooltipContent sideOffset={4}>{label}</TooltipContent>
@@ -120,13 +116,13 @@
 {/snippet}
 
 <div id="{idPrefix}-{file.path}" class="border-b border-edge">
-  <div class="sticky top-0 z-20 flex w-full items-center border-b border-edge/50 bg-raised/90 backdrop-blur-sm">
+  <div class="sticky top-0 z-20 flex w-full items-center border-b border-edge/50 bg-raised">
     <button
-      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-raised"
+      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-overlay focus-visible:shadow-focus-ring focus-visible:outline-none"
       onclick={() => onToggle(file.path)}
     >
       <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
-      <span class="text-2xs font-bold {statusDisplay.color}" title={statusDisplay.label}>{statusDisplay.letter}</span>
+      <span class="text-2xs font-bold {statusColor}" title={statusLabel}>{statusLetter}</span>
       <FileIcon filename={file.path} size={13} />
       <span class="min-w-0 truncate font-mono text-sm text-fg">
         {#if file.oldPath}<span class="text-muted">{file.oldPath} → </span>{/if}{file.path}
@@ -139,7 +135,7 @@
     <div class="flex shrink-0 items-center gap-0.5 pr-2">
       <!-- Per-file expand/collapse of Monaco's unchanged-region
            folding. Lives on the left of the divider because it's a
-           VIEW control — it changes what you see INSIDE this diff,
+           View control: it changes what you see inside this diff,
            not where the file opens. Hidden until the row is expanded,
            since it has no effect on a collapsed body. -->
       {#if expanded && storeReady && !file.binary}

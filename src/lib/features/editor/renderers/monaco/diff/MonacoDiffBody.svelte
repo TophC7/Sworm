@@ -8,6 +8,7 @@
 -->
 
 <script lang="ts">
+  import { untrack } from 'svelte'
   import DiffBinaryPlaceholder from '$lib/features/workbench/surfaces/diff/DiffBinaryPlaceholder.svelte'
   import { getDiffEditorPool, type PoolRef } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { useDiffScroll } from '$lib/features/editor/renderers/monaco/diff/scrollContext.svelte'
@@ -80,7 +81,7 @@
   let host = $state<HTMLDivElement | null>(null)
   // Seed the host height from the best information available at mount.
   // Order:
-  //   1. `entry.height` — preloader-populated or cached from a prior
+  //   1. `entry.height`: preloader-populated or cached from a prior
   //      mount; this is the real measured value.
   //   2. Per-file estimate derived from numstat. With
   //      `hideUnchangedRegions` enabled the visible row height is roughly
@@ -94,7 +95,8 @@
   // cascade. With a fixed 500px seed, a long stack of small-diff rows
   // all shrink into place once measurements complete; every shift moves
   // neighbours, the IntersectionObserver re-fires on shifted rows, more
-  // editors mount, more measurements fire — positive feedback loop. A
+  // editors mount, and more measurements fire. That positive feedback
+  // loop makes a rough variable seed important. A
   // rough variable seed keeps the page approximately the right total
   // height from first paint, so layout settles on the first measurement
   // instead of cascading through every row.
@@ -116,6 +118,20 @@
   let currentAcquireSeq = 0
   let currentMeasureAndSync: (() => void) | null = null
   let currentLineChanges: LineChange[] = []
+  // Signature of the most recently committed height measurement. Lets
+  // `measureAndSync` distinguish "first measure" / "real toggle" from
+  // "scroll-driven re-acquire produced pixel-jitter on the same data".
+  // Only a change in this signature causes a height write; otherwise we
+  // re-layout the editor at the cached height and drop the measurement.
+  let lastCommittedHeightSig: string | null = null
+
+  // Combined toggle + global-settings signature. Hoisted to script
+  // scope so the acquire closure and the on-mount priming step share
+  // the same definition.
+  function computeHeightSig(): string {
+    const s = pool.getSettings()
+    return `${hideUnchanged}|${s.renderSideBySide}|${s.wordWrap}|${s.fontSize}`
+  }
 
   // Monaco serializes collapsed unchanged-region state into
   // `viewState.modelState`. That fights the row-level toggle, whose
@@ -270,22 +286,36 @@
     return () => io.disconnect()
   })
 
-  $effect(() => {
-    // Subscribe to the store's version so lazy content arrivals
-    // re-trigger the mount effect. Without this, an entry whose
-    // content loads after the row first becomes visible would never
-    // pick up its models.
+  // Per-row signature gate over the store's global broadcast counter.
+  //
+  // `store.version` bumps whenever ANY lazy content load resolves; if
+  // the mount effect read it directly, every visible row would tear
+  // down and re-acquire on every other row's content arrival. We
+  // reduce the counter to a signature that only changes when THIS
+  // row's relevant state changes (visibility, `contentLoaded`, or
+  // `binary`). A `$derived.by` that returns the same string twice
+  // does not re-fire its downstream consumers, so unrelated lazy
+  // loads pass through silently.
+  let mountWorkSig = $derived.by(() => {
     void store.version
     const entry = store.get(path)
+    return `${visible}|${entry?.contentLoaded ?? false}|${entry?.binary ?? false}`
+  })
+
+  $effect(() => {
+    void mountWorkSig
+    const entry = untrack(() => store.get(path))
     if (!visible || !host || !entry || entry.binary) return
-    const retainedEntry = store.retain(path)
+    const retainedEntry = untrack(() => store.retain(path))
     if (!retainedEntry || retainedEntry.binary) return
 
     const original = retainedEntry.original
     const modified = retainedEntry.modified
     if (!original || !modified) {
-      // Lazy entry; content not loaded yet. `retain` already
-      // kicked off the loader; we'll re-run when `version` bumps.
+      // Lazy entry; content not loaded yet. `retain` already kicked
+      // off the loader; the `mountWorkSig` derived above will flip
+      // when this entry's `contentLoaded` becomes true and re-fire
+      // this effect.
       store.release(path)
       return
     }
@@ -293,6 +323,17 @@
     // Restore last-known height before the first content-size event
     // arrives so collapsed→expanded transitions don't jump.
     if (retainedEntry.height != null) height = retainedEntry.height
+
+    // Prime the height-commit gate when a cached height already exists
+    // and we have no remembered signature yet (typical on row re-expand
+    // or first acquire after a content load that ran while parked).
+    // Without this, the first `onDidUpdateDiff` would treat its
+    // measurement as a real change and could commit Monaco's pixel-
+    // jitter version of the same height, shifting the visible row from
+    // its restored position.
+    if (retainedEntry.height != null && lastCommittedHeightSig == null) {
+      lastCommittedHeightSig = computeHeightSig()
+    }
 
     const hostEl = host
     const seq = ++currentAcquireSeq
@@ -358,17 +399,32 @@
         const h = Math.max(modifiedEd.getContentHeight(), originalEd.getContentHeight())
         if (h <= 0) return
 
-        if (h !== height) {
-          height = h
-          store.setHeight(path, h)
+        const sig = computeHeightSig()
+        const cachedHeight = store.get(path)?.height ?? null
+        const sigChanged = sig !== lastCommittedHeightSig
+        const noCachedHeight = cachedHeight == null
+
+        if (sigChanged || noCachedHeight) {
+          // Genuine change: first ever measurement after a fresh content
+          // load, or a toggle / global setting altered the diff layout.
+          // Commit the new height and remember the signature.
+          if (h !== height) {
+            height = h
+            store.setHeight(path, h)
+          }
+          lastCommittedHeightSig = sig
+          ref.editor.layout({ width: hostEl.clientWidth, height: h })
+          return
         }
 
-        // The measured row height is the source of truth. Apply that
-        // same number directly to Monaco's viewport instead of waiting
-        // for a later host resize observer cycle, which can miss the
-        // initial 240px -> real-height jump and leave Monaco stuck with
-        // an internal hidden Y scroll.
-        ref.editor.layout({ width: hostEl.clientWidth, height: h })
+        // Steady-state: the row has already been measured under this
+        // exact signature. Monaco's diff worker can produce pixel-level
+        // jitter on a scroll-driven re-acquire. Committing it would
+        // shift the visible row even though no user-meaningful change
+        // happened. Suppress the write and re-layout at the cached
+        // height so the editor's internal viewport stays consistent
+        // with the row's locked outer dimensions.
+        ref.editor.layout({ width: hostEl.clientWidth, height: cachedHeight })
       }
       currentMeasureAndSync = measureAndSync
 

@@ -88,6 +88,64 @@ struct CachedSummary {
     summary: GitSummary,
 }
 
+fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
+    let lines: Vec<String> = String::from_utf8_lossy(stdout)
+        .lines()
+        .map(|line| line.to_string())
+        .collect();
+
+    lines
+        .chunks(7)
+        .filter_map(|chunk| {
+            if chunk.len() != 7 {
+                return None;
+            }
+
+            let parents = if chunk[2].is_empty() {
+                Vec::new()
+            } else {
+                chunk[2].split(' ').map(|s| s.to_string()).collect()
+            };
+
+            let refs = if chunk[6].is_empty() {
+                Vec::new()
+            } else {
+                chunk[6].split(", ").map(|s| s.trim().to_string()).collect()
+            };
+
+            Some(GraphCommit {
+                hash: chunk[0].clone(),
+                short_hash: chunk[1].clone(),
+                parents,
+                author: chunk[3].clone(),
+                date: chunk[4].clone(),
+                message: chunk[5].clone(),
+                refs,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteBranchError {
+    #[error("Branch not fully merged: {branch}")]
+    BranchUnmerged { branch: String, message: String },
+
+    #[error("{0}")]
+    Git(String),
+}
+
+fn delete_branch_error(branch: &str, stderr: String) -> DeleteBranchError {
+    if stderr.to_lowercase().contains("not fully merged") {
+        DeleteBranchError::BranchUnmerged {
+            branch: branch.to_string(),
+            message: stderr,
+        }
+    } else {
+        DeleteBranchError::Git(stderr)
+    }
+}
+
 /// Git service using the system git CLI.
 ///
 /// Holds an in-memory TTL cache of [`GitSummary`] values keyed by
@@ -455,41 +513,33 @@ impl GitService {
             return Vec::new();
         }
 
-        let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|line| line.to_string())
-            .collect();
+        parse_graph_commits(&output.stdout)
+    }
 
-        lines
-            .chunks(7)
-            .filter_map(|chunk| {
-                if chunk.len() != 7 {
-                    return None;
-                }
+    /// Get linear commit history reachable from one branch ref.
+    pub fn get_branch_commits(&self, path: &Path, branch: &str, limit: usize) -> Vec<GraphCommit> {
+        let output = std::process::Command::new("git")
+            .args([
+                "--no-optional-locks",
+                "log",
+                "--topo-order",
+                &format!("--max-count={}", limit),
+                "--format=%H%n%h%n%P%n%an%n%aI%n%s%n%D",
+                branch,
+                "--",
+            ])
+            .current_dir(path)
+            .output();
 
-                let parents = if chunk[2].is_empty() {
-                    Vec::new()
-                } else {
-                    chunk[2].split(' ').map(|s| s.to_string()).collect()
-                };
+        let Ok(output) = output else {
+            return Vec::new();
+        };
 
-                let refs = if chunk[6].is_empty() {
-                    Vec::new()
-                } else {
-                    chunk[6].split(", ").map(|s| s.trim().to_string()).collect()
-                };
+        if !output.status.success() {
+            return Vec::new();
+        }
 
-                Some(GraphCommit {
-                    hash: chunk[0].clone(),
-                    short_hash: chunk[1].clone(),
-                    parents,
-                    author: chunk[3].clone(),
-                    date: chunk[4].clone(),
-                    message: chunk[5].clone(),
-                    refs,
-                })
-            })
-            .collect()
+        parse_graph_commits(&output.stdout)
     }
 
     /// Get full commit detail (info + changed files with stats).
@@ -618,7 +668,7 @@ impl GitService {
         })
     }
 
-    // ── Write operations ────────────────────────────────────────────
+    // WRITE OPERATIONS //
 
     /// Stage all changes (tracked + untracked).
     pub fn stage_all(&self, path: &Path) -> Result<(), String> {
@@ -741,7 +791,7 @@ impl GitService {
 
     /// Fetch from all remotes.
     pub fn fetch(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["fetch", "--all"])
+        self.run_mutate(path, &["fetch", "--all", "--prune"])
     }
 
     /// Stash all changes including untracked files.
@@ -875,6 +925,262 @@ impl GitService {
         self.run_mutate(path, &["stash", "drop", &stash_ref])
     }
 
+    // BRANCH OPERATIONS //
+    //
+    // Branch invariants for this block:
+    //   * Every write goes through [`Self::run_mutate`] so the summary
+    //     cache invalidates and the StatusBar reflects state inside one
+    //     poll cycle.
+    //   * Reads use a single `git for-each-ref` call to load local +
+    //     remote branches in one shell-out; per-branch ahead/behind
+    //     comes from a follow-up `rev-list --left-right --count` per
+    //     branch with an upstream (errors silently fall to zeros so
+    //     branches without upstreams still surface).
+    //   * Paused-state detection ([`Self::branch_status`]) inspects
+    //     `.git/rebase-merge`, `.git/rebase-apply`, and
+    //     `.git/MERGE_HEAD` directly; do not parse `git status` output
+    //     here, the directories are authoritative regardless of how
+    //     the rebase or merge entered the paused state.
+
+    /// List every local + remote-tracking branch in one shell-out.
+    ///
+    /// Format string tokens (each `%(…)` produces one tab-separated
+    /// field; the order below matches the parsing in `parse_branch_row`):
+    ///
+    ///   `%(refname)`                  full ref (`refs/heads/main`)
+    ///   `%(HEAD)`                     `*` for current branch
+    ///   `%(objectname)`               full hash
+    ///   `%(objectname:short)`         short hash
+    ///   `%(upstream:short)`           upstream short name (empty if none)
+    ///   `%(upstream:track,nobracket)` ahead / behind text
+    ///   `%(authorname)`               commit's author name
+    ///   `%(authordate:iso8601-strict)` ISO-8601 timestamp
+    ///   `%(contents:subject)`         one-line subject
+    pub fn list_branches(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<crate::models::branch::BranchSummary>, String> {
+        use crate::models::branch::{BranchKind, BranchSummary};
+
+        let format = "%(refname)\t%(HEAD)\t%(objectname)\t%(objectname:short)\t%(upstream:short)\t%(upstream:track,nobracket)\t%(authorname)\t%(authordate:iso8601-strict)\t%(contents:subject)";
+        let output = std::process::Command::new("git")
+            .args([
+                "--no-optional-locks",
+                "for-each-ref",
+                "--format",
+                format,
+                "refs/heads",
+                "refs/remotes",
+            ])
+            .current_dir(path)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut out: Vec<BranchSummary> = Vec::new();
+        for line in text.lines() {
+            if let Some(row) = parse_branch_row(line) {
+                // Skip the synthetic `refs/remotes/<remote>/HEAD` rows
+                // that `for-each-ref` emits; they alias another ref
+                // and would duplicate it in the list.
+                if matches!(row.kind, BranchKind::Remote) && row.name.ends_with("/HEAD") {
+                    continue;
+                }
+                let upstream = match row.kind {
+                    BranchKind::Local => row.upstream,
+                    BranchKind::Remote => Some(row.name.clone()),
+                };
+                out.push(BranchSummary {
+                    name: row.name,
+                    kind: row.kind,
+                    is_current: matches!(row.kind, BranchKind::Local) && row.is_current,
+                    upstream,
+                    ahead: row.ahead,
+                    behind: row.behind,
+                    tip: row.tip,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Single-branch lookup. Used by the StatusBar popover and post-
+    /// mutation refresh. Returns `Err` if the branch is unknown so the
+    /// command layer can surface a 404-shaped error.
+    pub fn branch_info(
+        &self,
+        path: &Path,
+        name: &str,
+    ) -> Result<crate::models::branch::BranchSummary, String> {
+        let all = self.list_branches(path)?;
+        all.into_iter()
+            .find(|b| b.name == name)
+            .ok_or_else(|| format!("Branch not found: {}", name))
+    }
+
+    /// Inspect `.git/` sentinel dirs to determine paused state.
+    ///
+    /// `rebase-merge` is the interactive / new-style rebase dir;
+    /// `rebase-apply` is the legacy `git am`-style rebase dir.
+    /// `MERGE_HEAD` is a flat file written for the duration of a
+    /// merge with conflicts. Use platform-safe `path.join(...)`
+    /// rather than string concatenation.
+    pub fn branch_status(&self, path: &Path) -> crate::models::branch::BranchOpState {
+        use crate::models::branch::BranchOpState;
+        let git_dir = resolve_git_dir(path);
+        if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
+            return BranchOpState::Rebasing;
+        }
+        if git_dir.join("MERGE_HEAD").exists() {
+            return BranchOpState::Merging;
+        }
+        BranchOpState::Idle
+    }
+
+    /// Return true when the index, worktree, or untracked set has changes.
+    pub fn is_worktree_dirty(&self, path: &Path) -> bool {
+        self.is_git_repo(path) && !self.get_changes(path).is_empty()
+    }
+
+    /// File metadata for `branch...HEAD` compare. Content stays lazy:
+    /// the compare modal only renders status + path, and snapshots use
+    /// the existing `git_show_file` path when a file is opened.
+    pub fn diff_branch_against_head(&self, path: &Path, branch: &str) -> Vec<FileDiff> {
+        if !self.is_git_repo(path) {
+            return Vec::new();
+        }
+        self.rev_diff_files(path, branch, Some("HEAD"), false)
+    }
+
+    /// Switch to an existing branch. `git switch` refuses on a dirty
+    /// tree; the frontend's `safeCheckout` enforces the dirty gate
+    /// before this is reached.
+    pub fn checkout_branch(&self, path: &Path, name: &str) -> Result<(), String> {
+        self.run_mutate(path, &["switch", name])
+    }
+
+    /// Create a tracking local branch from a remote ref and switch to
+    /// it (`git switch -c <local> --track <remote>`).
+    pub fn checkout_remote_as_local(
+        &self,
+        path: &Path,
+        remote_name: &str,
+        local_name: &str,
+    ) -> Result<(), String> {
+        self.run_mutate(path, &["switch", "-c", local_name, "--track", remote_name])
+    }
+
+    /// Create a branch off `base`, optionally switching to it.
+    pub fn create_branch(
+        &self,
+        path: &Path,
+        name: &str,
+        base: &str,
+        checkout: bool,
+    ) -> Result<(), String> {
+        if checkout {
+            self.run_mutate(path, &["switch", "-c", name, base])?;
+        } else {
+            self.run_mutate(path, &["branch", name, base])?;
+        }
+        Ok(())
+    }
+
+    /// Rename a local branch via `git branch -m <old> <new>`.
+    pub fn rename_branch(&self, path: &Path, old: &str, new: &str) -> Result<(), String> {
+        self.run_mutate(path, &["branch", "-m", old, new])
+    }
+
+    /// Delete a local branch. Without `force`, refuses unmerged
+    /// branches as a typed error so the frontend can offer the
+    /// force-delete fallback without parsing git stderr.
+    pub fn delete_branch(
+        &self,
+        path: &Path,
+        name: &str,
+        force: bool,
+    ) -> Result<(), DeleteBranchError> {
+        let flag = if force { "-D" } else { "-d" };
+        self.run_mutate(path, &["branch", flag, name])
+            .map_err(|err| delete_branch_error(name, err))
+    }
+
+    /// Delete a remote branch by pushing a delete to its remote
+    /// (`git push <remote> --delete <name>`).
+    pub fn delete_remote_branch(
+        &self,
+        path: &Path,
+        remote: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        self.run_mutate(path, &["push", remote, "--delete", name])
+    }
+
+    /// Set or change a branch's upstream tracking ref.
+    pub fn set_upstream(&self, path: &Path, branch: &str, upstream: &str) -> Result<(), String> {
+        let arg = format!("--set-upstream-to={}", upstream);
+        self.run_mutate(path, &["branch", &arg, branch])
+    }
+
+    /// Fast-forward a branch to its upstream without checking it out
+    /// (or `git pull --ff-only` for the current branch). Both forms
+    /// reject non-fast-forward updates with a readable error.
+    pub fn fast_forward(&self, path: &Path, branch: &str) -> Result<(), String> {
+        let current = self.current_branch(path);
+        if current.as_deref() == Some(branch) {
+            return self.run_mutate(path, &["pull", "--ff-only"]);
+        }
+        let upstream = upstream_of(path, branch)
+            .ok_or_else(|| format!("Branch '{}' has no upstream configured", branch))?;
+        let (remote, remote_branch) = upstream
+            .split_once('/')
+            .ok_or_else(|| format!("Cannot parse upstream '{}'", upstream))?;
+        let refspec = format!("{}:{}", remote_branch, branch);
+        self.run_mutate(path, &["fetch", remote, &refspec])
+    }
+
+    /// Merge `source` into the current branch. `no_ff` forces a merge
+    /// commit even when the merge could fast-forward.
+    pub fn merge_into_current(&self, path: &Path, source: &str, no_ff: bool) -> Result<(), String> {
+        let mut args = vec!["merge"];
+        if no_ff {
+            args.push("--no-ff");
+        }
+        args.push(source);
+        self.run_mutate(path, &args)
+    }
+
+    /// Rebase the current branch onto `target`. Conflicts are surfaced
+    /// through `branch_status` (paused-state directories), not by
+    /// parsing this command's output.
+    pub fn rebase_current_onto(&self, path: &Path, target: &str) -> Result<(), String> {
+        self.run_mutate(path, &["rebase", target])
+    }
+
+    /// Continue a paused rebase after the user resolved conflicts.
+    pub fn rebase_continue(&self, path: &Path) -> Result<(), String> {
+        self.run_mutate(path, &["rebase", "--continue"])
+    }
+
+    /// Skip the current commit during a paused rebase.
+    pub fn rebase_skip(&self, path: &Path) -> Result<(), String> {
+        self.run_mutate(path, &["rebase", "--skip"])
+    }
+
+    /// Abort an in-flight rebase, restoring pre-rebase state.
+    pub fn rebase_abort(&self, path: &Path) -> Result<(), String> {
+        self.run_mutate(path, &["rebase", "--abort"])
+    }
+
+    /// Abort an in-flight merge, restoring pre-merge state.
+    pub fn merge_abort(&self, path: &Path) -> Result<(), String> {
+        self.run_mutate(path, &["merge", "--abort"])
+    }
+
     /// Get all file diffs for a stash entry (including untracked files).
     /// Initialize a new git repository. Repo identity changes (now a
     /// repo), so [`Self::run_mutate`]'s invalidation drops any stale
@@ -938,7 +1244,7 @@ impl GitService {
         "main".to_string()
     }
 
-    // ── Unified diff payload for the Monaco multi-file diff viewer ──
+    // DIFF PAYLOAD //
     //
     // `get_diff_files` is the single entry point used by the new viewer.
     // It returns `{old, new}` content per file so the frontend can build
@@ -1092,23 +1398,32 @@ impl GitService {
             Some(format!("{}^", hash))
         };
 
-        let files = self.list_rev_files(path, hash, old_ref.as_deref());
+        self.rev_diff_files(path, hash, old_ref.as_deref(), true)
+    }
+
+    fn rev_diff_files(
+        &self,
+        path: &Path,
+        new_rev: &str,
+        old_rev: Option<&str>,
+        include_content: bool,
+    ) -> Vec<FileDiff> {
+        let files = self.list_rev_files(path, new_rev, old_rev);
         let mut out = Vec::new();
         for entry in files {
-            let old_content = match (&old_ref, &entry.old_path_for_diff) {
-                (Some(old_rev), Some(op)) => {
+            let old_content = match (include_content, old_rev, &entry.old_path_for_diff) {
+                (false, _, _) => BlobResult::Missing,
+                (true, Some(old_rev), Some(op)) => {
                     read_git_show_blob(path, &format!("{}:{}", old_rev, op))
                 }
                 _ => BlobResult::Missing,
             };
-            let new_content = if matches!(entry.status, GitStatus::Deleted) {
+            let new_content = if !include_content || matches!(entry.status, GitStatus::Deleted) {
                 BlobResult::Missing
             } else {
-                read_git_show_blob(path, &format!("{}:{}", hash, entry.path))
+                read_git_show_blob(path, &format!("{}:{}", new_rev, entry.path))
             };
             let (old, new, binary) = fold_both_sides(old_content, new_content);
-            // Language prefers the new path; fall back to the old path for
-            // deletions where `path` itself may be empty.
             let lang = if !entry.path.is_empty() {
                 lang_from_path(&entry.path)
             } else {
@@ -1579,8 +1894,126 @@ fn combine_patches(staged: Option<String>, unstaged: Option<String>) -> Option<S
     }
 }
 
+/// One row from `git for-each-ref` parsed into the fields the
+/// `BranchSummary` builder needs. Kept private to the branch-listing
+/// path because the layout matches the format string used there.
+struct BranchRefRow {
+    name: String,
+    kind: crate::models::branch::BranchKind,
+    is_current: bool,
+    upstream: Option<String>,
+    ahead: i32,
+    behind: i32,
+    tip: crate::models::branch::BranchCommitRef,
+}
+
+/// Parse one `for-each-ref --format=…` line. Returns `None` for HEAD
+/// detached entries, malformed rows, or refs we don't surface in the
+/// Branches view.
+fn parse_branch_row(line: &str) -> Option<BranchRefRow> {
+    use crate::models::branch::{BranchCommitRef, BranchKind};
+    let parts: Vec<&str> = line.split('\t').collect();
+    if parts.len() < 9 {
+        return None;
+    }
+    let refname = parts[0];
+    let (name, kind) = if let Some(rest) = refname.strip_prefix("refs/heads/") {
+        (rest.to_string(), BranchKind::Local)
+    } else if let Some(rest) = refname.strip_prefix("refs/remotes/") {
+        (rest.to_string(), BranchKind::Remote)
+    } else {
+        return None;
+    };
+    let upstream = if parts[4].is_empty() {
+        None
+    } else {
+        Some(parts[4].to_string())
+    };
+    let (ahead, behind) = parse_tracking_counts(parts[5]);
+    Some(BranchRefRow {
+        name,
+        kind,
+        is_current: parts[1] == "*",
+        upstream,
+        ahead,
+        behind,
+        tip: BranchCommitRef {
+            hash: parts[2].to_string(),
+            short_hash: parts[3].to_string(),
+            author: parts[6].to_string(),
+            date: parts[7].to_string(),
+            // Subject can contain tabs in pathological cases; rejoin
+            // the trailing fields so we don't truncate at the first
+            // tab inside the subject.
+            subject: parts[8..].join("\t"),
+        },
+    })
+}
+
+fn parse_tracking_counts(track: &str) -> (i32, i32) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.split(',') {
+        let trimmed = part.trim();
+        if let Some(value) = trimmed.strip_prefix("ahead ") {
+            ahead = value.parse().unwrap_or(0);
+        } else if let Some(value) = trimmed.strip_prefix("behind ") {
+            behind = value.parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// Look up the upstream short name for a local branch. Returns `None`
+/// when the branch has no tracking ref.
+fn upstream_of(path: &Path, branch: &str) -> Option<String> {
+    let arg = format!("{}@{{upstream}}", branch);
+    let output = std::process::Command::new("git")
+        .args(["--no-optional-locks", "rev-parse", "--abbrev-ref", &arg])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Resolve the path to the repo's `.git` directory. Worktrees and
+/// submodules can move it elsewhere; `git rev-parse --git-dir` is
+/// the authoritative answer. Falls back to `<path>/.git` if the call
+/// fails so paused-state detection still works on a basic repo.
+fn resolve_git_dir(path: &Path) -> PathBuf {
+    let output = std::process::Command::new("git")
+        .args(["--no-optional-locks", "rev-parse", "--git-dir"])
+        .current_dir(path)
+        .output();
+    if let Ok(o) = output {
+        if o.status.success() {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !s.is_empty() {
+                let candidate = PathBuf::from(&s);
+                if candidate.is_absolute() {
+                    return candidate;
+                }
+                return path.join(s);
+            }
+        }
+    }
+    path.join(".git")
+}
+
 /// Run a mutating git command, returning `Ok(())` on success or
 /// `Err(stderr)` on failure.
+///
+/// Mutators intentionally omit `--no-optional-locks`. Read-only git
+/// calls use it to avoid optional index locks during polling; writes
+/// need Git's normal locking so index and ref updates serialize safely.
 fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -1701,5 +2134,189 @@ mod tests {
         assert_eq!(old.as_deref(), Some("alpha\nbeta\n"));
         assert_eq!(new, None);
         assert!(!binary);
+    }
+
+    /// Build a fixture repo with a current branch on a single commit
+    /// and return its path. The caller is responsible for cleanup.
+    fn temp_repo(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sworm-branch-{}-{}-{}",
+            tag,
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@t.com"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        git(&dir, &["commit", "-q", "-m", "init"]);
+        dir
+    }
+
+    /// `list_branches` covers locals, remotes, the diverged remote
+    /// case, and `current_branch` flagging for P0.T2.
+    #[test]
+    fn list_branches_returns_locals_remotes_with_ahead_behind() {
+        let dir = temp_repo("list");
+
+        // Two more local branches; one diverges from main.
+        git(&dir, &["branch", "feature"]);
+        git(&dir, &["branch", "diverged"]);
+
+        // Set up a fake remote in a sibling bare repo, then push the
+        // current main, plus a "diverged" branch that has one extra
+        // commit upstream and one extra commit locally.
+        let remote = dir.with_extension("remote.git");
+        let _ = std::fs::remove_dir_all(&remote);
+        std::fs::create_dir_all(&remote).unwrap();
+        Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .current_dir(&remote)
+            .output()
+            .unwrap();
+        let remote_url = remote.to_string_lossy().into_owned();
+        git(&dir, &["remote", "add", "origin", &remote_url]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+
+        // Push the current "diverged" tip to origin, then add an
+        // upstream-only commit (via a second clone), then add a
+        // local-only commit so the branch is +1/-1.
+        git(&dir, &["push", "-q", "-u", "origin", "diverged"]);
+        let work2 = dir.with_extension("work2");
+        let _ = std::fs::remove_dir_all(&work2);
+        Command::new("git")
+            .args(["clone", "-q", &remote_url, work2.to_str().unwrap()])
+            .output()
+            .unwrap();
+        git(&work2, &["config", "user.email", "u@u.com"]);
+        git(&work2, &["config", "user.name", "u"]);
+        git(&work2, &["switch", "-q", "diverged"]);
+        std::fs::write(work2.join("upstream.txt"), "u\n").unwrap();
+        git(&work2, &["add", "upstream.txt"]);
+        git(&work2, &["commit", "-q", "-m", "upstream"]);
+        git(&work2, &["push", "-q"]);
+
+        // Pull origin's new ref into our fixture's `refs/remotes` (no merge).
+        git(&dir, &["fetch", "-q", "origin"]);
+
+        // One local-only commit on `diverged`.
+        git(&dir, &["switch", "-q", "diverged"]);
+        std::fs::write(dir.join("local.txt"), "l\n").unwrap();
+        git(&dir, &["add", "local.txt"]);
+        git(&dir, &["commit", "-q", "-m", "local"]);
+        git(&dir, &["switch", "-q", "main"]);
+
+        let svc = GitService::new();
+        let list = svc.list_branches(&dir).expect("list_branches succeeded");
+
+        let by_name = |n: &str| {
+            list.iter()
+                .find(|b| b.name == n)
+                .cloned()
+                .unwrap_or_else(|| panic!("missing branch {} in {:?}", n, list))
+        };
+
+        assert!(by_name("main").is_current);
+        assert!(!by_name("feature").is_current);
+        assert!(!by_name("diverged").is_current);
+
+        let diverged = by_name("diverged");
+        assert_eq!(
+            diverged.upstream.as_deref(),
+            Some("origin/diverged"),
+            "diverged should track origin/diverged"
+        );
+        assert_eq!(diverged.ahead, 1, "one local-only commit");
+        assert_eq!(diverged.behind, 1, "one upstream-only commit");
+
+        // origin/main exists as a remote-tracking row; the synthetic
+        // origin/HEAD row is filtered out.
+        assert!(list.iter().any(|b| b.name == "origin/main"));
+        assert!(!list.iter().any(|b| b.name == "origin/HEAD"));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&remote).ok();
+        std::fs::remove_dir_all(&work2).ok();
+    }
+
+    /// `branch_info` happy path + missing-branch error for P0.T3.
+    #[test]
+    fn branch_info_returns_one_or_errors() {
+        let dir = temp_repo("info");
+        let svc = GitService::new();
+
+        let main = svc.branch_info(&dir, "main").expect("main should resolve");
+        assert_eq!(main.name, "main");
+        assert!(main.is_current);
+
+        let err = svc
+            .branch_info(&dir, "does-not-exist")
+            .expect_err("missing branch should error");
+        assert!(
+            err.contains("does-not-exist"),
+            "error should mention the missing name, got: {}",
+            err
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_branch_returns_unmerged_variant() {
+        let dir = temp_repo("delete-unmerged");
+        git(&dir, &["branch", "topic"]);
+        git(&dir, &["switch", "-q", "topic"]);
+        std::fs::write(dir.join("topic.txt"), "topic\n").unwrap();
+        git(&dir, &["add", "topic.txt"]);
+        git(&dir, &["commit", "-q", "-m", "topic"]);
+        git(&dir, &["switch", "-q", "main"]);
+
+        let svc = GitService::new();
+        let err = svc
+            .delete_branch(&dir, "topic", false)
+            .expect_err("unmerged branch should be rejected");
+
+        match err {
+            DeleteBranchError::BranchUnmerged { branch, message } => {
+                assert_eq!(branch, "topic");
+                assert!(message.to_lowercase().contains("not fully merged"));
+            }
+            DeleteBranchError::Git(message) => {
+                panic!("expected BranchUnmerged, got git error: {}", message)
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `branch_status` covers idle, mid-rebase, mid-merge for P0.T4.
+    /// We synthesise the sentinel directories rather than driving git
+    /// to a paused state; `branch_status` is a pure filesystem probe.
+    #[test]
+    fn branch_status_detects_paused_directories() {
+        use crate::models::branch::BranchOpState;
+        let dir = temp_repo("status");
+        let svc = GitService::new();
+
+        assert_eq!(svc.branch_status(&dir), BranchOpState::Idle);
+
+        let git_dir = dir.join(".git");
+        std::fs::create_dir_all(git_dir.join("rebase-merge")).unwrap();
+        assert_eq!(svc.branch_status(&dir), BranchOpState::Rebasing);
+        std::fs::remove_dir_all(git_dir.join("rebase-merge")).unwrap();
+
+        std::fs::create_dir_all(git_dir.join("rebase-apply")).unwrap();
+        assert_eq!(svc.branch_status(&dir), BranchOpState::Rebasing);
+        std::fs::remove_dir_all(git_dir.join("rebase-apply")).unwrap();
+
+        std::fs::write(git_dir.join("MERGE_HEAD"), "deadbeef\n").unwrap();
+        assert_eq!(svc.branch_status(&dir), BranchOpState::Merging);
+        std::fs::remove_file(git_dir.join("MERGE_HEAD")).unwrap();
+
+        assert_eq!(svc.branch_status(&dir), BranchOpState::Idle);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

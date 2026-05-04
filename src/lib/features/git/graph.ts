@@ -6,22 +6,22 @@
 
 import type { GraphCommit } from '$lib/types/backend'
 
-// ── VS Code constants (scmHistory.ts) ──────────────────────────
-export const SWIMLANE_HEIGHT = 22
+// VS CODE CONSTANTS //
+export const SWIMLANE_HEIGHT = 24
 export const SWIMLANE_WIDTH = 11
 const SWIMLANE_CURVE_RADIUS = 5
 export const CIRCLE_RADIUS = 4
 
-// ── Lane colors (adapted to warm palette) ──────────────────────
+// LANE COLORS //
 export const GRAPH_COLORS = [
-  '#ffb59f', // peach (accent)
-  '#98ff7f', // green
-  '#ffe572', // yellow
-  '#ff7672', // red
-  '#b66dff' // purple
+  'var(--color-accent)',
+  'var(--color-success)',
+  'var(--color-warning)',
+  'var(--color-danger)',
+  'var(--color-pink)'
 ]
 
-// ── Data model ─────────────────────────────────────────────────
+// DATA MODEL //
 
 export interface GraphNode {
   id: string
@@ -53,7 +53,7 @@ export interface RowRender {
   width: number
 }
 
-// ── Lane computation ───────────────────────────────────────────
+// LANE COMPUTATION //
 // Mirrors VS Code's toISCMHistoryItemViewModelArray.
 //
 // For each commit (topo order, newest first):
@@ -99,7 +99,7 @@ export function computeGraph(commits: GraphCommit[]): GraphRow[] {
   return rows
 }
 
-// ── SVG path computation ───────────────────────────────────────
+// SVG PATHS //
 // Mirrors VS Code's renderSCMHistoryItemGraph.
 
 function findLastIndex(nodes: GraphNode[], id: string): number {
@@ -129,7 +129,7 @@ export function computeRowRender(row: GraphRow): RowRender {
         ? inputSwimlanes[circleIndex].color
         : 0
 
-  // ── Input-lane pass-through / merge / shift ──────────────────
+  // INPUT LANES //
   let outputIdx = 0
   for (let index = 0; index < inputSwimlanes.length; index++) {
     const c = color(inputSwimlanes[index].color)
@@ -145,11 +145,11 @@ export function computeRowRender(row: GraphRow): RowRender {
           color: c
         })
       } else {
-        // Primary lane — just advance output pointer
+          // Primary lane advances the output pointer only.
         outputIdx++
       }
     } else {
-      // Not this commit — pass through or shift left
+      // Lanes for other commits pass through or shift left.
       if (outputIdx < outputSwimlanes.length && inputSwimlanes[index].id === outputSwimlanes[outputIdx].id) {
         if (index === outputIdx) {
           // Straight vertical
@@ -178,7 +178,7 @@ export function computeRowRender(row: GraphRow): RowRender {
     }
   }
 
-  // ── Branch-out lines for additional parents ──────────────────
+  // BRANCH OUTS //
   for (let i = 1; i < commit.parents.length; i++) {
     const parentIdx = findLastIndex(outputSwimlanes, commit.parents[i])
     if (parentIdx === -1) continue
@@ -200,7 +200,7 @@ export function computeRowRender(row: GraphRow): RowRender {
     })
   }
 
-  // ── Vertical stem to/from circle ─────────────────────────────
+  // VERTICAL STEM //
   const cx = SWIMLANE_WIDTH * (circleIndex + 1)
 
   // Stem from top to circle
@@ -219,7 +219,7 @@ export function computeRowRender(row: GraphRow): RowRender {
     })
   }
 
-  // ── Dimensions and circle ────────────────────────────────────
+  // DIMENSIONS //
   const maxCols = Math.max(inputSwimlanes.length, outputSwimlanes.length, 1) + 1
   const isMerge = commit.parents.length > 1
 

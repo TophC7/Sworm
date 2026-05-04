@@ -206,62 +206,23 @@
     expandedFiles = anyExpanded ? new Set() : new Set(files.map((f) => f.path))
   }
 
-  // --- Scroll context for the IntersectionObserver inside MonacoDiffBody ---
+  // SCROLL CONTEXT //
+
+  // The context exposes the scroll element only. Children attach their
+  // own IntersectionObserver against this element to drive editor
+  // acquire/release; they do not need scrollTop or container height,
+  // and exposing those would create a reactive surface that would
+  // re-fire every consumer effect on every scroll frame. The element
+  // itself flips exactly once, from null to the mounted div, and never again
+  // for the lifetime of this stack, so reading it inside a child
+  // `$effect` is safe.
   let scrollEl = $state<HTMLElement | null>(null)
 
-  let scrollCtx: DiffScrollState = $state({
-    element: null,
-    scrollTop: 0,
-    containerHeight: 0
-  })
-
+  let scrollCtx: DiffScrollState = $state({ element: null })
   setDiffScrollContext(scrollCtx)
 
   $effect(() => {
-    const el = scrollEl
-    if (!el) return
-
-    scrollCtx.element = el
-    scrollCtx.containerHeight = el.clientHeight
-    scrollCtx.scrollTop = el.scrollTop
-
-    let ticking = false
-    function onScroll() {
-      if (!ticking) {
-        ticking = true
-        requestAnimationFrame(() => {
-          if (!el) {
-            ticking = false
-            return
-          }
-          const top = el.scrollTop
-          if (top !== scrollCtx.scrollTop) scrollCtx.scrollTop = top
-          ticking = false
-        })
-      }
-    }
-
-    el.addEventListener('scroll', onScroll, { passive: true })
-    // Deferred to the next frame so that downstream consumers' reactive
-    // updates don't run synchronously inside the observer callback (the
-    // "ResizeObserver loop completed with undelivered notifications"
-    // warning fires when they do).
-    let roPending = false
-    const ro = new ResizeObserver(() => {
-      if (roPending) return
-      roPending = true
-      requestAnimationFrame(() => {
-        roPending = false
-        const h = el.clientHeight
-        if (h !== scrollCtx.containerHeight) scrollCtx.containerHeight = h
-      })
-    })
-    ro.observe(el)
-
-    return () => {
-      el.removeEventListener('scroll', onScroll)
-      ro.disconnect()
-    }
+    scrollCtx.element = scrollEl
   })
 </script>
 

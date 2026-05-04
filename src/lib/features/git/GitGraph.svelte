@@ -2,38 +2,48 @@
   import { backend } from '$lib/api/backend'
   import type { TabId } from '$lib/features/workbench/model'
   import type { CommitDetail, CommitFileChange } from '$lib/types/backend'
-  import { computeGraph, computeRowRender, SWIMLANE_HEIGHT, CIRCLE_RADIUS } from '$lib/features/git/graph'
+  import { computeGraph, computeRowRender } from '$lib/features/git/graph'
   import type { GraphRow } from '$lib/features/git/graph'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
   import GitStashList from '$lib/features/git/GitStashList.svelte'
+  import GitBranches from '$lib/features/git/GitBranches.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
-  import CommitTooltip from '$lib/features/git/CommitTooltip.svelte'
-  import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
+  import { TooltipProvider } from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitGraphIcon, PackageIcon } from '$lib/icons/lucideExports'
+  import { GitBranchPlusIcon, GitGraphIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
+  import * as branches from '$lib/features/git/branches.svelte'
+  import {
+    getGitSidebarTab,
+    setGitSidebarTab,
+    type GitSidebarTab
+  } from '$lib/features/app-shell/sidebar/state.svelte'
 
   let {
     projectPath,
+    projectId,
     onFileClick,
     onStashFileClick,
     onPersistTab,
     onMutate
   }: {
     projectPath: string
+    projectId: string
     onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => TabId | Promise<TabId> | void
     onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
     onMutate?: () => void
   } = $props()
 
-  let activeTab = $state<'graph' | 'stashes'>('graph')
+  let activeTab = $derived(getGitSidebarTab())
   let rows = $state<GraphRow[]>([])
   let renders = $derived(rows.map(computeRowRender))
   let currentPath = ''
   let stashCount = $state(0)
+  let branchEntry = $derived(branches.byProject.get(projectId))
 
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
@@ -142,19 +152,32 @@
     void loadStashCount(projectPath)
     onMutate?.()
   }
+
+  function setActiveTab(tab: GitSidebarTab) {
+    setGitSidebarTab(tab)
+  }
 </script>
 
 <div class="flex h-full flex-col text-base">
   <div class="flex shrink-0 items-center justify-between px-2.5 py-1.5">
-    <span class="text-xs font-semibold tracking-wide text-muted uppercase">
-      {activeTab === 'graph' ? 'Graph' : 'Stashes'}{activeTab === 'stashes' && stashCount > 0 ? ` (${stashCount})` : ''}
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold tracking-wide text-muted uppercase">
+      <span>
+        {activeTab === 'graph'
+          ? 'Graph'
+          : activeTab === 'stashes'
+            ? `Stashes${stashCount > 0 ? ` (${stashCount})` : ''}`
+            : 'Branches'}
+      </span>
+      {#if activeTab === 'branches' && branchEntry?.fetching}
+        <LoaderCircle size={11} class="animate-spin text-muted" aria-label="Fetching branches" />
+      {/if}
     </span>
     <div class="flex items-center gap-0.5">
       <IconButton
         tooltip="Commit graph"
         tooltipSide="bottom"
         active={activeTab === 'graph'}
-        onclick={() => (activeTab = 'graph')}
+        onclick={() => setActiveTab('graph')}
       >
         <GitGraphIcon size={13} />
       </IconButton>
@@ -162,9 +185,17 @@
         tooltip="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
         tooltipSide="bottom"
         active={activeTab === 'stashes'}
-        onclick={() => (activeTab = 'stashes')}
+        onclick={() => setActiveTab('stashes')}
       >
         <PackageIcon size={13} />
+      </IconButton>
+      <IconButton
+        tooltip="Branches"
+        tooltipSide="bottom"
+        active={activeTab === 'branches'}
+        onclick={() => setActiveTab('branches')}
+      >
+        <GitBranchPlusIcon size={13} />
       </IconButton>
     </div>
   </div>
@@ -177,78 +208,20 @@
         <div class="flex-1 overflow-y-auto">
           {#each rows as row, i (row.commit.hash)}
             {@const r = renders[i]}
-            {@const refs = visibleRefs(row.commit.refs)}
             {@const isExpanded = expandedHash === row.commit.hash}
 
-            <TooltipRoot>
-              <TooltipTrigger
-                class="group flex w-full items-center border-t border-edge/30 text-left hover:bg-raised/50 {isExpanded
-                  ? 'bg-raised/60'
-                  : ''}"
-                style="height: {SWIMLANE_HEIGHT}px"
-                onclick={() => toggleCommit(row.commit.hash)}
-                onmouseenter={() => prefetchDetail(row.commit.hash)}
-              >
-                <svg
-                  class="shrink-0"
-                  width={r.width}
-                  height={SWIMLANE_HEIGHT}
-                  viewBox="0 0 {r.width} {SWIMLANE_HEIGHT}"
-                >
-                  {#each r.paths as p, pi (pi)}
-                    <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
-                  {/each}
-                  {#if r.circle.isMerge}
-                    <circle
-                      cx={r.circle.cx}
-                      cy={r.circle.cy}
-                      r={CIRCLE_RADIUS + 2}
-                      fill={r.circle.color}
-                      stroke="none"
-                    />
-                    <circle
-                      cx={r.circle.cx}
-                      cy={r.circle.cy}
-                      r={CIRCLE_RADIUS - 1}
-                      fill={r.circle.color}
-                      stroke="none"
-                    />
-                  {:else}
-                    <circle cx={r.circle.cx} cy={r.circle.cy} r={r.circle.r} fill={r.circle.color} stroke="none" />
-                  {/if}
-                </svg>
-                <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-                  <span class="min-w-0 truncate text-sm text-fg">{row.commit.message}</span>
-                  {#if refs.length > 0}
-                    <!-- First ref: full label badge, colored to match the graph line -->
-                    <span
-                      class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
-                      style="background: {r.circle.color}20; color: {r.circle.color}"
-                      title={refLabel(refs[0])}
-                    >
-                      {refLabel(refs[0])}
-                    </span>
-                    {#each refs.slice(1) as ref (ref)}
-                      <span
-                        class="size-3 shrink-0 rounded-sm"
-                        style="background: {r.circle.color}40"
-                        title={refLabel(ref)}
-                      ></span>
-                    {/each}
-                  {/if}
-                </div>
-              </TooltipTrigger>
-              <TooltipContent class="max-w-135" sideOffset={6} side="right" align="center">
-                <CommitTooltip
-                  commit={row.commit}
-                  detail={detailCache.get(row.commit.hash) ?? null}
-                  graphColor={r.circle.color}
-                />
-              </TooltipContent>
-            </TooltipRoot>
+            <GitCommitRow
+              commit={row.commit}
+              render={r}
+              detail={detailCache.get(row.commit.hash) ?? null}
+              graphColor={r.circle.color}
+              active={isExpanded}
+              onRowClick={toggleCommit}
+              onPrefetch={prefetchDetail}
+            />
 
             {#if isExpanded}
-              <div class="border-t border-edge/30 bg-surface/40 py-1">
+              <div class="border-t border-edge/30 bg-surface py-1">
                 {#if !expandedDetail}
                   <div class="px-4 py-1.5 text-xs text-subtle">Loading files...</div>
                 {:else if expandedTree.length === 0}
@@ -275,7 +248,7 @@
         </div>
       </TooltipProvider>
     {/if}
-  {:else}
+  {:else if activeTab === 'stashes'}
     <GitStashList
       {projectPath}
       {branchColorMap}
@@ -283,5 +256,7 @@
       onFileClick={onStashFileClick}
       {onPersistTab}
     />
+  {:else}
+    <GitBranches {projectPath} {projectId} {branchColorMap} />
   {/if}
 </div>

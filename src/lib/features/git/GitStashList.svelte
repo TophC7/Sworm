@@ -144,14 +144,13 @@
                to the tooltip-triggering row button. Nesting <button>s inside
                <button>s breaks keyboard/pointer semantics. -->
           <div
-            class="group flex w-full items-center gap-1.5 border-t border-edge/30 px-2.5 hover:bg-raised/50 {isExpanded
-              ? 'bg-raised/60'
+            class="group flex h-6 w-full items-center gap-1.5 border-t border-edge/30 px-2.5 hover:bg-raised {isExpanded
+              ? 'bg-raised'
               : ''}"
-            style="height: 22px"
           >
             <TooltipRoot>
               <TooltipTrigger
-                class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-left outline-none"
+                class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-left focus-visible:shadow-focus-ring focus-visible:outline-none"
                 onclick={() => toggleStash(stash.index)}
               >
                 <span class="shrink-0 rounded bg-accent-bg px-1 py-px font-mono text-2xs text-accent">
@@ -160,7 +159,7 @@
                 {#if parsed.branch}
                   <span
                     class="inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
-                    style="background: {color}20; color: {color}"
+                    style="background: color-mix(in srgb, {color} 20%, transparent); color: {color}"
                   >
                     {parsed.branch}
                   </span>
@@ -220,7 +219,7 @@
           </div>
 
           {#if isExpanded}
-            <div class="border-t border-edge/30 bg-surface/40 py-1">
+            <div class="border-t border-edge/30 bg-surface py-1">
               {#if expandedTree.length === 0}
                 <div class="px-4 py-1.5 text-xs text-subtle">No files changed.</div>
               {:else}

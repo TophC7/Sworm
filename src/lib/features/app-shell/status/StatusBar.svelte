@@ -2,16 +2,20 @@
   import { getSessions } from '$lib/features/sessions/state/sessions.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import { getActiveProjectId } from '$lib/features/workbench/state.svelte'
+  import { getProjectById } from '$lib/features/projects/state.svelte'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
+  import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
+  import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
-  import { Circle, AlertTriangle, GitBranchIcon, ArrowUp, ArrowDown, Minus, Plus } from '$lib/icons/lucideExports'
+  import { Circle, AlertTriangle, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
 
   let activeProjectId = $derived(getActiveProjectId())
+  let activeProject = $derived(activeProjectId ? getProjectById(activeProjectId) : null)
   let sessions = $derived(activeProjectId ? getSessions(activeProjectId) : [])
   let liveSessions = $derived(sessions.filter((s) => s.status === 'running'))
   let zoom = $derived(getZoomLevel())
@@ -25,21 +29,21 @@
   class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-xs"
 >
   <div class="flex items-center gap-2.5">
-    {#if gitSummary?.branch}
-      <span class="flex items-center gap-1 font-mono text-muted">
-        <GitBranchIcon size={10} />
-        {gitSummary.branch}
-      </span>
-      {#if (gitSummary.ahead ?? 0) > 0}
-        <span class="flex items-center gap-0.5 text-success">
-          <ArrowUp size={9} />{gitSummary.ahead}
-        </span>
-      {/if}
-      {#if (gitSummary.behind ?? 0) > 0}
-        <span class="flex items-center gap-0.5 text-danger">
-          <ArrowDown size={9} />{gitSummary.behind}
-        </span>
-      {/if}
+    {#if gitSummary?.branch && activeProjectId && activeProject}
+      <StatusBarBranchPopover projectId={activeProjectId} projectPath={activeProject.path}>
+        {#snippet children()}
+          <span class="flex items-center gap-1 font-mono text-muted">
+            <GitBranchIcon size={10} />
+            {gitSummary.branch}
+            <AheadBehindBadge
+              ahead={gitSummary.ahead ?? 0}
+              behind={gitSummary.behind ?? 0}
+              size="xs"
+              twoColor
+            />
+          </span>
+        {/snippet}
+      </StatusBarBranchPopover>
     {/if}
     <NixEnvIndicator />
   </div>

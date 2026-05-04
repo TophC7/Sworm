@@ -112,7 +112,7 @@
       {#each filteredRefs as ref (ref)}
         <span
           class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-2xs leading-tight"
-          style="border-color: {graphColor}40; color: {graphColor}"
+          style="border-color: color-mix(in srgb, {graphColor} 40%, transparent); color: {graphColor}"
         >
           <span class="inline-block h-1 w-1 shrink-0 rounded-full" style="background: {graphColor}" aria-hidden="true"
           ></span>

@@ -216,7 +216,7 @@
   {#if !summary}
     <div class="px-2.5 py-3 text-sm text-subtle">Loading git info&hellip;</div>
   {:else if !isRepo}
-    <!-- Not a git repository — offer init or clone -->
+    <!-- Not a git repository. Offer init or clone. -->
     <div class="flex flex-col gap-4 px-3 py-4">
       <div class="flex flex-col items-center gap-2 py-4 text-center">
         <GitBranchIcon size={28} class="text-subtle" />
@@ -284,6 +284,7 @@
         <div class="h-full overflow-y-auto">
           <GitGraph
             {projectPath}
+            {projectId}
             onFileClick={onCommitFileClick}
             {onStashFileClick}
             {onPersistTab}

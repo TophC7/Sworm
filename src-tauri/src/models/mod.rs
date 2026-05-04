@@ -1,4 +1,5 @@
 pub mod activity_map;
+pub mod branch;
 pub mod builtins;
 pub mod file_diff;
 pub mod lsp;

@@ -1,11 +1,58 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
+use crate::models::branch::{BranchOpState, BranchSummary};
 use crate::models::file_diff::{DiffSource, FileDiff};
-use crate::services::git::{CommitDetail, GitSummary, GraphCommit, StashEntry, MAX_CONTENT_BYTES};
+use crate::services::git::{
+    CommitDetail, DeleteBranchError, GitSummary, GraphCommit, StashEntry, MAX_CONTENT_BYTES,
+};
 use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Lightweight defense against arg-injection for branch / remote
+/// names. Rejects empties, leading `-` (would be parsed as a flag by
+/// the git CLI), embedded whitespace and control chars, the `..` / `@{`
+/// sequences, and the metacharacters `git check-ref-format` rejects.
+/// Frontend validation is more permissive (mirrors `check-ref-format`
+/// directly); this layer only stops the obvious shell-side hazards.
+pub(crate) fn validated_ref_name(name: &str) -> Result<(), ApiError> {
+    if name.is_empty() {
+        return Err(ApiError::InvalidArgument(
+            "Branch name is empty".to_string(),
+        ));
+    }
+    if name.starts_with('-') {
+        return Err(ApiError::InvalidArgument(
+            "Branch name cannot start with '-'".to_string(),
+        ));
+    }
+    if name.contains("..") || name.contains("@{") {
+        return Err(ApiError::InvalidArgument(format!(
+            "Invalid branch name: {}",
+            name
+        )));
+    }
+    for c in name.chars() {
+        if c.is_control() || c == ' ' || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\') {
+            return Err(ApiError::InvalidArgument(format!(
+                "Invalid branch name: {}",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate an upstream tracking ref in `<remote>/<branch>` form.
+pub(crate) fn validated_upstream_ref(upstream: &str) -> Result<(), ApiError> {
+    let (remote, branch) = upstream.split_once('/').ok_or_else(|| {
+        ApiError::InvalidArgument("Upstream must use <remote>/<branch>".to_string())
+    })?;
+    validated_ref_name(remote)?;
+    validated_ref_name(branch)?;
+    Ok(())
+}
 
 /// Reject anything that isn't a hex commit hash (40-char full or 7+ short).
 pub(crate) fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
@@ -374,7 +421,21 @@ pub async fn git_get_graph(
     Ok(state.git.get_graph(Path::new(&path), limit))
 }
 
-// ── Write operations ────────────────────────────────────────────
+/// Get commit history reachable from one branch ref.
+#[tauri::command]
+pub async fn git_get_branch_commits(
+    path: String,
+    branch: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<GraphCommit>, ApiError> {
+    validated_ref_name(&branch)?;
+    Ok(state
+        .git
+        .get_branch_commits(Path::new(&path), &branch, limit))
+}
+
+// WRITE OPERATIONS //
 
 /// Stage all changes (tracked + untracked).
 #[tauri::command]
@@ -682,8 +743,297 @@ pub async fn git_clone_in_place(
         .map_err(ApiError::Internal)
 }
 
+// BRANCH OPERATIONS //
+
+/// List every local + remote-tracking branch in one call.
+#[tauri::command]
+pub async fn git_list_branches(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<BranchSummary>, ApiError> {
+    state
+        .git
+        .list_branches(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Single-branch lookup. Used by the StatusBar popover and post-
+/// mutation refresh path.
+#[tauri::command]
+pub async fn git_branch_info(
+    path: String,
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<BranchSummary, ApiError> {
+    validated_ref_name(&name)?;
+    state
+        .git
+        .branch_info(Path::new(&path), &name)
+        .map_err(ApiError::NotFound)
+}
+
+/// Current paused-state of the working tree (idle / rebasing / merging).
+#[tauri::command]
+pub async fn git_branch_status(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<BranchOpState, ApiError> {
+    Ok(state.git.branch_status(Path::new(&path)))
+}
+
+/// File metadata for `branch...HEAD` compare.
+#[tauri::command]
+pub async fn git_diff_branch_against_head(
+    path: String,
+    branch: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FileDiff>, ApiError> {
+    validated_ref_name(&branch)?;
+    Ok(state
+        .git
+        .diff_branch_against_head(Path::new(&path), &branch))
+}
+
+/// Switch HEAD to an existing branch.
+#[tauri::command]
+pub async fn git_checkout_branch(
+    path: String,
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&name)?;
+    let repo = Path::new(&path);
+    if state.git.is_worktree_dirty(repo) {
+        return Err(ApiError::DirtyWorktree {
+            message: "Stash or commit changes before switching branches".to_string(),
+        });
+    }
+    state
+        .git
+        .checkout_branch(repo, &name)
+        .map_err(ApiError::Internal)
+}
+
+/// Create a tracking local branch from a remote ref and switch to it.
+#[tauri::command]
+pub async fn git_checkout_remote_as_local(
+    path: String,
+    remote_name: String,
+    local_name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&remote_name)?;
+    validated_ref_name(&local_name)?;
+    let repo = Path::new(&path);
+    if state.git.is_worktree_dirty(repo) {
+        return Err(ApiError::DirtyWorktree {
+            message: "Stash or commit changes before switching branches".to_string(),
+        });
+    }
+    state
+        .git
+        .checkout_remote_as_local(repo, &remote_name, &local_name)
+        .map_err(ApiError::Internal)
+}
+
+/// Create a branch off `base`, optionally switching to it after.
+#[tauri::command]
+pub async fn git_create_branch(
+    path: String,
+    name: String,
+    base: String,
+    checkout: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&name)?;
+    validated_ref_name(&base)?;
+    state
+        .git
+        .create_branch(Path::new(&path), &name, &base, checkout)
+        .map_err(ApiError::Internal)
+}
+
+/// Rename a local branch.
+#[tauri::command]
+pub async fn git_rename_branch(
+    path: String,
+    old_name: String,
+    new_name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&old_name)?;
+    validated_ref_name(&new_name)?;
+    state
+        .git
+        .rename_branch(Path::new(&path), &old_name, &new_name)
+        .map_err(ApiError::Internal)
+}
+
+/// Delete a local branch. Without `force`, refuses unmerged branches
+/// with a typed error so the dialog can offer the force-delete fallback.
+#[tauri::command]
+pub async fn git_delete_branch(
+    path: String,
+    name: String,
+    force: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&name)?;
+    state
+        .git
+        .delete_branch(Path::new(&path), &name, force)
+        .map_err(|err| match err {
+            DeleteBranchError::BranchUnmerged { branch, message } => {
+                ApiError::BranchUnmerged { branch, message }
+            }
+            DeleteBranchError::Git(message) => ApiError::Internal(message),
+        })
+}
+
+/// Delete a branch on a remote (`git push <remote> --delete <name>`).
+#[tauri::command]
+pub async fn git_delete_remote_branch(
+    path: String,
+    remote: String,
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&remote)?;
+    validated_ref_name(&name)?;
+    state
+        .git
+        .delete_remote_branch(Path::new(&path), &remote, &name)
+        .map_err(ApiError::Internal)
+}
+
+/// Set or change a branch's upstream tracking ref.
+#[tauri::command]
+pub async fn git_set_upstream(
+    path: String,
+    branch: String,
+    upstream: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&branch)?;
+    validated_upstream_ref(&upstream)?;
+    state
+        .git
+        .set_upstream(Path::new(&path), &branch, &upstream)
+        .map_err(ApiError::Internal)
+}
+
+/// Fast-forward a branch to its upstream without checking it out.
+/// Falls back to `git pull --ff-only` for the current branch.
+#[tauri::command]
+pub async fn git_fast_forward_branch(
+    path: String,
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&name)?;
+    state
+        .git
+        .fast_forward(Path::new(&path), &name)
+        .map_err(ApiError::Internal)
+}
+
+/// Merge `source` into the current branch.
+#[tauri::command]
+pub async fn git_merge_into_current(
+    path: String,
+    source: String,
+    no_ff: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&source)?;
+    state
+        .git
+        .merge_into_current(Path::new(&path), &source, no_ff)
+        .map_err(ApiError::Internal)
+}
+
+/// Rebase the current branch onto `target`.
+#[tauri::command]
+pub async fn git_rebase_current_onto(
+    path: String,
+    target: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    validated_ref_name(&target)?;
+    state
+        .git
+        .rebase_current_onto(Path::new(&path), &target)
+        .map_err(ApiError::Internal)
+}
+
+/// Continue a paused rebase after the user resolved conflicts.
+#[tauri::command]
+pub async fn git_rebase_continue(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .rebase_continue(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Skip the current commit during a paused rebase.
+#[tauri::command]
+pub async fn git_rebase_skip(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .rebase_skip(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Abort an in-flight rebase.
+#[tauri::command]
+pub async fn git_rebase_abort(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .rebase_abort(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
+/// Abort an in-flight merge.
+#[tauri::command]
+pub async fn git_merge_abort(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .git
+        .merge_abort(Path::new(&path))
+        .map_err(ApiError::Internal)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validated_upstream_ref_accepts_remote_branch_shape() {
+        use super::validated_upstream_ref;
+
+        assert!(validated_upstream_ref("origin/main").is_ok());
+        assert!(validated_upstream_ref("origin/feature/nested").is_ok());
+    }
+
+    #[test]
+    fn validated_upstream_ref_rejects_missing_side_or_flag_shape() {
+        use super::validated_upstream_ref;
+
+        assert!(validated_upstream_ref("main").is_err());
+        assert!(validated_upstream_ref("/main").is_err());
+        assert!(validated_upstream_ref("origin/").is_err());
+        assert!(validated_upstream_ref("-origin/main").is_err());
+    }
+
     #[test]
     fn validated_project_file_rejects_traversal() {
         use super::validated_project_file;
@@ -712,7 +1062,7 @@ mod tests {
         // File deleted, parent intact.
         assert!(validated_project_file(&project_str, "missing.txt").is_ok());
 
-        // File and parent directory both missing — walk-up anchors to the project root.
+        // File and parent directory both missing; walk-up anchors to the project root.
         assert!(validated_project_file(&project_str, "vanished/dir/file.txt").is_ok());
 
         // Traversal still rejected even when the candidate doesn't exist.
