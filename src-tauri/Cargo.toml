@@ -29,7 +29,7 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 portable-pty = "0.9"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util"] }
 rusqlite = { version = "0.33", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

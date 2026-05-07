@@ -10,6 +10,7 @@
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
+  import { sidebarRowVariants } from '$lib/components/ui/sidebar-row'
   import { ClockIcon, Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/features/git/graph'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
@@ -143,11 +144,7 @@
           <!-- Row is a wrapping div so the action buttons can sit as siblings
                to the tooltip-triggering row button. Nesting <button>s inside
                <button>s breaks keyboard/pointer semantics. -->
-          <div
-            class="group flex h-6 w-full items-center gap-1.5 border-t border-edge/30 px-2.5 hover:bg-raised {isExpanded
-              ? 'bg-raised'
-              : ''}"
-          >
+          <div class="{sidebarRowVariants({ variant: 'leaf', pressed: isExpanded })} group">
             <TooltipRoot>
               <TooltipTrigger
                 class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-left focus-visible:shadow-focus-ring focus-visible:outline-none"

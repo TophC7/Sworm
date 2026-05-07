@@ -7,6 +7,7 @@
   import SidebarRail from '$lib/features/app-shell/sidebar/SidebarRail.svelte'
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
   import FilesSidebar from '$lib/features/files/FilesSidebar.svelte'
+  import IssuesSidebar from '$lib/features/issues/IssuesSidebar.svelte'
   import SessionHistoryView from '$lib/features/sessions/SessionHistoryView.svelte'
   import {
     getSidebarWidth,
@@ -111,6 +112,8 @@
               openStashDiff(project.id, stashIndex, message, filePath)}
             onViewAllChanges={(staged) => openWorkingTreeDiff(project.id, staged, null, null, { temporary: false })}
           />
+        {:else if sidebarView === 'issues'}
+          <IssuesSidebar projectId={project.id} />
         {:else if sidebarView === 'sessions'}
           <SessionHistoryView projectId={project.id} />
         {:else if sidebarView === 'files'}

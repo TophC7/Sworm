@@ -4,17 +4,10 @@
 -->
 
 <script lang="ts" module>
-  const TREE_INDENT_BASE_PX = 10
-  const TREE_INDENT_STEP_PX = 12
+  import { treeIndent, treeIndentValue } from '$lib/components/ui/tree-indent'
+  import { SidebarRow, sidebarRowVariants } from '$lib/components/ui/sidebar-row'
+
   const BRANCH_HISTORY_PAGE_SIZE = 5
-
-  function treeIndent(depth: number): string {
-    return `${TREE_INDENT_BASE_PX + depth * TREE_INDENT_STEP_PX}px`
-  }
-
-  function treeIndentValue(depth: number): number {
-    return TREE_INDENT_BASE_PX + depth * TREE_INDENT_STEP_PX
-  }
 </script>
 
 <script lang="ts">
@@ -188,7 +181,8 @@
   }
 
   let filtered = $derived.by(() => {
-    if (!entry) return { current: null as BranchSummary | null, locals: [] as BranchSummary[], remotes: [] as BranchSummary[] }
+    if (!entry)
+      return { current: null as BranchSummary | null, locals: [] as BranchSummary[], remotes: [] as BranchSummary[] }
     const q = search.trim().toLowerCase()
     const sorter = prefs?.sort === 'alpha' ? compareAlpha : compareDate
     let current: BranchSummary | null = null
@@ -326,7 +320,6 @@
   // labels and as the default base for "+New branch".
   let currentName = $derived(entry?.list.find((b) => b.isCurrent)?.name ?? '')
 
-
   function openCreateDialog(base?: string) {
     createBase = base ?? currentName ?? 'HEAD'
     createOpen = true
@@ -366,10 +359,7 @@
 
     try {
       await backend.git.branch.rebaseOnto(projectPath, target)
-      await Promise.all([
-        branches.refresh(projectId, projectPath),
-        refreshGit(projectId, projectPath)
-      ])
+      await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
     } catch (e) {
       const msg = getErrorMessage(e)
       if (msg.toLowerCase().includes('conflict')) {
@@ -392,10 +382,8 @@
   function smartAction(branch: BranchSummary): SmartAction {
     if (branch.kind === 'remote') return { kind: 'disabled', label: 'Remote-only branch' }
     if (!branch.upstream) return { kind: 'disabled', label: 'No upstream configured' }
-    if (branch.behind > 0 && branch.ahead === 0)
-      return { kind: 'pull', label: `Pull (${branch.behind})` }
-    if (branch.ahead > 0 && branch.behind === 0)
-      return { kind: 'push', label: `Push (${branch.ahead})` }
+    if (branch.behind > 0 && branch.ahead === 0) return { kind: 'pull', label: `Pull (${branch.behind})` }
+    if (branch.ahead > 0 && branch.behind === 0) return { kind: 'push', label: `Push (${branch.ahead})` }
     return { kind: 'fetch', label: 'Fetch' }
   }
 
@@ -512,10 +500,7 @@
     </div>
 
     <DropdownMenuRoot>
-      <DropdownMenuTrigger
-        class={iconButtonVariants({ active: false })}
-        aria-label="Branch actions"
-      >
+      <DropdownMenuTrigger class={iconButtonVariants({ active: false })} aria-label="Branch actions">
         <MoreHorizontalIcon size={13} />
       </DropdownMenuTrigger>
       <DropdownMenuContent class="min-w-[210px] text-sm" align="end">
@@ -700,17 +685,13 @@
   {@const color = branchColor(branch)}
   <div class="bg-surface">
     {#if history?.loading && history.commits.length === 0}
-      <div class="flex h-6 items-center px-2.5 text-xs text-subtle" style:padding-left={treeIndent(depth)}>
-        Loading commits...
-      </div>
+      <SidebarRow variant="info" divider={false} {depth} class="text-subtle">Loading commits...</SidebarRow>
     {:else if history?.error}
-      <div class="flex h-6 items-center px-2.5 text-xs text-danger" style:padding-left={treeIndent(depth)}>
+      <SidebarRow variant="info" divider={false} {depth} class="text-danger">
         {history.error}
-      </div>
+      </SidebarRow>
     {:else if !history || history.commits.length === 0}
-      <div class="flex h-6 items-center px-2.5 text-xs text-subtle" style:padding-left={treeIndent(depth)}>
-        No commits found.
-      </div>
+      <SidebarRow variant="info" divider={false} {depth} class="text-subtle">No commits found.</SidebarRow>
     {:else}
       {#each history.commits as commit (commit.hash)}
         <GitCommitRow
@@ -724,19 +705,17 @@
       {/each}
 
       {#if history.loading}
-        <div class="flex h-6 items-center px-2.5 text-xs text-subtle" style:padding-left={treeIndent(depth)}>
-          Loading commits...
-        </div>
+        <SidebarRow variant="info" divider={false} {depth} class="text-subtle">Loading commits...</SidebarRow>
       {:else if !history.exhausted}
-        <button
-          type="button"
-          class="flex h-6 w-full items-center gap-1.5 border-t border-edge/30 px-2.5 text-left text-xs text-muted hover:bg-raised hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
-          style:padding-left={treeIndent(depth)}
+        <SidebarRow
+          variant="action"
+          {depth}
+          class="text-xs"
           onclick={() => void loadBranchHistory(branch, history.limit + BRANCH_HISTORY_PAGE_SIZE)}
         >
           <MoreHorizontalIcon size={12} class="shrink-0" />
           <span>Show more</span>
-        </button>
+        </SidebarRow>
       {/if}
     {/if}
   </div>
@@ -754,12 +733,9 @@
   {#if node.branch}
     {@render branchRow(node.branch, depth, node.isSelf ? '(self)' : null)}
   {:else}
-    <div
-      class="flex h-6 items-center gap-1 border-t border-edge/30 px-2.5 text-xs text-muted"
-      style:padding-left={treeIndent(depth)}
-    >
+    <SidebarRow variant="info" {depth}>
       <span class="truncate">{node.name}/</span>
-    </div>
+    </SidebarRow>
   {/if}
   {#each node.children as child (child.fullName)}
     {@render treeNode(child, depth + 1)}
@@ -774,9 +750,10 @@
   <ContextMenuRoot>
     <ContextMenuTrigger class="contents">
       <div
-        class="group flex h-6 w-full items-center gap-1.5 border-t border-edge/30 px-2.5 text-left text-sm hover:bg-raised {branch.isCurrent || isExpanded
-          ? 'bg-raised'
-          : ''}"
+        class="{sidebarRowVariants({
+          variant: 'leaf',
+          pressed: branch.isCurrent || isExpanded
+        })} group"
         style:padding-left={treeIndent(depth)}
       >
         <TooltipRoot>
@@ -786,15 +763,10 @@
             aria-label={`${branch.name} branch`}
             onclick={() => toggleBranchHistory(branch)}
           >
-            <GitBranchIcon
-              size={12}
-              class={branch.isCurrent ? 'text-accent' : 'text-muted'}
-              color={color}
-            />
+            <GitBranchIcon size={12} class={branch.isCurrent ? 'text-accent' : 'text-muted'} {color} />
             <span class="min-w-0 flex-1 truncate">
-              {displayName ?? (prefs?.layout === 'tree' && branch.kind === 'local'
-                ? basename(branch.name)
-                : branch.name)}
+              {displayName ??
+                (prefs?.layout === 'tree' && branch.kind === 'local' ? basename(branch.name) : branch.name)}
             </span>
 
             <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" />
@@ -937,30 +909,15 @@
 {/if}
 
 {#if createOpen}
-  <CreateBranchDialog
-    bind:open={createOpen}
-    defaultBase={createBase}
-    {projectId}
-    {projectPath}
-  />
+  <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {projectId} {projectPath} />
 {/if}
 
 {#if renameOpen}
-  <RenameBranchDialog
-    bind:open={renameOpen}
-    oldName={renameTarget}
-    {projectId}
-    {projectPath}
-  />
+  <RenameBranchDialog bind:open={renameOpen} oldName={renameTarget} {projectId} {projectPath} />
 {/if}
 
 {#if deleteOpen && deleteBranch}
-  <DeleteBranchDialog
-    bind:open={deleteOpen}
-    branch={deleteBranch}
-    {projectId}
-    {projectPath}
-  />
+  <DeleteBranchDialog bind:open={deleteOpen} branch={deleteBranch} {projectId} {projectPath} />
 {/if}
 
 {#if upstreamOpen}
@@ -985,10 +942,5 @@
 {/if}
 
 {#if compareOpen}
-  <CompareBranchModal
-    bind:open={compareOpen}
-    branchName={compareTarget}
-    {projectId}
-    {projectPath}
-  />
+  <CompareBranchModal bind:open={compareOpen} branchName={compareTarget} {projectId} {projectPath} />
 {/if}

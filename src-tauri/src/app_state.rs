@@ -5,6 +5,8 @@ use crate::services::{
     env::EnvironmentService,
     files::FileService,
     git::GitService,
+    issue_bridge::IssueBridgeService,
+    issues::IssueService,
     lsp::LspService,
     projects::ProjectService,
     providers::ProviderService,
@@ -41,6 +43,8 @@ pub struct AppState {
     pub sessions: SessionService,
     pub pty: PtyService,
     pub git: GitService,
+    pub issues: Arc<IssueService>,
+    pub issue_bridge: IssueBridgeService,
     pub files: FileService,
     pub credentials: CredentialService,
     pub env: EnvironmentService,
@@ -72,6 +76,7 @@ impl AppState {
         let _ = sessions.reset_stale_running(db_service.write().conn());
 
         let pty = PtyService::new();
+        let issues = Arc::new(IssueService::new());
 
         // Transcript persistence runs on its own thread with its own DB
         // connection, so the PTY reader never blocks on sqlite.
@@ -108,6 +113,8 @@ impl AppState {
             sessions,
             pty,
             git: GitService::new(),
+            issues: Arc::clone(&issues),
+            issue_bridge: IssueBridgeService::new(issues),
             files: FileService::new(),
             credentials: CredentialService::new(),
             env: EnvironmentService::new(),

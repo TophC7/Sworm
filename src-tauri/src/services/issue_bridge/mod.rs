@@ -1,0 +1,281 @@
+//! Per-project Unix-domain-socket bridge that exposes
+//! [`IssueService`] over a small NDJSON RPC protocol so out-of-process
+//! agent clients (the `sworm-issues` Pi extension) can read and mutate
+//! issue memory without sharing the SQLite handle.
+//!
+//! The bridge is started lazily by
+//! [`crate::commands::sessions`] when a session is launched for a
+//! provider that should see issue memory, and torn down when
+//! [`IssueBridgeService`] is dropped or [`Self::stop`] is called.
+//!
+//! Submodules:
+//! - [`protocol`] — wire format and error classification
+//! - [`server`] — accept loop and per-connection NDJSON I/O
+//! - [`dispatch`] — method router into [`IssueService`]
+//! - [`socket`] — socket path resolution and private-dir creation
+
+mod dispatch;
+mod protocol;
+mod server;
+mod socket;
+
+use crate::services::issues::IssueService;
+use protocol::PROTOCOL_VERSION;
+use serde::Serialize;
+use server::run_bridge;
+use socket::{create_private_dir, socket_path_for};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::net::UnixListener;
+use tokio::sync::oneshot;
+use uuid::Uuid;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+/// Per-project bridge coordinates injected into agent child processes
+/// as `SWORM_ISSUES_*` environment variables. Returned by
+/// [`IssueBridgeService::ensure_running`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueBridgeInfo {
+    pub project_id: String,
+    pub socket_path: String,
+    pub token: String,
+    pub protocol_version: u32,
+}
+
+struct BridgeRuntime {
+    info: IssueBridgeInfo,
+    shutdown: Option<oneshot::Sender<()>>,
+}
+
+/// Per-project Unix-socket listeners that expose [`IssueService`] to
+/// agent child processes via NDJSON RPC.
+pub struct IssueBridgeService {
+    issues: Arc<IssueService>,
+    runtimes: parking_lot::Mutex<HashMap<String, BridgeRuntime>>,
+}
+
+impl IssueBridgeService {
+    /// Build a fresh bridge service backed by the shared
+    /// [`IssueService`] handle. No sockets are created until
+    /// [`Self::ensure_running`] is called.
+    pub fn new(issues: Arc<IssueService>) -> Self {
+        Self {
+            issues,
+            runtimes: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Idempotent: returns the bridge coordinates for `project_id`,
+    /// starting a new listener task if one isn't already running (or if
+    /// the previous socket file disappeared).
+    pub fn ensure_running(
+        &self,
+        project_id: &str,
+        project_path: &Path,
+    ) -> Result<IssueBridgeInfo, String> {
+        if let Some(existing) = self.runtimes.lock().get(project_id) {
+            if Path::new(&existing.info.socket_path).exists() {
+                return Ok(existing.info.clone());
+            }
+        }
+
+        let socket_path = socket_path_for(project_id, project_path)?;
+        if socket_path.exists() {
+            std::fs::remove_file(&socket_path).map_err(|e| {
+                format!(
+                    "Failed to remove stale issue bridge socket {}: {}",
+                    socket_path.display(),
+                    e
+                )
+            })?;
+        }
+        if let Some(parent) = socket_path.parent() {
+            create_private_dir(parent).map_err(|e| {
+                format!(
+                    "Failed to create issue bridge dir {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
+        }
+
+        let listener = UnixListener::bind(&socket_path).map_err(|e| {
+            format!(
+                "Failed to bind issue bridge socket {}: {}",
+                socket_path.display(),
+                e
+            )
+        })?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |e| {
+                format!(
+                    "Failed to set issue bridge socket permissions {}: {}",
+                    socket_path.display(),
+                    e
+                )
+            },
+        )?;
+
+        let token = Uuid::new_v4().to_string();
+        let info = IssueBridgeInfo {
+            project_id: project_id.to_string(),
+            socket_path: socket_path.to_string_lossy().into_owned(),
+            token: token.clone(),
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let issues = Arc::clone(&self.issues);
+        let project_path = project_path.to_path_buf();
+        let project_id_for_task = project_id.to_string();
+        let socket_for_task = socket_path.clone();
+
+        tauri::async_runtime::spawn(async move {
+            run_bridge(
+                listener,
+                issues,
+                project_id_for_task,
+                project_path,
+                token,
+                shutdown_rx,
+                socket_for_task,
+            )
+            .await;
+        });
+
+        self.runtimes.lock().insert(
+            project_id.to_string(),
+            BridgeRuntime {
+                info: info.clone(),
+                shutdown: Some(shutdown_tx),
+            },
+        );
+
+        Ok(info)
+    }
+
+    /// Tear down a project's bridge: signal shutdown to its listener
+    /// task and unlink the socket file. No-op if not running.
+    #[allow(dead_code)]
+    pub fn stop(&self, project_id: &str) {
+        if let Some(mut runtime) = self.runtimes.lock().remove(project_id) {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            let _ = std::fs::remove_file(runtime.info.socket_path);
+        }
+    }
+}
+
+impl Drop for IssueBridgeService {
+    fn drop(&mut self) {
+        let runtimes = std::mem::take(&mut *self.runtimes.lock());
+        for (_, mut runtime) in runtimes {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            let _ = std::fs::remove_file(runtime.info.socket_path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    fn temp_project(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("sworm-bridge-test-{}-{}", name, Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn bridge_requires_token_and_serves_info() {
+        let issues = Arc::new(IssueService::new());
+        let bridge = IssueBridgeService::new(issues);
+        let project = temp_project("info");
+        let info = bridge.ensure_running("project-1", &project).unwrap();
+
+        let mut stream = UnixStream::connect(&info.socket_path).await.unwrap();
+        stream
+            .write_all(
+                b"{\"id\":\"bad\",\"token\":\"nope\",\"method\":\"bridge.info\",\"params\":{}}\n",
+            )
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("unauthorized"));
+
+        let mut stream = UnixStream::connect(&info.socket_path).await.unwrap();
+        let request = format!(
+            "{{\"id\":\"ok\",\"token\":\"{}\",\"method\":\"bridge.info\",\"params\":{{}}}}\n",
+            info.token
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("issues.v1"));
+        bridge.stop("project-1");
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[tokio::test]
+    async fn bridge_issue_methods_use_issue_service() {
+        let issues = Arc::new(IssueService::new());
+        let bridge = IssueBridgeService::new(Arc::clone(&issues));
+        let project = temp_project("methods");
+        let info = bridge.ensure_running("project-2", &project).unwrap();
+
+        // Issues require an epic, so seed one directly via the service.
+        let epic = issues
+            .create_epic(
+                &project,
+                crate::models::issues::IssueEpicCreateInput {
+                    title: "Bridge epic".into(),
+                    description: None,
+                    status: None,
+                    priority: None,
+                    actor: None,
+                },
+            )
+            .unwrap();
+
+        let mut stream = UnixStream::connect(&info.socket_path).await.unwrap();
+        let request = format!(
+            "{{\"id\":\"create\",\"token\":\"{}\",\"method\":\"issue.create\",\"params\":{{\"title\":\"Bridge issue\",\"epicId\":\"{}\"}}}}\n",
+            info.token, epic.id
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("ISSUE-1"), "response was: {line}");
+
+        let mut stream = UnixStream::connect(&info.socket_path).await.unwrap();
+        // No epic id; should now classify as invalid_argument rather
+        // than the prior catch-all `domain_error`.
+        let bad = format!(
+            "{{\"id\":\"bad\",\"token\":\"{}\",\"method\":\"issue.create\",\"params\":{{\"title\":\"Orphan\"}}}}\n",
+            info.token
+        );
+        stream.write_all(bad.as_bytes()).await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("invalid_argument"), "response was: {line}");
+
+        bridge.stop("project-2");
+        let _ = std::fs::remove_dir_all(project);
+    }
+}

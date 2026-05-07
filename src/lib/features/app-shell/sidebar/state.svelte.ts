@@ -1,4 +1,4 @@
-export type SidebarView = 'git' | 'sessions' | 'files'
+export type SidebarView = 'git' | 'sessions' | 'files' | 'issues'
 export type GitSidebarTab = 'graph' | 'stashes' | 'branches'
 
 let sidebarWidth = $state(280)

@@ -351,6 +351,158 @@ export interface TaskDefinition {
   confirm?: boolean
 }
 
+export type IssueStatus = 'todo' | 'in_progress' | 'blocked' | 'completed' | 'wont_fix' | 'archived'
+export type IssueEpicStatus = 'todo' | 'in_progress' | 'completed' | 'archived'
+export type IssueAssigneeKind = 'human' | 'agent' | 'session' | 'unassigned'
+
+export interface IssueEpic {
+  id: string
+  title: string
+  description: string | null
+  status: IssueEpicStatus
+  priority: number
+  createdBy: string
+  updatedBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Issue {
+  id: string
+  epicId: string | null
+  parentIssueId: string | null
+  title: string
+  description: string | null
+  status: IssueStatus
+  priority: number
+  assigneeKind: IssueAssigneeKind
+  assigneeId: string | null
+  createdBy: string
+  updatedBy: string
+  tags: string[]
+  contextJson: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface IssueComment {
+  id: string
+  issueId: string
+  author: string
+  body: string
+  createdBy: string
+  updatedBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface IssueDependency {
+  id: string
+  issueId: string
+  dependsOnIssueId: string
+  createdBy: string
+  createdAt: string
+}
+
+export interface IssueEvent {
+  id: number
+  actor: string
+  action: string
+  entityType: string
+  entityId: string
+  snapshotJson: string | null
+  changesJson: string | null
+  createdAt: string
+}
+
+export interface IssueDetail {
+  issue: Issue
+  comments: IssueComment[]
+  dependsOn: IssueDependency[]
+  blockedBy: IssueDependency[]
+  subIssues: Issue[]
+  events: IssueEvent[]
+}
+
+export interface IssueListFilters {
+  status?: IssueStatus
+  epicId?: string
+  includeArchived?: boolean
+  limit?: number
+}
+
+export interface IssueSearchFilters {
+  status?: IssueStatus
+  includeArchived?: boolean
+  limit?: number
+}
+
+export interface IssueCreateInput {
+  title: string
+  description?: string | null
+  status?: IssueStatus
+  priority?: number
+  epicId?: string | null
+  parentIssueId?: string | null
+  assigneeKind?: IssueAssigneeKind
+  assigneeId?: string | null
+  tags?: string[]
+  contextJson?: string | null
+  actor?: string
+}
+
+export interface IssueUpdateInput {
+  title?: string
+  description?: string | null
+  status?: IssueStatus
+  priority?: number
+  epicId?: string | null
+  assigneeKind?: IssueAssigneeKind
+  assigneeId?: string | null
+  tags?: string[]
+  contextJson?: string | null
+  actor?: string
+}
+
+export interface IssueEpicCreateInput {
+  title: string
+  description?: string | null
+  status?: IssueEpicStatus
+  priority?: number
+  actor?: string
+}
+
+export interface IssueEpicUpdateInput {
+  title?: string
+  description?: string | null
+  status?: IssueEpicStatus
+  priority?: number
+  actor?: string
+}
+
+export interface IssueCommentCreateInput {
+  issueId: string
+  author: string
+  body: string
+  actor?: string
+}
+
+export interface IssueCommentUpdateInput {
+  body: string
+  actor?: string
+}
+
+export interface IssueDependencyInput {
+  issueId: string
+  dependsOnIssueId: string
+  actor?: string
+}
+
+export interface IssueConfigEntry {
+  key: string
+  value: string
+}
+
 export interface FileEntryStat {
   isDir: boolean
 }

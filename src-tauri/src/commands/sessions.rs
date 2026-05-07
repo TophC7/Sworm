@@ -381,10 +381,36 @@ pub async fn session_start(
     let arg_refs: Vec<&str> = args.iter().map(|value| value.as_str()).collect();
 
     // Build child env: merge Nix environment if available
-    let child_env = match nix_env_vars {
+    let mut child_env = match nix_env_vars {
         Some(nix_env) => NixService::merge_env(&state.env.child_env, &nix_env),
         None => state.env.child_env.clone(),
     };
+
+    // Agent sessions get Sworm issue-memory bridge coordinates after
+    // environment merge so Sworm runtime values win over inherited env.
+    if !matches!(session.provider_id.as_str(), "terminal" | "fresh") {
+        match state
+            .issue_bridge
+            .ensure_running(&session.project_id, std::path::Path::new(&session.cwd))
+        {
+            Ok(info) => {
+                child_env.insert("SWORM_PROJECT_ID".to_string(), session.project_id.clone());
+                child_env.insert("SWORM_PROJECT_PATH".to_string(), session.cwd.clone());
+                child_env.insert("SWORM_ISSUES_SOCKET".to_string(), info.socket_path);
+                child_env.insert("SWORM_ISSUES_TOKEN".to_string(), info.token);
+                child_env.insert(
+                    "SWORM_ISSUES_PROTOCOL_VERSION".to_string(),
+                    info.protocol_version.to_string(),
+                );
+            }
+            Err(error) => {
+                warn!(
+                    "Issue bridge unavailable for session {} in project {}: {}",
+                    session_id, session.project_id, error
+                );
+            }
+        }
+    }
 
     // Flush the transcript batcher first so the final bytes before exit
     // reach disk; otherwise the last ~500 ms of output would be dropped

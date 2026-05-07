@@ -6,7 +6,6 @@
 // than one debounce window of state.
 
 import { backend } from '$lib/api/backend'
-import { basename } from '$lib/utils/paths'
 import type {
   PaneSlot,
   PersistedTab,
@@ -16,6 +15,7 @@ import type {
   SplitMode,
   Tab
 } from '$lib/features/workbench/model'
+import { basename } from '$lib/utils/paths'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,6 +83,24 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
     case 'tool':
       // Dev-only tab; don't let it show up on next launch.
       return null
+    case 'issue':
+      // Title is a cache; on hydrate we re-fetch detail and refresh it.
+      return {
+        kind: 'issue',
+        issueId: tab.issueId,
+        title: tab.title,
+        temporary: tab.temporary,
+        locked: tab.locked
+      }
+    case 'epic':
+      // Title is a cache; refreshed when surface loads detail.
+      return {
+        kind: 'epic',
+        epicId: tab.epicId,
+        title: tab.title,
+        temporary: tab.temporary,
+        locked: tab.locked
+      }
     case 'launcher':
       // The picker tab is a transient UI surface, not content. On restore
       // the empty-pane fallback in workbench/Pane.svelte covers the "no active tab"
@@ -227,6 +245,26 @@ export function deserializeWorkspace(data: PersistedWorkspaceV2, generateTabId: 
         // the dev-only tab, so drop it on restore too.
         tab = null
         break
+      case 'issue':
+        tab = {
+          kind: 'issue',
+          id,
+          issueId: persisted.issueId,
+          title: persisted.title,
+          temporary: persisted.temporary,
+          locked: persisted.locked
+        }
+        break
+      case 'epic':
+        tab = {
+          kind: 'epic',
+          id,
+          epicId: persisted.epicId,
+          title: persisted.title,
+          temporary: persisted.temporary,
+          locked: persisted.locked
+        }
+        break
       default: {
         const _exhaustive: never = persisted
         tab = _exhaustive
@@ -350,7 +388,10 @@ export function flushWorkspace(projectId: string): Promise<void> {
 }
 
 export function schedulePersistAppShell(state: AppShellState): void {
-  appShellPending = { openProjectIds: [...state.openProjectIds], activeProjectId: state.activeProjectId }
+  appShellPending = {
+    openProjectIds: [...state.openProjectIds],
+    activeProjectId: state.activeProjectId
+  }
   if (appShellTimer) clearTimeout(appShellTimer)
   appShellTimer = setTimeout(() => {
     void flushAppShell()

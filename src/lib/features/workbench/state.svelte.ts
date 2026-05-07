@@ -6,16 +6,17 @@
 // (from sessions store) with a richer per-pane model.
 
 import { backend } from '$lib/api/backend'
-import type { Session } from '$lib/types/backend'
-import { basename } from '$lib/utils/paths'
+import { hideProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
+import { invalidateProjectFiles } from '$lib/features/files/projectFiles.svelte'
+import { clearGitState } from '$lib/features/git/state.svelte'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
-import { clearGitState } from '$lib/features/git/state.svelte'
-import { invalidateProjectFiles } from '$lib/features/files/projectFiles.svelte'
-import { hideProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
-import { canLockTab, createPane } from '$lib/features/workbench/model'
 import type {
   DiffSource,
+  DiffTab,
+  EpicTab,
+  IssueTab,
+  LauncherTab,
   PaneSlot,
   PaneState,
   PersistedTab,
@@ -30,10 +31,9 @@ import type {
   TaskRunStatus,
   TaskTab,
   TextTab,
-  ToolTab,
-  DiffTab,
-  LauncherTab
+  ToolTab
 } from '$lib/features/workbench/model'
+import { canLockTab, createPane } from '$lib/features/workbench/model'
 import {
   deserializeWorkspace,
   flushAllWorkspaces,
@@ -45,10 +45,15 @@ import {
   serializeWorkspace,
   tabToPersisted
 } from '$lib/features/workbench/persistence'
+import type { Session } from '$lib/types/backend'
+import { basename } from '$lib/utils/paths'
 
-export { canLockTab, createPane }
 export type {
   DiffSource,
+  DiffTab,
+  EpicTab,
+  IssueTab,
+  LauncherTab,
   PaneSlot,
   PaneState,
   PersistedTab,
@@ -63,10 +68,9 @@ export type {
   TaskRunStatus,
   TaskTab,
   TextTab,
-  ToolTab,
-  DiffTab,
-  LauncherTab
+  ToolTab
 }
+export { canLockTab, createPane }
 
 // Statuses that warrant a legacy bootstrap tab; used only when no
 // persisted workspace blob exists for the project (i.e. first-time
@@ -636,7 +640,12 @@ export function resetTaskTabForRestart(
   projectId: string,
   tabId: TabId,
   nextRunId: string,
-  latest: { activeFilePath: string | null; label: string; icon: string | null; group: string | null }
+  latest: {
+    activeFilePath: string | null
+    label: string
+    icon: string | null
+    group: string | null
+  }
 ): void {
   const ws = getWorkspace(projectId)
   if (!ws) return
@@ -701,6 +710,10 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'text' || a.filePath !== b.filePath || a.gitRef !== b.gitRef
     case 'tool':
       return b.kind !== 'tool' || a.tool !== b.tool || a.label !== b.label
+    case 'issue':
+      return b.kind !== 'issue' || a.issueId !== b.issueId
+    case 'epic':
+      return b.kind !== 'epic' || a.epicId !== b.epicId
     default:
       return true
   }
@@ -874,7 +887,14 @@ export function addTextTab(projectId: string, filePath: string, temporary = true
   return addContentTab(
     projectId,
     'text',
-    (id): TextTab => ({ kind: 'text', id, filePath, fileName, temporary, locked: false }),
+    (id): TextTab => ({
+      kind: 'text',
+      id,
+      filePath,
+      fileName,
+      temporary,
+      locked: false
+    }),
     temporary,
     (t) => t.kind === 'text' && t.filePath === filePath && !t.gitRef && !t.temporary
   )
@@ -932,7 +952,16 @@ export function addReadonlyTextTab(
   return addContentTab(
     projectId,
     'text',
-    (id): TextTab => ({ kind: 'text', id, filePath, fileName, temporary, locked: false, gitRef, refLabel }),
+    (id): TextTab => ({
+      kind: 'text',
+      id,
+      filePath,
+      fileName,
+      temporary,
+      locked: false,
+      gitRef,
+      refLabel
+    }),
     temporary,
     (t) => t.kind === 'text' && t.filePath === filePath && t.gitRef === gitRef && !t.temporary
   )
@@ -1004,6 +1033,76 @@ export function addNotificationToolTab(projectId: string, temporary = false): Ta
     temporary,
     (t) => t.kind === 'tool' && t.tool === 'notification-test' && !t.temporary
   )
+}
+
+export function addIssueTab(projectId: string, issueId: string, title: string, temporary = true): TabId {
+  return addContentTab(
+    projectId,
+    'issue',
+    (id): IssueTab => ({
+      kind: 'issue',
+      id,
+      issueId,
+      title,
+      temporary,
+      locked: false
+    }),
+    temporary,
+    (t) => t.kind === 'issue' && t.issueId === issueId,
+    (existing) => {
+      // Refresh cached title when reusing the persistent tab; the
+      // surface may have a fresher value loaded.
+      if (existing.kind !== 'issue' || existing.title === title) return existing
+      return { ...existing, title }
+    }
+  )
+}
+
+/** Update the cached title on an existing issue tab in any pane. */
+export function updateIssueTabTitle(projectId: string, issueId: string, title: string): void {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  let dirty = false
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.kind !== 'issue' || t.issueId !== issueId || t.title === title) return t
+    dirty = true
+    return { ...t, title }
+  })
+  if (dirty) commitWorkspace(ws)
+}
+
+export function addEpicTab(projectId: string, epicId: string, title: string, temporary = true): TabId {
+  return addContentTab(
+    projectId,
+    'epic',
+    (id): EpicTab => ({
+      kind: 'epic',
+      id,
+      epicId,
+      title,
+      temporary,
+      locked: false
+    }),
+    temporary,
+    (t) => t.kind === 'epic' && t.epicId === epicId,
+    (existing) => {
+      if (existing.kind !== 'epic' || existing.title === title) return existing
+      return { ...existing, title }
+    }
+  )
+}
+
+/** Update the cached title on an existing epic tab in any pane. */
+export function updateEpicTabTitle(projectId: string, epicId: string, title: string): void {
+  const ws = getWorkspace(projectId)
+  if (!ws) return
+  let dirty = false
+  ws.tabs = ws.tabs.map((t) => {
+    if (t.kind !== 'epic' || t.epicId !== epicId || t.title === title) return t
+    dirty = true
+    return { ...t, title }
+  })
+  if (dirty) commitWorkspace(ws)
 }
 
 export function promoteTab(projectId: string, tabId: TabId): void {
@@ -1132,6 +1231,10 @@ export async function reopenLastClosedTab(projectId: string): Promise<TabId | nu
         }
       case 'tool':
         return null
+      case 'issue':
+        return addIssueTab(projectId, head.issueId, head.title, false)
+      case 'epic':
+        return addEpicTab(projectId, head.epicId, head.title, false)
       default: {
         const _exhaustive: never = head
         return _exhaustive

@@ -1,6 +1,6 @@
 import type { Tab } from '$lib/features/workbench/model'
 
-export type SurfaceKind = 'launcher' | 'session' | 'text' | 'diff' | 'tool' | 'task'
+export type SurfaceKind = 'launcher' | 'session' | 'text' | 'diff' | 'tool' | 'task' | 'issue' | 'epic'
 
 export function getSurfaceKind(tab: Tab): SurfaceKind {
   return tab.kind

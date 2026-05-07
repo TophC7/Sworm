@@ -7,6 +7,7 @@ pub mod files;
 pub mod formatting;
 pub mod fresh;
 pub mod git;
+pub mod issues;
 pub mod lsp;
 pub mod nix;
 pub mod projects;

@@ -7,6 +7,8 @@
   import TextSurface from '$lib/features/workbench/surfaces/text/TextSurface.svelte'
   import DiffSurface from '$lib/features/workbench/surfaces/diff/DiffSurface.svelte'
   import ToolSurface from '$lib/features/workbench/surfaces/tool/ToolSurface.svelte'
+  import IssueSurface from '$lib/features/workbench/surfaces/issue/IssueSurface.svelte'
+  import EpicSurface from '$lib/features/workbench/surfaces/epic/EpicSurface.svelte'
 
   let {
     activeTab = null,
@@ -43,4 +45,8 @@
   <ToolSurface tab={activeTab} />
 {:else if activeTab.kind === 'task'}
   <TaskSurface tab={activeTab} {projectId} />
+{:else if activeTab.kind === 'issue'}
+  <IssueSurface tab={activeTab} {projectId} />
+{:else if activeTab.kind === 'epic'}
+  <EpicSurface tab={activeTab} {projectId} />
 {/if}

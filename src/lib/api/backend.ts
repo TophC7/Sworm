@@ -3,39 +3,54 @@
 // Every Tauri invoke call goes through this module. Pages and
 // components must NOT import invoke() directly.
 
-import { invoke, Channel } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import type {
   AppInfo,
   BranchOpState,
   BranchSummary,
+  BuiltinCatalog,
   CommitDetail,
   ConfigSchemaEntry,
-  DiscoveredProject,
   DiffFileContent,
   DiffSource,
-  FileDiff,
+  DiscoveredProject,
   EnvProbeResult,
+  FileDiff,
   FileEntryStat,
   FilePasteCollision,
+  FormattingSettings,
+  GeneralSettings,
   GitQuickDiffData,
   GitSummary,
   GraphCommit,
-  GeneralSettings,
-  FormattingSettings,
+  Issue,
+  IssueComment,
+  IssueCommentCreateInput,
+  IssueCommentUpdateInput,
+  IssueConfigEntry,
+  IssueCreateInput,
+  IssueDependency,
+  IssueDependencyInput,
+  IssueDetail,
+  IssueEpic,
+  IssueEpicCreateInput,
+  IssueEpicUpdateInput,
+  IssueListFilters,
+  IssueSearchFilters,
+  IssueUpdateInput,
+  LspEvent,
+  LspServerConfig,
+  LspServerSettingsEntry,
   NixDetection,
   NixDiagnostic,
   NixEnvRecord,
   Project,
+  ProviderConfig,
   ProviderStatus,
   PtyEvent,
   Session,
-  BuiltinCatalog,
   SettingsPayload,
   StashEntry,
-  ProviderConfig,
-  LspEvent,
-  LspServerConfig,
-  LspServerSettingsEntry,
   TaskDefinition
 } from '$lib/types/backend'
 
@@ -70,7 +85,10 @@ export const backend = {
       return invoke<void>('clipboard_copy_files', { paths, op })
     },
     /** Read file URIs from the system clipboard. Returns null if none. */
-    clipboardReadFiles(): Promise<{ op: 'copy' | 'cut'; paths: string[] } | null> {
+    clipboardReadFiles(): Promise<{
+      op: 'copy' | 'cut'
+      paths: string[]
+    } | null> {
       return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
     },
     /**
@@ -84,7 +102,10 @@ export const backend = {
 
   dnd: {
     saveDroppedBytes(bytes: Uint8Array, suggestedName: string): Promise<string> {
-      return invoke<string>('dnd_save_dropped_bytes', { bytes: Array.from(bytes), suggestedName })
+      return invoke<string>('dnd_save_dropped_bytes', {
+        bytes: Array.from(bytes),
+        suggestedName
+      })
     }
   },
 
@@ -125,13 +146,19 @@ export const backend = {
       return invoke<ProviderStatus[]>('provider_refresh')
     },
     listForProject(projectId: string): Promise<ProviderStatus[]> {
-      return invoke<ProviderStatus[]>('provider_list_for_project', { projectId })
+      return invoke<ProviderStatus[]>('provider_list_for_project', {
+        projectId
+      })
     }
   },
 
   sessions: {
     create(projectId: string, providerId: string, title: string): Promise<Session> {
-      return invoke<Session>('session_create', { projectId, providerId, title })
+      return invoke<Session>('session_create', {
+        projectId,
+        providerId,
+        title
+      })
     },
     list(projectId: string): Promise<Session[]> {
       return invoke<Session[]>('session_list', { projectId })
@@ -156,7 +183,13 @@ export const backend = {
       output: Channel<number[]>,
       events: Channel<PtyEvent>
     ): Promise<void> {
-      return invoke<void>('session_start', { sessionId, cols, rows, output, events })
+      return invoke<void>('session_start', {
+        sessionId,
+        cols,
+        rows,
+        output,
+        events
+      })
     },
     start(
       sessionId: string,
@@ -170,7 +203,10 @@ export const backend = {
       return backend.sessions.startWithChannels(sessionId, cols, rows, output, events)
     },
     write(sessionId: string, data: Uint8Array): Promise<void> {
-      return invoke<void>('session_write', { sessionId, data: Array.from(data) })
+      return invoke<void>('session_write', {
+        sessionId,
+        data: Array.from(data)
+      })
     },
     resize(sessionId: string, cols: number, rows: number): Promise<void> {
       return invoke<void>('session_resize', { sessionId, cols, rows })
@@ -237,7 +273,10 @@ export const backend = {
       return invoke<GraphCommit[]>('git_get_graph', { path, limit })
     },
     getCommitDetail(path: string, hash: string): Promise<CommitDetail | null> {
-      return invoke<CommitDetail | null>('git_get_commit_detail', { path, hash })
+      return invoke<CommitDetail | null>('git_get_commit_detail', {
+        path,
+        hash
+      })
     },
     /**
      * Unified payload for the Monaco multi-file diff viewer.
@@ -262,7 +301,12 @@ export const backend = {
       status: FileDiff['status'],
       staged: boolean
     ): Promise<DiffFileContent> {
-      return invoke<DiffFileContent>('diff_get_working_file', { path, filePath, status, staged })
+      return invoke<DiffFileContent>('diff_get_working_file', {
+        path,
+        filePath,
+        status,
+        staged
+      })
     },
 
     // Write operations
@@ -288,13 +332,24 @@ export const backend = {
       return invoke<string | null>('git_get_full_patch', { path })
     },
     getPathPatch(path: string, files: string[], staged: boolean | null = null): Promise<string | null> {
-      return invoke<string | null>('git_get_path_patch', { path, files, staged })
+      return invoke<string | null>('git_get_path_patch', {
+        path,
+        files,
+        staged
+      })
     },
     getQuickDiffData(projectPath: string, filePath: string): Promise<GitQuickDiffData> {
-      return invoke<GitQuickDiffData>('git_get_quick_diff_data', { projectPath, filePath })
+      return invoke<GitQuickDiffData>('git_get_quick_diff_data', {
+        projectPath,
+        filePath
+      })
     },
     stageFileContent(projectPath: string, filePath: string, content: string | null): Promise<void> {
-      return invoke<void>('git_stage_file_content', { projectPath, filePath, content })
+      return invoke<void>('git_stage_file_content', {
+        projectPath,
+        filePath,
+        content
+      })
     },
     commit(path: string, message: string): Promise<string> {
       return invoke<string>('git_commit', { path, message })
@@ -351,26 +406,32 @@ export const backend = {
         return invoke<BranchSummary>('git_branch_info', { path, name })
       },
       commits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
-        return invoke<GraphCommit[]>('git_get_branch_commits', { path, branch, limit })
+        return invoke<GraphCommit[]>('git_get_branch_commits', {
+          path,
+          branch,
+          limit
+        })
       },
       status(path: string): Promise<BranchOpState> {
         return invoke<BranchOpState>('git_branch_status', { path })
       },
       diffAgainstHead(path: string, branch: string): Promise<FileDiff[]> {
-        return invoke<FileDiff[]>('git_diff_branch_against_head', { path, branch })
+        return invoke<FileDiff[]>('git_diff_branch_against_head', {
+          path,
+          branch
+        })
       },
       checkout(path: string, name: string): Promise<void> {
         return invoke<void>('git_checkout_branch', { path, name })
       },
       checkoutRemoteAsLocal(path: string, remoteName: string, localName: string): Promise<void> {
-        return invoke<void>('git_checkout_remote_as_local', { path, remoteName, localName })
+        return invoke<void>('git_checkout_remote_as_local', {
+          path,
+          remoteName,
+          localName
+        })
       },
-      create(
-        path: string,
-        name: string,
-        base: string,
-        opts: { checkout?: boolean } = {}
-      ): Promise<void> {
+      create(path: string, name: string, base: string, opts: { checkout?: boolean } = {}): Promise<void> {
         return invoke<void>('git_create_branch', {
           path,
           name,
@@ -382,7 +443,11 @@ export const backend = {
         return invoke<void>('git_rename_branch', { path, oldName, newName })
       },
       delete(path: string, name: string, opts: { force?: boolean } = {}): Promise<void> {
-        return invoke<void>('git_delete_branch', { path, name, force: opts.force ?? false })
+        return invoke<void>('git_delete_branch', {
+          path,
+          name,
+          force: opts.force ?? false
+        })
       },
       deleteRemote(path: string, remote: string, name: string): Promise<void> {
         return invoke<void>('git_delete_remote_branch', { path, remote, name })
@@ -420,13 +485,27 @@ export const backend = {
 
   fresh: {
     openFile(projectId: string, projectPath: string, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_file', { projectId, projectPath, filePath })
+      return invoke<void>('editor_open_file', {
+        projectId,
+        projectPath,
+        filePath
+      })
     },
     openAtCommit(projectId: string, projectPath: string, commitHash: string, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_at_commit', { projectId, projectPath, commitHash, filePath })
+      return invoke<void>('editor_open_at_commit', {
+        projectId,
+        projectPath,
+        commitHash,
+        filePath
+      })
     },
     openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_at_stash', { projectId, projectPath, stashIndex, filePath })
+      return invoke<void>('editor_open_at_stash', {
+        projectId,
+        projectPath,
+        stashIndex,
+        filePath
+      })
     }
   },
 
@@ -454,7 +533,10 @@ export const backend = {
       return invoke<void>('file_rename', { projectPath, oldPath, newPath })
     },
     stat(projectPath: string, filePath: string): Promise<FileEntryStat | null> {
-      return invoke<FileEntryStat | null>('file_stat', { projectPath, filePath })
+      return invoke<FileEntryStat | null>('file_stat', {
+        projectPath,
+        filePath
+      })
     },
     delete(projectPath: string, filePath: string): Promise<void> {
       return invoke<void>('file_delete', { projectPath, filePath })
@@ -477,7 +559,11 @@ export const backend = {
       })
     },
     pasteCollisions(projectPath: string, targetDir: string, sources: string[]): Promise<FilePasteCollision[]> {
-      return invoke<FilePasteCollision[]>('file_paste_collisions', { projectPath, targetDir, sources })
+      return invoke<FilePasteCollision[]>('file_paste_collisions', {
+        projectPath,
+        targetDir,
+        sources
+      })
     }
   },
 
@@ -513,7 +599,9 @@ export const backend = {
       return invoke<GeneralSettings>('settings_set_general', { settings })
     },
     setFormatting(formatting: FormattingSettings): Promise<FormattingSettings> {
-      return invoke<FormattingSettings>('settings_set_formatting', { formatting })
+      return invoke<FormattingSettings>('settings_set_formatting', {
+        formatting
+      })
     },
     setProviderConfig(config: ProviderConfig): Promise<ProviderConfig> {
       return invoke<ProviderConfig>('settings_set_provider_config', { config })
@@ -529,6 +617,113 @@ export const backend = {
   configSchemas: {
     list(): Promise<ConfigSchemaEntry[]> {
       return invoke<ConfigSchemaEntry[]>('config_schemas_list')
+    }
+  },
+
+  issues: {
+    list(projectId: string, filters: IssueListFilters = {}): Promise<Issue[]> {
+      return invoke<Issue[]>('issues_list', { projectId, filters })
+    },
+    ready(projectId: string, limit?: number): Promise<Issue[]> {
+      return invoke<Issue[]>('issues_ready', {
+        projectId,
+        limit: limit ?? null
+      })
+    },
+    search(projectId: string, query: string, filters: IssueSearchFilters = {}): Promise<Issue[]> {
+      return invoke<Issue[]>('issues_search', { projectId, query, filters })
+    },
+    get(projectId: string, issueId: string): Promise<IssueDetail> {
+      return invoke<IssueDetail>('issues_get', { projectId, issueId })
+    },
+    create(projectId: string, input: IssueCreateInput): Promise<Issue> {
+      return invoke<Issue>('issues_create', { projectId, input })
+    },
+    update(projectId: string, issueId: string, patch: IssueUpdateInput): Promise<Issue> {
+      return invoke<Issue>('issues_update', { projectId, issueId, patch })
+    },
+    delete(projectId: string, issueId: string): Promise<void> {
+      return invoke<void>('issues_delete', { projectId, issueId })
+    },
+    currentGitUser(projectId: string): Promise<string> {
+      return invoke<string>('issue_current_git_user', { projectId })
+    },
+    epics: {
+      create(projectId: string, input: IssueEpicCreateInput): Promise<IssueEpic> {
+        return invoke<IssueEpic>('issue_epics_create', { projectId, input })
+      },
+      list(projectId: string): Promise<IssueEpic[]> {
+        return invoke<IssueEpic[]>('issue_epics_list', { projectId })
+      },
+      get(projectId: string, epicId: string): Promise<IssueEpic> {
+        return invoke<IssueEpic>('issue_epics_get', { projectId, epicId })
+      },
+      update(projectId: string, epicId: string, patch: IssueEpicUpdateInput): Promise<IssueEpic> {
+        return invoke<IssueEpic>('issue_epics_update', {
+          projectId,
+          epicId,
+          patch
+        })
+      },
+      delete(projectId: string, epicId: string): Promise<void> {
+        return invoke<void>('issue_epics_delete', { projectId, epicId })
+      }
+    },
+    comments: {
+      add(projectId: string, input: IssueCommentCreateInput): Promise<IssueComment> {
+        return invoke<IssueComment>('issue_comments_add', { projectId, input })
+      },
+      list(projectId: string, issueId: string): Promise<IssueComment[]> {
+        return invoke<IssueComment[]>('issue_comments_list', {
+          projectId,
+          issueId
+        })
+      },
+      update(projectId: string, commentId: string, input: IssueCommentUpdateInput): Promise<IssueComment> {
+        return invoke<IssueComment>('issue_comments_update', {
+          projectId,
+          commentId,
+          input
+        })
+      },
+      delete(projectId: string, commentId: string): Promise<void> {
+        return invoke<void>('issue_comments_delete', { projectId, commentId })
+      }
+    },
+    dependencies: {
+      add(projectId: string, input: IssueDependencyInput): Promise<IssueDependency> {
+        return invoke<IssueDependency>('issue_dependencies_add', {
+          projectId,
+          input
+        })
+      },
+      remove(projectId: string, input: IssueDependencyInput): Promise<void> {
+        return invoke<void>('issue_dependencies_remove', { projectId, input })
+      },
+      list(projectId: string, issueId: string): Promise<IssueDependency[]> {
+        return invoke<IssueDependency[]>('issue_dependencies_list', {
+          projectId,
+          issueId
+        })
+      }
+    },
+    config: {
+      list(projectId: string): Promise<IssueConfigEntry[]> {
+        return invoke<IssueConfigEntry[]>('issue_config_list', { projectId })
+      },
+      get(projectId: string, key: string): Promise<IssueConfigEntry | null> {
+        return invoke<IssueConfigEntry | null>('issue_config_get', {
+          projectId,
+          key
+        })
+      },
+      set(projectId: string, key: string, value: string): Promise<IssueConfigEntry> {
+        return invoke<IssueConfigEntry>('issue_config_set', {
+          projectId,
+          key,
+          value
+        })
+      }
     }
   },
 
@@ -587,7 +782,11 @@ export const backend = {
 
   formatting: {
     biome(projectId: string, filePath: string, content: string): Promise<string> {
-      return invoke<string>('formatting_format_biome', { projectId, filePath, content })
+      return invoke<string>('formatting_format_biome', {
+        projectId,
+        filePath,
+        content
+      })
     },
     nixfmt(projectId: string, content: string): Promise<string> {
       return invoke<string>('formatting_format_nixfmt', { projectId, content })

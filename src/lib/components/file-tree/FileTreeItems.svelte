@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends { path: string }">
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { FixedHeightVirtualList } from '$lib/components/ui/virtual-list'
+  import { TreeIndentGuides } from '$lib/components/ui/tree-indent'
   import { flattenVisibleTree, type FileTreeNode, type FlatTreeRow } from '$lib/utils/fileTree'
   import type { Snippet } from 'svelte'
 
@@ -69,9 +70,7 @@
   weight or color.
 -->
 {#snippet indentGuides(depth: number)}
-  {#each Array(depth) as _, i (i)}
-    <span class="pointer-events-none absolute top-0 bottom-0 w-px bg-subtle/25" style="left: {i * 12 + 16}px"></span>
-  {/each}
+  <TreeIndentGuides {depth} />
 {/snippet}
 
 {#snippet directoryRow(node: FileTreeNode<T>, depth: number)}

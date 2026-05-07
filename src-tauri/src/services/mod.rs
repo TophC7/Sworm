@@ -8,6 +8,8 @@ pub mod env;
 pub mod files;
 pub mod formatting;
 pub mod git;
+pub mod issue_bridge;
+pub mod issues;
 pub mod lsp;
 pub mod nix;
 pub mod projects;

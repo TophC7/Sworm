@@ -1,11 +1,13 @@
 import { canLockTab, type Tab } from '$lib/features/workbench/model'
+import { getSurfaceKind, isSurfacePreview, type SurfaceKind } from '$lib/features/workbench/surfaces'
 import { getDiffTabTitle } from '$lib/features/workbench/surfaces/diff/service.svelte'
+import { getEpicTabTitle } from '$lib/features/workbench/surfaces/epic/service.svelte'
+import { getIssueTabTitle } from '$lib/features/workbench/surfaces/issue/service.svelte'
 import { getLauncherTitle } from '$lib/features/workbench/surfaces/launcher/service.svelte'
 import { getSessionProviderIcon, getSessionTabTitle } from '$lib/features/workbench/surfaces/session/service.svelte'
 import { getTaskTabIcon, getTaskTabTitle } from '$lib/features/workbench/surfaces/task/service.svelte'
 import { getTextTabFileName, getTextTabTitle } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { getToolTabTitle } from '$lib/features/workbench/surfaces/tool/service.svelte'
-import { getSurfaceKind, isSurfacePreview, type SurfaceKind } from '$lib/features/workbench/surfaces'
 
 export interface TabPresentation {
   surfaceKind: SurfaceKind
@@ -87,6 +89,28 @@ export function getTabPresentation(tab: Tab): TabPresentation {
         preview: false,
         providerIcon: null,
         lucideIcon: getTaskTabIcon(tab),
+        fileName: null,
+        lockable: canLockTab(tab)
+      }
+    case 'issue':
+      if (tab.kind !== 'issue') throw new Error('Invalid issue tab presentation request')
+      return {
+        surfaceKind,
+        title: getIssueTabTitle(tab),
+        preview: isSurfacePreview(tab),
+        providerIcon: null,
+        lucideIcon: null,
+        fileName: null,
+        lockable: canLockTab(tab)
+      }
+    case 'epic':
+      if (tab.kind !== 'epic') throw new Error('Invalid epic tab presentation request')
+      return {
+        surfaceKind,
+        title: getEpicTabTitle(tab),
+        preview: isSurfacePreview(tab),
+        providerIcon: null,
+        lucideIcon: null,
         fileName: null,
         lockable: canLockTab(tab)
       }

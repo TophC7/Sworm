@@ -98,7 +98,27 @@ export interface TaskTab {
   locked: boolean
 }
 
-export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab
+export interface IssueTab {
+  kind: 'issue'
+  id: TabId
+  issueId: string
+  /** Cached title for tab label; refreshed when surface loads detail. */
+  title: string
+  temporary: boolean
+  locked: boolean
+}
+
+export interface EpicTab {
+  kind: 'epic'
+  id: TabId
+  epicId: string
+  /** Cached title for tab label; refreshed when surface loads detail. */
+  title: string
+  temporary: boolean
+  locked: boolean
+}
+
+export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab | IssueTab | EpicTab
 
 export interface PaneState {
   slot: PaneSlot
@@ -119,7 +139,13 @@ export interface ProjectWorkspace {
 }
 
 export type PersistedTab =
-  | { kind: 'session'; sessionId: string; title: string; providerId: string; locked: boolean }
+  | {
+      kind: 'session'
+      sessionId: string
+      title: string
+      providerId: string
+      locked: boolean
+    }
   | {
       kind: 'text'
       filePath: string
@@ -151,7 +177,27 @@ export type PersistedTab =
       temporary: boolean
       locked: boolean
     }
-  | { kind: 'tool'; tool: 'notification-test'; label: string; temporary: boolean; locked: boolean }
+  | {
+      kind: 'tool'
+      tool: 'notification-test'
+      label: string
+      temporary: boolean
+      locked: boolean
+    }
+  | {
+      kind: 'issue'
+      issueId: string
+      title: string
+      temporary: boolean
+      locked: boolean
+    }
+  | {
+      kind: 'epic'
+      epicId: string
+      title: string
+      temporary: boolean
+      locked: boolean
+    }
 
 export interface PersistedWorkspaceV2 {
   version: 2
@@ -171,5 +217,7 @@ export function createPane(slot: PaneSlot): PaneState {
 }
 
 export function canLockTab(tab: Tab): boolean {
-  return tab.kind === 'session' || tab.kind === 'text' || tab.kind === 'task'
+  return (
+    tab.kind === 'session' || tab.kind === 'text' || tab.kind === 'task' || tab.kind === 'issue' || tab.kind === 'epic'
+  )
 }

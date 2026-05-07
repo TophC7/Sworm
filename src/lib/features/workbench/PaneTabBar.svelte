@@ -20,7 +20,7 @@
   import { openTaskTab, reportTaskStatus } from '$lib/features/tasks/service.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
-  import { FileDiff, BellIcon, Lock, Plus } from '$lib/icons/lucideExports'
+  import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import { TerminalIcon } from '$lib/icons/lucideExports'
@@ -200,6 +200,10 @@
               <FileDiff size={14} class="shrink-0 text-accent" />
             {:else if surfaceKind === 'tool'}
               <BellIcon size={14} class="shrink-0 text-accent" />
+            {:else if surfaceKind === 'issue'}
+              <CircleDot size={14} class="shrink-0 text-accent" />
+            {:else if surfaceKind === 'epic'}
+              <Layers size={14} class="shrink-0 text-warning" />
             {:else if tab.kind === 'text' && presentation.fileName}
               <!-- Pass the full relative path so the resolver can apply
                    directory-aware rules (e.g. .sworm/*.json → sworm icon).

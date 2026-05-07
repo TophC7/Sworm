@@ -1569,6 +1569,30 @@ impl GitService {
         }
         entries
     }
+
+    /// Resolve the current git identity for `path`. Prefers `user.email`,
+    /// falls back to `user.name`. Returns `None` when neither is set.
+    pub fn current_user_identity(&self, path: &Path) -> Option<String> {
+        self.git_config_value(path, "user.email")
+            .or_else(|| self.git_config_value(path, "user.name"))
+    }
+
+    fn git_config_value(&self, path: &Path, key: &str) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .args(["--no-optional-locks", "config", "--get", key])
+            .current_dir(path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    }
 }
 
 /// Intermediate rev-walk entry. Keeps the old-path separate so the
