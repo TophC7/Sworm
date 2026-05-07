@@ -16,6 +16,10 @@
 
 ### UI
 
+- [ ] `VariableHeightVirtualList` sibling primitive
+  Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent and unblocks reusing `LazyRender.svelte` inside `MonacoDiffBody.svelte`.
+- [ ] Split `DiffModelStore` into entry registry + content source
+  `DiffModelStore` now owns metadata + Monaco-model lifecycle AND lazy-fetch coordination (`contentLoaded`, `inflight`, `hasContent`). Split into `DiffEntryRegistry` (registry + Monaco models) and a thin `DiffContentSource` strategy that either pre-fills entries (commit/stash) or lazily fetches them (working).
 - [ ] Recursive split-tree panes with size + count caps
   Replace the fixed `SplitMode` / `QuadLayout` state machine in `workspace.svelte.ts` with a recursive `Node = Leaf | Branch` tree.
   Gate splits with:
@@ -130,8 +134,8 @@
   Standardize cancel semantics and wire long-running operations through the notification store.
 - [ ] Progress feedback for long file operations
   Show visible progress during paste and copy operations.
-- [ ] Branch controls in file view
-  Show current branch and add quick branch switching in the files sidebar.
+- [x] Branch controls in file view
+  Landed via `.sworm/spec/branches-view` (beads label `spec:branches-view`): Branches tab in `GitGraph.svelte`, StatusBar quick-switch popover, full create/rename/delete/upstream/merge/rebase/compare flow.
 - [ ] File preview/viewer for common types
   Add inline preview support for images, JSON, CSV, and other common types.
 
@@ -141,3 +145,18 @@
   Keep recent terminal output so reloads can replay history and reconnect cleanly.
 - [ ] Terminal font + settings cleanup
   Either wire terminal font and size settings through or remove the dead fields from the schema.
+
+### Performance & Reliability (post-freeze investigation)
+
+- [ ] Switch xterm.js to canvas or WebGL renderer
+  The DOM renderer produces 20-30k DOM mutations/sec under multi-session TUI load. Not a freeze cause anymore (the sync-Tauri-command bug was), but high-frequency mutation pressure makes paints heavier and contributes to GC churn. The `@xterm/addon-canvas` or `@xterm/addon-webgl` swap is a one-import change in `TerminalSessionManager.ts`. Smoothness polish.
+- [ ] Switch PTY `Channel<Vec<u8>>` to `tauri::ipc::InvokeResponseBody::Raw`
+  Tauri's default `Vec<u8>` channel encoding is JSON-array-of-numbers (`[27,91,72,...]`) which is ~3.5× the binary size. Switching to the `Raw` body sends bytes through Tauri's binary fetch path for payloads ≥1 KiB, dropping the JS-side decode cost. Combined with the existing 16 ms flusher tick and per-session deferred-write skip, the PTY pipeline would be effectively zero-overhead.
+- [ ] Cache git summaries harder; drop polling cadence
+  `services::git::get_summary` is still 5+ seconds occasionally on `/repo/Minecraft/...` (filesystem latency or cross-process `.git/index` lock contention). The freeze fix made it non-blocking, but the work is still wasted. Options: extend the existing 300 ms TTL summary cache, drop poll frequency from 10 s to 30 s, or add a debounce so concurrent project polls don't all queue at once.
+- [ ] Reduce xterm scrollback default
+  Currently 10 000 lines × N sessions. With many resident sessions this is a lot of buffered text. 2 000-3 000 is enough for typical TUI use.
+- [ ] Convert remaining sync `pub fn env_probe` and `pub fn app_take_pending_open_path` to async-friendly forms
+  Both refused the `pub fn` → `pub async fn` sweep because they don't return `Result` (Tauri requires it for async commands with state references). Both are trivial / fast so left sync. If either ever grows real work, change return type to `Result<T, ApiError>` and convert.
+- [ ] Audit Sworm services for shared mutex contention with the main thread
+  The freeze investigation showed slow git was the proximate cause, but the deeper question is: does any service hold a sync `Mutex` that the webview thread needs? If a sync command runs on a tokio worker but blocks on a mutex held by another worker doing slow work, you'll see stalls even with `async fn`. Worth a sweep of `parking_lot::Mutex` usage across `services/`.
