@@ -53,11 +53,14 @@ impl IssueService {
 
     /// Top-of-queue todo issues with no unresolved dependencies and no
     /// parent. Used by the agent prompt and the sidebar's ready section.
-    pub fn ready(&self, project_path: &Path, limit: Option<i64>) -> Result<Vec<Issue>, String> {
+    pub fn ready(
+        &self,
+        project_path: &Path,
+        filters: IssueReadyFilters,
+    ) -> Result<Vec<Issue>, String> {
         let db = self.db(project_path)?;
         let conn = db.read();
-        query_issues(
-            &conn,
+        let mut sql = String::from(
             "SELECT id, epic_id, parent_issue_id, title, description, status, priority, assignee_kind, assignee_id, created_by, updated_by, tags_json, context_json, created_at, updated_at
              FROM issue_items i
              WHERE i.status = 'todo'
@@ -67,11 +70,22 @@ impl IssueService {
                  JOIN issue_items dep ON dep.id = d.depends_on_issue_id
                  WHERE d.issue_id = i.id
                    AND dep.status NOT IN ('completed', 'wont_fix', 'archived')
-               )
-             ORDER BY i.priority ASC, i.created_at ASC
-             LIMIT ?",
-            &[&limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500)],
-        )
+               )",
+        );
+        let mut owned: Vec<Box<dyn ToSql>> = Vec::new();
+        if let Some(epic_id) = filters.epic_id {
+            sql.push_str(" AND i.epic_id = ?");
+            owned.push(Box::new(epic_id));
+        }
+        sql.push_str(" ORDER BY i.priority ASC, i.created_at ASC LIMIT ?");
+        owned.push(Box::new(
+            filters.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 500),
+        ));
+        let params = owned
+            .iter()
+            .map(|v| v.as_ref())
+            .collect::<Vec<&dyn ToSql>>();
+        query_issues(&conn, &sql, &params)
     }
 
     /// Substring match across issue title, description, comment body,
@@ -106,6 +120,10 @@ impl IssueService {
             owned.push(Box::new(status));
         } else if !filters.include_archived.unwrap_or(false) {
             sql.push_str(" AND i.status != 'archived'");
+        }
+        if let Some(epic_id) = filters.epic_id {
+            sql.push_str(" AND i.epic_id = ?");
+            owned.push(Box::new(epic_id));
         }
         sql.push_str(" ORDER BY i.priority ASC, i.updated_at DESC LIMIT ?");
         owned.push(Box::new(

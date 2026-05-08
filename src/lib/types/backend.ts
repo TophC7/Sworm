@@ -431,8 +431,14 @@ export interface IssueListFilters {
   limit?: number
 }
 
+export interface IssueReadyFilters {
+  epicId?: string
+  limit?: number
+}
+
 export interface IssueSearchFilters {
   status?: IssueStatus
+  epicId?: string
   includeArchived?: boolean
   limit?: number
 }

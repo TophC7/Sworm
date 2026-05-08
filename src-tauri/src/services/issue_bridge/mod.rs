@@ -186,6 +186,7 @@ impl Drop for IssueBridgeService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
     use std::path::PathBuf;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
@@ -195,6 +196,30 @@ mod tests {
             std::env::temp_dir().join(format!("sworm-bridge-test-{}-{}", name, Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    async fn rpc(info: &IssueBridgeInfo, method: &str, params: Value) -> Value {
+        let mut stream = UnixStream::connect(&info.socket_path).await.unwrap();
+        let request = json!({
+            "id": method,
+            "token": info.token.as_str(),
+            "method": method,
+            "params": params,
+        });
+        stream
+            .write_all(format!("{}\n", request).as_bytes())
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            response.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "response was: {line}"
+        );
+        response.get("result").cloned().unwrap_or(Value::Null)
     }
 
     #[tokio::test]
@@ -276,6 +301,229 @@ mod tests {
         assert!(line.contains("invalid_argument"), "response was: {line}");
 
         bridge.stop("project-2");
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[tokio::test]
+    async fn bridge_exposes_full_issue_surface() {
+        let issues = Arc::new(IssueService::new());
+        let bridge = IssueBridgeService::new(issues);
+        let project = temp_project("full-surface");
+        let info = bridge.ensure_running("project-full", &project).unwrap();
+
+        let bridge_info = rpc(&info, "bridge.info", json!({})).await;
+        assert!(bridge_info
+            .get("methods")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|method| method == "epic.create"));
+
+        let epic = rpc(
+            &info,
+            "epic.create",
+            json!({"title":"Full epic","description":"Bridge parity"}),
+        )
+        .await;
+        let epic_id = epic.get("id").and_then(Value::as_str).unwrap();
+        assert_eq!(epic_id, "EPIC-1");
+        assert_eq!(
+            rpc(&info, "epic.list", json!({}))
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            rpc(&info, "epic.show", json!({"epicId": epic_id}))
+                .await
+                .get("id")
+                .and_then(Value::as_str),
+            Some(epic_id)
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "epic.update",
+                json!({"epicId": epic_id, "patch": {"priority": 1}}),
+            )
+            .await
+            .get("priority")
+            .and_then(Value::as_i64),
+            Some(1)
+        );
+
+        let issue_a = rpc(
+            &info,
+            "issue.create",
+            json!({"title":"A","epicId": epic_id,"tags":["spec:fresh"],"contextJson":"{\"kind\":\"spec\"}"}),
+        )
+        .await;
+        let issue_b = rpc(
+            &info,
+            "issue.create",
+            json!({"title":"B","epicId": epic_id,"priority": 3}),
+        )
+        .await;
+        let issue_a_id = issue_a.get("id").and_then(Value::as_str).unwrap();
+        let issue_b_id = issue_b.get("id").and_then(Value::as_str).unwrap();
+        assert_eq!(issue_a_id, "ISSUE-1");
+        assert_eq!(issue_b_id, "ISSUE-2");
+
+        rpc(
+            &info,
+            "dependency.add",
+            json!({"issueId": issue_b_id,"dependsOnIssueId": issue_a_id}),
+        )
+        .await;
+        assert_eq!(
+            rpc(&info, "dependency.list", json!({"issueId": issue_b_id}))
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "issue.ready",
+                json!({"filters":{"epicId": epic_id,"limit": 10}}),
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "issue.list",
+                json!({"filters":{"epicId": epic_id,"limit": 10}}),
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "issue.search",
+                json!({"query":"A","filters":{"epicId": epic_id}}),
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            rpc(&info, "issue.show", json!({"issueId": issue_a_id}))
+                .await
+                .get("issue")
+                .and_then(|issue| issue.get("id"))
+                .and_then(Value::as_str),
+            Some(issue_a_id)
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "issue.claim",
+                json!({"issueId": issue_a_id,"assigneeKind":"agent","assigneeId":"pi"}),
+            )
+            .await
+            .get("status")
+            .and_then(Value::as_str),
+            Some("in_progress")
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "issue.update",
+                json!({"issueId": issue_a_id,"patch":{"status":"completed"}}),
+            )
+            .await
+            .get("status")
+            .and_then(Value::as_str),
+            Some("completed")
+        );
+
+        let comment = rpc(
+            &info,
+            "comment.add",
+            json!({"issueId": issue_a_id,"author":"pi","body":"done"}),
+        )
+        .await;
+        let comment_id = comment.get("id").and_then(Value::as_str).unwrap();
+        assert_eq!(
+            rpc(&info, "comment.list", json!({"issueId": issue_a_id}))
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "comment.update",
+                json!({"commentId": comment_id,"input":{"body":"done done"}}),
+            )
+            .await
+            .get("body")
+            .and_then(Value::as_str),
+            Some("done done")
+        );
+        rpc(&info, "comment.delete", json!({"commentId": comment_id})).await;
+
+        rpc(
+            &info,
+            "dependency.remove",
+            json!({"issueId": issue_b_id,"dependsOnIssueId": issue_a_id}),
+        )
+        .await;
+        assert!(
+            rpc(&info, "dependency.list", json!({"issueId": issue_b_id}))
+                .await
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        assert!(rpc(&info, "config.list", json!({}))
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.get("value") == Some(&json!("ISSUE"))));
+        assert_eq!(
+            rpc(&info, "config.get", json!({"key":"issue_prefix"}))
+                .await
+                .get("value")
+                .and_then(Value::as_str),
+            Some("ISSUE")
+        );
+        assert_eq!(
+            rpc(
+                &info,
+                "config.set",
+                json!({"key":"comment_prefix","value":"NOTE"}),
+            )
+            .await
+            .get("value")
+            .and_then(Value::as_str),
+            Some("NOTE")
+        );
+
+        rpc(&info, "issue.delete", json!({"issueId": issue_b_id})).await;
+        rpc(&info, "issue.delete", json!({"issueId": issue_a_id})).await;
+        rpc(&info, "epic.delete", json!({"epicId": epic_id})).await;
+
+        bridge.stop("project-full");
         let _ = std::fs::remove_dir_all(project);
     }
 }

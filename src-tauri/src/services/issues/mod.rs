@@ -358,7 +358,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let ready = service.ready(&project, None).unwrap();
+        let ready = service
+            .ready(&project, IssueReadyFilters::default())
+            .unwrap();
         assert_eq!(
             ready.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             vec![a.id.as_str()]
@@ -373,7 +375,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let ready = service.ready(&project, None).unwrap();
+        let ready = service
+            .ready(&project, IssueReadyFilters::default())
+            .unwrap();
         assert_eq!(
             ready.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             vec![b.id.as_str()]

@@ -110,12 +110,23 @@ pub struct IssueListFilters {
     pub limit: Option<i64>,
 }
 
+/// Optional filters for `issues_ready`. Ready issues are always top-level
+/// `todo` issues with no unresolved dependencies; these fields only scope
+/// and page that queue.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueReadyFilters {
+    pub epic_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
 /// Optional filters for `issues_search`. The query string itself is a
 /// separate parameter; this struct only carries refinements.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueSearchFilters {
     pub status: Option<String>,
+    pub epic_id: Option<String>,
     pub include_archived: Option<bool>,
     pub limit: Option<i64>,
 }

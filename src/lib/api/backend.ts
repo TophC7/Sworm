@@ -36,6 +36,7 @@ import type {
   IssueEpicCreateInput,
   IssueEpicUpdateInput,
   IssueListFilters,
+  IssueReadyFilters,
   IssueSearchFilters,
   IssueUpdateInput,
   LspEvent,
@@ -624,10 +625,11 @@ export const backend = {
     list(projectId: string, filters: IssueListFilters = {}): Promise<Issue[]> {
       return invoke<Issue[]>('issues_list', { projectId, filters })
     },
-    ready(projectId: string, limit?: number): Promise<Issue[]> {
+    ready(projectId: string, filters: IssueReadyFilters | number = {}): Promise<Issue[]> {
+      const readyFilters = typeof filters === 'number' ? { limit: filters } : filters
       return invoke<Issue[]>('issues_ready', {
         projectId,
-        limit: limit ?? null
+        filters: readyFilters
       })
     },
     search(projectId: string, query: string, filters: IssueSearchFilters = {}): Promise<Issue[]> {

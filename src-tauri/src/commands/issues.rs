@@ -29,11 +29,16 @@ pub async fn issues_list(
 pub async fn issues_ready(
     project_id: String,
     limit: Option<i64>,
+    filters: Option<IssueReadyFilters>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Issue>, ApiError> {
     let project_path = project_path_for(&project_id, &state)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.ready(&project_path, limit)).await
+    let mut filters = filters.unwrap_or_default();
+    if filters.limit.is_none() {
+        filters.limit = limit;
+    }
+    run_blocking(move || issues.ready(&project_path, filters)).await
 }
 
 #[tauri::command]

@@ -90,6 +90,7 @@ fn is_validation_message(message: &str) -> bool {
         "Tags must not be empty",
         "Issue must belong",
         "Value must not",
+        "Missing required param",
     ];
     PATTERNS.iter().any(|p| message.contains(p))
 }

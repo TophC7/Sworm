@@ -53,6 +53,8 @@ src/lib/paraglide
 
 # AI Agent
 .claude/settings.local.json
+.sworm/issues.db-wal
+.sworm/issues.db-shm
 
 # Tauri / Rust
 src-tauri/target/

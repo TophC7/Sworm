@@ -7,12 +7,41 @@ use super::protocol::{
     PROTOCOL_VERSION,
 };
 use crate::models::issues::{
-    IssueCommentCreateInput, IssueCreateInput, IssueDependencyInput, IssueSearchFilters,
-    IssueUpdateInput,
+    IssueCommentCreateInput, IssueCommentUpdateInput, IssueCreateInput, IssueDependencyInput,
+    IssueEpicCreateInput, IssueEpicUpdateInput, IssueListFilters, IssueReadyFilters,
+    IssueSearchFilters, IssueUpdateInput,
 };
 use crate::services::issues::IssueService;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::path::Path;
+
+const BRIDGE_METHODS: &[&str] = &[
+    "bridge.info",
+    "epic.create",
+    "epic.list",
+    "epic.show",
+    "epic.update",
+    "epic.delete",
+    "issue.list",
+    "issue.ready",
+    "issue.search",
+    "issue.show",
+    "issue.create",
+    "issue.update",
+    "issue.delete",
+    "issue.claim",
+    "comment.add",
+    "comment.list",
+    "comment.update",
+    "comment.delete",
+    "dependency.add",
+    "dependency.remove",
+    "dependency.list",
+    "config.list",
+    "config.get",
+    "config.set",
+];
 
 pub(super) fn handle_request(
     request: BridgeRequest,
@@ -30,22 +59,50 @@ pub(super) fn handle_request(
         "bridge.info" => Ok(json!({
             "protocol_version": PROTOCOL_VERSION,
             "project_id": project_id,
-            "capabilities": ["issues.v1"]
+            "capabilities": ["issues.v1", "issues.full.v1"],
+            "methods": BRIDGE_METHODS
         })),
+
+        "epic.create" => {
+            let input = parse::<IssueEpicCreateInput>(request.params)?;
+            issues.create_epic(project_path, input).map(to_value)
+        }
+        "epic.list" => issues.list_epics(project_path).map(to_value),
+        "epic.show" => {
+            let epic_id = required_string(&request.params, "epicId")?;
+            issues
+                .get_epic(project_path, &epic_id)
+                .and_then(|item| item.ok_or_else(|| format!("Epic not found: {}", epic_id)))
+                .map(to_value)
+        }
+        "epic.update" => {
+            let epic_id = required_string(&request.params, "epicId")?;
+            let patch = parse_param::<IssueEpicUpdateInput>(&request.params, "patch")?;
+            issues
+                .update_epic(project_path, &epic_id, patch)
+                .map(to_value)
+        }
+        "epic.delete" => {
+            let epic_id = required_string(&request.params, "epicId")?;
+            issues
+                .delete_epic(project_path, &epic_id)
+                .map(|_| json!({}))
+        }
+
+        "issue.list" => {
+            let filters = parse_param::<IssueListFilters>(&request.params, "filters")?;
+            issues.list(project_path, filters).map(to_value)
+        }
         "issue.ready" => {
-            let limit = optional_i64(&request.params, "limit");
-            issues.ready(project_path, limit).map(to_value)
+            let mut filters = parse_param::<IssueReadyFilters>(&request.params, "filters")?;
+            if filters.limit.is_none() {
+                filters.limit = optional_i64(&request.params, "limit");
+            }
+            issues.ready(project_path, filters).map(to_value)
         }
         "issue.search" => {
             let query = required_string(&request.params, "query")?;
-            let filters = serde_json::from_value::<IssueSearchFilters>(
-                request
-                    .params
-                    .get("filters")
-                    .cloned()
-                    .unwrap_or(Value::Object(Default::default())),
-            )
-            .map_err(|e| e.to_string())?;
+            let filters = parse_param::<IssueSearchFilters>(&request.params, "filters")?;
             issues.search(project_path, &query, filters).map(to_value)
         }
         "issue.show" => {
@@ -56,21 +113,17 @@ pub(super) fn handle_request(
                 .map(to_value)
         }
         "issue.create" => {
-            let input = serde_json::from_value::<IssueCreateInput>(request.params)
-                .map_err(|e| e.to_string())?;
+            let input = parse::<IssueCreateInput>(request.params)?;
             issues.create(project_path, input).map(to_value)
         }
         "issue.update" => {
             let issue_id = required_string(&request.params, "issueId")?;
-            let patch = serde_json::from_value::<IssueUpdateInput>(
-                request
-                    .params
-                    .get("patch")
-                    .cloned()
-                    .unwrap_or(Value::Object(Default::default())),
-            )
-            .map_err(|e| e.to_string())?;
+            let patch = parse_param::<IssueUpdateInput>(&request.params, "patch")?;
             issues.update(project_path, &issue_id, patch).map(to_value)
+        }
+        "issue.delete" => {
+            let issue_id = required_string(&request.params, "issueId")?;
+            issues.delete(project_path, &issue_id).map(|_| json!({}))
         }
         "issue.claim" => {
             let issue_id = required_string(&request.params, "issueId")?;
@@ -104,22 +157,55 @@ pub(super) fn handle_request(
                 )
                 .map(to_value)
         }
-        "issue.comment.add" => {
-            let input = serde_json::from_value::<IssueCommentCreateInput>(request.params)
-                .map_err(|e| e.to_string())?;
+
+        "comment.add" | "issue.comment.add" => {
+            let input = parse::<IssueCommentCreateInput>(request.params)?;
             issues.add_comment(project_path, input).map(to_value)
         }
-        "issue.dependency.add" => {
-            let input = serde_json::from_value::<IssueDependencyInput>(request.params)
-                .map_err(|e| e.to_string())?;
+        "comment.list" | "issue.comment.list" => {
+            let issue_id = required_string(&request.params, "issueId")?;
+            issues.list_comments(project_path, &issue_id).map(to_value)
+        }
+        "comment.update" | "issue.comment.update" => {
+            let comment_id = required_string(&request.params, "commentId")?;
+            let input = parse_required_param::<IssueCommentUpdateInput>(&request.params, "input")?;
+            issues
+                .update_comment(project_path, &comment_id, input)
+                .map(to_value)
+        }
+        "comment.delete" | "issue.comment.delete" => {
+            let comment_id = required_string(&request.params, "commentId")?;
+            issues
+                .delete_comment(project_path, &comment_id)
+                .map(|_| json!({}))
+        }
+
+        "dependency.add" | "issue.dependency.add" => {
+            let input = parse::<IssueDependencyInput>(request.params)?;
             issues.add_dependency(project_path, input).map(to_value)
         }
-        "issue.dependency.remove" => {
-            let input = serde_json::from_value::<IssueDependencyInput>(request.params)
-                .map_err(|e| e.to_string())?;
+        "dependency.remove" | "issue.dependency.remove" => {
+            let input = parse::<IssueDependencyInput>(request.params)?;
             issues
                 .remove_dependency(project_path, input)
                 .map(|_| json!({}))
+        }
+        "dependency.list" | "issue.dependency.list" => {
+            let issue_id = required_string(&request.params, "issueId")?;
+            issues
+                .list_dependencies(project_path, &issue_id)
+                .map(to_value)
+        }
+
+        "config.list" | "issue.config.list" => issues.list_config(project_path).map(to_value),
+        "config.get" | "issue.config.get" => {
+            let key = required_string(&request.params, "key")?;
+            issues.get_config(project_path, &key).map(to_value)
+        }
+        "config.set" | "issue.config.set" => {
+            let key = required_string(&request.params, "key")?;
+            let value = required_string(&request.params, "value")?;
+            issues.set_config(project_path, &key, &value).map(to_value)
         }
         _ => Err(format!("Unknown issue bridge method: {}", request.method)),
     })();
@@ -131,4 +217,28 @@ pub(super) fn handle_request(
             BridgeResponse::error(id, code, &message)
         }
     }
+}
+
+fn parse<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+    serde_json::from_value::<T>(value).map_err(|e| e.to_string())
+}
+
+fn parse_param<T: DeserializeOwned + Default>(params: &Value, key: &str) -> Result<T, String> {
+    serde_json::from_value::<T>(
+        params
+            .get(key)
+            .cloned()
+            .unwrap_or(Value::Object(Default::default())),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn parse_required_param<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, String> {
+    serde_json::from_value::<T>(
+        params
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("Missing required param: {}", key))?,
+    )
+    .map_err(|e| e.to_string())
 }
