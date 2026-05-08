@@ -236,18 +236,12 @@ pub async fn session_start(
     // On first start, generate and persist a resume token for providers that
     // support session resumption. Codex handles its own binding separately.
     if first_start {
-        let token = match session.provider_id.as_str() {
-            "claude_code" => Some(SessionService::deterministic_session_uuid(
-                "claude",
-                &session_id,
-            )),
-            "copilot" => Some(SessionService::deterministic_session_uuid(
-                "copilot",
-                &session_id,
-            )),
-            "codex" | "terminal" | "fresh" => None,
-            // GenericFlag providers (Gemini, etc.): marker so restarts add resume flags
-            _ => Some("started".to_string()),
+        let deterministic = SessionService::initial_resume_token(&session.provider_id, &session_id);
+        let token = match (deterministic.clone(), session.provider_id.as_str()) {
+            (Some(t), _) => Some(t),
+            (None, "codex" | "terminal" | "fresh") => None,
+            // GenericFlag providers (Gemini, Pi, etc.): marker so restarts add resume flags
+            (None, _) => Some("started".to_string()),
         };
         if let Some(ref t) = token {
             state
@@ -258,11 +252,8 @@ pub async fn session_start(
         // Only update in-memory token for providers with deterministic UUIDs.
         // GenericFlag providers keep provider_resume_token as None on first
         // start so the match block below produces (None, None) → fresh start.
-        match session.provider_id.as_str() {
-            "claude_code" | "copilot" => {
-                session.provider_resume_token = token;
-            }
-            _ => {}
+        if deterministic.is_some() {
+            session.provider_resume_token = deterministic;
         }
     }
 
@@ -343,16 +334,9 @@ pub async fn session_start(
                 (None, Some(token))
             }
         }
-        "copilot" => {
-            // Copilot uses --resume for both new and existing sessions
-            let token = session.provider_resume_token.clone().unwrap_or_else(|| {
-                SessionService::deterministic_session_uuid("copilot", &session_id)
-            });
-            (Some(token), None)
-        }
         "codex" => (session.provider_resume_token.clone(), None),
         _ => {
-            // GenericFlag providers (Gemini, etc.): resume_token signals restart
+            // GenericFlag providers (Gemini, Pi, etc.): resume_token signals restart
             if first_start {
                 (None, None)
             } else {
@@ -369,6 +353,16 @@ pub async fn session_start(
         None,
     );
     args.extend(provider_config.extra_args);
+
+    // Pi has no global session store, so each Sworm session keeps its
+    // state under app-data via `--session-dir`. Cleaned up on session_remove.
+    if session.provider_id == "pi" {
+        let pi_session_dir =
+            crate::services::pi::ensure_session_dir(state.db.app_data_dir(), &session_id)
+                .map_err(|error| ApiError::Io(error.to_string()))?;
+        args.push("--session-dir".to_string());
+        args.push(pi_session_dir.to_string_lossy().into_owned());
+    }
 
     // Fresh: attach to a deterministic named session per project so multiple
     // tabs share one editor and we can reliably send files to it.
@@ -395,7 +389,7 @@ pub async fn session_start(
         {
             Ok(info) => {
                 child_env.insert("SWORM_PROJECT_ID".to_string(), session.project_id.clone());
-                child_env.insert("SWORM_PROJECT_PATH".to_string(), session.cwd.clone());
+                child_env.insert("SWORM_PROJECT_PATH".to_string(), info.project_path);
                 child_env.insert("SWORM_ISSUES_SOCKET".to_string(), info.socket_path);
                 child_env.insert("SWORM_ISSUES_TOKEN".to_string(), info.token);
                 child_env.insert(
@@ -553,17 +547,7 @@ pub async fn session_reset(
         .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", session_id)))?;
 
     // Generate a fresh deterministic token for providers that use session IDs
-    let new_token = match session.provider_id.as_str() {
-        "claude_code" => Some(SessionService::deterministic_session_uuid(
-            "claude",
-            &session_id,
-        )),
-        "copilot" => Some(SessionService::deterministic_session_uuid(
-            "copilot",
-            &session_id,
-        )),
-        _ => None,
-    };
+    let new_token = SessionService::initial_resume_token(&session.provider_id, &session_id);
 
     state
         .sessions
@@ -588,6 +572,10 @@ pub async fn session_remove(
     let _ = state.pty.kill(&session_id);
     state.transcript_batcher.forget(&session_id);
     state.transcript.clear(&session_id);
+
+    // Pi sessions own a private state dir under app-data; remove it
+    // before dropping the row so the path can't be re-resolved later.
+    crate::services::pi::remove_session_dir(state.db.app_data_dir(), &session_id);
 
     let db = state.db.write();
     state

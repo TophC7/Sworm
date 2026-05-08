@@ -40,22 +40,13 @@ export const allProviders: ProviderMeta[] = [
     gradientTo: '#065f46'
   },
   {
-    id: 'copilot',
-    label: 'GitHub Copilot',
-    icon: '/png/copilot.png',
-    textLabel: 'Copilot',
-    textFont: "'SF Mono', monospace",
-    gradientFrom: '#a78bfa',
-    gradientTo: '#4c1d95'
-  },
-  {
-    id: 'crush',
-    label: 'Crush',
-    icon: '/png/crush.png',
-    textLabel: 'CRUSH',
-    textFont: "'Monocraft Nerd Font', monospace",
-    gradientFrom: '#f0abfc',
-    gradientTo: '#701a75'
+    id: 'pi',
+    label: 'Pi',
+    icon: '/svg/pi.svg',
+    textLabel: 'Pi',
+    textFont: 'var(--font-plantin)',
+    gradientFrom: '#ffb59f',
+    gradientTo: '#763724'
   },
   {
     id: 'gemini',
@@ -65,15 +56,6 @@ export const allProviders: ProviderMeta[] = [
     textAspect: 98 / 24,
     gradientFrom: '#60a5fa',
     gradientTo: '#1e3a5f'
-  },
-  {
-    id: 'opencode',
-    label: 'OpenCode',
-    icon: '/svg/opencode.svg',
-    textIcon: '/svg/opencode-text.svg',
-    textAspect: 138 / 24,
-    gradientFrom: '#c084fc',
-    gradientTo: '#4c1d95'
   }
 ]
 

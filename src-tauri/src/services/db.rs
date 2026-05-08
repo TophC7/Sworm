@@ -1,7 +1,7 @@
 use parking_lot::{Mutex, MutexGuard};
 use refinery::embed_migrations;
 use rusqlite::Connection;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::info;
 
@@ -112,6 +112,16 @@ impl DatabaseService {
     /// Return the database file path.
     pub fn db_path(&self) -> &PathBuf {
         &self.db_path
+    }
+
+    /// Tauri app-data directory: parent of [`db_path`]. Used as the
+    /// root for sibling state (Pi session dirs, future per-app caches).
+    pub fn app_data_dir(&self) -> &Path {
+        // `db_path` is always built via `app_data_dir.join("sworm.db")`
+        // in `resolve_db_path`, so the parent is guaranteed non-None.
+        self.db_path
+            .parent()
+            .expect("db_path always has an app-data parent")
     }
 
     /// Simple smoke test: count rows in the projects table.

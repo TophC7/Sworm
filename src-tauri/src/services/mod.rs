@@ -12,6 +12,7 @@ pub mod issue_bridge;
 pub mod issues;
 pub mod lsp;
 pub mod nix;
+pub mod pi;
 pub mod projects;
 pub mod providers;
 pub mod pty;

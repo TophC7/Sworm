@@ -90,33 +90,18 @@ const PROVIDERS: &[ProviderDef] = &[
         default_args: &[],
     },
     ProviderDef {
-        id: ProviderId::Copilot,
-        label: "GitHub Copilot",
-        cli_command: "copilot",
-        detect_commands: &["copilot"],
+        id: ProviderId::Pi,
+        label: "Pi",
+        cli_command: "pi",
+        detect_commands: &["pi"],
         version_args: &["--version"],
-        install_hint: "",
-        docs_url: "https://docs.github.com/en/copilot",
-        auto_approve_flag: Some("--allow-all-tools"),
-        prompt_mode: PromptMode::FlagThenValue { flag: "-i" },
-        resume_mode: ResumeMode::SessionId {
-            session_flag: "--resume",
-            continue_flags: &["--resume"],
+        install_hint: "Install Pi from your Nix/home-manager configuration or npm package.",
+        docs_url: "https://pi.dev",
+        auto_approve_flag: None,
+        prompt_mode: PromptMode::ArgvTail,
+        resume_mode: ResumeMode::GenericFlag {
+            flags: &["--continue"],
         },
-        session_id_mode: SessionIdMode::Deterministic { flag: "--resume" },
-        default_args: &[],
-    },
-    ProviderDef {
-        id: ProviderId::Crush,
-        label: "Crush",
-        cli_command: "crush",
-        detect_commands: &["crush"],
-        version_args: &["--version"],
-        install_hint: "",
-        docs_url: "https://github.com/charmbracelet/crush",
-        auto_approve_flag: Some("--yolo"),
-        prompt_mode: PromptMode::KeystrokeInjection,
-        resume_mode: ResumeMode::None,
         session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
@@ -410,12 +395,18 @@ fn detect_provider(
             .output()
         {
             Ok(output) if output.status.success() => {
-                let version = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // NOTE: Pi prints `--version` on stderr and leaves stdout
+                // empty. Other CLIs print to stdout; do not generalize the
+                // fallback or stderr banners (deprecation, login warnings)
+                // will surface as fake version strings.
+                let version_source =
+                    if matches!(definition.id, ProviderId::Pi) && stdout.trim().is_empty() {
+                        String::from_utf8_lossy(&output.stderr).trim().to_string()
+                    } else {
+                        stdout.trim().to_string()
+                    };
+                let version = version_source.lines().next().unwrap_or("").to_string();
                 info!("{} detected: {} ({})", definition.label, version, path);
                 ProviderStatus {
                     id: definition.id,

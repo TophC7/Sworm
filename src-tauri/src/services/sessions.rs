@@ -50,11 +50,7 @@ impl SessionService {
     ) -> Result<Session, String> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let provider_resume_token = match provider_id {
-            "claude_code" => Some(Self::deterministic_session_uuid("claude", &id)),
-            "copilot" => Some(Self::deterministic_session_uuid("copilot", &id)),
-            _ => None,
-        };
+        let provider_resume_token = Self::initial_resume_token(provider_id, &id);
 
         conn.execute(
             "INSERT INTO sessions (
@@ -94,8 +90,21 @@ impl SessionService {
         })
     }
 
+    /// Initial `provider_resume_token` value for a freshly created
+    /// session, before it has ever been started. Providers that key
+    /// resumption off a deterministic UUID get one minted up-front;
+    /// every other provider starts with `None` and may later persist
+    /// a runtime-discovered token (Codex thread id, generic-flag
+    /// "started" marker, etc).
+    pub fn initial_resume_token(provider_id: &str, session_id: &str) -> Option<String> {
+        match provider_id {
+            "claude_code" => Some(Self::deterministic_session_uuid("claude", session_id)),
+            _ => None,
+        }
+    }
+
     /// Derive a deterministic UUID from a provider prefix and session ID.
-    /// Providers that use session-id flags (Claude Code, Copilot) need valid
+    /// Providers that use session-id flags (Claude Code) need valid
     /// UUIDs. We hash `<prefix>:<session_id>` and format as UUID v4.
     pub fn deterministic_session_uuid(prefix: &str, app_session_id: &str) -> String {
         let mut hasher = Sha256::new();

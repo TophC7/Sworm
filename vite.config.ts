@@ -1,18 +1,23 @@
 import { sveltekit } from '@sveltejs/kit/vite'
+import { resolve, sep } from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 
 // Tauri expects a fixed port during dev
 const host = process.env.TAURI_DEV_HOST
-const ignoredWatchPaths = [
-  '**/src-tauri/**',
-  '**/.direnv/**',
-  '**/.git/**',
-  '**/.bun/**',
-  '**/target/**',
-  '**/result/**',
-  '**/result-*/**'
-]
+const rootDir = process.cwd()
+const uiWatchRoots = ['src', 'static'].map((path) => resolve(rootDir, path))
+
+function isUiWatchPath(path: string): boolean {
+  const absPath = resolve(path)
+  if (absPath === rootDir) return true
+  return uiWatchRoots.some((watchRoot) => {
+    const isWatchRoot = absPath === watchRoot
+    const isInsideWatchRoot = absPath.startsWith(`${watchRoot}${sep}`)
+    const isAncestorOfWatchRoot = watchRoot.startsWith(`${absPath}${sep}`)
+    return isWatchRoot || isInsideWatchRoot || isAncestorOfWatchRoot
+  })
+}
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
@@ -54,8 +59,8 @@ export default defineConfig({
         }
       : undefined,
     watch: {
-      // Avoid reload storms from local tooling and Nix metadata trees.
-      ignored: ignoredWatchPaths
+      // Dev webview should reload only for files that can change UI content.
+      ignored: (path) => !isUiWatchPath(path)
     }
   }
 })

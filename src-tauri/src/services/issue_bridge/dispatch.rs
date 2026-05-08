@@ -59,6 +59,7 @@ pub(super) fn handle_request(
         "bridge.info" => Ok(json!({
             "protocol_version": PROTOCOL_VERSION,
             "project_id": project_id,
+            "project_path": project_path.to_string_lossy(),
             "capabilities": ["issues.v1", "issues.full.v1"],
             "methods": BRIDGE_METHODS
         })),

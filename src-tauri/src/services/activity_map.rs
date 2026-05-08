@@ -1,8 +1,9 @@
 use crate::models::activity_map::{DiscoveredProject, DiscoveredProviderActivity};
-use chrono::{Local, NaiveDateTime, TimeZone};
+use chrono::{Local, TimeZone};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Maximum number of discovered projects to return.
@@ -13,10 +14,8 @@ const WINDOW_DAYS: usize = 7;
 
 const PROVIDER_CLAUDE_CODE: &str = "claude_code";
 const PROVIDER_CODEX: &str = "codex";
-const PROVIDER_COPILOT: &str = "copilot";
+const PROVIDER_PI: &str = "pi";
 const PROVIDER_GEMINI: &str = "gemini";
-const PROVIDER_CRUSH: &str = "crush";
-const PROVIDER_OPENCODE: &str = "opencode";
 
 pub struct ActivityMapService;
 
@@ -36,14 +35,8 @@ impl ActivityMapService {
         // Collect (path, activity) pairs from each provider
         let mut by_path: HashMap<String, Vec<DiscoveredProviderActivity>> = HashMap::new();
 
-        let scanners: Vec<fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>> = vec![
-            scan_claude_code,
-            scan_codex,
-            scan_copilot,
-            scan_gemini,
-            scan_crush,
-            scan_opencode,
-        ];
+        let scanners: Vec<fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>> =
+            vec![scan_claude_code, scan_codex, scan_pi, scan_gemini];
 
         for scanner in scanners {
             for (path, activity) in scanner(&day_starts) {
@@ -127,21 +120,6 @@ fn ts_to_iso(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_default()
-}
-
-/// Parse an ISO 8601 string to a unix timestamp.
-fn iso_to_ts(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.timestamp())
-        .or_else(|| {
-            // Try parsing without timezone (some providers omit it)
-            NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-                .ok()
-                .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok())
-                .and_then(|ndt| Local.from_local_datetime(&ndt).earliest())
-                .map(|dt| dt.timestamp())
-        })
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -375,40 +353,39 @@ fn scan_codex(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvide
     inner().unwrap_or_default()
 }
 
-fn scan_copilot(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
+fn scan_pi(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
     let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let session_dir = home_dir()?.join(".copilot/session-state");
-        if !session_dir.is_dir() {
+        let sessions_dir = home_dir()?.join(".pi/agent/sessions");
+        if !sessions_dir.is_dir() {
             return None;
         }
 
         let mut by_cwd: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
 
-        for entry in fs::read_dir(&session_dir).ok()?.flatten() {
-            if !entry.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
+        for dir in fs::read_dir(&sessions_dir).ok()?.flatten() {
+            if !dir.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
-
-            let yaml_path = entry.path().join("workspace.yaml");
-            if !yaml_path.exists() {
-                continue;
-            }
-
-            let Ok(content) = fs::read_to_string(&yaml_path) else {
-                continue;
-            };
-            if let Some((cwd, updated_at)) = parse_copilot_workspace_yaml(&content) {
-                let ts = iso_to_ts(&updated_at).unwrap_or_else(|| {
-                    // Fall back to file mtime
-                    fs::metadata(&yaml_path)
-                        .and_then(|m| m.modified())
-                        .map(|t| {
-                            t.duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64
-                        })
-                        .unwrap_or(0)
-                });
+            for file in fs::read_dir(dir.path()).ok()?.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Some(cwd) = read_pi_session_cwd(&path) else {
+                    continue;
+                };
+                let ts = file
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
+                    .unwrap_or(0);
+                if ts <= 0 {
+                    continue;
+                }
 
                 let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
                 if ts > entry.0 {
@@ -427,7 +404,7 @@ fn scan_copilot(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvi
                 (
                     cwd,
                     DiscoveredProviderActivity {
-                        provider_id: PROVIDER_COPILOT.into(),
+                        provider_id: PROVIDER_PI.into(),
                         last_active: ts_to_iso(max_ts),
                         daily_counts: daily,
                     },
@@ -441,23 +418,19 @@ fn scan_copilot(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvi
     inner().unwrap_or_default()
 }
 
-/// Minimal line-scan of Copilot workspace.yaml to extract cwd and updated_at
-/// without a YAML parser dependency.
-fn parse_copilot_workspace_yaml(content: &str) -> Option<(String, String)> {
-    let mut cwd = None;
-    let mut updated_at = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(val) = trimmed.strip_prefix("cwd:") {
-            cwd = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
-        }
-        if let Some(val) = trimmed.strip_prefix("updated_at:") {
-            updated_at = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
-        }
+fn read_pi_session_cwd(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(file).read_line(&mut line).ok()?;
+    let header: serde_json::Value = serde_json::from_str(&line).ok()?;
+    if header.get("type").and_then(|v| v.as_str()) != Some("session") {
+        return None;
     }
-
-    Some((cwd?, updated_at.unwrap_or_default()))
+    header
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(ToString::to_string)
 }
 
 fn scan_gemini(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
@@ -514,113 +487,6 @@ fn scan_gemini(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvid
                 ));
             }
         }
-
-        Some(results)
-    };
-
-    inner().unwrap_or_default()
-}
-
-fn scan_crush(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
-    let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let json_path = home_dir()?.join(".local/share/crush/projects.json");
-        if !json_path.exists() {
-            return None;
-        }
-
-        let content = fs::read_to_string(&json_path).ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-        let projects = parsed.get("projects")?.as_array()?;
-
-        let mut results = Vec::new();
-
-        for project in projects {
-            let path = project.get("path")?.as_str()?;
-            let last_accessed = project.get("last_accessed").and_then(|v| v.as_str());
-
-            let ts = last_accessed.and_then(iso_to_ts).unwrap_or(0);
-
-            if ts > 0 {
-                let mut daily = [0u32; WINDOW_DAYS];
-                if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                    daily[idx] += 1;
-                }
-
-                results.push((
-                    path.to_string(),
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_CRUSH.into(),
-                        last_active: ts_to_iso(ts),
-                        daily_counts: daily,
-                    },
-                ));
-            }
-        }
-
-        Some(results)
-    };
-
-    inner().unwrap_or_default()
-}
-
-fn scan_opencode(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
-    let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let db_path = home_dir()?.join(".local/share/opencode/opencode.db");
-        if !db_path.exists() {
-            return None;
-        }
-
-        let conn = Connection::open_with_flags(
-            &db_path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .ok()?;
-
-        // OpenCode stores time_updated as epoch milliseconds
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.worktree, s.time_updated
-                 FROM project p
-                 LEFT JOIN session s ON s.project_id = p.id
-                 WHERE p.worktree IS NOT NULL AND p.worktree != ''",
-            )
-            .ok()?;
-
-        let mut by_path: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
-            })
-            .ok()?;
-
-        for row in rows.flatten() {
-            let (worktree, time_updated) = row;
-            let ts = time_updated.unwrap_or(0) / 1000;
-
-            let entry = by_path.entry(worktree).or_insert((0, [0u32; WINDOW_DAYS]));
-            if ts > entry.0 {
-                entry.0 = ts;
-            }
-            if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                entry.1[idx] += 1;
-            }
-        }
-
-        let results = by_path
-            .into_iter()
-            .filter(|(_, (max_ts, _))| *max_ts > 0)
-            .map(|(path, (max_ts, daily))| {
-                (
-                    path,
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_OPENCODE.into(),
-                        last_active: ts_to_iso(max_ts),
-                        daily_counts: daily,
-                    },
-                )
-            })
-            .collect();
 
         Some(results)
     };

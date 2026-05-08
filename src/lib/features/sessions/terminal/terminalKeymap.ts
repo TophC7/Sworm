@@ -54,7 +54,7 @@ const DEFAULT_PROFILE: ProviderProfile = { shiftEncoding: 'legacy' }
 
 const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: { shiftEncoding: 'kitty' }
-  // claude_code, codex, copilot, crush, fresh, terminal: legacy default.
+  // claude_code, codex, pi, fresh, terminal: legacy default.
 }
 
 function profileFor(providerId: string | null): ProviderProfile {

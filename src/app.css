@@ -79,6 +79,7 @@
   /* FONTS // mono is Monocraft only; falls back to default monospace. */
   --font-sans: 'Lexend', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Monocraft Nerd Font', monospace;
+  --font-plantin: 'Plantin MT Pro', 'Times New Roman', serif;
 
   /* TYPE SCALE // utilities text-3xs through text-5xl. */
   --text-3xs: 0.5rem;
@@ -161,6 +162,14 @@
   font-weight: 700;
   font-display: swap;
   src: url('/fonts/SFMono-Bold.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Plantin MT Pro';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plantin-mt-pro/PlantinMTProSmBd.TTF') format('truetype');
 }
 
 /* ── Component classes ────────────────────────── */

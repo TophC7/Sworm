@@ -41,6 +41,7 @@ use std::os::unix::fs::PermissionsExt;
 #[serde(rename_all = "camelCase")]
 pub struct IssueBridgeInfo {
     pub project_id: String,
+    pub project_path: String,
     pub socket_path: String,
     pub token: String,
     pub protocol_version: u32,
@@ -77,12 +78,28 @@ impl IssueBridgeService {
         project_id: &str,
         project_path: &Path,
     ) -> Result<IssueBridgeInfo, String> {
-        if let Some(existing) = self.runtimes.lock().get(project_id) {
-            if Path::new(&existing.info.socket_path).exists() {
-                return Ok(existing.info.clone());
+        // Fast path: socket file still on disk and runtime still tracked.
+        // NOTE: if the socket file vanished (manual rm, post-crash cleanup,
+        // tmpfs flush) the runtime entry is stale -- the task is likely
+        // still alive but accepting on a vanished path. Drop the entry
+        // here so the bind path below mints a fresh listener.
+        {
+            let runtimes = self.runtimes.lock();
+            if let Some(existing) = runtimes.get(project_id) {
+                if Path::new(&existing.info.socket_path).exists() {
+                    return Ok(existing.info.clone());
+                }
+            }
+        }
+        if let Some(mut stale) = self.runtimes.lock().remove(project_id) {
+            if let Some(shutdown) = stale.shutdown.take() {
+                let _ = shutdown.send(());
             }
         }
 
+        // Bind the socket and prep the runtime *outside* the map mutex.
+        // These are blocking syscalls; serializing them across projects
+        // would needlessly stall concurrent project starts.
         let socket_path = socket_path_for(project_id, project_path)?;
         if socket_path.exists() {
             std::fs::remove_file(&socket_path).map_err(|e| {
@@ -124,30 +141,42 @@ impl IssueBridgeService {
         let token = Uuid::new_v4().to_string();
         let info = IssueBridgeInfo {
             project_id: project_id.to_string(),
+            project_path: project_path.to_string_lossy().into_owned(),
             socket_path: socket_path.to_string_lossy().into_owned(),
             token: token.clone(),
             protocol_version: PROTOCOL_VERSION,
         };
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let issues = Arc::clone(&self.issues);
-        let project_path = project_path.to_path_buf();
+        let project_path_owned = project_path.to_path_buf();
         let project_id_for_task = project_id.to_string();
         let socket_for_task = socket_path.clone();
+        let token_for_task = token.clone();
 
         tauri::async_runtime::spawn(async move {
             run_bridge(
                 listener,
                 issues,
                 project_id_for_task,
-                project_path,
-                token,
+                project_path_owned,
+                token_for_task,
                 shutdown_rx,
                 socket_for_task,
             )
             .await;
         });
 
-        self.runtimes.lock().insert(
+        // Re-acquire the map mutex only to publish the runtime. If a
+        // racing caller raced past us with a winning entry, drop ours.
+        let mut runtimes = self.runtimes.lock();
+        if let Some(existing) = runtimes.get(project_id) {
+            if Path::new(&existing.info.socket_path).exists() {
+                let _ = shutdown_tx.send(());
+                let _ = std::fs::remove_file(&socket_path);
+                return Ok(existing.info.clone());
+            }
+        }
+        runtimes.insert(
             project_id.to_string(),
             BridgeRuntime {
                 info: info.clone(),
@@ -160,7 +189,6 @@ impl IssueBridgeService {
 
     /// Tear down a project's bridge: signal shutdown to its listener
     /// task and unlink the socket file. No-op if not running.
-    #[allow(dead_code)]
     pub fn stop(&self, project_id: &str) {
         if let Some(mut runtime) = self.runtimes.lock().remove(project_id) {
             if let Some(shutdown) = runtime.shutdown.take() {
@@ -301,6 +329,32 @@ mod tests {
         assert!(line.contains("invalid_argument"), "response was: {line}");
 
         bridge.stop("project-2");
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[tokio::test]
+    async fn ensure_running_recovers_after_stop_or_socket_loss() {
+        let issues = Arc::new(IssueService::new());
+        let bridge = IssueBridgeService::new(issues);
+        let project = temp_project("recover");
+
+        let first = bridge.ensure_running("project-recover", &project).unwrap();
+        assert!(Path::new(&first.socket_path).exists());
+
+        // explicit stop -> next ensure_running rebinds with a fresh token
+        bridge.stop("project-recover");
+        let second = bridge.ensure_running("project-recover", &project).unwrap();
+        assert_ne!(first.token, second.token);
+        assert!(Path::new(&second.socket_path).exists());
+
+        // socket file vanishes underneath us (tmpfs flush, manual rm)
+        // -> ensure_running rebinds rather than handing back a stale entry
+        std::fs::remove_file(&second.socket_path).unwrap();
+        let third = bridge.ensure_running("project-recover", &project).unwrap();
+        assert_ne!(second.token, third.token);
+        assert!(Path::new(&third.socket_path).exists());
+
+        bridge.stop("project-recover");
         let _ = std::fs::remove_dir_all(project);
     }
 

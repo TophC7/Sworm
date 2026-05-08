@@ -163,6 +163,8 @@ pub async fn project_remove(id: String, state: tauri::State<'_, AppState>) -> Re
         tracing::info!("Killed {} live PTY(s) for project {}", killed, id);
     }
 
+    state.issue_bridge.stop(&id);
+
     // Now safe to delete -- CASCADE will remove sessions too
     state
         .projects

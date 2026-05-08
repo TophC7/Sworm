@@ -31,7 +31,7 @@ export function sampleChunk(chunk: string): string {
  * Classify a PTY output chunk as busy, idle, or neutral.
  *
  * Provider ID should match the session's provider_id field
- * (e.g. 'claude_code', 'codex', 'copilot').
+ * (e.g. 'claude_code', 'codex', 'pi').
  */
 export function classifyActivity(providerId: string | null | undefined, chunk: string): ActivitySignal {
   const text = stripAnsi(sampleChunk(chunk))
@@ -62,44 +62,12 @@ export function classifyActivity(providerId: string | null | undefined, chunk: s
     if (/send\s+\S*\s*newline|transcript|quit/i.test(text)) return 'idle'
   }
 
-  // -- GitHub Copilot --
-  if (p === 'copilot') {
-    if (/Thinking|Working|Generating/i.test(text)) return 'busy'
-    if (
-      /Ready|Press Enter|Next step/i.test(text) ||
-      /Do you want to/i.test(text) ||
-      /Confirm with number keys/i.test(text) ||
-      /approve all file operations/i.test(text) ||
-      /Yes, and approve/i.test(text)
-    )
-      return 'idle'
-  }
-
-  // -- Crush --
-  if (p === 'crush') {
-    if (/Processing|Generating|Running|Executing/i.test(text)) return 'busy'
-    if (/Thinking|Working|Analyzing|Building/i.test(text)) return 'busy'
-    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(text)) return 'busy'
-    if (/Ready|Awaiting|Press Enter/i.test(text)) return 'idle'
-    if (/crush\s*>/i.test(text)) return 'idle'
-    if (/What.*\?|Choose|Select/i.test(text)) return 'idle'
-  }
-
   // -- Gemini CLI --
   if (p === 'gemini') {
     if (/esc\s*to\s*cancel/i.test(text)) return 'busy'
     if (/Thinking\.{0,3}/i.test(text)) return 'busy'
     if (/Running|Working|Executing|Generating|Applying|Planning|Analyzing/i.test(text)) return 'busy'
     if (/Ready|Awaiting|Press Enter/i.test(text)) return 'idle'
-  }
-
-  // -- OpenCode --
-  if (p === 'opencode') {
-    if (/Thinking\.{0,3}/i.test(text)) return 'busy'
-    if (/waiting\s+for\s+response/i.test(text)) return 'busy'
-    if (/esc\s*to\s*cancel/i.test(text)) return 'busy'
-    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(text)) return 'busy'
-    if (/Ready|Awaiting|Press Enter|Next command|Type your message/i.test(text)) return 'idle'
   }
 
   // -- Generic fallback (covers unlisted providers) --
