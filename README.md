@@ -31,7 +31,7 @@ Agent CLIs like Claude Code and Codex already have excellent tool ecosystems (MC
 ### Agent-Native Integration
 - **Thread Tracking:** Deep integration with tools like **Codex** to link terminal sessions with agent conversation history.
 - **Activity Mapping:** Scans your filesystem to discover where agents have been active, providing a "heatmap" of agent-driven development, helping you locate your AI projects.
-- **Multi-Session PTY:** Run `claude`, `codex`, `opencode`, or standard shells in a project-scoped, persistent terminal.
+- **Multi-Session PTY:** Run `claude`, `codex`, `pi`, `gemini`, or standard shells in a project-scoped, persistent terminal.
 
 ### Nix-Powered Environments
 - **Flake Integration:** Point Sworm at a `flake.nix` and its `devShell` becomes the environment for every shell, session, and task. 

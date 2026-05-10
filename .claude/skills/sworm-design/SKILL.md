@@ -125,6 +125,8 @@ Session state lives on **status dots**, not on badges or alert banners.
 
 **Mono:** Monocraft Nerd Font. Always. Falls back to the OS default `monospace` only — no SF Mono chain, no JetBrains, no Cascadia.
 
+**Brand exception:** Pi provider wordmark may use bundled Plantin MT Pro via `--font-plantin`.
+
 Mono is for _data_: session IDs, file paths, kbd keys, timestamps, branch names, kicker labels, terminal output.
 
 ### 3.2 Scale
@@ -175,7 +177,7 @@ All sizes ship as Tailwind utilities (`text-2xs` … `text-5xl`). Use the named 
 Bundled under `static/svg/` (and mirrored into `extensions/Sworm Design System/assets/` for external mocks):
 
 - `worm.svg`, `sworm.svg` — app logo; worm is 18px titlebar, 30px empty-state.
-- Provider marks: `claudecode.svg`, `codex.svg`, `copilot.svg` (PNG fallback), `gemini.svg`, `opencode.svg`, `fresh.svg`, plus `crush.png`.
+- Provider marks: `claudecode.svg`, `codex.svg`, `pi.svg`, `gemini.svg`, `fresh.svg`.
 - `nixos.svg`, `terminal.svg`.
 
 **Provider presence rule.** Provider logos render full-color when the provider is detected, `grayscale + 50% opacity` when not. This is how Sworm communicates "connected vs not available" — no extra dot, no extra label.
