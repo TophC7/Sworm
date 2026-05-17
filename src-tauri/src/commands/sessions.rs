@@ -6,11 +6,13 @@ use crate::services::nix::NixService;
 use crate::services::providers::ProviderService;
 use crate::services::pty::PtyEvent;
 use crate::services::sessions::SessionService;
-use crate::services::settings::SettingsService;
+use crate::services::settings_resolution::{
+    provider_config_record, resolve_effective_settings_for_project_path,
+};
 use chrono::{Duration, Utc};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
@@ -223,11 +225,17 @@ pub async fn session_start(
         .get(db.conn(), &session_id)
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound(format!("Session not found: {}", session_id)))?;
-    let provider_config = SettingsService::get_provider_config(db.conn(), &session.provider_id)
-        .map_err(ApiError::Database)?
-        .unwrap_or_else(|| {
-            crate::services::settings::ProviderConfigRecord::default_for(&session.provider_id)
-        });
+    let effective_settings =
+        resolve_effective_settings_for_project_path(Some(Path::new(&session.cwd)))
+            .map_err(ApiError::Internal)?;
+    let provider_config =
+        provider_config_record(&effective_settings.settings, &session.provider_id);
+    if !provider_config.enabled {
+        return Err(ApiError::InvalidArgument(format!(
+            "Provider disabled by settings: {}",
+            session.provider_id
+        )));
+    }
 
     // Track whether this is the very first start (no token yet) so we can
     // choose --session-id (new) vs --resume (existing) when building args.

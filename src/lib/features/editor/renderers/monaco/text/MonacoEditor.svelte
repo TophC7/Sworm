@@ -22,6 +22,7 @@
     type MountedTextSurfaceController
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
+  import { MONO_FONT_FAMILY } from '$lib/fonts'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { onMount } from 'svelte'
 
@@ -111,7 +112,7 @@
         minimap: { enabled: false },
         fontSize: 13,
         lineHeight: 20,
-        fontFamily: "'Monocraft Nerd Font', monospace",
+        fontFamily: MONO_FONT_FAMILY,
         fontLigatures: false,
         lineNumbers: 'on',
         renderWhitespace: 'all',

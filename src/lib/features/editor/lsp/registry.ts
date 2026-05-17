@@ -25,6 +25,21 @@ type MonacoSelectionOrPosition = import('monaco-editor').IRange | import('monaco
 
 type JsonRpcId = number
 
+function changedLspServerIds(oldEntries: LspServerSettingsEntry[], newEntries: LspServerSettingsEntry[]): Set<string> {
+  const oldById = new Map(oldEntries.map((entry) => [entry.server.server_definition_id, JSON.stringify(entry.config)]))
+  const newById = new Map(newEntries.map((entry) => [entry.server.server_definition_id, JSON.stringify(entry.config)]))
+  const changed = new Set<string>()
+
+  for (const [serverId, serialized] of newById) {
+    if (oldById.get(serverId) !== serialized) changed.add(serverId)
+  }
+  for (const serverId of oldById.keys()) {
+    if (!newById.has(serverId)) changed.add(serverId)
+  }
+
+  return changed
+}
+
 interface DocumentContext {
   projectId: string
   projectPath: string
@@ -150,13 +165,31 @@ class LspRegistry {
   }
 
   async refreshProject(projectId: string): Promise<void> {
+    const oldEntries = await this.serverEntriesByProject.get(projectId)?.catch(() => [])
     this.invalidateServerEntries(projectId)
+    const newEntries = await this.getProjectServerEntries(projectId)
+    const changedServerIds = changedLspServerIds(oldEntries ?? [], newEntries)
+    if (changedServerIds.size === 0) return
 
-    const instances = [...this.serverInstances.values()].filter((instance) => instance.projectId === projectId)
+    const instances = [...this.serverInstances.values()].filter(
+      (instance) => instance.projectId === projectId && changedServerIds.has(instance.entry.server.server_definition_id)
+    )
     await Promise.all(instances.map((instance) => this.stopInstance(instance)))
 
     const documents = [...this.documents.values()].filter((document) => document.context.projectId === projectId)
-    await Promise.all(documents.map((document) => this.attachMatchingServers(document)))
+    await Promise.all(
+      documents.map((document) =>
+        this.attachMatchingServers(document, (entry) => changedServerIds.has(entry.server.server_definition_id))
+      )
+    )
+  }
+
+  async refreshAllProjects(): Promise<void> {
+    const projectIds = new Set([
+      ...this.knownProjects.keys(),
+      ...[...this.serverInstances.values()].map((instance) => instance.projectId)
+    ])
+    await Promise.all([...projectIds].map((projectId) => this.refreshProject(projectId)))
   }
 
   async restartServerDefinition(serverDefinitionId: string): Promise<void> {
@@ -351,7 +384,7 @@ class LspRegistry {
     const existing = this.serverInstances.get(key)
     if (existing) return existing
 
-    const settings = safeJsonParse(entry.config.settings_json)
+    const settings = entry.config.settings ?? null
     const instance: ServerInstance = {
       key,
       sessionId: key,
@@ -838,6 +871,10 @@ export function refreshLspProjectEnvironment(projectId: string) {
   return registry.refreshProject(projectId)
 }
 
+export function refreshAllLspProjectEnvironments() {
+  return registry.refreshAllProjects()
+}
+
 export function formatDocumentWithLsp(model: MonacoModel) {
   return registry.provideDocumentFormattingEdits(model)
 }
@@ -1183,15 +1220,6 @@ function toMonacoMarker(diagnostic: unknown): import('monaco-editor').editor.IMa
       typeof (diagnostic as { source?: unknown } | undefined)?.source === 'string'
         ? ((diagnostic as { source: string }).source ?? undefined)
         : undefined
-  }
-}
-
-function safeJsonParse(value: string | null): unknown {
-  if (!value) return null
-  try {
-    return JSON.parse(value)
-  } catch {
-    return null
   }
 }
 

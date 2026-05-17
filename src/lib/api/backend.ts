@@ -4,6 +4,7 @@
 // components must NOT import invoke() directly.
 
 import { Channel, invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
   AppInfo,
   BranchOpState,
@@ -15,6 +16,7 @@ import type {
   DiffSource,
   DiscoveredProject,
   EnvProbeResult,
+  EffectiveSettingsPayload,
   FileDiff,
   FileEntryStat,
   FilePasteCollision,
@@ -50,7 +52,12 @@ import type {
   ProviderStatus,
   PtyEvent,
   Session,
+  SettingsChangedEvent,
+  SettingsFileResult,
+  SettingsLayerPayload,
   SettingsPayload,
+  ShortcutsFilePayload,
+  ShortcutsFileResult,
   StashEntry,
   TaskDefinition
 } from '$lib/types/backend'
@@ -596,6 +603,41 @@ export const backend = {
     get(): Promise<SettingsPayload> {
       return invoke<SettingsPayload>('settings_get')
     },
+    getEffective(projectPath?: string): Promise<EffectiveSettingsPayload> {
+      return invoke<EffectiveSettingsPayload>('settings_get_effective', {
+        input: { project_path: projectPath ?? null }
+      })
+    },
+    getGlobalLayer(): Promise<SettingsLayerPayload> {
+      return invoke<SettingsLayerPayload>('settings_get_global_layer')
+    },
+    patchGlobalSection(
+      section: 'general' | 'formatting' | 'providers' | 'lsp',
+      value: unknown
+    ): Promise<SettingsLayerPayload> {
+      return invoke<SettingsLayerPayload>('settings_patch_global_section', {
+        input: { section, value }
+      })
+    },
+    createGlobalFile(): Promise<SettingsFileResult> {
+      return invoke<SettingsFileResult>('settings_create_global_file')
+    },
+    openGlobalFile(): Promise<SettingsFileResult> {
+      return invoke<SettingsFileResult>('settings_open_global_file')
+    },
+    createProjectFile(projectPath: string): Promise<SettingsFileResult> {
+      return invoke<SettingsFileResult>('settings_create_project_file', {
+        input: { project_path: projectPath }
+      })
+    },
+    openProjectFile(projectPath: string): Promise<SettingsFileResult> {
+      return invoke<SettingsFileResult>('settings_open_project_file', {
+        input: { project_path: projectPath }
+      })
+    },
+    onChanged(handler: (event: SettingsChangedEvent) => void): Promise<UnlistenFn> {
+      return listen<SettingsChangedEvent>('settings-changed', (event) => handler(event.payload))
+    },
     setGeneral(settings: GeneralSettings): Promise<GeneralSettings> {
       return invoke<GeneralSettings>('settings_set_general', { settings })
     },
@@ -606,6 +648,21 @@ export const backend = {
     },
     setProviderConfig(config: ProviderConfig): Promise<ProviderConfig> {
       return invoke<ProviderConfig>('settings_set_provider_config', { config })
+    }
+  },
+
+  shortcuts: {
+    getGlobal(): Promise<ShortcutsFilePayload> {
+      return invoke<ShortcutsFilePayload>('shortcuts_get_global')
+    },
+    setGlobal(value: unknown): Promise<ShortcutsFilePayload> {
+      return invoke<ShortcutsFilePayload>('shortcuts_set_global', { value })
+    },
+    createGlobalFile(): Promise<ShortcutsFileResult> {
+      return invoke<ShortcutsFileResult>('shortcuts_create_global_file')
+    },
+    openGlobalFile(): Promise<ShortcutsFileResult> {
+      return invoke<ShortcutsFileResult>('shortcuts_open_global_file')
     }
   },
 

@@ -3,7 +3,9 @@ use crate::errors::ApiError;
 use crate::models::nix_env::{NixDetection, NixEnvRecord, NixEnvStatus};
 use crate::models::provider::ProviderStatus;
 use crate::services::nix::{NixDiagnostic, NixService};
-use crate::services::settings::SettingsService;
+use crate::services::settings_resolution::{
+    provider_binary_overrides, resolve_effective_settings_for_project_path,
+};
 
 /// Detect Nix files in a project directory and return current selection.
 #[tauri::command]
@@ -108,11 +110,16 @@ pub async fn nix_evaluate(
                 )
             })?;
 
-        let general =
-            SettingsService::get_general_settings(db.conn()).map_err(ApiError::Database)?;
-        // Clamp to a sane range so a bad DB value can't hang the app forever or
+        let effective_settings =
+            resolve_effective_settings_for_project_path(Some(std::path::Path::new(&project.path)))
+                .map_err(ApiError::Internal)?;
+        // Clamp to a sane range so a bad config value can't hang the app forever or
         // fire a timeout before nix has even finished spawning.
-        let timeout_secs = general.nix_eval_timeout_secs.clamp(30, 3600);
+        let timeout_secs = effective_settings
+            .settings
+            .general
+            .nix_eval_timeout_secs
+            .clamp(30, 3600);
 
         NixService::set_status(db.conn(), &project_id, NixEnvStatus::Evaluating)
             .map_err(ApiError::Database)?;
@@ -205,13 +212,22 @@ pub async fn provider_list_for_project(
 ) -> Result<Vec<ProviderStatus>, ApiError> {
     let db = state.db.read();
 
+    let project = state
+        .projects
+        .get(db.conn(), &project_id)
+        .map_err(ApiError::Database)?
+        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
+
     let merged_path = match NixService::load_env_vars(db.conn(), &project_id) {
         Ok(Some(nix_env)) => NixService::merged_path(&state.env.merged_path, &nix_env),
         _ => state.env.merged_path.clone(),
     };
+    drop(db);
 
-    let overrides =
-        SettingsService::load_binary_overrides(db.conn()).map_err(ApiError::Database)?;
+    let effective =
+        resolve_effective_settings_for_project_path(Some(std::path::Path::new(&project.path)))
+            .map_err(ApiError::Internal)?;
+    let overrides = provider_binary_overrides(&effective.settings);
 
     let mut providers = state.providers.lock();
     Ok(providers.detect_all(&merged_path, &overrides, Some(&state.env.detected_shell)))

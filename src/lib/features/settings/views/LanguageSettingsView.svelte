@@ -1,11 +1,10 @@
 <script lang="ts">
-  import { getBuiltinLanguageLabel } from '$lib/features/builtins/catalog'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Switch } from '$lib/components/ui/switch'
   import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
-  import { Braces, CircleAlert, ChevronDown, RefreshCwIcon } from '$lib/icons/lucideExports'
+  import { CircleAlert, ChevronDown, RefreshCwIcon } from '$lib/icons/lucideExports'
   import {
     getLspServers,
     getLspServersLoading,
@@ -20,25 +19,15 @@
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { onDestroy } from 'svelte'
   import { createAutoSaver } from './autoSaver'
-  import type { JsonSettingsEditorSession } from './jsonSettings'
-  import {
-    serializeSettingsEditorValue,
-    settingsEditorDefaults,
-    settingsEditorDescription,
-    settingsEditorSchema,
-    settingsEditorValue
-  } from './jsonSettings'
 
   type StatusHook = () => void
 
   let {
     definition,
-    onOpenJsonEditor,
     onSaving,
     onSaved
   }: {
     definition: BuiltinSettingsPage
-    onOpenJsonEditor: (session: JsonSettingsEditorSession) => void
     onSaving: StatusHook
     onSaved: StatusHook
   } = $props()
@@ -59,7 +48,7 @@
     binaryPath: string
     extraArgs: string
     trace: 'off' | 'messages' | 'verbose'
-    settingsJson: string
+    settings: unknown | null
   }
 
   let drafts = $state<Record<string, Draft>>({})
@@ -76,7 +65,7 @@
         binaryPath: entry.config.binary_path_override ?? '',
         extraArgs: entry.config.extra_args.join(' '),
         trace: entry.config.trace,
-        settingsJson: entry.config.settings_json ?? ''
+        settings: entry.config.settings ?? null
       }
     }
   })
@@ -130,7 +119,7 @@
         runtime_args: [],
         extra_args: splitArgs(draft.extraArgs),
         trace: draft.trace,
-        settings_json: draft.settingsJson.trim() || null
+        settings: draft.settings
       },
       activeProjectId ?? undefined
     )
@@ -153,22 +142,6 @@
 
   function toggleExpanded(id: string) {
     expanded = { ...expanded, [id]: !(expanded[id] ?? false) }
-  }
-
-  async function handleJsonSettingsSave(id: string, nextValue: string | null) {
-    const draft = drafts[id]
-    if (!draft) return
-    const nextDraft = { ...draft, settingsJson: nextValue ?? '' }
-    drafts = { ...drafts, [id]: nextDraft }
-    onSaving()
-    try {
-      await persistServer(id, nextDraft)
-    } catch (error) {
-      notify.error('Save language server failed', getErrorMessage(error))
-      throw error
-    } finally {
-      onSaved()
-    }
   }
 
   async function refresh() {
@@ -202,30 +175,6 @@
       }
     }
     return [...languages].sort()
-  }
-
-  function sharedConfigScope(extraLanguages: string[]): string | null {
-    if (extraLanguages.length === 0) return null
-    return `${definition.label} and ${extraLanguages.map(getBuiltinLanguageLabel).join(', ')}`
-  }
-
-  function openJsonEditor(entry: LspServerSettingsEntry, draft: Draft, extraLanguages: string[]) {
-    const settings = entry.server.settings
-    const sharedScope = sharedConfigScope(extraLanguages)
-    onOpenJsonEditor({
-      id: entry.server.server_definition_id,
-      title: entry.server.label,
-      description: settingsEditorDescription(settings, sharedScope),
-      schema: settingsEditorSchema(settings),
-      defaults: settingsEditorDefaults(settings),
-      value: settingsEditorValue(settings, draft.settingsJson),
-      onSave: async (nextValue) => {
-        await handleJsonSettingsSave(
-          entry.server.server_definition_id,
-          serializeSettingsEditorValue(settings, nextValue)
-        )
-      }
-    })
   }
 
   function formatterLabel(option: FormatterSelection): string {
@@ -389,26 +338,10 @@
 
             <div class="flex items-start gap-3">
               <span class="w-32 shrink-0 pt-1.5 text-sm text-muted">Preferences</span>
-              <div class="flex flex-1 flex-col gap-1.5">
-                <div class="flex items-center gap-2">
-                  <Button variant="outline" size="xs" onclick={() => openJsonEditor(entry, draft, extraLanguages)}>
-                    <Braces size={12} />
-                    {draft.settingsJson.trim() ? 'Edit JSON' : 'Set JSON'}
-                  </Button>
-                  {#if draft.settingsJson.trim()}
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onclick={() => {
-                        drafts = { ...drafts, [id]: { ...draft, settingsJson: '' } }
-                        void flushServer(id)
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  {/if}
-                </div>
-              </div>
+              <p class="text-xs text-subtle">
+                Edit nested LSP preferences in <span class="font-mono">settings.jsonc</span> under
+                <span class="font-mono">lsp.servers.{id}.settings</span>.
+              </p>
             </div>
           </div>
         {/if}

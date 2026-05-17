@@ -3,7 +3,7 @@ use crate::models::builtins::{
     BuiltinLanguageContribution, BuiltinLspServerDefinition, BuiltinManifest,
     BuiltinRuntimeCatalog, BuiltinSettingsCatalog, BuiltinSettingsPage, BuiltinSettingsPageKind,
 };
-use crate::services::settings::FormatterSelection;
+use crate::models::settings::FormatterSelection;
 use serde_json::from_str;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;

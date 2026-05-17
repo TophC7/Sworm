@@ -1,10 +1,11 @@
 use crate::models::lsp::{
     LspEvent, LspServerConnectionStatus, LspServerStatus, LspTransportTraceDirection,
 };
+use crate::models::settings::{LspServerConfigRecord, LspTraceLevel};
 use crate::services::builtins::LoadedBuiltinLspServerDefinition;
 use crate::services::env::EnvironmentService;
 use crate::services::nix::NixService;
-use crate::services::settings::{LspServerConfigRecord, LspTraceLevel};
+
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

@@ -1,439 +1,219 @@
-use rusqlite::{Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use crate::models::settings;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfigRecord {
-    pub provider_id: String,
-    pub enabled: bool,
-    pub binary_path_override: Option<String>,
-    pub extra_args: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LspTraceLevel {
-    Off,
-    Messages,
-    Verbose,
-}
-
-impl LspTraceLevel {
-    fn as_db_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Messages => "messages",
-            Self::Verbose => "verbose",
-        }
-    }
-
-    fn from_db_str(value: &str) -> Self {
-        match value {
-            "messages" => Self::Messages,
-            "verbose" => Self::Verbose,
-            _ => Self::Off,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FormatterSelection {
-    Lsp,
-    Biome,
-    Nixfmt,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FormattingLanguageSettings {
-    pub formatter: FormatterSelection,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FormattingSettings {
-    pub javascript_typescript: FormattingLanguageSettings,
-    pub json: FormattingLanguageSettings,
-    pub nix: FormattingLanguageSettings,
-}
-
-impl Default for FormattingSettings {
-    fn default() -> Self {
-        Self {
-            javascript_typescript: FormattingLanguageSettings {
-                formatter: FormatterSelection::Biome,
-            },
-            json: FormattingLanguageSettings {
-                formatter: FormatterSelection::Biome,
-            },
-            nix: FormattingLanguageSettings {
-                formatter: FormatterSelection::Nixfmt,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LspServerConfigRecord {
-    pub server_definition_id: String,
-    pub enabled: bool,
-    pub binary_path_override: Option<String>,
-    pub runtime_path_override: Option<String>,
-    pub runtime_args: Vec<String>,
-    pub extra_args: Vec<String>,
-    pub trace: LspTraceLevel,
-    pub settings_json: Option<String>,
-}
-
-impl LspServerConfigRecord {
-    pub fn default_for(server_definition_id: &str) -> Self {
-        Self {
-            server_definition_id: server_definition_id.to_string(),
-            enabled: true,
-            binary_path_override: None,
-            runtime_path_override: None,
-            runtime_args: Vec::new(),
-            extra_args: Vec::new(),
-            trace: LspTraceLevel::Off,
-            settings_json: None,
-        }
-    }
-}
-
-impl ProviderConfigRecord {
-    pub fn default_for(provider_id: &str) -> Self {
-        Self {
-            provider_id: provider_id.to_string(),
-            enabled: true,
-            binary_path_override: None,
-            extra_args: Vec::new(),
-        }
-    }
-}
-
-/// Default timeout for `nix develop --command env -0` evaluations, in seconds.
-/// 120s was too aggressive for cold stores pulling GUI deps (webkitgtk, gtk3,
-/// rust toolchain); 600s leaves headroom while still catching true hangs.
-pub const DEFAULT_NIX_EVAL_TIMEOUT_SECS: u64 = 600;
-
-fn default_nix_eval_timeout_secs() -> u64 {
-    DEFAULT_NIX_EVAL_TIMEOUT_SECS
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeneralSettings {
-    pub theme: String,
-    pub terminal_font_family: String,
-    pub terminal_font_size: u16,
-    // Backward-compat: older stored JSON won't have this key -- fall back to default.
-    #[serde(default = "default_nix_eval_timeout_secs")]
-    pub nix_eval_timeout_secs: u64,
-}
-
-impl Default for GeneralSettings {
-    fn default() -> Self {
-        Self {
-            theme: "system".to_string(),
-            terminal_font_family: "JetBrains Mono".to_string(),
-            terminal_font_size: 13,
-            nix_eval_timeout_secs: DEFAULT_NIX_EVAL_TIMEOUT_SECS,
-        }
-    }
-}
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 pub struct SettingsService;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsJsoncLayer {
+    pub path: PathBuf,
+    pub loaded: bool,
+    pub value: Value,
+}
+
 impl SettingsService {
-    pub fn get(conn: &Connection, key: &str) -> Result<Option<String>, rusqlite::Error> {
-        conn.query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            [key],
-            |row| row.get(0),
+    pub fn global_settings_path() -> Result<PathBuf, String> {
+        Self::global_settings_path_from_env_vars(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
         )
-        .optional()
     }
 
-    pub fn set(conn: &Connection, key: &str, value: &str) -> Result<(), rusqlite::Error> {
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET value_json = ?2, updated_at = ?3",
-            rusqlite::params![key, value, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_general_settings(conn: &Connection) -> Result<GeneralSettings, String> {
-        match Self::get(conn, "general").map_err(|error| error.to_string())? {
-            Some(value) => serde_json::from_str(&value)
-                .map_err(|error| format!("Failed to parse general settings: {}", error)),
-            None => Ok(GeneralSettings::default()),
-        }
-    }
-
-    pub fn set_general_settings(
-        conn: &Connection,
-        settings: &GeneralSettings,
-    ) -> Result<(), String> {
-        let serialized = serde_json::to_string(settings)
-            .map_err(|error| format!("Failed to serialize general settings: {}", error))?;
-        Self::set(conn, "general", &serialized).map_err(|error| error.to_string())
-    }
-
-    pub fn get_formatting_settings(conn: &Connection) -> Result<FormattingSettings, String> {
-        match Self::get(conn, "formatting").map_err(|error| error.to_string())? {
-            Some(value) => parse_formatting_settings(&value),
-            None => Ok(FormattingSettings::default()),
-        }
-    }
-
-    pub fn set_formatting_settings(
-        conn: &Connection,
-        settings: &FormattingSettings,
-    ) -> Result<(), String> {
-        let serialized = serde_json::to_string(settings)
-            .map_err(|error| format!("Failed to serialize formatting settings: {}", error))?;
-        Self::set(conn, "formatting", &serialized).map_err(|error| error.to_string())
-    }
-
-    pub fn get_provider_config(
-        conn: &Connection,
-        provider_id: &str,
-    ) -> Result<Option<ProviderConfigRecord>, String> {
-        conn.query_row(
-            "SELECT provider_id, enabled, binary_path_override, extra_args_json
-             FROM provider_configs WHERE provider_id = ?1",
-            [provider_id],
-            |row| {
-                let extra_args_json: Option<String> = row.get(3)?;
-                let extra_args = extra_args_json
-                    .as_deref()
-                    .map(serde_json::from_str::<Vec<String>>)
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            3,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?
-                    .unwrap_or_default();
-
-                Ok(ProviderConfigRecord {
-                    provider_id: row.get(0)?,
-                    enabled: row.get::<_, i64>(1)? != 0,
-                    binary_path_override: row.get(2)?,
-                    extra_args,
-                })
-            },
+    pub fn global_shortcuts_path() -> Result<PathBuf, String> {
+        Self::global_shortcuts_path_from_env_vars(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
         )
-        .optional()
-        .map_err(|error| format!("Failed to load provider config: {}", error))
     }
 
-    pub fn save_provider_config(
-        conn: &Connection,
-        config: &ProviderConfigRecord,
-    ) -> Result<(), String> {
-        let now = chrono::Utc::now().to_rfc3339();
-        let extra_args_json = serde_json::to_string(&config.extra_args)
-            .map_err(|error| format!("Failed to serialize provider args: {}", error))?;
-
-        conn.execute(
-            "INSERT INTO provider_configs (
-                provider_id, enabled, binary_path_override, extra_args_json, env_overrides_json, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, '{}', ?5)
-             ON CONFLICT(provider_id) DO UPDATE SET
-                enabled = ?2,
-                binary_path_override = ?3,
-                extra_args_json = ?4,
-                updated_at = ?5",
-            rusqlite::params![
-                config.provider_id,
-                if config.enabled { 1 } else { 0 },
-                config.binary_path_override,
-                extra_args_json,
-                now
-            ],
+    pub fn global_settings_path_from_env_vars(
+        xdg_config_home: Option<OsString>,
+        home: Option<OsString>,
+    ) -> Result<PathBuf, String> {
+        Self::global_config_file_path_from_env_vars(
+            xdg_config_home,
+            home,
+            settings::SETTINGS_FILE_NAME,
         )
-        .map_err(|error| format!("Failed to save provider config: {}", error))?;
-
-        Ok(())
     }
 
-    pub fn load_binary_overrides(conn: &Connection) -> Result<HashMap<String, String>, String> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT provider_id, binary_path_override
-                 FROM provider_configs
-                 WHERE binary_path_override IS NOT NULL
-                   AND TRIM(binary_path_override) != ''",
-            )
-            .map_err(|error| format!("Failed to prepare provider overrides query: {}", error))?;
+    pub fn global_shortcuts_path_from_env_vars(
+        xdg_config_home: Option<OsString>,
+        home: Option<OsString>,
+    ) -> Result<PathBuf, String> {
+        Self::global_config_file_path_from_env_vars(
+            xdg_config_home,
+            home,
+            settings::SHORTCUTS_FILE_NAME,
+        )
+    }
 
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|error| format!("Failed to query provider overrides: {}", error))?;
-
-        let mut overrides = HashMap::new();
-        for row in rows {
-            let (provider_id, binary_path_override) =
-                row.map_err(|error| format!("Failed to read provider override: {}", error))?;
-            overrides.insert(provider_id, binary_path_override);
+    fn global_config_file_path_from_env_vars(
+        xdg_config_home: Option<OsString>,
+        home: Option<OsString>,
+        file_name: &str,
+    ) -> Result<PathBuf, String> {
+        if let Some(path) = non_empty_env_path(xdg_config_home) {
+            return Ok(path
+                .join(settings::GLOBAL_SETTINGS_DIR_NAME)
+                .join(file_name));
         }
 
-        Ok(overrides)
+        let home = non_empty_env_path(home)
+            .ok_or_else(|| "HOME is required to resolve global config path".to_string())?;
+        Ok(home
+            .join(".config")
+            .join(settings::GLOBAL_SETTINGS_DIR_NAME)
+            .join(file_name))
     }
 
-    pub fn get_lsp_server_config(
-        conn: &Connection,
-        server_definition_id: &str,
-    ) -> Result<Option<LspServerConfigRecord>, String> {
-        conn.query_row(
-            "SELECT
-                server_definition_id,
-                enabled,
-                binary_path_override,
-                runtime_path_override,
-                runtime_args_json,
-                extra_args_json,
-                trace,
-                settings_json
-             FROM lsp_server_configs
-             WHERE server_definition_id = ?1",
-            [server_definition_id],
-            |row| {
-                let runtime_args_json: Option<String> = row.get(4)?;
-                let extra_args_json: Option<String> = row.get(5)?;
-
-                let runtime_args = runtime_args_json
-                    .as_deref()
-                    .map(serde_json::from_str::<Vec<String>>)
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            4,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?
-                    .unwrap_or_default();
-
-                let extra_args = extra_args_json
-                    .as_deref()
-                    .map(serde_json::from_str::<Vec<String>>)
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            5,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?
-                    .unwrap_or_default();
-
-                let trace: String = row.get(6)?;
-
-                Ok(LspServerConfigRecord {
-                    server_definition_id: row.get(0)?,
-                    enabled: row.get::<_, i64>(1)? != 0,
-                    binary_path_override: row.get(2)?,
-                    runtime_path_override: row.get(3)?,
-                    runtime_args,
-                    extra_args,
-                    trace: LspTraceLevel::from_db_str(&trace),
-                    settings_json: row.get(7)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Failed to load LSP server config: {}", error))
+    pub fn project_settings_path(project_path: &Path) -> PathBuf {
+        project_path.join(settings::PROJECT_SETTINGS_PATH)
     }
 
-    pub fn save_lsp_server_config(
-        conn: &Connection,
-        config: &LspServerConfigRecord,
-    ) -> Result<(), String> {
-        let now = chrono::Utc::now().to_rfc3339();
-        let runtime_args_json = serde_json::to_string(&config.runtime_args)
-            .map_err(|error| format!("Failed to serialize runtime args: {}", error))?;
-        let extra_args_json = serde_json::to_string(&config.extra_args)
-            .map_err(|error| format!("Failed to serialize LSP args: {}", error))?;
+    pub fn ensure_global_settings_parent() -> Result<PathBuf, String> {
+        let path = Self::global_settings_path()?;
+        ensure_parent_dir(&path)?;
+        Ok(path)
+    }
 
-        conn.execute(
-            "INSERT INTO lsp_server_configs (
-                server_definition_id,
-                enabled,
-                binary_path_override,
-                runtime_path_override,
-                runtime_args_json,
-                extra_args_json,
-                trace,
-                settings_json,
-                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(server_definition_id) DO UPDATE SET
-                enabled = excluded.enabled,
-                binary_path_override = excluded.binary_path_override,
-                runtime_path_override = excluded.runtime_path_override,
-                runtime_args_json = excluded.runtime_args_json,
-                extra_args_json = excluded.extra_args_json,
-                trace = excluded.trace,
-                settings_json = excluded.settings_json,
-                updated_at = excluded.updated_at",
-            rusqlite::params![
-                config.server_definition_id,
-                if config.enabled { 1 } else { 0 },
-                config.binary_path_override,
-                config.runtime_path_override,
-                runtime_args_json,
-                extra_args_json,
-                config.trace.as_db_str(),
-                config.settings_json,
-                now
-            ],
-        )
-        .map_err(|error| format!("Failed to save LSP server config: {}", error))?;
+    pub fn ensure_global_shortcuts_parent() -> Result<PathBuf, String> {
+        let path = Self::global_shortcuts_path()?;
+        ensure_parent_dir(&path)?;
+        Ok(path)
+    }
 
-        Ok(())
+    pub fn ensure_project_settings_parent(project_path: &Path) -> Result<PathBuf, String> {
+        let path = Self::project_settings_path(project_path);
+        ensure_parent_dir(&path)?;
+        Ok(path)
+    }
+
+    pub fn read_jsonc_layer_or_empty(path: &Path) -> Result<SettingsJsoncLayer, String> {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(SettingsJsoncLayer {
+                    path: path.to_path_buf(),
+                    loaded: false,
+                    value: json!({}),
+                });
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to read settings file {}: {}",
+                    path.display(),
+                    error
+                ));
+            }
+        };
+
+        let value = if raw.trim().is_empty() {
+            json!({})
+        } else {
+            jsonc_parser::parse_to_serde_value::<Value>(&raw, &Default::default()).map_err(
+                |error| {
+                    format!(
+                        "Failed to parse settings file {}: {}",
+                        path.display(),
+                        error
+                    )
+                },
+            )?
+        };
+
+        Ok(SettingsJsoncLayer {
+            path: path.to_path_buf(),
+            loaded: true,
+            value,
+        })
     }
 }
 
-fn parse_formatting_settings(raw: &str) -> Result<FormattingSettings, String> {
-    let mut value: Value = serde_json::from_str(raw)
-        .map_err(|error| format!("Failed to parse formatting settings: {}", error))?;
-
-    let Some(root) = value.as_object_mut() else {
-        return Err("Failed to parse formatting settings: expected object".to_string());
-    };
-
-    normalize_formatter_group(root, "javascript_typescript", FormatterSelection::Biome);
-    normalize_formatter_group(root, "json", FormatterSelection::Biome);
-    normalize_formatter_group(root, "nix", FormatterSelection::Nixfmt);
-
-    serde_json::from_value(value)
-        .map_err(|error| format!("Failed to parse formatting settings: {}", error))
+fn ensure_parent_dir(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create {}: {}", parent.display(), error))
 }
 
-fn normalize_formatter_group(
-    root: &mut serde_json::Map<String, Value>,
-    key: &str,
-    default: FormatterSelection,
-) {
-    let group = root.entry(key.to_string()).or_insert_with(|| json!({}));
-    if !group.is_object() {
-        *group = json!({});
+fn non_empty_env_path(value: Option<OsString>) -> Option<PathBuf> {
+    let value = value?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use uuid::Uuid;
+
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("sworm-settings-{name}-{}", Uuid::new_v4()))
     }
 
-    let group_obj = group.as_object_mut().expect("group is object");
-    let formatter = group_obj.get("formatter").and_then(Value::as_str);
-    if formatter.is_none() || formatter == Some("auto") {
-        group_obj.insert(
-            "formatter".to_string(),
-            serde_json::to_value(default).expect("formatter serializes"),
+    #[test]
+    fn global_settings_path_prefers_xdg_config_home() {
+        let path = SettingsService::global_settings_path_from_env_vars(
+            Some(OsString::from("/tmp/xdg")),
+            Some(OsString::from("/home/test")),
+        )
+        .expect("path resolves");
+        assert_eq!(path, PathBuf::from("/tmp/xdg/sworm/settings.jsonc"));
+    }
+
+    #[test]
+    fn global_shortcuts_path_uses_same_config_dir() {
+        let path = SettingsService::global_shortcuts_path_from_env_vars(
+            Some(OsString::from("/tmp/xdg")),
+            Some(OsString::from("/home/test")),
+        )
+        .expect("path resolves");
+        assert_eq!(path, PathBuf::from("/tmp/xdg/sworm/shortcuts.jsonc"));
+    }
+
+    #[test]
+    fn global_settings_path_falls_back_to_home_config() {
+        let path = SettingsService::global_settings_path_from_env_vars(
+            None,
+            Some(OsString::from("/home/test")),
+        )
+        .expect("path resolves");
+        assert_eq!(
+            path,
+            PathBuf::from("/home/test/.config/sworm/settings.jsonc")
         );
+    }
+
+    #[test]
+    fn missing_jsonc_layer_is_empty_unloaded_object() {
+        let path = temp_root("missing").join("settings.jsonc");
+        let layer = SettingsService::read_jsonc_layer_or_empty(&path).expect("missing is empty");
+        assert_eq!(layer.path, path);
+        assert!(!layer.loaded);
+        assert_eq!(layer.value, json!({}));
+    }
+
+    #[test]
+    fn jsonc_layer_accepts_comments() {
+        let root = temp_root("comments");
+        std::fs::create_dir_all(&root).expect("temp dir created");
+        let path = root.join("settings.jsonc");
+        std::fs::write(
+            &path,
+            "{\n  // comment\n  \"general\": { \"theme\": \"system\" }\n}\n",
+        )
+        .expect("settings file written");
+
+        let layer = SettingsService::read_jsonc_layer_or_empty(&path).expect("jsonc parses");
+        assert!(layer.loaded);
+        assert_eq!(layer.value["general"]["theme"], "system");
     }
 }

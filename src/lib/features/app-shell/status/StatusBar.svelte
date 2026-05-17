@@ -12,6 +12,11 @@
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
+  import {
+    ensureSettingsDiagnosticsListener,
+    getSettingsDiagnostics,
+    refreshSettingsDiagnostics
+  } from '$lib/features/settings/state/diagnostics.svelte'
   import { Circle, AlertTriangle, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
 
   let activeProjectId = $derived(getActiveProjectId())
@@ -23,6 +28,12 @@
   let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
   let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))
   let zoomInShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-in', ['Ctrl+=', 'Ctrl++'])[0]))
+  let settingsDiagnostics = $derived(getSettingsDiagnostics())
+
+  $effect(() => {
+    ensureSettingsDiagnosticsListener()
+    void refreshSettingsDiagnostics(activeProject?.path)
+  })
 </script>
 
 <footer
@@ -35,12 +46,7 @@
           <span class="flex items-center gap-1 font-mono text-muted">
             <GitBranchIcon size={10} />
             {gitSummary.branch}
-            <AheadBehindBadge
-              ahead={gitSummary.ahead ?? 0}
-              behind={gitSummary.behind ?? 0}
-              size="xs"
-              twoColor
-            />
+            <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} size="xs" twoColor />
           </span>
         {/snippet}
       </StatusBarBranchPopover>
@@ -49,6 +55,29 @@
   </div>
 
   <div class="flex items-center gap-2.5">
+    {#if settingsDiagnostics.length > 0}
+      <TooltipRoot>
+        <TooltipTrigger class="flex items-center gap-1 text-warning transition-colors hover:text-warning-bright">
+          <AlertTriangle size={10} />
+          {settingsDiagnostics.length} settings
+        </TooltipTrigger>
+        <TooltipContent class="max-w-md">
+          <div class="space-y-1 text-left">
+            <div class="text-xs font-medium text-warning-bright">Settings diagnostics</div>
+            {#each settingsDiagnostics.slice(0, 5) as diagnostic}
+              <div class="font-mono text-2xs text-muted">
+                {diagnostic.layer}: {diagnostic.path}{diagnostic.pointer ? ` ${diagnostic.pointer}` : ''}
+                <span class="font-sans text-warning-bright">{diagnostic.message}</span>
+              </div>
+            {/each}
+            {#if settingsDiagnostics.length > 5}
+              <div class="text-2xs text-subtle">+{settingsDiagnostics.length - 5} more</div>
+            {/if}
+          </div>
+        </TooltipContent>
+      </TooltipRoot>
+    {/if}
+
     {#if liveSessions.length > 0}
       <span class="flex items-center gap-1 text-success">
         <Circle size={6} fill="currentColor" />

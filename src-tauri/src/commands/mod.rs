@@ -15,6 +15,7 @@ pub mod providers;
 pub mod pty;
 pub mod sessions;
 pub mod settings;
+pub mod shortcuts;
 pub mod tasks;
 pub mod transcript;
 pub mod workspace;

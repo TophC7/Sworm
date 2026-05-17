@@ -12,6 +12,7 @@ use crate::services::{
     providers::ProviderService,
     pty::{PtyService, TranscriptBatcher},
     sessions::SessionService,
+    settings_watcher::SettingsWatcherService,
     tasks::TaskService,
     transcript::TranscriptService,
     workspace_state::{AppStateKvService, WorkspaceStateService},
@@ -54,6 +55,7 @@ pub struct AppState {
     pub workspace_state: WorkspaceStateService,
     pub app_state_kv: AppStateKvService,
     pub tasks: TaskService,
+    pub settings_watchers: SettingsWatcherService,
     /// Tracks project IDs with Nix evaluations in progress to prevent concurrent runs.
     pub nix_eval_locks: Mutex<HashSet<String>>,
     /// Per-cwd locks serializing Codex thread binding to avoid cross-binding races.
@@ -61,6 +63,8 @@ pub struct AppState {
     pub codex_bind_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Cached activity map scan results. None = not yet scanned.
     pub activity_map_cache: Mutex<Option<Vec<DiscoveredProject>>>,
+    /// Monotonic generation for settings file writes and watcher events.
+    pub settings_generation: Arc<Mutex<u64>>,
 }
 
 impl AppState {
@@ -124,9 +128,11 @@ impl AppState {
             workspace_state: WorkspaceStateService::new(),
             app_state_kv: AppStateKvService::new(),
             tasks: TaskService::new(),
+            settings_watchers: SettingsWatcherService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),
             codex_bind_locks: Arc::new(Mutex::new(HashMap::new())),
             activity_map_cache: Mutex::new(None),
+            settings_generation: Arc::new(Mutex::new(0)),
         })
     }
 }

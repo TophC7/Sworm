@@ -21,8 +21,10 @@ import {
   newTerminalSession,
   openActiveProjectInExternalTerminal,
   openFreshSession,
+  openGlobalSettingsFile,
   openProjectDirectory,
   openProjectPicker,
+  openProjectSettingsFile,
   openSettings,
   reloadView,
   reopenTab,
@@ -191,6 +193,23 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       icon: SettingsIcon,
       keywords: ['preferences', 'config', 'options'],
       run: openSettings
+    }),
+    appCommand({
+      id: 'open-global-settings',
+      label: 'Open Global Settings',
+      group: 'General',
+      icon: SettingsIcon,
+      keywords: ['settings', 'preferences', 'jsonc', 'global', 'user'],
+      run: openGlobalSettingsFile
+    }),
+    appCommand({
+      id: 'open-project-settings',
+      label: 'Open Project Settings',
+      group: 'General',
+      icon: SettingsIcon,
+      keywords: ['settings', 'preferences', 'jsonc', 'project', 'sworm'],
+      visible: activeProjectVisible,
+      run: openProjectSettingsFile
     }),
     appCommand({
       id: 'close-project',

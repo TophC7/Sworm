@@ -5,6 +5,8 @@
  * or plain text (textLabel + textFont).
  */
 
+import { MONO_FONT_FAMILY } from '$lib/fonts'
+
 export interface ProviderMeta {
   id: string
   label: string
@@ -75,7 +77,7 @@ export const directOptions: ProviderMeta[] = [
     label: 'Terminal',
     icon: '/svg/terminal.svg',
     textLabel: 'Terminal',
-    textFont: "'Monocraft Nerd Font', monospace",
+    textFont: MONO_FONT_FAMILY,
     gradientFrom: '#a1a1aa',
     gradientTo: '#3f3f46'
   }

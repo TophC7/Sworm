@@ -93,6 +93,82 @@ export interface ProviderConfig {
   extra_args: string[]
 }
 
+export interface ProviderSettings {
+  enabled: boolean
+  binary_path_override: string | null
+  extra_args: string[]
+}
+
+export interface EffectiveLspServerSettings {
+  enabled: boolean
+  binary_path_override: string | null
+  runtime_path_override: string | null
+  runtime_args: string[]
+  extra_args: string[]
+  trace: LspTraceLevel
+  settings: unknown | null
+}
+
+export interface EffectiveSettings {
+  general: GeneralSettings
+  formatting: FormattingSettings
+  providers: Record<string, ProviderSettings>
+  lsp: { servers: Record<string, EffectiveLspServerSettings> }
+}
+
+export type SettingsLayerKind = 'global' | 'project'
+export type SettingsDiagnosticCode =
+  | 'parse_error'
+  | 'type_error'
+  | 'invalid_enum'
+  | 'invalid_null'
+  | 'unknown_key'
+  | 'unknown_provider'
+  | 'unknown_lsp_server'
+export type SettingsDiagnosticSeverity = 'warning' | 'error'
+
+export interface SettingsDiagnostic {
+  layer: SettingsLayerKind
+  path: string
+  pointer: string
+  code: SettingsDiagnosticCode
+  severity: SettingsDiagnosticSeverity
+  message: string
+}
+
+export interface EffectiveSettingsPayload {
+  settings: EffectiveSettings
+  diagnostics: SettingsDiagnostic[]
+}
+
+export interface SettingsLayerPayload {
+  path: string
+  loaded: boolean
+  value: unknown
+  diagnostics: SettingsDiagnostic[]
+}
+
+export interface SettingsFileResult {
+  path: string
+}
+
+export interface ShortcutsFilePayload {
+  path: string
+  loaded: boolean
+  value: unknown
+}
+
+export interface ShortcutsFileResult {
+  path: string
+}
+
+export interface SettingsChangedEvent {
+  layer: SettingsLayerKind
+  project_id?: string | null
+  generation: number
+  diagnostics: SettingsDiagnostic[]
+}
+
 export interface ProviderSettingsEntry {
   provider: ProviderStatus
   config: ProviderConfig
@@ -172,7 +248,7 @@ export interface LspServerConfig {
   runtime_args: string[]
   extra_args: string[]
   trace: LspTraceLevel
-  settings_json: string | null
+  settings: unknown | null
 }
 
 export interface LspServerStatus {

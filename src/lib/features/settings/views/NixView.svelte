@@ -13,7 +13,6 @@
 <script lang="ts">
   import { Input } from '$lib/components/ui/input'
   import LanguageSettingsView from './LanguageSettingsView.svelte'
-  import type { JsonSettingsEditorSession } from './jsonSettings'
   import type { BuiltinSettingsPage } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getSettings, saveGeneralSettings } from '$lib/features/settings/state/settings.svelte'
@@ -24,12 +23,10 @@
   type StatusHook = () => void
   let {
     definition,
-    onOpenJsonEditor,
     onSaving,
     onSaved
   }: {
     definition: BuiltinSettingsPage
-    onOpenJsonEditor: (session: JsonSettingsEditorSession) => void
     onSaving: StatusHook
     onSaved: StatusHook
   } = $props()
@@ -81,4 +78,4 @@
   </div>
 </section>
 
-<LanguageSettingsView {definition} {onOpenJsonEditor} {onSaving} {onSaved} />
+<LanguageSettingsView {definition} {onSaving} {onSaved} />

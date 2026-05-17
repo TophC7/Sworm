@@ -1,4 +1,4 @@
-use crate::services::settings::FormatterSelection;
+use crate::models::settings::FormatterSelection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

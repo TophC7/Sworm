@@ -8,4 +8,5 @@ pub mod nix_env;
 pub mod project;
 pub mod provider;
 pub mod session;
+pub mod settings;
 pub mod task;

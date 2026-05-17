@@ -41,21 +41,6 @@ CREATE TABLE session_entries (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE provider_configs (
-  provider_id TEXT PRIMARY KEY,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  binary_path_override TEXT,
-  extra_args_json TEXT,
-  env_overrides_json TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE app_settings (
-  key TEXT PRIMARY KEY,
-  value_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 CREATE TABLE mcp_servers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -105,24 +90,11 @@ CREATE TABLE workspace_state (
   updated_at TEXT NOT NULL
 );
 
--- App-shell key/value (hot-restore: open project ids, active project,
--- pending-open path, ...). Kept separate from `app_settings` because
--- preferences and hot-restore state are different classes of data.
+-- App-shell key/value for hot-restore data: open project ids, active
+-- project, pending-open path, and other frontend-owned state.
 CREATE TABLE app_state (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE lsp_server_configs (
-  server_definition_id TEXT PRIMARY KEY,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  binary_path_override TEXT,
-  runtime_path_override TEXT,
-  runtime_args_json TEXT NOT NULL DEFAULT '[]',
-  extra_args_json TEXT NOT NULL DEFAULT '[]',
-  trace TEXT NOT NULL DEFAULT 'off',
-  settings_json TEXT,
   updated_at TEXT NOT NULL
 );
 

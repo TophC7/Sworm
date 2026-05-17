@@ -1,5 +1,5 @@
 use crate::models::builtins::{BuiltinDocumentSelector, BuiltinLspServerSettingsDescriptor};
-use crate::services::settings::LspServerConfigRecord;
+use crate::models::settings::LspServerConfigRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

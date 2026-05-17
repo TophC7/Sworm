@@ -18,7 +18,8 @@ import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/ser
 import {
   createUntitledTextSurface,
   getDirtyTextSurfaceCount,
-  hasAnyDirtyTextSurfaces
+  hasAnyDirtyTextSurfaces,
+  openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import {
   closeProject,
@@ -70,6 +71,29 @@ export async function openProjectDirectory(): Promise<void> {
 
 export function openSettings(): void {
   setSettingsOpen(true)
+}
+
+export async function openGlobalSettingsFile(): Promise<void> {
+  try {
+    await backend.settings.openGlobalFile()
+  } catch (error) {
+    notify.error('Open Global Settings failed', getErrorMessage(error))
+  }
+}
+
+export async function openProjectSettingsFile(): Promise<void> {
+  const project = getActiveProject()
+  if (!project) {
+    notify.error('No active project', 'Open a project before opening project settings.')
+    return
+  }
+
+  try {
+    await backend.settings.openProjectFile(project.path)
+    await openTextFile(project.id, '.sworm/settings.jsonc', { temporary: false })
+  } catch (error) {
+    notify.error('Open Project Settings failed', getErrorMessage(error))
+  }
 }
 
 export function closeActiveProject(): void {

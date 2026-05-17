@@ -5,6 +5,7 @@
 // behavior. Just mount xterm, pipe output, forward input.
 
 import { backend } from '$lib/api/backend'
+import { MONO_FONT_FAMILY } from '$lib/fonts'
 import type { PtyEvent } from '$lib/types/backend'
 import type { TaskRunStatus } from '$lib/features/workbench/model'
 import { FitAddon } from '@xterm/addon-fit'
@@ -14,7 +15,7 @@ import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
   fontSize: 13,
-  fontFamily: "'Monocraft Nerd Font', monospace",
+  fontFamily: MONO_FONT_FAMILY,
   scrollback: 10000,
   convertEol: true,
   vtExtensions: { kittyKeyboard: true },

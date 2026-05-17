@@ -8,7 +8,7 @@ import {
 import { formatDocumentWithLsp, getLspDocumentContext } from '$lib/features/editor/lsp/registry'
 import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
 import { getSettings, loadSettings } from '$lib/features/settings/state/settings.svelte'
-import type { FormatterSelection } from '$lib/types/backend'
+import type { FormatterSelection, FormattingSettings } from '$lib/types/backend'
 
 type Monaco = typeof import('monaco-editor')
 type MonacoModel = import('monaco-editor').editor.ITextModel
@@ -21,6 +21,7 @@ class FormatterRegistry {
   async ensureMonaco(monaco: Monaco): Promise<void> {
     this.monaco = monaco
     await preloadBuiltinCatalog()
+    ensureFormatterSettingsCacheInvalidation()
     if (!getSettings()) {
       void loadSettings()
     }
@@ -38,14 +39,14 @@ class FormatterRegistry {
     const group = formattingGroupForLanguageId(model.getLanguageId())
     if (!group) return []
 
-    const formatter = resolveFormatterSelection(group)
+    const context = getLspDocumentContext(model)
+    if (!context) return []
+
+    const formatter = await resolveFormatterSelection(group, context.projectPath)
     if (formatter === 'disabled') return []
     if (formatter === 'lsp') {
       return formatDocumentWithLsp(model)
     }
-
-    const context = getLspDocumentContext(model)
-    if (!context) return []
 
     try {
       if (formatter === 'biome') {
@@ -68,14 +69,56 @@ class FormatterRegistry {
 }
 
 const registry = new FormatterRegistry()
+const formatterSettingsByProjectPath = new Map<string, Promise<FormattingSettings>>()
+let formatterSettingsInvalidationStarted = false
+let formatterSettingsCachingEnabled = true
 
 export function ensureMonacoFormatters(monaco: Monaco) {
   return registry.ensureMonaco(monaco)
 }
 
-function resolveFormatterSelection(group: FormattingGroupId): FormatterSelection {
-  const settings = getSettings()?.formatting
-  return settings?.[group]?.formatter ?? defaultFormatterForGroup(group)
+async function resolveFormatterSelection(group: FormattingGroupId, projectPath: string): Promise<FormatterSelection> {
+  try {
+    const formatting = await resolveProjectFormattingSettings(projectPath)
+    return formatting[group]?.formatter ?? defaultFormatterForGroup(group)
+  } catch (error) {
+    console.warn('Failed to load project-effective formatter settings', error)
+    const settings = getSettings()?.formatting
+    return settings?.[group]?.formatter ?? defaultFormatterForGroup(group)
+  }
+}
+
+function ensureFormatterSettingsCacheInvalidation(): void {
+  if (formatterSettingsInvalidationStarted) return
+  formatterSettingsInvalidationStarted = true
+  backend.settings
+    .onChanged(() => {
+      formatterSettingsByProjectPath.clear()
+    })
+    .catch(() => {
+      formatterSettingsCachingEnabled = false
+      formatterSettingsByProjectPath.clear()
+    })
+}
+
+async function resolveProjectFormattingSettings(projectPath: string): Promise<FormattingSettings> {
+  if (!formatterSettingsCachingEnabled) {
+    const effective = await backend.settings.getEffective(projectPath)
+    return effective.settings.formatting
+  }
+
+  let cached = formatterSettingsByProjectPath.get(projectPath)
+  if (!cached) {
+    cached = backend.settings
+      .getEffective(projectPath)
+      .then((effective) => effective.settings.formatting)
+      .catch((error) => {
+        formatterSettingsByProjectPath.delete(projectPath)
+        throw error
+      })
+    formatterSettingsByProjectPath.set(projectPath, cached)
+  }
+  return cached
 }
 
 function toFullDocumentEdit(model: MonacoModel, formatted: string): MonacoTextEdit[] {

@@ -130,9 +130,21 @@ pub fn run() {
             commands::providers::provider_refresh,
             // Settings commands
             commands::settings::settings_get,
+            commands::settings::settings_get_effective,
+            commands::settings::settings_get_global_layer,
+            commands::settings::settings_patch_global_section,
+            commands::settings::settings_create_global_file,
+            commands::settings::settings_open_global_file,
+            commands::settings::settings_create_project_file,
+            commands::settings::settings_open_project_file,
             commands::settings::settings_set_general,
             commands::settings::settings_set_formatting,
             commands::settings::settings_set_provider_config,
+            // Shortcut commands
+            commands::shortcuts::shortcuts_get_global,
+            commands::shortcuts::shortcuts_set_global,
+            commands::shortcuts::shortcuts_create_global_file,
+            commands::shortcuts::shortcuts_open_global_file,
             // Formatter commands
             commands::formatting::formatting_format_biome,
             commands::formatting::formatting_format_nixfmt,

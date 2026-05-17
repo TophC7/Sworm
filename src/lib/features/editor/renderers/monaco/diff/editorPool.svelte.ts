@@ -13,6 +13,7 @@
 //   - View-state is saved before release, restored on sticky reuse.
 
 import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
+import { MONO_FONT_FAMILY } from '$lib/fonts'
 
 type Monaco = typeof import('monaco-editor')
 type DiffEditor = import('monaco-editor').editor.IStandaloneDiffEditor
@@ -135,7 +136,7 @@ export function createDiffOptions(settings: DiffEditorSettings): DiffOptions {
     lineNumbers: 'on',
     glyphMargin: false,
     folding: false,
-    fontFamily: "'Monocraft Nerd Font', monospace",
+    fontFamily: MONO_FONT_FAMILY,
     fontLigatures: false,
     lineHeight: 20,
     minimap: { enabled: false },

@@ -10,15 +10,8 @@
 
 <script lang="ts">
   import { getBuiltinSettingsPages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
-  import {
-    BreadcrumbItem,
-    BreadcrumbList,
-    BreadcrumbPage,
-    BreadcrumbRoot,
-    BreadcrumbSeparator
-  } from '$lib/components/ui/breadcrumb'
   import FileIcon from '$lib/icons/FileIcon.svelte'
-  import { Button, IconButton } from '$lib/components/ui/button'
+  import { IconButton } from '$lib/components/ui/button'
   import { DialogContent, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { ScrollArea } from '$lib/components/ui/scroll-area'
   import { TooltipContent, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
@@ -44,13 +37,11 @@
   // outside Tauri (e.g. vite preview).
   const versionPromise: Promise<string | null> = getVersion().catch(() => null)
   import GeneralView from '$lib/features/settings/views/GeneralView.svelte'
-  import JsonSettingsEditorView from '$lib/features/settings/views/JsonSettingsEditorView.svelte'
   import KeyboardShortcutsView from '$lib/features/settings/views/KeyboardShortcutsView.svelte'
   import LanguageSettingsView from '$lib/features/settings/views/LanguageSettingsView.svelte'
   import NixView from '$lib/features/settings/views/NixView.svelte'
   import ProvidersView from '$lib/features/settings/views/ProvidersView.svelte'
   import WindowView from '$lib/features/settings/views/WindowView.svelte'
-  import type { JsonSettingsEditorSession } from '$lib/features/settings/views/jsonSettings'
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 
@@ -88,7 +79,6 @@
   let activeItem = $derived(FLAT_NAV.find((item) => item.id === active) ?? FLAT_NAV[0])
   let activeLabel = $derived(activeItem.label)
   let activeLanguagePage = $derived(languagePages.find((definition) => definition.id === active) ?? null)
-  let editorSession = $state<JsonSettingsEditorSession | null>(null)
 
   // SAVE STATUS //
 
@@ -128,23 +118,12 @@
   let saveTooltip = $derived(
     pending > 0 ? 'Saving changes…' : savedFlash ? 'All changes saved' : 'Changes autosave 400ms after you stop typing.'
   )
-
-  function openJsonEditor(session: JsonSettingsEditorSession) {
-    editorSession = session
-  }
-
-  function closeJsonEditor() {
-    editorSession = null
-  }
 </script>
 
 <DialogRoot
   bind:open
   onOpenChange={(v) => {
-    if (!v) {
-      closeJsonEditor()
-      onClose()
-    }
+    if (!v) onClose()
   }}
 >
   <DialogContent class="h-full max-h-224 max-w-5xl overflow-hidden bg-ground p-0" onModalClose={onClose}>
@@ -168,7 +147,6 @@
               <button
                 type="button"
                 onclick={() => {
-                  closeJsonEditor()
                   active = item.id
                 }}
                 class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors
@@ -200,77 +178,31 @@
       <!-- MAIN //-->
       <main class="flex min-w-0 flex-1 flex-col">
         <header class="flex h-12 shrink-0 items-center justify-between border-b border-edge bg-surface px-5">
-          {#if editorSession}
-            <BreadcrumbRoot class="flex min-w-0 flex-1">
-              <BreadcrumbList class="min-w-0">
-                <BreadcrumbItem class="max-w-48 min-w-0">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="-ml-2 h-auto px-2 py-1 text-sm text-muted hover:text-bright"
-                    onclick={closeJsonEditor}
-                  >
-                    {activeLabel}
-                  </Button>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem class="min-w-0 flex-1">
-                  <BreadcrumbPage class="text-md">{editorSession.title}</BreadcrumbPage>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </BreadcrumbRoot>
-          {:else}
-            <DialogTitle class="truncate text-md font-semibold text-bright">{activeLabel}</DialogTitle>
-          {/if}
+          <DialogTitle class="truncate text-md font-semibold text-bright">{activeLabel}</DialogTitle>
           <IconButton tooltip="Close" onclick={onClose}>
             <X size={14} />
           </IconButton>
         </header>
 
-        {#if editorSession}
-          {#key editorSession.id}
-            <div class="min-h-0 flex-1">
-              <JsonSettingsEditorView
-                editorId={editorSession.id}
-                schema={editorSession.schema}
-                defaults={editorSession.defaults}
-                value={editorSession.value}
-                description={editorSession.description}
-                onSave={async (nextValue) => {
-                  const session = editorSession
-                  if (!session) return
-                  await session.onSave(nextValue)
-                  closeJsonEditor()
-                }}
-              />
-            </div>
-          {/key}
-        {:else}
-          <ScrollArea class="flex-1">
-            {#if active === 'appearance'}
-              <GeneralView />
-            {:else if active === 'keyboard-shortcuts'}
-              <KeyboardShortcutsView />
-            {:else if active === 'providers'}
-              <ProvidersView {onSaving} {onSaved} />
-            {:else if active === 'window'}
-              <WindowView />
-            {:else if activeLanguagePage}
-              {#key activeLanguagePage.id}
-                {#if activeLanguagePage.kind === 'nix'}
-                  <NixView definition={activeLanguagePage} onOpenJsonEditor={openJsonEditor} {onSaving} {onSaved} />
-                {:else}
-                  <LanguageSettingsView
-                    definition={activeLanguagePage}
-                    onOpenJsonEditor={openJsonEditor}
-                    {onSaving}
-                    {onSaved}
-                  />
-                {/if}
-              {/key}
-            {/if}
-          </ScrollArea>
-        {/if}
+        <ScrollArea class="flex-1">
+          {#if active === 'appearance'}
+            <GeneralView />
+          {:else if active === 'keyboard-shortcuts'}
+            <KeyboardShortcutsView />
+          {:else if active === 'providers'}
+            <ProvidersView {onSaving} {onSaved} />
+          {:else if active === 'window'}
+            <WindowView />
+          {:else if activeLanguagePage}
+            {#key activeLanguagePage.id}
+              {#if activeLanguagePage.kind === 'nix'}
+                <NixView definition={activeLanguagePage} {onSaving} {onSaved} />
+              {:else}
+                <LanguageSettingsView definition={activeLanguagePage} {onSaving} {onSaved} />
+              {/if}
+            {/key}
+          {/if}
+        </ScrollArea>
 
         <footer class="flex h-10 shrink-0 items-center justify-between border-t border-edge px-5 text-sm">
           <span class="font-mono text-xs text-subtle">

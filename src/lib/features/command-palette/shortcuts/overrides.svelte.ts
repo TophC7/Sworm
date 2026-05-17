@@ -1,8 +1,6 @@
 import { backend } from '$lib/api/backend'
 import { normalizeShortcut, shortcutEquals } from '$lib/features/command-palette/shortcuts/spec'
 
-const APP_STATE_KEY = 'shortcutOverrides'
-
 export interface KeybindingRule {
   command: string
   key: string
@@ -35,11 +33,11 @@ function normalizeBindings(bindings: string[]): string[] {
   return normalized
 }
 
-function parse(raw: string | null): ShortcutOverrideState {
-  if (!raw) return emptyState()
+function parse(value: unknown): ShortcutOverrideState {
+  if (!value || typeof value !== 'object') return emptyState()
   try {
-    const parsed = JSON.parse(raw)
-    if (parsed?.version !== 1 || !Array.isArray(parsed.bindings)) return emptyState()
+    const parsed = value as Partial<KeybindingSettingsV1>
+    if (parsed.version !== 1 || !Array.isArray(parsed.bindings)) return emptyState()
 
     const bindings: Record<string, string[]> = {}
     for (const rule of parsed.bindings as KeybindingRule[]) {
@@ -84,11 +82,11 @@ function trackOverrides(): void {
 }
 
 export function loadShortcutOverrides(): Promise<void> {
-  loadPromise ??= backend.workspace
-    .appStateGet(APP_STATE_KEY)
-    .then((raw) => {
+  loadPromise ??= backend.shortcuts
+    .getGlobal()
+    .then((payload) => {
       if (changedBeforeLoad) return
-      overrides = parse(raw)
+      overrides = parse(payload.value)
       notify()
     })
     .catch((error) => {
@@ -113,7 +111,7 @@ function notify(): void {
 }
 
 function persist(state: ShortcutOverrideState): void {
-  void backend.workspace.appStatePut(APP_STATE_KEY, JSON.stringify(serialize(state))).catch((error) => {
+  void backend.shortcuts.setGlobal(serialize(state)).catch((error) => {
     console.warn('Failed to persist shortcut overrides:', error)
   })
 }

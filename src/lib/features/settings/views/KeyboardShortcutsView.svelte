@@ -4,10 +4,12 @@
 -->
 
 <script lang="ts">
+  import { backend } from '$lib/api/backend'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
+  import { notify } from '$lib/features/notifications/state.svelte'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
   import ShortcutPreview from '$lib/features/command-palette/shortcuts/ShortcutPreview.svelte'
   import { clearShortcutOverride, getUserKeybindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
@@ -29,6 +31,16 @@
   let search = $state('')
   let filter = $state<Filter>('all')
   let rebindTarget = $state<ShortcutCommandInfo | null>(null)
+  let shortcutsPath = $state<string | null>(null)
+
+  async function openShortcutsFile(): Promise<void> {
+    try {
+      const result = await backend.shortcuts.openGlobalFile()
+      shortcutsPath = result.path
+    } catch (error) {
+      notify.error('Failed to open shortcuts file', error instanceof Error ? error.message : String(error))
+    }
+  }
 
   function matchesSearch(command: ShortcutCommandInfo): boolean {
     const query = search.trim().toLowerCase()
@@ -82,7 +94,16 @@
 </script>
 
 <section class="flex flex-col gap-3 border-b border-edge px-5 py-4">
-  <h3 class="text-md font-semibold text-bright">Keyboard Shortcuts</h3>
+  <div class="flex items-start justify-between gap-3">
+    <div class="space-y-1">
+      <h3 class="text-md font-semibold text-bright">Keyboard Shortcuts</h3>
+      <p class="text-xs text-subtle">
+        Overrides save to <span class="font-mono">shortcuts.jsonc</span>{#if shortcutsPath}
+          at <span class="font-mono">{shortcutsPath}</span>{/if}.
+      </p>
+    </div>
+    <Button size="xs" variant="outline" onclick={openShortcutsFile}>Open File</Button>
+  </div>
   <div class="flex items-center gap-2">
     <Input bind:value={search} placeholder="Search commands..." class="max-w-md" />
     <TabsRoot

@@ -5,8 +5,7 @@
 // of that blob; the backend only stores it.
 //
 // App state: a small key/value store scoped to hot-restore data (open
-// project ids, active project id). Distinct from `app_settings`, which
-// stores user preferences.
+// project ids, active project id, transient frontend-owned state).
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
