@@ -18,3 +18,10 @@ pub struct Session {
     pub last_started_at: Option<String>,
     pub last_stopped_at: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSessionGroup {
+    pub project_id: String,
+    pub sessions: Vec<Session>,
+    pub archived_sessions: Vec<Session>,
+}

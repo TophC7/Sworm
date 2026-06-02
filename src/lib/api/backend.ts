@@ -48,6 +48,7 @@ import type {
   NixDiagnostic,
   NixEnvRecord,
   Project,
+  ProjectSessionGroup,
   ProviderConfig,
   ProviderStatus,
   PtyEvent,
@@ -236,6 +237,9 @@ export const backend = {
     },
     listArchived(projectId: string): Promise<Session[]> {
       return invoke<Session[]>('session_list_archived', { projectId })
+    },
+    listProjectGroups(projectIds: string[]): Promise<ProjectSessionGroup[]> {
+      return invoke<ProjectSessionGroup[]>('session_list_project_groups', { projectIds })
     },
     /**
      * Return whether the backend currently holds a live PTY for this

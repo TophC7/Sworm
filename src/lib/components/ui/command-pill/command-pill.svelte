@@ -25,7 +25,6 @@
 
 <script lang="ts">
   import { cn } from '$lib/utils/cn'
-  import { SearchIcon } from '$lib/icons/lucideExports'
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import { splitShortcut } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
   import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
@@ -49,7 +48,6 @@
   {onclick}
   {...rest}
 >
-  <SearchIcon size={12} />
   <span class="truncate">{label}</span>
   <KbdGroup class="ml-auto">
     {#each shortcutParts as part (part)}

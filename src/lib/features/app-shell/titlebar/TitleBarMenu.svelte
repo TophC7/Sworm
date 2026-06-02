@@ -1,7 +1,8 @@
 <!--
   @component
-  TitleBarMenu — hamburger popover that replaces the old AppMenuBar.
-  Groups File / View / Project items using DropdownMenuSeparator.
+  TitleBarMenu — hamburger fallback for the app menu bar, shown when the
+  horizontal menu bar (AppMenuBar) doesn't fit the titlebar. Renders the
+  shared buildAppMenu model, so its contents match AppMenuBar exactly.
 -->
 
 <script lang="ts">
@@ -17,34 +18,11 @@
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
   import { MenuIcon } from '$lib/icons/lucideExports'
-  import { getProjects } from '$lib/features/projects/state.svelte'
-  import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
-  import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-  import {
-    closeProject,
-    getActiveProjectId,
-    getOpenProjectIds,
-    openProject
-  } from '$lib/features/workbench/state.svelte'
+  import { buildAppMenu, type AppMenuHandlers } from './menuModel'
 
-  let {
-    onNewProject,
-    onAbout
-  }: {
-    onNewProject: () => void
-    onAbout?: () => void
-  } = $props()
+  let { onNewProject, onSettings }: AppMenuHandlers = $props()
 
-  let projects = $derived(getProjects())
-  let openIds = $derived(getOpenProjectIds())
-  let activeId = $derived(getActiveProjectId())
-  let recentProjects = $derived(projects.filter((p) => !openIds.includes(p.id)))
-  let hasActiveProject = $derived(activeId !== null)
-  let sidebarCollapsed = $derived(isSidebarCollapsed())
-
-  function handleCloseProject() {
-    if (activeId) void closeProject(activeId)
-  }
+  let groups = $derived(buildAppMenu({ onNewProject, onSettings }))
 </script>
 
 <DropdownMenuRoot>
@@ -52,37 +30,27 @@
     <MenuIcon size={14} />
   </DropdownMenuTrigger>
 
-  <DropdownMenuContent align="end" sideOffset={6}>
-    <DropdownMenuItem onclick={onNewProject}>Open Project</DropdownMenuItem>
-
-    {#if recentProjects.length > 0}
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger>
-          <span>Open Recent</span>
-        </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent>
-          {#each recentProjects as project (project.id)}
-            <DropdownMenuItem onclick={() => openProject(project.id)}>
-              <span class="truncate" title={project.path}>{project.name}</span>
-            </DropdownMenuItem>
-          {/each}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-    {/if}
-
-    {#if onAbout}
-      <DropdownMenuItem onclick={onAbout}>About</DropdownMenuItem>
-    {/if}
-
-    <DropdownMenuItem onclick={handleCloseProject} disabled={!hasActiveProject}>Close Project</DropdownMenuItem>
-
-    <DropdownMenuSeparator />
-
-    <DropdownMenuItem onclick={toggleSidebar} disabled={!hasActiveProject}>
-      {sidebarCollapsed ? 'Show' : 'Hide'} Sidebar
-    </DropdownMenuItem>
-    <DropdownMenuItem onclick={zoomIn}>Zoom In</DropdownMenuItem>
-    <DropdownMenuItem onclick={zoomOut}>Zoom Out</DropdownMenuItem>
-    <DropdownMenuItem onclick={zoomReset}>Reset Zoom</DropdownMenuItem>
+  <DropdownMenuContent align="start" sideOffset={6}>
+    {#each groups as group, gi (group.label)}
+      {#if gi > 0}<DropdownMenuSeparator />{/if}
+      {#each group.entries as entry, i (i)}
+        {#if entry.kind === 'separator'}
+          <DropdownMenuSeparator />
+        {:else if entry.kind === 'submenu'}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>{entry.label}</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {#each entry.items as item (item.label)}
+                <DropdownMenuItem onclick={item.onSelect} disabled={item.disabled}>
+                  <span class="truncate" title={item.title}>{item.label}</span>
+                </DropdownMenuItem>
+              {/each}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        {:else}
+          <DropdownMenuItem onclick={entry.onSelect} disabled={entry.disabled}>{entry.label}</DropdownMenuItem>
+        {/if}
+      {/each}
+    {/each}
   </DropdownMenuContent>
 </DropdownMenuRoot>

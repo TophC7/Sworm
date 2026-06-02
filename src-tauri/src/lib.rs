@@ -161,6 +161,7 @@ pub fn run() {
             commands::sessions::session_archive,
             commands::sessions::session_unarchive,
             commands::sessions::session_list_archived,
+            commands::sessions::session_list_project_groups,
             // Task commands (project-scoped .sworm/tasks.json)
             commands::tasks::tasks_list,
             commands::tasks::tasks_start,

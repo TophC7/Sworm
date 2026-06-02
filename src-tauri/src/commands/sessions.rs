@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::models::session::Session;
+use crate::models::session::{ProjectSessionGroup, Session};
 use crate::services::codex_state::CodexStateReader;
 use crate::services::nix::NixService;
 use crate::services::providers::ProviderService;
@@ -21,6 +21,21 @@ use tracing::warn;
 const CODEX_BIND_LOOKBACK_SECS: i64 = 15;
 const CODEX_BIND_TIMEOUT_SECS: u64 = 20;
 const CODEX_BIND_POLL_MS: u64 = 250;
+
+fn reconcile_stale_session_statuses(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    sessions: &mut [Session],
+) {
+    for session in sessions {
+        if (session.status == "running" || session.status == "starting")
+            && !state.pty.is_alive(&session.id)
+        {
+            let _ = state.sessions.update_status(conn, &session.id, "exited");
+            session.status = "exited".to_string();
+        }
+    }
+}
 
 fn spawn_codex_bind_thread(
     session_id: String,
@@ -183,12 +198,7 @@ pub async fn session_list(
         .list_for_project(db.conn(), &project_id)
         .map_err(ApiError::Database)?;
 
-    for s in &mut sessions {
-        if (s.status == "running" || s.status == "starting") && !state.pty.is_alive(&s.id) {
-            let _ = state.sessions.update_status(db.conn(), &s.id, "exited");
-            s.status = "exited".to_string();
-        }
-    }
+    reconcile_stale_session_statuses(&state, db.conn(), &mut sessions);
 
     Ok(sessions)
 }
@@ -657,4 +667,35 @@ pub async fn session_list_archived(
         .sessions
         .list_archived_for_project(db.conn(), &project_id)
         .map_err(ApiError::Database)
+}
+
+/// List live and archived sessions for multiple projects in one IPC call.
+#[tauri::command]
+pub async fn session_list_project_groups(
+    project_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ProjectSessionGroup>, ApiError> {
+    let db = state.db.write();
+    let mut groups = Vec::with_capacity(project_ids.len());
+
+    for project_id in project_ids {
+        let mut sessions = state
+            .sessions
+            .list_for_project(db.conn(), &project_id)
+            .map_err(ApiError::Database)?;
+        reconcile_stale_session_statuses(&state, db.conn(), &mut sessions);
+
+        let archived_sessions = state
+            .sessions
+            .list_archived_for_project(db.conn(), &project_id)
+            .map_err(ApiError::Database)?;
+
+        groups.push(ProjectSessionGroup {
+            project_id,
+            sessions,
+            archived_sessions,
+        });
+    }
+
+    Ok(groups)
 }

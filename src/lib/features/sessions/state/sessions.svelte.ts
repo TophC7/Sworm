@@ -6,7 +6,7 @@
 import { backend } from '$lib/api/backend'
 import { removeSession as removeActivityEntry } from '$lib/features/sessions/state/sessionActivity.svelte'
 import { addSessionTab, restoreWorkspaceFromDisk, syncSessionTabs } from '$lib/features/workbench/state.svelte'
-import type { Session } from '$lib/types/backend'
+import type { ProjectSessionGroup, Session } from '$lib/types/backend'
 
 let sessionsByProject = $state<Map<string, Session[]>>(new Map())
 let archivedSessionsByProject = $state<Map<string, Session[]>>(new Map())
@@ -40,16 +40,6 @@ function filterAgents(list: Session[]): Session[] {
   return list.filter((s) => !NON_AGENT_PROVIDERS.has(s.provider_id))
 }
 
-function groupByProvider(list: Session[]): Map<string, Session[]> {
-  const groups = new Map<string, Session[]>()
-  for (const session of list) {
-    const existing = groups.get(session.provider_id)
-    if (existing) existing.push(session)
-    else groups.set(session.provider_id, [session])
-  }
-  return groups
-}
-
 // Component callers wrap these in `$derived`, so per-render memoization
 // already handles repeat reads against the same underlying array.
 export function getAgentSessions(projectId: string): Session[] {
@@ -58,14 +48,6 @@ export function getAgentSessions(projectId: string): Session[] {
 
 export function getArchivedAgentSessions(projectId: string): Session[] {
   return filterAgents(getArchivedSessions(projectId))
-}
-
-export function getAgentSessionsGrouped(projectId: string): Map<string, Session[]> {
-  return groupByProvider(getAgentSessions(projectId))
-}
-
-export function getArchivedAgentSessionsGrouped(projectId: string): Map<string, Session[]> {
-  return groupByProvider(getArchivedAgentSessions(projectId))
 }
 
 // BACKEND CRUD //
@@ -80,8 +62,7 @@ export async function loadSessions(projectId: string) {
     const nextSessions = await backend.sessions.list(projectId)
     setProjectSessions(projectId, nextSessions)
     syncSessionTabs(projectId, nextSessions)
-  } catch (e) {
-    console.error('Failed to load sessions:', e)
+  } catch {
     setProjectSessions(projectId, [])
   }
 }
@@ -89,10 +70,41 @@ export async function loadSessions(projectId: string) {
 export async function loadArchivedSessions(projectId: string) {
   try {
     setProjectArchivedSessions(projectId, await backend.sessions.listArchived(projectId))
-  } catch (e) {
-    console.error('Failed to load archived sessions:', e)
+  } catch {
     setProjectArchivedSessions(projectId, [])
   }
+}
+
+/**
+ * Load project sessions for display only (the projects sidebar tree),
+ * without the workbench side effects of `loadSessions`.
+ *
+ * `loadSessions` restores the persisted workspace and reconciles tabs;
+ * correct for the active project, wrong for every other project listed
+ * in the tree (it would hydrate every workspace and let the bootstrap
+ * heuristic spawn phantom session tabs). This only fills the per-project
+ * session caches the selectors read from. On failure the existing cache
+ * is left intact rather than cleared.
+ */
+export async function loadSessionGroupsForDisplay(projectIds: string[]) {
+  if (projectIds.length === 0) return
+  try {
+    const groups = await backend.sessions.listProjectGroups(projectIds)
+    applySessionGroups(groups)
+  } catch {
+    // Display cache refresh is opportunistic; keep existing data on failure.
+  }
+}
+
+function applySessionGroups(groups: ProjectSessionGroup[]) {
+  let nextSessionsByProject = new Map(sessionsByProject)
+  let nextArchivedSessionsByProject = new Map(archivedSessionsByProject)
+  for (const group of groups) {
+    nextSessionsByProject = nextSessionsByProject.set(group.project_id, group.sessions)
+    nextArchivedSessionsByProject = nextArchivedSessionsByProject.set(group.project_id, group.archived_sessions)
+  }
+  sessionsByProject = nextSessionsByProject
+  archivedSessionsByProject = nextArchivedSessionsByProject
 }
 
 export async function createSession(projectId: string, providerId: string, title: string): Promise<Session> {

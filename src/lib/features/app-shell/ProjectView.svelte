@@ -8,7 +8,7 @@
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
   import FilesSidebar from '$lib/features/files/FilesSidebar.svelte'
   import IssuesSidebar from '$lib/features/issues/IssuesSidebar.svelte'
-  import SessionHistoryView from '$lib/features/sessions/SessionHistoryView.svelte'
+  import ProjectsSidebar from '$lib/features/projects/ProjectsSidebar.svelte'
   import {
     getSidebarWidth,
     setSidebarWidth,
@@ -114,8 +114,8 @@
           />
         {:else if sidebarView === 'issues'}
           <IssuesSidebar projectId={project.id} />
-        {:else if sidebarView === 'sessions'}
-          <SessionHistoryView projectId={project.id} />
+        {:else if sidebarView === 'projects'}
+          <ProjectsSidebar />
         {:else if sidebarView === 'files'}
           <FilesSidebar projectId={project.id} projectPath={project.path} />
         {/if}

@@ -53,6 +53,12 @@ export interface Session {
   last_stopped_at: string | null
 }
 
+export interface ProjectSessionGroup {
+  project_id: string
+  sessions: Session[]
+  archived_sessions: Session[]
+}
+
 export type SessionStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'exited' | 'failed'
 
 export type ProviderConnectionStatus = 'connected' | 'missing' | 'error'
