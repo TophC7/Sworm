@@ -373,6 +373,10 @@
     url = "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.12.0-beta.197.tgz";
     hash = "sha512-EoYQVIWp90XmNXBfrEocz5tk44JLMdHL9+Asd57Bj9DuERLLszA8pkF3wbuR5C7555g3sRTMTHlzYQ3gv9xbOw==";
   };
+  "@xterm/addon-image@0.10.0-beta.197" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-image/-/addon-image-0.10.0-beta.197.tgz";
+    hash = "sha512-31oIqBm+Yk3xyYGjBhhp308gDyFywv3JJAWBflycgqZFbvfZ2ju4IvHmvKJhp8qC+0ac6SRAA7XBKGqtoZjcsA==";
+  };
   "@xterm/addon-web-links@0.13.0-beta.197" = fetchurl {
     url = "https://registry.npmjs.org/@xterm/addon-web-links/-/addon-web-links-0.13.0-beta.197.tgz";
     hash = "sha512-8MgssTKGYJIgZpemu34KBIsmB0qh/XsQxugOhaYym8qSjn8KAMn9FN0j15W6XwEFQDAu1vtBh1jiKjQfyvHoqQ==";

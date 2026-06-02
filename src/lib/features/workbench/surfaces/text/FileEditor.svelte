@@ -411,7 +411,7 @@
       </div>
     {:else if isMarkdown && mode === 'preview'}
       <div class="h-full overflow-y-auto">
-        <MarkdownRenderer source={previewSource} />
+        <MarkdownRenderer source={previewSource} {projectPath} {filePath} />
       </div>
     {:else if isMarkdown && mode === 'split'}
       <ResizablePaneGroup direction="horizontal">
@@ -437,7 +437,7 @@
         <ResizableHandle />
         <ResizablePane defaultSize={50} minSize={20}>
           <div class="h-full overflow-y-auto border-l border-edge">
-            <MarkdownRenderer source={previewSource} />
+            <MarkdownRenderer source={previewSource} {projectPath} {filePath} />
           </div>
         </ResizablePane>
       </ResizablePaneGroup>

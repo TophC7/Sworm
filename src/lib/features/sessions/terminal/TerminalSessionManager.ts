@@ -6,6 +6,7 @@ import type { PtyEvent, Session } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
+import { ImageAddon } from '@xterm/addon-image'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 
@@ -67,6 +68,7 @@ export class TerminalSessionManager {
 
   private terminal: Terminal | null = null
   private fitAddon: FitAddon | null = null
+  private imageAddon: ImageAddon | null = null
   private webLinksAddon: WebLinksAddon | null = null
   private hostEl: HTMLDivElement | null = null
   private container: HTMLElement | null = null
@@ -412,6 +414,7 @@ export class TerminalSessionManager {
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null
+    this.imageAddon = null
     this.webLinksAddon = null
     this.hostEl = null
     this.eventListeners.clear()
@@ -478,8 +481,11 @@ export class TerminalSessionManager {
 
     this.terminal = new Terminal(TERMINAL_OPTIONS)
     this.fitAddon = new FitAddon()
+    // xterm core does not render SIXEL / iTerm / Kitty image payloads; it needs the parser addon.
+    this.imageAddon = new ImageAddon()
     this.webLinksAddon = new WebLinksAddon()
     this.terminal.loadAddon(this.fitAddon)
+    this.terminal.loadAddon(this.imageAddon)
     this.terminal.loadAddon(this.webLinksAddon)
     this.terminal.open(this.hostEl)
 

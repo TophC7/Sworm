@@ -38,6 +38,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@xterm/addon-fit": "0.12.0-beta.197",
+    "@xterm/addon-image": "0.10.0-beta.197",
     "@xterm/addon-web-links": "0.13.0-beta.197",
     "@xterm/xterm": "6.1.0-beta.197",
     "bits-ui": "^2.17.3",

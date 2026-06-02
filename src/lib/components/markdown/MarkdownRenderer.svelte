@@ -2,8 +2,17 @@
   import SvelteMarkdown from '@humanspeak/svelte-markdown'
   import CodeBlock from './CodeBlock.svelte'
   import { Checkbox } from '$lib/components/ui/checkbox'
+  import { markdownImageSrc } from '$lib/utils/mediaAssets'
 
-  let { source }: { source: string } = $props()
+  let {
+    source,
+    projectPath,
+    filePath
+  }: {
+    source: string
+    projectPath?: string
+    filePath?: string | null
+  } = $props()
 </script>
 
 <div class="markdown-preview px-6 py-4 text-base leading-relaxed text-fg">
@@ -104,7 +113,7 @@
     {/snippet}
 
     {#snippet image({ href, text })}
-      <img src={href} alt={text} class="my-3 max-w-full rounded" />
+      <img src={markdownImageSrc(href, projectPath, filePath)} alt={text} class="my-3 max-w-full rounded" />
     {/snippet}
   </SvelteMarkdown>
 </div>

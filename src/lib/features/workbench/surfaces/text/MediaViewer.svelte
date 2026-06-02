@@ -2,9 +2,8 @@
   // asset:// URL → WebView fetches direct from disk: zero IPC overhead
   // and full HTTP-Range support, so <video> seek works. Requires
   // app.security.assetProtocol enabled in src-tauri/tauri.conf.json.
-  import { convertFileSrc } from '@tauri-apps/api/core'
-  import { normalizeAbsolutePath } from '$lib/utils/paths'
   import type { MediaKind } from '$lib/features/editor/languageMap'
+  import { mediaAssetUrl } from '$lib/utils/mediaAssets'
 
   let {
     projectPath,
@@ -16,7 +15,7 @@
     kind: MediaKind
   } = $props()
 
-  let assetUrl = $derived(convertFileSrc(normalizeAbsolutePath(`${projectPath}/${filePath}`)))
+  let assetUrl = $derived(mediaAssetUrl(projectPath, filePath))
 </script>
 
 <div class="flex h-full w-full items-center justify-center overflow-auto bg-ground p-4">
