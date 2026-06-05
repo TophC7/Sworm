@@ -8,14 +8,18 @@
   visual contract to one place.
 
   Variants:
-    - section: h-7, hover:bg-raised. Group/section header.
-    - leaf:    h-6, hover:bg-raised. Tree row for an item.
-    - action:  h-6, text-xs muted, hover:bg-raised. "Show more" / inline "+ Add".
+    - section: h-7. Group/section header.
+    - leaf:    h-6. Tree row for an item.
+    - action:  h-6, text-xs muted. "Show more" / inline "+ Add".
     - info:    h-6, text-xs muted, no hover. Loading / empty / dir placeholder.
 
-  `divider` toggles the `border-t border-edge/30` rule independently
-  from variant; `depth` resolves via treeIndent for nested tree rows;
-  `pressed` applies the bg-raised accent for current/expanded items.
+  `on` names the backing surface so hover always steps up exactly one
+  level: rows on `ground` (top-level panel lists, the default) hover to
+  bg-surface, rows on `surface` (expanded group containers) hover to
+  bg-raised. `divider` toggles the `border-t border-edge/30` rule
+  independently from variant; `depth` resolves via treeIndent for
+  nested tree rows; `pressed` applies the bg-raised accent for
+  current/expanded items.
 -->
 
 <script lang="ts" module>
@@ -25,10 +29,14 @@
     base: 'flex w-full items-center gap-1.5 px-2.5 text-left transition-colors focus-visible:shadow-focus-ring focus-visible:outline-none',
     variants: {
       variant: {
-        section: 'h-7 text-sm hover:bg-raised',
-        leaf: 'h-6 text-sm hover:bg-raised',
-        action: 'h-6 text-sm text-muted hover:bg-raised hover:text-bright',
+        section: 'h-7 text-sm',
+        leaf: 'h-6 text-sm',
+        action: 'h-6 text-sm text-muted hover:text-bright',
         info: 'h-6 text-xs text-muted'
+      },
+      on: {
+        ground: '',
+        surface: ''
       },
       divider: {
         true: 'border-t border-edge/30',
@@ -39,14 +47,21 @@
         false: ''
       }
     },
+    // Hover steps one surface up from the backing; info rows never hover.
+    compoundVariants: [
+      { variant: ['section', 'leaf', 'action'], on: 'ground', class: 'hover:bg-surface' },
+      { variant: ['section', 'leaf', 'action'], on: 'surface', class: 'hover:bg-raised' }
+    ],
     defaultVariants: {
       variant: 'section',
+      on: 'ground',
       divider: true,
       pressed: false
     }
   })
 
   export type SidebarRowVariant = NonNullable<VariantProps<typeof sidebarRowVariants>['variant']>
+  export type SidebarRowOn = NonNullable<VariantProps<typeof sidebarRowVariants>['on']>
 </script>
 
 <script lang="ts">
@@ -56,6 +71,7 @@
 
   let {
     variant = 'section' as SidebarRowVariant,
+    on = 'ground' as SidebarRowOn,
     pressed = false,
     divider = true,
     depth = 0,
@@ -64,6 +80,7 @@
     ...rest
   }: {
     variant?: SidebarRowVariant
+    on?: SidebarRowOn
     pressed?: boolean
     divider?: boolean
     depth?: number
@@ -80,7 +97,7 @@
   <button
     type="button"
     data-slot="sidebar-row"
-    class={cn(sidebarRowVariants({ variant, pressed, divider }), className)}
+    class={cn(sidebarRowVariants({ variant, on, pressed, divider }), className)}
     {style}
     {...rest}
   >
@@ -89,7 +106,7 @@
 {:else}
   <div
     data-slot="sidebar-row"
-    class={cn(sidebarRowVariants({ variant, pressed, divider }), className)}
+    class={cn(sidebarRowVariants({ variant, on, pressed, divider }), className)}
     {style}
     {...rest}
   >

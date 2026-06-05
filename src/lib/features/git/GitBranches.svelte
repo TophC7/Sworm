@@ -709,6 +709,7 @@
       {:else if !history.exhausted}
         <SidebarRow
           variant="action"
+          on="surface"
           {depth}
           class="text-xs"
           onclick={() => void loadBranchHistory(branch, history.limit + BRANCH_HISTORY_PAGE_SIZE)}

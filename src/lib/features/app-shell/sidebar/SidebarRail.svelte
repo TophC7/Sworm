@@ -7,7 +7,13 @@
     type SidebarView
   } from '$lib/features/app-shell/sidebar/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitBranchIcon, ListTreeIcon, FolderOpen, ClipboardListIcon, SettingsIcon } from '$lib/icons/lucideExports'
+  import {
+    GitBranchIcon,
+    BotMessageSquare,
+    FolderOpen,
+    ClipboardListIcon,
+    SettingsIcon
+  } from '$lib/icons/lucideExports'
   import { openSettings } from '$lib/features/app-actions/actions.svelte'
 
   let { gitChangeCount = 0 }: { gitChangeCount?: number } = $props()
@@ -31,10 +37,10 @@
   }
 
   const views: { id: SidebarView; icon: typeof GitBranchIcon; label: string }[] = [
-    { id: 'projects', icon: ListTreeIcon, label: 'Projects' },
+    { id: 'files', icon: FolderOpen, label: 'Files' },
     { id: 'git', icon: GitBranchIcon, label: 'Git' },
-    { id: 'issues', icon: ClipboardListIcon, label: 'Issues' },
-    { id: 'files', icon: FolderOpen, label: 'Files' }
+    { id: 'sessions', icon: BotMessageSquare, label: 'Sessions' },
+    { id: 'issues', icon: ClipboardListIcon, label: 'Issues' }
   ]
 </script>
 

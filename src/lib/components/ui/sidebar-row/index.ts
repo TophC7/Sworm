@@ -1,1 +1,6 @@
-export { default as SidebarRow, type SidebarRowVariant, sidebarRowVariants } from './sidebar-row.svelte'
+export {
+  default as SidebarRow,
+  type SidebarRowVariant,
+  type SidebarRowOn,
+  sidebarRowVariants
+} from './sidebar-row.svelte'

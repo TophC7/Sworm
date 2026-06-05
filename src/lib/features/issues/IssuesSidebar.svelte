@@ -530,7 +530,7 @@
         {/each}
       {/each}
       {#if epic}
-        <SidebarRow variant="action" divider={false} onclick={() => openCapture('issue', epic.id)}>
+        <SidebarRow variant="action" on="surface" divider={false} onclick={() => openCapture('issue', epic.id)}>
           <span>New issue…</span>
           <Plus size={12} class="ml-auto shrink-0" />
         </SidebarRow>

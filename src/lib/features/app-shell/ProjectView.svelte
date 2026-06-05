@@ -8,7 +8,9 @@
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
   import FilesSidebar from '$lib/features/files/FilesSidebar.svelte'
   import IssuesSidebar from '$lib/features/issues/IssuesSidebar.svelte'
-  import ProjectsSidebar from '$lib/features/projects/ProjectsSidebar.svelte'
+  import SessionsSidebar from '$lib/features/sessions/SessionsSidebar.svelte'
+  import ProjectStrip from '$lib/features/projects/ProjectStrip.svelte'
+  import { ResizeDivider } from '$lib/components/ui/resize-divider'
   import {
     getSidebarWidth,
     setSidebarWidth,
@@ -36,32 +38,10 @@
   let sidebarCollapsed = $derived(isSidebarCollapsed())
   let sidebarWidth = $derived(getSidebarWidth())
   let sidebarView = $derived(getSidebarView())
-  let layoutEl = $state<HTMLDivElement | null>(null)
-
-  // Resize handle for git sidebar (left side)
-  function sidebarResizeHandle(element: HTMLElement) {
-    function onPointerDown(e: PointerEvent) {
-      e.preventDefault()
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-
-      function onMove(e: PointerEvent) {
-        if (!layoutEl) return
-        const w = e.clientX - layoutEl.getBoundingClientRect().left
-        setSidebarWidth(w)
-      }
-      function onUp() {
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    }
-    element.addEventListener('pointerdown', onPointerDown)
-    return () => element.removeEventListener('pointerdown', onPointerDown)
-  }
+  let sidebarPanelEl = $state<HTMLDivElement | null>(null)
+  // Panel left edge cached at drag start; it stays fixed while the
+  // width changes, so per-move layout reads are unnecessary.
+  let panelLeft = 0
 
   // Load sessions and start git polling when project changes
   $effect(() => {
@@ -88,53 +68,59 @@
   })
 </script>
 
-<!-- Horizontal layout: sidebar-rail | sidebar-content | resize | panes -->
+<!-- Horizontal layout: (project-strip / sidebar-rail | sidebar-content) | resize | panes -->
 <div class="flex min-h-0 flex-1 overflow-hidden">
-  <!-- Sidebar rail: always visible -->
-  <SidebarRail {gitChangeCount} />
+  <!-- Left column: project strip pinned above the rail + sidebar panel -->
+  <div class="flex shrink-0 flex-col overflow-hidden">
+    <ProjectStrip />
 
-  <!-- Sidebar content + pane grid (resize handle relative to this container) -->
-  <div class="flex min-h-0 flex-1 overflow-hidden" bind:this={layoutEl}>
-    <!-- Sidebar panel (collapsible) -->
-    {#if !sidebarCollapsed}
-      <div class="shrink-0 overflow-hidden" style="width: {sidebarWidth}px;">
-        {#if sidebarView === 'git'}
-          <GitSidebar
-            summary={gitSummary}
-            projectId={project.id}
-            projectPath={project.path}
-            onRefresh={handleRefreshGit}
-            onFileClick={(filePath, staged) => openWorkingTreeDiff(project.id, staged, null, filePath)}
-            onPersistTab={(openedTab) => promoteTabWhenReady(project.id, openedTab)}
-            onCommitFileClick={(hash, shortHash, message, filePath) =>
-              openCommitDiff(project.id, hash, shortHash, message, filePath)}
-            onStashFileClick={(stashIndex, message, filePath) =>
-              openStashDiff(project.id, stashIndex, message, filePath)}
-            onViewAllChanges={(staged) => openWorkingTreeDiff(project.id, staged, null, null, { temporary: false })}
-          />
-        {:else if sidebarView === 'issues'}
-          <IssuesSidebar projectId={project.id} />
-        {:else if sidebarView === 'projects'}
-          <ProjectsSidebar />
-        {:else if sidebarView === 'files'}
-          <FilesSidebar projectId={project.id} projectPath={project.path} />
-        {/if}
-      </div>
+    <div class="flex min-h-0 flex-1 overflow-hidden">
+      <!-- Sidebar rail: always visible -->
+      <SidebarRail {gitChangeCount} />
 
-      <!-- Sidebar resize handle -->
-      <div
-        class="w-px shrink-0 cursor-col-resize bg-edge transition-colors hover:bg-accent/40"
-        {@attach sidebarResizeHandle}
-        role="separator"
-        aria-label="Resize sidebar"
-      ></div>
-    {/if}
+      <!-- Sidebar panel (collapsible) -->
+      {#if !sidebarCollapsed}
+        <div class="shrink-0 overflow-hidden" style="width: {sidebarWidth}px;" bind:this={sidebarPanelEl}>
+          {#if sidebarView === 'git'}
+            <GitSidebar
+              summary={gitSummary}
+              projectId={project.id}
+              projectPath={project.path}
+              onRefresh={handleRefreshGit}
+              onFileClick={(filePath, staged) => openWorkingTreeDiff(project.id, staged, null, filePath)}
+              onPersistTab={(openedTab) => promoteTabWhenReady(project.id, openedTab)}
+              onCommitFileClick={(hash, shortHash, message, filePath) =>
+                openCommitDiff(project.id, hash, shortHash, message, filePath)}
+              onStashFileClick={(stashIndex, message, filePath) =>
+                openStashDiff(project.id, stashIndex, message, filePath)}
+              onViewAllChanges={(staged) => openWorkingTreeDiff(project.id, staged, null, null, { temporary: false })}
+            />
+          {:else if sidebarView === 'issues'}
+            <IssuesSidebar projectId={project.id} />
+          {:else if sidebarView === 'sessions'}
+            <SessionsSidebar projectId={project.id} />
+          {:else if sidebarView === 'files'}
+            <FilesSidebar projectId={project.id} projectPath={project.path} />
+          {/if}
+        </div>
+      {/if}
+    </div>
+  </div>
 
-    <!-- Right column: session tabs + content -->
-    <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
-      <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <PaneGrid projectId={project.id} projectPath={project.path} />
-      </div>
+  {#if !sidebarCollapsed}
+    <!-- Sidebar resize handle: full height beside the left column. -->
+    <ResizeDivider
+      direction="col"
+      onResizeStart={() => (panelLeft = sidebarPanelEl?.getBoundingClientRect().left ?? 0)}
+      onResize={(e) => setSidebarWidth(e.clientX - panelLeft)}
+      aria-label="Resize sidebar"
+    />
+  {/if}
+
+  <!-- Right column: session tabs + content -->
+  <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <PaneGrid projectId={project.id} projectPath={project.path} />
     </div>
   </div>
 </div>
