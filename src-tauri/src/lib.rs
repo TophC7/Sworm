@@ -10,7 +10,7 @@ use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    configure_linux_runtime_env();
+    configure_linux_gdk_backend();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -287,143 +287,17 @@ pub fn run() {
     });
 }
 
-/// Apply Linux-specific env overrides for GDK/WebKit.
+/// Prefer native Wayland while preserving an explicit backend override.
 ///
 /// Called before the Tauri runtime (and its threads) starts.
 /// `std::env::set_var` is safe here because no other threads exist yet;
 /// it will become `unsafe` in Rust 2024 edition; revisit when upgrading.
 #[cfg(target_os = "linux")]
-fn configure_linux_runtime_env() {
-    if let Some(backend) = preferred_gdk_backend(std::env::var_os("GDK_BACKEND")) {
-        std::env::set_var("GDK_BACKEND", backend);
-    }
-
-    if should_apply_webkit_workarounds() {
-        set_env_if_missing("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        set_env_if_missing("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+fn configure_linux_gdk_backend() {
+    if std::env::var_os("GDK_BACKEND").is_none_or(|value| value.is_empty()) {
+        std::env::set_var("GDK_BACKEND", "wayland,x11");
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn configure_linux_runtime_env() {}
-
-fn preferred_gdk_backend(current: Option<std::ffi::OsString>) -> Option<&'static str> {
-    match current {
-        Some(value) if !value.is_empty() => None,
-        _ => Some("wayland,x11"),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn should_apply_webkit_workarounds() -> bool {
-    should_apply_webkit_workarounds_for_env(
-        std::env::var("SWORM_WEBKIT_WORKAROUNDS").ok().as_deref(),
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        std::env::var("GDK_BACKEND").ok().as_deref(),
-    )
-}
-
-#[cfg(not(target_os = "linux"))]
-fn should_apply_webkit_workarounds() -> bool {
-    false
-}
-
-fn set_env_if_missing(key: &str, value: &str) {
-    match std::env::var_os(key) {
-        Some(existing) if !existing.is_empty() => {}
-        _ => std::env::set_var(key, value),
-    }
-}
-
-fn should_apply_webkit_workarounds_for_env(
-    override_value: Option<&str>,
-    has_wayland_display: bool,
-    session_type: Option<&str>,
-    gdk_backend: Option<&str>,
-) -> bool {
-    if let Some(value) = override_value {
-        return value == "1";
-    }
-
-    if has_wayland_display {
-        return true;
-    }
-
-    if session_type
-        .map(|value| value.eq_ignore_ascii_case("wayland"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    gdk_backend
-        .map(|value| value.split(',').any(|entry| entry.trim().eq("wayland")))
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{preferred_gdk_backend, should_apply_webkit_workarounds_for_env};
-    use std::ffi::OsString;
-
-    #[test]
-    fn defaults_to_wayland_first_when_backend_is_missing() {
-        assert_eq!(preferred_gdk_backend(None), Some("wayland,x11"));
-    }
-
-    #[test]
-    fn defaults_to_wayland_first_when_backend_is_empty() {
-        assert_eq!(
-            preferred_gdk_backend(Some(OsString::from(""))),
-            Some("wayland,x11")
-        );
-    }
-
-    #[test]
-    fn preserves_existing_backend_override() {
-        assert_eq!(preferred_gdk_backend(Some(OsString::from("x11"))), None);
-    }
-
-    // These test the pure `should_apply_webkit_workarounds_for_env` function
-    // (no env access), so they run on any platform.
-    #[test]
-    fn webkit_workarounds_enable_for_wayland_session() {
-        assert!(should_apply_webkit_workarounds_for_env(
-            None,
-            false,
-            Some("wayland"),
-            None
-        ));
-    }
-
-    #[test]
-    fn webkit_workarounds_respect_force_disable() {
-        assert!(!should_apply_webkit_workarounds_for_env(
-            Some("0"),
-            true,
-            Some("wayland"),
-            Some("wayland,x11")
-        ));
-    }
-
-    #[test]
-    fn webkit_workarounds_respect_force_enable() {
-        assert!(should_apply_webkit_workarounds_for_env(
-            Some("1"),
-            false,
-            None,
-            None
-        ));
-    }
-
-    #[test]
-    fn webkit_workarounds_enable_for_wayland_backend_hint() {
-        assert!(should_apply_webkit_workarounds_for_env(
-            None,
-            false,
-            Some("x11"),
-            Some("wayland,x11")
-        ));
-    }
-}
+fn configure_linux_gdk_backend() {}

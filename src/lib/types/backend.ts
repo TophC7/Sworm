@@ -13,8 +13,6 @@ export interface EnvProbeResult {
   merged_path: string
   probe_succeeded: boolean
   gdk_backend: string | null
-  webkit_disable_dmabuf_renderer: string | null
-  webkit_disable_compositing_mode: string | null
 }
 
 export interface PtyEvent {
