@@ -27,6 +27,9 @@ export default defineConfig({
 
   // Pre-bundle Monaco worker entry points so dev doesn't re-scan them on each load.
   optimizeDeps: {
+    // LucideIcon intentionally globs package icons for arbitrary task icon names.
+    // Dependency discovery cannot resolve those imports from Svelte virtual modules.
+    noDiscovery: true,
     include: [
       'monaco-editor/esm/vs/editor/editor.worker',
       'monaco-editor/esm/vs/language/typescript/ts.worker',
