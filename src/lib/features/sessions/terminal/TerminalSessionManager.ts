@@ -9,6 +9,7 @@ import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 
 const TERMINAL_OPTIONS: ITerminalOptions = {
@@ -72,6 +73,8 @@ export class TerminalSessionManager {
   private fitAddon: FitAddon | null = null
   private imageAddon: ImageAddon | null = null
   private webLinksAddon: WebLinksAddon | null = null
+  private webglAddon: WebglAddon | null = null
+  private webglContextLossDisposable: IDisposable | null = null
   private hostEl: HTMLDivElement | null = null
   private container: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
@@ -87,7 +90,11 @@ export class TerminalSessionManager {
   private providerId: string | null = null
   private transcriptLoaded = false
   private transcriptByteCount = 0
-  // Dedup concurrent attach() calls so we fetch the transcript once.
+  // Terminal creation yields while the font loads. Every entry path
+  // shares this promise so concurrent attach/load/start calls cannot
+  // create competing xterm instances or WebGL contexts.
+  private terminalPromise: Promise<void> | null = null
+  // Dedup concurrent transcript loads so history is fetched once.
   private transcriptPromise: Promise<void> | null = null
   private readonly textDecoder = new TextDecoder()
   private readonly eventListeners = new Set<EventListener>()
@@ -413,11 +420,14 @@ export class TerminalSessionManager {
     this.oscDisposable = null
     this.writeQueue?.dispose()
     this.writeQueue = null
+    this.webglContextLossDisposable?.dispose()
+    this.webglContextLossDisposable = null
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null
     this.imageAddon = null
     this.webLinksAddon = null
+    this.webglAddon = null
     this.hostEl = null
     this.eventListeners.clear()
     this.errorListeners.clear()
@@ -464,11 +474,42 @@ export class TerminalSessionManager {
     })
   }
 
-  private async ensureTerminal(): Promise<void> {
-    if (this.terminal) {
-      return
-    }
+  private enableWebglRenderer(): void {
+    if (!this.terminal) return
 
+    try {
+      const addon = new WebglAddon()
+      this.webglContextLossDisposable = addon.onContextLoss(() => {
+        addon.dispose()
+        this.webglAddon = null
+        this.webglContextLossDisposable?.dispose()
+        this.webglContextLossDisposable = null
+        console.warn('WebGL terminal renderer lost its context; using DOM renderer.')
+      })
+      this.terminal.loadAddon(addon)
+      this.webglAddon = addon
+    } catch (error) {
+      this.webglContextLossDisposable?.dispose()
+      this.webglContextLossDisposable = null
+      this.webglAddon = null
+      console.warn('WebGL terminal renderer unavailable; using DOM renderer.', error)
+    }
+  }
+
+  private async ensureTerminal(): Promise<void> {
+    if (this.terminal || this.disposed) return
+    if (this.terminalPromise) return this.terminalPromise
+
+    const promise = this.initializeTerminal()
+    this.terminalPromise = promise
+    try {
+      await promise
+    } finally {
+      if (this.terminalPromise === promise) this.terminalPromise = null
+    }
+  }
+
+  private async initializeTerminal(): Promise<void> {
     // Wait for the terminal font to load before creating the terminal.
     // xterm.js measures character widths on a canvas at creation time —
     // if the font isn't ready, it measures with the fallback and the
@@ -479,6 +520,10 @@ export class TerminalSessionManager {
     } catch {
       // Font load can fail if the font name is invalid; proceed with fallback
     }
+
+    // dispose() may run while font loading yields. Never resurrect a
+    // manager after its registry owner has released it.
+    if (this.disposed || this.terminal) return
 
     this.hostEl = document.createElement('div')
     this.hostEl.className = 'terminal-session-host'
@@ -496,6 +541,7 @@ export class TerminalSessionManager {
     this.terminal.loadAddon(this.imageAddon)
     this.terminal.loadAddon(this.webLinksAddon)
     this.terminal.open(this.hostEl)
+    this.enableWebglRenderer()
     this.writeQueue = new XtermWriteQueue(this.terminal)
 
     // All key-by-key policy lives in terminalKeymap.ts. This handler

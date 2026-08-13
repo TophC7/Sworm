@@ -157,8 +157,6 @@
   }
 
   onMount(() => {
-    void attachSession(session)
-
     return () => {
       if (attachedSessionId) {
         sessionRegistry.detach(attachedSessionId)

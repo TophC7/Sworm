@@ -88,6 +88,36 @@ struct CachedSummary {
     summary: GitSummary,
 }
 
+#[derive(Clone)]
+struct CachedAheadBehind {
+    head: String,
+    upstream: String,
+    value: (Option<i32>, Option<i32>),
+}
+
+fn resolve_ahead_behind_refs(path: &Path) -> Option<(String, String)> {
+    let output = std::process::Command::new("git")
+        .args(["--no-optional-locks", "rev-parse", "HEAD", "@{upstream}"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut refs = text.lines().map(str::to_owned);
+    Some((refs.next()?, refs.next()?))
+}
+
+fn parse_ahead_behind(stdout: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut parts = text.split_whitespace();
+    let ahead = parts.next()?.parse::<i32>().ok();
+    let behind = parts.next()?.parse::<i32>().ok();
+    Some((ahead, behind))
+}
+
 fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
     let lines: Vec<String> = String::from_utf8_lossy(stdout)
         .lines()
@@ -153,12 +183,14 @@ fn delete_branch_error(branch: &str, stderr: String) -> DeleteBranchError {
 /// [`Self::invalidate`] so the next read picks up fresh state.
 pub struct GitService {
     summary_cache: Mutex<HashMap<PathBuf, CachedSummary>>,
+    ahead_behind_cache: Mutex<HashMap<PathBuf, CachedAheadBehind>>,
 }
 
 impl GitService {
     pub fn new() -> Self {
         Self {
             summary_cache: Mutex::new(HashMap::new()),
+            ahead_behind_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -296,25 +328,24 @@ impl GitService {
         }
 
         let (branch, base_ref, ahead_behind, changes) = std::thread::scope(|s| {
-            let b = s.spawn(|| self.current_branch(path));
-            let r = s.spawn(|| self.default_base_ref(path));
-            let a = s.spawn(|| self.ahead_behind(path));
-            let c = s.spawn(|| self.get_changes(path));
+            let branch = s.spawn(|| self.current_branch(path));
+            let base_ref = s.spawn(|| self.default_base_ref(path));
+            let ahead_behind = s.spawn(|| self.ahead_behind(path));
+            let changes = s.spawn(|| self.get_changes(path));
             (
-                b.join().unwrap_or(None),
-                r.join().unwrap_or(None),
-                a.join().unwrap_or((None, None)),
-                c.join().unwrap_or_default(),
+                branch.join().unwrap_or(None),
+                base_ref.join().unwrap_or(None),
+                ahead_behind.join().unwrap_or((None, None)),
+                changes.join().unwrap_or_default(),
             )
         });
         let (ahead, behind) = ahead_behind;
-
-        let staged_count = changes.iter().filter(|c| c.staged).count() as i32;
+        let staged_count = changes.iter().filter(|change| change.staged).count() as i32;
         let unstaged_count = changes
             .iter()
-            .filter(|c| !c.staged && c.status != "?")
+            .filter(|change| !change.staged && change.status != "?")
             .count() as i32;
-        let untracked_count = changes.iter().filter(|c| c.status == "?").count() as i32;
+        let untracked_count = changes.iter().filter(|change| change.status == "?").count() as i32;
 
         let summary = GitSummary {
             is_repo: true,
@@ -413,31 +444,47 @@ impl GitService {
     }
 
     /// Get ahead/behind counts relative to the tracking branch.
+    ///
+    /// Walking the commit graph can be expensive on network filesystems.
+    /// Resolve the two refs cheaply first and reuse the count while their
+    /// object IDs remain unchanged; commits and fetches naturally miss.
     fn ahead_behind(&self, path: &Path) -> (Option<i32>, Option<i32>) {
-        let output = std::process::Command::new("git")
+        let Some((head, upstream)) = resolve_ahead_behind_refs(path) else {
+            self.ahead_behind_cache.lock().remove(path);
+            return (None, None);
+        };
+
+        if let Some(entry) = self.ahead_behind_cache.lock().get(path) {
+            if entry.head == head && entry.upstream == upstream {
+                return entry.value;
+            }
+        }
+
+        let range = format!("{}...{}", head, upstream);
+        let value = std::process::Command::new("git")
             .args([
                 "--no-optional-locks",
                 "rev-list",
                 "--left-right",
                 "--count",
-                "HEAD...@{upstream}",
+                &range,
             ])
             .current_dir(path)
-            .output();
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| parse_ahead_behind(&output.stdout))
+            .unwrap_or((None, None));
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let parts: Vec<&str> = text.trim().split('\t').collect();
-                if parts.len() == 2 {
-                    let ahead = parts[0].parse::<i32>().ok();
-                    let behind = parts[1].parse::<i32>().ok();
-                    return (ahead, behind);
-                }
-            }
-        }
-
-        (None, None)
+        self.ahead_behind_cache.lock().insert(
+            path.to_path_buf(),
+            CachedAheadBehind {
+                head,
+                upstream,
+                value,
+            },
+        );
+        value
     }
 
     /// Get the combined patch for all working-tree changes (staged + unstaged).
@@ -2263,6 +2310,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
         std::fs::remove_dir_all(&work2).ok();
+    }
+
+    #[test]
+    fn ahead_behind_cache_tracks_ref_object_ids() {
+        let dir = temp_repo("ahead-cache");
+        let remote = dir.with_extension("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare"]);
+        let remote_url = remote.to_string_lossy().into_owned();
+        git(&dir, &["remote", "add", "origin", &remote_url]);
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+
+        let svc = GitService::new();
+        assert_eq!(svc.ahead_behind(&dir), (Some(0), Some(0)));
+        assert_eq!(svc.ahead_behind(&dir), (Some(0), Some(0)));
+
+        std::fs::write(dir.join("local.txt"), "local\n").unwrap();
+        git(&dir, &["add", "local.txt"]);
+        git(&dir, &["commit", "-q", "-m", "local"]);
+        assert_eq!(svc.ahead_behind(&dir), (Some(1), Some(0)));
+
+        git(&dir, &["push", "-q", "origin", "main"]);
+        assert_eq!(svc.ahead_behind(&dir), (Some(0), Some(0)));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&remote).ok();
     }
 
     /// `branch_info` happy path + missing-branch error for P0.T3.

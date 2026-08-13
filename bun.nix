@@ -369,21 +369,25 @@
     url = "https://registry.npmjs.org/@ungap/structured-clone/-/structured-clone-1.3.0.tgz";
     hash = "sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==";
   };
-  "@xterm/addon-fit@0.12.0-beta.197" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.12.0-beta.197.tgz";
-    hash = "sha512-EoYQVIWp90XmNXBfrEocz5tk44JLMdHL9+Asd57Bj9DuERLLszA8pkF3wbuR5C7555g3sRTMTHlzYQ3gv9xbOw==";
+  "@xterm/addon-fit@0.12.0-beta.291" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.12.0-beta.291.tgz";
+    hash = "sha512-bxJ4g8YKPily7Lc8NpkYBm6QmSyNhzGo1g5uXJl1g1zSHeM0GV1/Q5BQB/Y/C340+jcNb6CsFGj/VDgsXGLzIA==";
   };
-  "@xterm/addon-image@0.10.0-beta.197" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/addon-image/-/addon-image-0.10.0-beta.197.tgz";
-    hash = "sha512-31oIqBm+Yk3xyYGjBhhp308gDyFywv3JJAWBflycgqZFbvfZ2ju4IvHmvKJhp8qC+0ac6SRAA7XBKGqtoZjcsA==";
+  "@xterm/addon-image@0.10.0-beta.291" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-image/-/addon-image-0.10.0-beta.291.tgz";
+    hash = "sha512-yfRk0qFkmQiS6Y6id27hzg99d9WC3f1wRNrCojcqFd0WFt3Yq5+bD2QoimSBZ8Alz2kof8BknUk9pMrPXtm5Dw==";
   };
-  "@xterm/addon-web-links@0.13.0-beta.197" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/addon-web-links/-/addon-web-links-0.13.0-beta.197.tgz";
-    hash = "sha512-8MgssTKGYJIgZpemu34KBIsmB0qh/XsQxugOhaYym8qSjn8KAMn9FN0j15W6XwEFQDAu1vtBh1jiKjQfyvHoqQ==";
+  "@xterm/addon-web-links@0.13.0-beta.291" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-web-links/-/addon-web-links-0.13.0-beta.291.tgz";
+    hash = "sha512-sBGTf85ZwBdUIdDFF/lco9LFpeGegGKUJWFIzfre7sO50g5DoCUoSYMLJwn47EH8YlE0umhgzdUfvmnMOPOwgQ==";
   };
-  "@xterm/xterm@6.1.0-beta.197" = fetchurl {
-    url = "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.1.0-beta.197.tgz";
-    hash = "sha512-vzoc8sBcsvFpziSgeVGKZQDT1T/9MmEUKfUDpVqc3slDv7o0SiQCjvPeOF8y1++5vx2xmUn8lfcLnbfdtigtSQ==";
+  "@xterm/addon-webgl@0.20.0-beta.290" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/addon-webgl/-/addon-webgl-0.20.0-beta.290.tgz";
+    hash = "sha512-vHQCXsBp3rDermQSBCtN75U26DmoWI6SbCQ0oRjkuJR4r1B6SIyJBXuWPhHAXkCs86+iaStuafAdQDNO73cGWA==";
+  };
+  "@xterm/xterm@6.1.0-beta.291" = fetchurl {
+    url = "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.1.0-beta.291.tgz";
+    hash = "sha512-Q6IjxogKIu7fBkXHcn4vQhfHvtwhIv/NN8LR0knCAxPA06/jXuHwreqX9Y/4zvzj7m8u6OBndOJDCUAxLmRfQQ==";
   };
   "acorn@8.16.0" = fetchurl {
     url = "https://registry.npmjs.org/acorn/-/acorn-8.16.0.tgz";
