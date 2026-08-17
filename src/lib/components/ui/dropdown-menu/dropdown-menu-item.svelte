@@ -23,7 +23,7 @@
   {disabled}
   onSelect={(e) => onclick?.(e)}
   class={cn(
-    'w-full rounded-sm px-3 py-1.5 text-left transition-colors outline-none focus-visible:shadow-focus-ring',
+    'w-full rounded-sm px-3 py-1.5 text-left outline-none focus-visible:shadow-focus-ring',
     disabled
       ? 'cursor-default text-subtle'
       : destructive

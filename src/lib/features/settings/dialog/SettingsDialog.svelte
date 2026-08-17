@@ -61,13 +61,11 @@
   let languagePages = $state<BuiltinSettingsPage[]>(getBuiltinSettingsPages())
 
   let LANGUAGE_ITEMS = $derived(
-    languagePages.map(
-      (definition): NavItem => ({
-        id: definition.id,
-        label: definition.label,
-        icon: { kind: 'file', filename: definition.icon_filename }
-      })
-    )
+    languagePages.map((definition): NavItem => ({
+      id: definition.id,
+      label: definition.label,
+      icon: { kind: 'file', filename: definition.icon_filename }
+    }))
   )
   let NAV_SECTIONS = $derived([
     { title: 'General', items: GENERAL_ITEMS },
@@ -149,7 +147,7 @@
                 onclick={() => {
                   active = item.id
                 }}
-                class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors
+                class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left
                        {active === item.id ? 'bg-accent/15 text-bright' : 'text-muted hover:bg-surface hover:text-fg'}"
               >
                 {#if item.icon.kind === 'lucide'}

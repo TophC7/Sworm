@@ -254,7 +254,7 @@
               toggleExpanded(id)
             }
           }}
-          class="group flex cursor-pointer items-center gap-3 px-5 py-3 transition-colors hover:bg-surface/40"
+          class="group flex cursor-pointer items-center gap-3 px-5 py-3 hover:bg-surface/40"
         >
           <div
             role="presentation"

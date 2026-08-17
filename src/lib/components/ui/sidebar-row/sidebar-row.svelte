@@ -26,7 +26,7 @@
   import { tv, type VariantProps } from 'tailwind-variants'
 
   export const sidebarRowVariants = tv({
-    base: 'flex w-full items-center gap-1.5 px-2.5 text-left transition-colors focus-visible:shadow-focus-ring focus-visible:outline-none',
+    base: 'flex w-full items-center gap-1.5 px-2.5 text-left focus-visible:shadow-focus-ring focus-visible:outline-none',
     variants: {
       variant: {
         section: 'h-7 text-sm',

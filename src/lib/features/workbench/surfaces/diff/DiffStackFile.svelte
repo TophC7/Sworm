@@ -118,7 +118,7 @@
 <div id="{idPrefix}-{file.path}" class="border-b border-edge">
   <div class="sticky top-0 z-20 flex w-full items-center border-b border-edge/50 bg-raised">
     <button
-      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-overlay focus-visible:shadow-focus-ring focus-visible:outline-none"
+      class="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left hover:bg-overlay focus-visible:shadow-focus-ring focus-visible:outline-none"
       onclick={() => onToggle(file.path)}
     >
       <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />

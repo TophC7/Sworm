@@ -547,7 +547,7 @@
       <TooltipRoot>
         <TooltipTrigger
           type="button"
-          class="group/row relative flex h-6 w-full cursor-pointer items-center gap-1.5 pr-2.5 text-left text-sm transition-colors hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none"
+          class="group/row relative flex h-6 w-full cursor-pointer items-center gap-1.5 pr-2.5 text-left text-sm hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none"
           style="padding-left: {treeIndent(depth)}"
           onclick={() => void openIssueTab(projectId, issue.id, issue.title)}
         >

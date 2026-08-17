@@ -256,6 +256,7 @@ Neither is generic. If you want to animate something else, use color/opacity tra
 
 - **No scale on press.** Sworm is a dev tool; shrinking on click feels wrong.
 - **Color shifts toward `bright`**, never brightness filters.
+- **Swept lists are instant, pointed controls fade.** Any list the cursor sweeps across — file tree, sidebar lists, diff stacks, menu items, settings nav and list rows — takes no color transition at all: the highlight applies and clears on the first frame, VS Code-style. A fade never becomes visible during a fast sweep, so don't put `transition-colors` on row hovers. Single click targets (buttons, inputs, chips, tabs) keep the `transition-colors` fade.
 - **Resize handles are instant.** No animation on drag.
 - **Entrance fade** via `BlurFade` (motion-sv) stays limited to stage-level entrances: empty state, new-session picker. Don't blanket every render.
 

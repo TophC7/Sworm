@@ -80,7 +80,7 @@ Do not claim lint/format/test commands exist if they are not defined in the curr
 - The color palette is a warm base16 scheme. All palette colors are available as Tailwind utilities (e.g. `text-accent`, `bg-danger-bg`, `text-success`).
 - Surface hierarchy: `ground` (darkest) → `surface` → `raised` → `overlay` (lightest).
 - Use `group` + `group-hover:` for parent-hover-reveals (e.g. remove buttons).
-- Use `transition-colors` for hover/focus color transitions.
+- Use `transition-colors` for hover/focus color transitions — except swept lists (tree/list rows, menu items, nav lists), which take no hover transition at all (VS Code-style instant highlight) so fast mouse sweeps track the cursor.
 
 ## Important Notes
 

@@ -79,7 +79,7 @@
   {@const dropActive = dndEnabled ? (dndIsDropActive?.(node.path) ?? false) : false}
   {@const dimmed = isDimmed?.(node) ?? false}
   <div
-    class="group/tree-row relative flex w-full items-center text-sm transition-[color,background-color,opacity] {dropActive
+    class="group/tree-row relative flex w-full items-center text-sm transition-opacity {dropActive
       ? 'bg-accent/15 text-bright'
       : 'text-muted hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
     style:height="{ROW_HEIGHT_PX}px"
@@ -118,7 +118,7 @@
   {@const active = node.change ? (isActive?.(node.change.path) ?? false) : false}
   {@const dimmed = isDimmed?.(node) ?? false}
   <div
-    class="group/tree-row relative flex w-full items-center text-sm transition-[color,background-color,opacity] {active
+    class="group/tree-row relative flex w-full items-center text-sm transition-opacity {active
       ? 'bg-accent/10 text-bright'
       : 'text-fg hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
     style:height="{ROW_HEIGHT_PX}px"

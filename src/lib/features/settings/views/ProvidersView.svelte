@@ -119,7 +119,7 @@
               toggleExpanded(id)
             }
           }}
-          class="group flex cursor-pointer items-center gap-3 px-5 py-3 transition-colors hover:bg-surface/40"
+          class="group flex cursor-pointer items-center gap-3 px-5 py-3 hover:bg-surface/40"
         >
           <!-- Switch owns its own click; stop propagation so toggling the
                provider doesn't also expand the row. -->
