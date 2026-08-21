@@ -7,6 +7,7 @@ import CssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
+import { initializeMonacoEditorServices } from '$lib/features/editor/renderers/monaco/core/editorServices'
 import { ensureMonacoFormatters } from '$lib/features/editor/renderers/monaco/core/formatters'
 import { attachMonacoKeybindingOverrides } from '$lib/features/editor/renderers/monaco/core/keybindings'
 import { ensureMonacoLsp } from '$lib/features/editor/lsp/registry'
@@ -86,6 +87,7 @@ function getJsonLanguageService(monaco: typeof import('monaco-editor')): JsonLan
 let initPromise: Promise<void> | null = null
 
 export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void> {
+  initializeMonacoEditorServices()
   if (initPromise) return initPromise
 
   initPromise = (async () => {
