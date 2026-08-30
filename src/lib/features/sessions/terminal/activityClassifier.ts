@@ -70,8 +70,8 @@ export function classifyActivity(providerId: string | null | undefined, chunk: s
     if (/Ready|Awaiting|Press Enter/i.test(text)) return 'idle'
   }
 
-  // -- OMP (Oh My Pi) --
-  if (p === 'omp' || p === 'oh_my_pi' || p === 'pi') {
+  // -- OMP --
+  if (p === 'omp') {
     if (/esc\s*to\s*(interrupt|cancel)|ctrl\+c\s*to\s*interrupt/i.test(text)) return 'busy'
     if (/Working\.\.\.|Thinking|Generating|Executing|Running|Applying|Streaming|Synthesizing/i.test(text)) return 'busy'
     if (/Ask a question|Send a message|Enter to send|Ready|Awaiting/i.test(text)) return 'idle'

@@ -355,57 +355,48 @@ fn scan_codex(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvide
 fn scan_omp(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
     let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
         let home = home_dir()?;
-        let session_roots = [
-            home.join(".omp/agent/sessions"),
-            home.join(".pi/agent/sessions"),
-        ];
+        let sessions_dir = home.join(".omp/agent/sessions");
 
         let mut by_cwd: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
 
-        for sessions_dir in session_roots {
-            if !sessions_dir.is_dir() {
+        let Ok(dir_entries) = fs::read_dir(&sessions_dir) else {
+            return Some(Vec::new());
+        };
+
+        for dir in dir_entries.flatten() {
+            if !dir.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
-
-            let Ok(dir_entries) = fs::read_dir(&sessions_dir) else {
+            let Ok(file_entries) = fs::read_dir(dir.path()) else {
                 continue;
             };
-
-            for dir in dir_entries.flatten() {
-                if !dir.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
+            for file in file_entries.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                     continue;
                 }
-                let Ok(file_entries) = fs::read_dir(dir.path()) else {
+                let ts = file
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
+                    .unwrap_or(0);
+                if ts <= 0 {
+                    continue;
+                }
+                let Some(cwd) = read_omp_session_cwd(&path) else {
                     continue;
                 };
-                for file in file_entries.flatten() {
-                    let path = file.path();
-                    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                        continue;
-                    }
-                    let ts = file
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .map(|t| {
-                            t.duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64
-                        })
-                        .unwrap_or(0);
-                    if ts <= 0 {
-                        continue;
-                    }
-                    let Some(cwd) = read_omp_session_cwd(&path) else {
-                        continue;
-                    };
 
-                    let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
-                    if ts > entry.0 {
-                        entry.0 = ts;
-                    }
-                    if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                        entry.1[idx] += 1;
-                    }
+                let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
+                if ts > entry.0 {
+                    entry.0 = ts;
+                }
+                if let Some(idx) = bucket_timestamp(ts, day_starts) {
+                    entry.1[idx] += 1;
                 }
             }
         }

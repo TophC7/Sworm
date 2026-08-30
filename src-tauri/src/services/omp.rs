@@ -1,9 +1,9 @@
-//! OMP-specific filesystem layout helpers.
+//! OMP filesystem layout helpers.
 //!
-//! OMP has no global session store, so each Sworm session needs its
-//! own `--session-dir` under the Tauri app-data directory. These
-//! helpers centralize that path so the command layer doesn't grow
-//! ad hoc filesystem logic.
+//! Sworm isolates each session from OMP's global store with a private
+//! `--session-dir` under the Tauri app-data directory. These helpers
+//! centralize that path so the command layer doesn't grow ad hoc
+//! filesystem logic.
 
 use std::path::{Path, PathBuf};
 

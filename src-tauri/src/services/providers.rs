@@ -213,13 +213,9 @@ impl ProviderService {
     }
 
     pub fn definition(provider_id: &str) -> Option<&'static ProviderDef> {
-        let canonical_id = match provider_id {
-            "pi" | "oh_my_pi" => "omp",
-            other => other,
-        };
         PROVIDERS
             .iter()
-            .find(|provider| provider.id.as_str() == canonical_id)
+            .find(|provider| provider.id.as_str() == provider_id)
     }
 
     pub fn exists(provider_id: &str) -> bool {

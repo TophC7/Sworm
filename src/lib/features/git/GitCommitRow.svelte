@@ -61,7 +61,7 @@
         height={SWIMLANE_HEIGHT}
         viewBox="0 0 {render.width} {SWIMLANE_HEIGHT}"
       >
-        {#each render.paths as p, pi (pi)}
+        {#each render.paths as p, pathIndex (pathIndex)}
           <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
         {/each}
         {#if render.circle.isMerge}

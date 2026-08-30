@@ -372,9 +372,9 @@ pub async fn session_start(
     );
     args.extend(provider_config.extra_args);
 
-    // OMP has no global session store, so each Sworm session keeps its
-    // state under app-data via `--session-dir`. Cleaned up on session_remove.
-    if matches!(session.provider_id.as_str(), "omp" | "pi") {
+    // Isolate this Sworm session from OMP's global store. The private
+    // directory is removed with the Sworm session.
+    if session.provider_id == "omp" {
         let omp_session_dir =
             crate::services::omp::ensure_session_dir(state.db.app_data_dir(), &session_id)
                 .map_err(|error| ApiError::Io(error.to_string()))?;
