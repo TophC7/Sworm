@@ -1,6 +1,6 @@
 //! Per-project Unix-domain-socket bridge that exposes
 //! [`IssueService`] over a small NDJSON RPC protocol so out-of-process
-//! agent clients (the `sworm-issues` Pi extension) can read and mutate
+//! agent clients (the `sworm-issues` OMP extension) can read and mutate
 //! issue memory without sharing the SQLite handle.
 //!
 //! The bridge is started lazily by
@@ -487,7 +487,7 @@ mod tests {
             rpc(
                 &info,
                 "issue.claim",
-                json!({"issueId": issue_a_id,"assigneeKind":"agent","assigneeId":"pi"}),
+                json!({"issueId": issue_a_id,"assigneeKind":"agent","assigneeId":"omp"}),
             )
             .await
             .get("status")
@@ -509,7 +509,7 @@ mod tests {
         let comment = rpc(
             &info,
             "comment.add",
-            json!({"issueId": issue_a_id,"author":"pi","body":"done"}),
+            json!({"issueId": issue_a_id,"author":"omp","body":"done"}),
         )
         .await;
         let comment_id = comment.get("id").and_then(Value::as_str).unwrap();

@@ -56,7 +56,7 @@ impl BridgeResponse {
 
 /// Pick a stable error code for the bridge envelope based on the
 /// service-layer message shape. Mirrors `commands::issues::map_issue_error`
-/// so the Pi client can branch on the same categories the frontend sees.
+/// so the OMP client can branch on the same categories the frontend sees.
 pub(super) fn classify_error(message: &str) -> &'static str {
     if message.contains("not found")
         || message.contains("not Found")

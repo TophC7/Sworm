@@ -115,7 +115,7 @@ impl DatabaseService {
     }
 
     /// Tauri app-data directory: parent of [`db_path`]. Used as the
-    /// root for sibling state (Pi session dirs, future per-app caches).
+    /// root for sibling state (OMP session dirs, future per-app caches).
     pub fn app_data_dir(&self) -> &Path {
         // `db_path` is always built via `app_data_dir.join("sworm.db")`
         // in `resolve_db_path`, so the parent is guaranteed non-None.

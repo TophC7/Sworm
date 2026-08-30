@@ -42,13 +42,13 @@ export const allProviders: ProviderMeta[] = [
     gradientTo: '#065f46'
   },
   {
-    id: 'pi',
-    label: 'Pi',
-    icon: '/svg/pi.svg',
-    textLabel: 'Pi',
+    id: 'omp',
+    label: 'OMP',
+    icon: '/svg/omp.svg',
+    textLabel: 'OMP',
     textFont: 'var(--font-plantin)',
-    gradientFrom: '#ffb59f',
-    gradientTo: '#763724'
+    gradientFrom: '#ed4abf',
+    gradientTo: '#3b0764'
   },
   {
     id: 'gemini',

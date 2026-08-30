@@ -14,7 +14,7 @@ const WINDOW_DAYS: usize = 7;
 
 const PROVIDER_CLAUDE_CODE: &str = "claude_code";
 const PROVIDER_CODEX: &str = "codex";
-const PROVIDER_PI: &str = "pi";
+const PROVIDER_OMP: &str = "omp";
 const PROVIDER_GEMINI: &str = "gemini";
 
 pub struct ActivityMapService;
@@ -36,8 +36,7 @@ impl ActivityMapService {
         let mut by_path: HashMap<String, Vec<DiscoveredProviderActivity>> = HashMap::new();
 
         let scanners: Vec<fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>> =
-            vec![scan_claude_code, scan_codex, scan_pi, scan_gemini];
-
+            vec![scan_claude_code, scan_codex, scan_omp, scan_gemini];
         for scanner in scanners {
             for (path, activity) in scanner(&day_starts) {
                 by_path.entry(path).or_default().push(activity);
@@ -353,46 +352,60 @@ fn scan_codex(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvide
     inner().unwrap_or_default()
 }
 
-fn scan_pi(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
+fn scan_omp(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
     let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let sessions_dir = home_dir()?.join(".pi/agent/sessions");
-        if !sessions_dir.is_dir() {
-            return None;
-        }
+        let home = home_dir()?;
+        let session_roots = [
+            home.join(".omp/agent/sessions"),
+            home.join(".pi/agent/sessions"),
+        ];
 
         let mut by_cwd: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
 
-        for dir in fs::read_dir(&sessions_dir).ok()?.flatten() {
-            if !dir.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
+        for sessions_dir in session_roots {
+            if !sessions_dir.is_dir() {
                 continue;
             }
-            for file in fs::read_dir(dir.path()).ok()?.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+
+            let Ok(dir_entries) = fs::read_dir(&sessions_dir) else {
+                continue;
+            };
+
+            for dir in dir_entries.flatten() {
+                if !dir.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
                     continue;
                 }
-                let Some(cwd) = read_pi_session_cwd(&path) else {
+                let Ok(file_entries) = fs::read_dir(dir.path()) else {
                     continue;
                 };
-                let ts = file
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .map(|t| {
-                        t.duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64
-                    })
-                    .unwrap_or(0);
-                if ts <= 0 {
-                    continue;
-                }
+                for file in file_entries.flatten() {
+                    let path = file.path();
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    let ts = file
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .map(|t| {
+                            t.duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64
+                        })
+                        .unwrap_or(0);
+                    if ts <= 0 {
+                        continue;
+                    }
+                    let Some(cwd) = read_omp_session_cwd(&path) else {
+                        continue;
+                    };
 
-                let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
-                if ts > entry.0 {
-                    entry.0 = ts;
-                }
-                if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                    entry.1[idx] += 1;
+                    let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
+                    if ts > entry.0 {
+                        entry.0 = ts;
+                    }
+                    if let Some(idx) = bucket_timestamp(ts, day_starts) {
+                        entry.1[idx] += 1;
+                    }
                 }
             }
         }
@@ -404,7 +417,7 @@ fn scan_pi(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderAc
                 (
                     cwd,
                     DiscoveredProviderActivity {
-                        provider_id: PROVIDER_PI.into(),
+                        provider_id: PROVIDER_OMP.into(),
                         last_active: ts_to_iso(max_ts),
                         daily_counts: daily,
                     },
@@ -418,21 +431,29 @@ fn scan_pi(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderAc
     inner().unwrap_or_default()
 }
 
-fn read_pi_session_cwd(path: &Path) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
-    let mut line = String::new();
-    BufReader::new(file).read_line(&mut line).ok()?;
-    let header: serde_json::Value = serde_json::from_str(&line).ok()?;
-    if header.get("type").and_then(|v| v.as_str()) != Some("session") {
-        return None;
-    }
-    header
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .filter(|cwd| !cwd.trim().is_empty())
-        .map(ToString::to_string)
+#[derive(serde::Deserialize)]
+struct OmpSessionHeader<'a> {
+    #[serde(borrow)]
+    r#type: &'a str,
+    #[serde(borrow)]
+    cwd: Option<&'a str>,
 }
 
+fn read_omp_session_cwd(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(5).flatten() {
+        if let Ok(header) = serde_json::from_str::<OmpSessionHeader>(&line) {
+            if header.r#type == "session" {
+                return header
+                    .cwd
+                    .filter(|cwd| !cwd.trim().is_empty())
+                    .map(ToString::to_string);
+            }
+        }
+    }
+    None
+}
 fn scan_gemini(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
     let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
         let gemini_dir = home_dir()?.join(".gemini");
@@ -558,5 +579,29 @@ mod tests {
         assert_eq!(bucket_timestamp(0, &starts), None);
         // A timestamp at the last day boundary returns index 6
         assert_eq!(bucket_timestamp(starts[6], &starts), Some(6));
+    }
+
+    #[test]
+    fn read_omp_session_cwd_extracts_cwd_when_preceded_by_title() {
+        let path =
+            std::env::temp_dir().join(format!("sworm-omp-test-1-{}.jsonl", uuid::Uuid::new_v4()));
+        let content = "{\"type\":\"title\",\"v\":1,\"title\":\"My Session\"}\n{\"type\":\"session\",\"version\":3,\"id\":\"test-id\",\"cwd\":\"/home/toph/dev/my-project\"}\n";
+        fs::write(&path, content).unwrap();
+
+        let cwd = read_omp_session_cwd(&path);
+        let _ = fs::remove_file(&path);
+        assert_eq!(cwd, Some("/home/toph/dev/my-project".to_string()));
+    }
+
+    #[test]
+    fn read_omp_session_cwd_extracts_cwd_on_first_line() {
+        let path =
+            std::env::temp_dir().join(format!("sworm-omp-test-2-{}.jsonl", uuid::Uuid::new_v4()));
+        let content = "{\"type\":\"session\",\"version\":3,\"id\":\"test-id\",\"cwd\":\"/repo/Nix/omp.nix\"}\n";
+        fs::write(&path, content).unwrap();
+
+        let cwd = read_omp_session_cwd(&path);
+        let _ = fs::remove_file(&path);
+        assert_eq!(cwd, Some("/repo/Nix/omp.nix".to_string()));
     }
 }

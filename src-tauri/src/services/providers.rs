@@ -90,14 +90,14 @@ const PROVIDERS: &[ProviderDef] = &[
         default_args: &[],
     },
     ProviderDef {
-        id: ProviderId::Pi,
-        label: "Pi",
-        cli_command: "pi",
-        detect_commands: &["pi"],
+        id: ProviderId::Omp,
+        label: "OMP",
+        cli_command: "omp",
+        detect_commands: &["omp"],
         version_args: &["--version"],
-        install_hint: "Install Pi from your Nix/home-manager configuration or npm package.",
-        docs_url: "https://pi.dev",
-        auto_approve_flag: None,
+        install_hint: "Install OMP from your Nix/home-manager configuration or package manager.",
+        docs_url: "https://github.com/can1357/oh-my-pi",
+        auto_approve_flag: Some("--auto-approve"),
         prompt_mode: PromptMode::ArgvTail,
         resume_mode: ResumeMode::GenericFlag {
             flags: &["--continue"],
@@ -173,9 +173,7 @@ impl ProviderService {
             let handles = PROVIDERS
                 .iter()
                 .map(|def| {
-                    let override_path = binary_overrides
-                        .get(&def.id.to_string())
-                        .map(String::as_str);
+                    let override_path = binary_overrides.get(def.id.as_str()).map(String::as_str);
                     (
                         def,
                         scope.spawn(move || {
@@ -215,9 +213,13 @@ impl ProviderService {
     }
 
     pub fn definition(provider_id: &str) -> Option<&'static ProviderDef> {
+        let canonical_id = match provider_id {
+            "pi" | "oh_my_pi" => "omp",
+            other => other,
+        };
         PROVIDERS
             .iter()
-            .find(|provider| provider.id.to_string() == provider_id)
+            .find(|provider| provider.id.as_str() == canonical_id)
     }
 
     pub fn exists(provider_id: &str) -> bool {
@@ -396,12 +398,12 @@ fn detect_provider(
         {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // NOTE: Pi prints `--version` on stderr and leaves stdout
+                // NOTE: OMP prints `--version` on stderr and leaves stdout
                 // empty. Other CLIs print to stdout; do not generalize the
                 // fallback or stderr banners (deprecation, login warnings)
                 // will surface as fake version strings.
                 let version_source =
-                    if matches!(definition.id, ProviderId::Pi) && stdout.trim().is_empty() {
+                    if matches!(definition.id, ProviderId::Omp) && stdout.trim().is_empty() {
                         String::from_utf8_lossy(&output.stderr).trim().to_string()
                     } else {
                         stdout.trim().to_string()

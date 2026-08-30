@@ -258,7 +258,7 @@ pub async fn session_start(
         let token = match (deterministic.clone(), session.provider_id.as_str()) {
             (Some(t), _) => Some(t),
             (None, "codex" | "terminal" | "fresh") => None,
-            // GenericFlag providers (Gemini, Pi, etc.): marker so restarts add resume flags
+            // GenericFlag providers (Gemini, OMP, etc.): marker so restarts add resume flags
             (None, _) => Some("started".to_string()),
         };
         if let Some(ref t) = token {
@@ -354,7 +354,7 @@ pub async fn session_start(
         }
         "codex" => (session.provider_resume_token.clone(), None),
         _ => {
-            // GenericFlag providers (Gemini, Pi, etc.): resume_token signals restart
+            // GenericFlag providers (Gemini, OMP, etc.): resume_token signals restart
             if first_start {
                 (None, None)
             } else {
@@ -372,14 +372,14 @@ pub async fn session_start(
     );
     args.extend(provider_config.extra_args);
 
-    // Pi has no global session store, so each Sworm session keeps its
+    // OMP has no global session store, so each Sworm session keeps its
     // state under app-data via `--session-dir`. Cleaned up on session_remove.
-    if session.provider_id == "pi" {
-        let pi_session_dir =
-            crate::services::pi::ensure_session_dir(state.db.app_data_dir(), &session_id)
+    if matches!(session.provider_id.as_str(), "omp" | "pi") {
+        let omp_session_dir =
+            crate::services::omp::ensure_session_dir(state.db.app_data_dir(), &session_id)
                 .map_err(|error| ApiError::Io(error.to_string()))?;
         args.push("--session-dir".to_string());
-        args.push(pi_session_dir.to_string_lossy().into_owned());
+        args.push(omp_session_dir.to_string_lossy().into_owned());
     }
 
     // Fresh: attach to a deterministic named session per project so multiple
@@ -591,9 +591,9 @@ pub async fn session_remove(
     state.transcript_batcher.forget(&session_id);
     state.transcript.clear(&session_id);
 
-    // Pi sessions own a private state dir under app-data; remove it
+    // OMP sessions own a private state dir under app-data; remove it
     // before dropping the row so the path can't be re-resolved later.
-    crate::services::pi::remove_session_dir(state.db.app_data_dir(), &session_id);
+    crate::services::omp::remove_session_dir(state.db.app_data_dir(), &session_id);
 
     let db = state.db.write();
     state

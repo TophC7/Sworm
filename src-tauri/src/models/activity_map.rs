@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Activity from a single provider in a discovered project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredProviderActivity {
-    /// Provider slug: "claude_code", "codex", "pi", "gemini"
+    /// Provider slug: "claude_code", "codex", "omp", "gemini"
     pub provider_id: String,
     /// ISO 8601 timestamp of most recent activity from this provider.
     pub last_active: String,

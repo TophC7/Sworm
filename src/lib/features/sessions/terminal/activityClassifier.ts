@@ -31,7 +31,7 @@ export function sampleChunk(chunk: string): string {
  * Classify a PTY output chunk as busy, idle, or neutral.
  *
  * Provider ID should match the session's provider_id field
- * (e.g. 'claude_code', 'codex', 'pi').
+ * (e.g. 'claude_code', 'codex', 'omp').
  */
 export function classifyActivity(providerId: string | null | undefined, chunk: string): ActivitySignal {
   const text = stripAnsi(sampleChunk(chunk))
@@ -68,6 +68,13 @@ export function classifyActivity(providerId: string | null | undefined, chunk: s
     if (/Thinking\.{0,3}/i.test(text)) return 'busy'
     if (/Running|Working|Executing|Generating|Applying|Planning|Analyzing/i.test(text)) return 'busy'
     if (/Ready|Awaiting|Press Enter/i.test(text)) return 'idle'
+  }
+
+  // -- OMP (Oh My Pi) --
+  if (p === 'omp' || p === 'oh_my_pi' || p === 'pi') {
+    if (/esc\s*to\s*(interrupt|cancel)|ctrl\+c\s*to\s*interrupt/i.test(text)) return 'busy'
+    if (/Working\.\.\.|Thinking|Generating|Executing|Running|Applying|Streaming|Synthesizing/i.test(text)) return 'busy'
+    if (/Ask a question|Send a message|Enter to send|Ready|Awaiting/i.test(text)) return 'idle'
   }
 
   // -- Generic fallback (covers unlisted providers) --

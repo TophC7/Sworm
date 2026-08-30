@@ -17,7 +17,7 @@ pub const DEFAULT_NIX_EVAL_TIMEOUT_SECS: u64 = 600;
 pub const CANONICAL_PROVIDER_IDS: &[ProviderId] = &[
     ProviderId::ClaudeCode,
     ProviderId::Codex,
-    ProviderId::Pi,
+    ProviderId::Omp,
     ProviderId::Gemini,
     ProviderId::Fresh,
     ProviderId::Terminal,
@@ -265,7 +265,7 @@ mod tests {
 
         assert_eq!(
             provider_ids,
-            vec!["claude_code", "codex", "fresh", "gemini", "pi", "terminal"]
+            vec!["claude_code", "codex", "fresh", "gemini", "omp", "terminal"]
         );
         assert_eq!(
             settings.providers["claude_code"],

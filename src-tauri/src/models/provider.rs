@@ -5,22 +5,28 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderId {
     ClaudeCode,
     Codex,
-    Pi,
+    Omp,
     Gemini,
     Fresh,
     Terminal,
 }
 
+impl ProviderId {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ProviderId::ClaudeCode => "claude_code",
+            ProviderId::Codex => "codex",
+            ProviderId::Omp => "omp",
+            ProviderId::Gemini => "gemini",
+            ProviderId::Fresh => "fresh",
+            ProviderId::Terminal => "terminal",
+        }
+    }
+}
+
 impl std::fmt::Display for ProviderId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProviderId::ClaudeCode => write!(f, "claude_code"),
-            ProviderId::Codex => write!(f, "codex"),
-            ProviderId::Pi => write!(f, "pi"),
-            ProviderId::Gemini => write!(f, "gemini"),
-            ProviderId::Fresh => write!(f, "fresh"),
-            ProviderId::Terminal => write!(f, "terminal"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
