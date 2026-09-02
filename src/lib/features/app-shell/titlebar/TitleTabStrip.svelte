@@ -29,7 +29,6 @@
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
   import { startSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
-  import { sessionDotClass } from '$lib/features/sessions/visual'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
   import { findTask } from '$lib/features/tasks/state.svelte'
@@ -225,9 +224,6 @@
                 {/if}
               {:else if presentation.providerIcon}
                 <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
-              {/if}
-              {#if tab.kind === 'session'}
-                <span class="h-1.5 w-1.5 shrink-0 rounded-full {sessionDotClass(tab)}" aria-label={tab.status}></span>
               {/if}
               {#if tab.locked}
                 <Lock size={11} class="shrink-0 text-muted" />

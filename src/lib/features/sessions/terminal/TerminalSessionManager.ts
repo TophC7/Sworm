@@ -1,10 +1,10 @@
 import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
-import { feedOutput, removeSession } from '$lib/features/sessions/state/sessionActivity.svelte'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
+import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
 import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
 import type { TabId } from '$lib/features/workbench/model'
-import { setSessionTabResumeToken, setSessionTabStatus } from '$lib/features/workbench/state.svelte'
+import { setSessionTabResumeToken, setSessionTabStatus, setSessionTabTitle } from '$lib/features/workbench/state.svelte'
 import type { PtyEvent, SessionSpec, SessionStartInfo } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
@@ -84,7 +84,8 @@ export class TerminalSessionManager {
   // shares this promise so concurrent attach/load/start calls cannot
   // create competing xterm instances or WebGL contexts.
   private terminalPromise: Promise<void> | null = null
-  private readonly textDecoder = new TextDecoder()
+  private textDecoder = new TextDecoder()
+  private readonly titleParser = new TerminalTitleParser()
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
 
@@ -97,10 +98,10 @@ export class TerminalSessionManager {
   //
   // Strategy: while detached, push bytes into `deferredBytes`. On the
   // next `attach()`, concatenate and replay them in one xterm.write so
-  // the visible state catches up. Activity classification still runs
-  // on every chunk (it doesn't touch xterm) so the session-list dot
-  // stays accurate. The cap prevents a long-running unread session from
-  // pinning unbounded memory; over the cap we drop the oldest chunks
+  // the visible state catches up. The lightweight title scan still runs
+  // on every chunk so hidden tab labels stay current. The cap prevents a
+  // long-running unread session from pinning unbounded memory; over the
+  // cap we drop the oldest chunks
   // (cursor positioning at the new head will redraw correctly when the
   // agent emits its next full repaint, which TUIs do constantly).
   private deferredBytes: Uint8Array[] = []
@@ -237,6 +238,8 @@ export class TerminalSessionManager {
   }
 
   private async spawnPty(spec: Omit<SessionSpec, 'runId'>): Promise<SessionStartInfo> {
+    this.textDecoder = new TextDecoder()
+    this.titleParser.reset()
     await this.ensureTerminal()
     this.releaseChannels()
 
@@ -251,7 +254,18 @@ export class TerminalSessionManager {
     this.runId = runId
 
     const output = backend.sessions.createOutputChannel((data) => {
+      if (this.disposed || this.runId !== runId) return
+
       const bytes = new Uint8Array(data)
+      const text = this.textDecoder.decode(bytes, { stream: true })
+      const parsedTitle = this.titleParser.push(text)
+      let title = parsedTitle
+      if (spec.providerId === 'omp' && title?.startsWith('π')) {
+        title = title.slice(1).trimStart()
+        if (title.startsWith('>')) title = title.slice(1).trimStart()
+      }
+      if (title) setSessionTabTitle(this.tabId, title)
+
       // Detached managers buffer bytes and replay on next attach. See
       // `deferredBytes`. Only the visible session pays xterm parser cost.
       if (this.container) {
@@ -259,7 +273,6 @@ export class TerminalSessionManager {
       } else {
         this.deferDetachedBytes(bytes)
       }
-      feedOutput(this.tabId, spec.providerId, this.textDecoder.decode(bytes, { stream: true }))
     })
     const events = backend.sessions.createEventChannel((event) => {
       // A stale run's late events must not touch the tab that has since
@@ -351,7 +364,6 @@ export class TerminalSessionManager {
     } else {
       this.releaseChannels()
     }
-    removeSession(this.tabId)
 
     this.inputDisposable?.dispose()
     this.inputDisposable = null

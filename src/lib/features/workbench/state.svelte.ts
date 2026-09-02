@@ -149,14 +149,15 @@ function appendTab(tab: Tab): TabId {
 }
 
 function updateTab(tabId: TabId, update: (tab: Tab) => Tab): void {
-  let dirty = false
-  const tabs = workbench.tabs.map((t) => {
-    if (t.id !== tabId) return t
-    const updated = update(t)
-    if (updated !== t) dirty = true
-    return updated
-  })
-  if (dirty) commit({ tabs })
+  const index = workbench.tabs.findIndex((tab) => tab.id === tabId)
+  if (index === -1) return
+
+  const updated = update(workbench.tabs[index])
+  if (updated === workbench.tabs[index]) return
+
+  const tabs = [...workbench.tabs]
+  tabs[index] = updated
+  commit({ tabs })
 }
 
 function pushClosedTab(snapshot: PersistedTab): void {
@@ -316,15 +317,18 @@ export function setSessionTabStatus(tabId: TabId, status: SessionStatus): void {
   updateTab(tabId, (t) => (t.kind === 'session' && t.status !== status ? { ...t, status } : t))
 }
 
+export function setSessionTabTitle(tabId: TabId, title: string): void {
+  if (!title) return
+  updateTab(tabId, (t) => (t.kind === 'session' && t.title !== title ? { ...t, title } : t))
+}
+
 export function setSessionTabResumeToken(tabId: TabId, resumeToken: string | null): void {
   updateTab(tabId, (t) => (t.kind === 'session' && t.resumeToken !== resumeToken ? { ...t, resumeToken } : t))
 }
 
 /** Drop the tab's token only if it still equals `expectedToken`; a token bound meanwhile wins. */
 export function clearSessionTabResumeToken(tabId: TabId, expectedToken: string): void {
-  updateTab(tabId, (t) =>
-    t.kind === 'session' && t.resumeToken === expectedToken ? { ...t, resumeToken: null } : t
-  )
+  updateTab(tabId, (t) => (t.kind === 'session' && t.resumeToken === expectedToken ? { ...t, resumeToken: null } : t))
 }
 
 // TASK TABS //
