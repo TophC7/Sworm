@@ -157,11 +157,11 @@ impl NixService {
             "INSERT INTO folder_nix_envs (folder_path, nix_file, status, created_at, updated_at) \
              VALUES (?1, ?2, 'pending', ?3, ?4) \
              ON CONFLICT(folder_path) DO UPDATE SET \
+             status = CASE WHEN folder_nix_envs.nix_file = excluded.nix_file THEN folder_nix_envs.status ELSE 'pending' END, \
+             env_json = CASE WHEN folder_nix_envs.nix_file = excluded.nix_file THEN folder_nix_envs.env_json ELSE NULL END, \
+             error_message = CASE WHEN folder_nix_envs.nix_file = excluded.nix_file THEN folder_nix_envs.error_message ELSE NULL END, \
+             evaluated_at = CASE WHEN folder_nix_envs.nix_file = excluded.nix_file THEN folder_nix_envs.evaluated_at ELSE NULL END, \
              nix_file = excluded.nix_file, \
-             status = 'pending', \
-             env_json = NULL, \
-             error_message = NULL, \
-             evaluated_at = NULL, \
              updated_at = excluded.updated_at",
             rusqlite::params![folder_path, nix_file, now, now],
         )
@@ -564,5 +564,48 @@ mod tests {
         let nix = HashMap::new();
         let result = NixService::merged_path("/usr/bin", &nix);
         assert_eq!(result, "/usr/bin");
+    }
+
+    #[test]
+    fn test_select_preserves_env_on_same_file_reselect() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE folder_nix_envs (
+                folder_path TEXT PRIMARY KEY,
+                nix_file TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                env_json TEXT,
+                error_message TEXT,
+                evaluated_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+
+        let initial = NixService::select(&conn, "/test/path", "flake.nix").unwrap();
+        assert_eq!(initial.status, NixEnvStatus::Pending);
+        assert!(initial.env_json.is_none());
+
+        let mut env = HashMap::new();
+        env.insert("FOO".to_string(), "BAR".to_string());
+        NixService::save_success(&conn, "/test/path", &env).unwrap();
+
+        let loaded = NixService::load_env_vars(&conn, "/test/path").unwrap();
+        assert!(loaded.is_some());
+        assert_eq!(loaded.unwrap().get("FOO").unwrap(), "BAR");
+
+        // Reselecting same file preserves ready status and env
+        let reselected = NixService::select(&conn, "/test/path", "flake.nix").unwrap();
+        assert_eq!(reselected.status, NixEnvStatus::Ready);
+        assert!(reselected.env_json.is_some());
+
+        // Selecting different file resets to pending and clears env
+        let changed = NixService::select(&conn, "/test/path", "shell.nix").unwrap();
+        assert_eq!(changed.status, NixEnvStatus::Pending);
+        assert!(changed.env_json.is_none());
+        let loaded_after_change = NixService::load_env_vars(&conn, "/test/path").unwrap();
+        assert!(loaded_after_change.is_none());
     }
 }

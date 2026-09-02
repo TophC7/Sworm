@@ -28,14 +28,21 @@
   // an evaluated Nix environment contributes commands to PATH.
   $effect(() => {
     void detectNix(folderPath).then((result) => {
-      if (result.selected?.status === 'ready') void loadProvidersForFolder(folderPath)
+      if (result.selected?.status === 'ready') {
+        void loadProvidersForFolder(folderPath)
+      } else if (result.selected?.status === 'pending') {
+        void handleEvaluate()
+      }
     })
   })
 
   async function handleSelect(nixFile: string) {
+    if (evaluatingNow) return
     try {
-      await selectNixFile(folderPath, nixFile)
-      notify.success('Selected Nix file', nixFile)
+      if (detection?.selected?.nix_file !== nixFile) {
+        await selectNixFile(folderPath, nixFile)
+      }
+      await handleEvaluate()
     } catch (error) {
       notify.error('Select Nix file failed', getErrorMessage(error))
     }
@@ -75,9 +82,9 @@
     try {
       await clearNix(folderPath)
       await loadProvidersForFolder(folderPath)
-      notify.success('Cleared Nix environment')
+      notify.success('Disabled Nix environment')
     } catch (error) {
-      notify.error('Clear Nix environment failed', getErrorMessage(error))
+      notify.error('Disable Nix environment failed', getErrorMessage(error))
     }
   }
 
@@ -170,7 +177,7 @@
           <DropdownMenuItem destructive onclick={handleClear}>
             <span class="flex items-center gap-1.5">
               <X size={12} />
-              Clear Nix env
+              Disable Nix env
             </span>
           </DropdownMenuItem>
         {/if}
