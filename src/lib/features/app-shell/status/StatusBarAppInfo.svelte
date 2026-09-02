@@ -9,7 +9,7 @@
   import { cn } from '$lib/utils/cn'
   import { backend } from '$lib/api/backend'
   import githubIconUrl from '$lib/icons/github.svg?url'
-  import appIconUrl from '../../../../../src-tauri/icons/icon.svg?url'
+  import appIconUrl from '$lib/icons/sworm.svg?url'
   import { getTabs } from '$lib/features/workbench/state.svelte'
   import { isProcessLive } from '$lib/features/workbench/model'
   import { notify } from '$lib/features/notifications/state.svelte'

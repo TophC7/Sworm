@@ -6,7 +6,8 @@
   import { getRecentFolders } from '$lib/features/folders/state.svelte'
   import { openFolder } from '$lib/features/workbench/state.svelte'
   import { basename, parentPath } from '$lib/utils/paths'
-  import { FolderOpen, Worm } from '$lib/icons/lucideExports'
+  import { FolderOpen } from '$lib/icons/lucideExports'
+  import appIconUrl from '$lib/icons/sworm.svg?url'
 
   let recent = $derived(getRecentFolders())
 </script>
@@ -15,7 +16,7 @@
   <div class="mx-auto w-full max-w-md">
     <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
       <div class="mb-1 flex items-center gap-3">
-        <Worm size={30} strokeWidth={2} class="-mr-1.5 shrink-0 text-accent" />
+        <img src={appIconUrl} alt="" class="-mr-1.5 size-[30px] shrink-0" />
         <h1 class="m-0 text-2xl font-medium text-bright">Sworm</h1>
       </div>
       <p class="mb-8 text-base text-muted">Agentic Development Environment</p>
