@@ -30,12 +30,12 @@
   class={cn('flex h-8 min-h-8 shrink-0 items-center justify-between border-b border-edge bg-surface px-2.5', className)}
 >
   {#if left}
-    <div class="flex items-center gap-1.5">
+    <div class="flex min-w-0 items-center gap-1.5">
       {@render left()}
     </div>
   {/if}
   {#if right}
-    <div class="flex items-center gap-1">
+    <div class="flex shrink-0 items-center gap-1">
       {@render right()}
     </div>
   {/if}

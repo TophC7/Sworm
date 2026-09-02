@@ -34,7 +34,7 @@
     fileTreeDragSource,
     isFileTreeDropActive
   } from '$lib/features/dnd/adapters/file-tree.svelte'
-  import { basename, dirname, isEqualOrParent } from '$lib/utils/paths'
+  import { basename, dirname, isEqualOrParent, normalizeAbsolutePath } from '$lib/utils/paths'
   import { join } from '@tauri-apps/api/path'
 
   function errMessage(e: unknown): string {
@@ -42,6 +42,7 @@
   }
 
   let { folderPath }: { folderPath: string } = $props()
+  let folderName = $derived(basename(normalizeAbsolutePath(folderPath)) || folderPath || 'Files')
 
   let expandedDirs = new SvelteSet<string>()
   let filterQuery = $state('')
@@ -540,7 +541,7 @@
   }
 </script>
 
-<SidebarPanel title="Files">
+<SidebarPanel title={folderName}>
   {#snippet headerActions()}
     <IconButton tooltip="Refresh files" onclick={loadFiles}>
       <RotateCw size={11} />

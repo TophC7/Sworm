@@ -21,7 +21,7 @@
 <aside class={cn('flex h-full flex-col bg-ground', className)}>
   <PanelHeader>
     {#snippet left()}
-      <span class="text-xs font-semibold tracking-wide text-muted uppercase">{title}</span>
+      <span class="truncate text-xs font-semibold tracking-wide text-muted uppercase" {title}>{title}</span>
       {#if headerActions}{@render headerActions()}{/if}
     {/snippet}
     {#snippet right()}

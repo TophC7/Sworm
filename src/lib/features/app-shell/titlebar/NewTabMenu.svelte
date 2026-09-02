@@ -2,7 +2,7 @@
   @component
   NewTabMenu — the `+` button at the end of the title-bar tab strip.
   Opens Terminal / New File / one row per connected agent provider in the
-  active tab's folder. With no active tab there is no folder to target,
+  active tab's folder, or opens another folder. With no active tab there is no folder to target,
   so the button opens the folder picker instead.
 -->
 
@@ -21,7 +21,7 @@
   import { startSession } from '$lib/features/sessions/service.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import { createUntitledTextSurface } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { FilePlusIcon, Plus, TerminalIcon } from '$lib/icons/lucideExports'
+  import { FilePlusIcon, FolderOpen, Plus, TerminalIcon } from '$lib/icons/lucideExports'
 
   let folderPath = $derived(getActiveFolderPath())
   let connectedAgents = $derived.by(() => {
@@ -42,24 +42,29 @@
     >
       <Plus size={14} />
     </DropdownMenuTrigger>
-    <DropdownMenuContent align="end" sideOffset={4}>
+    <DropdownMenuContent align="start" sideOffset={4}>
       <DropdownMenuItem onclick={() => startSession(folder, 'terminal', 'Terminal')}>
-        <TerminalIcon size={14} class="text-muted" />
-        Terminal
+        <TerminalIcon size={14} class="shrink-0 text-muted" />
+        <span>Terminal</span>
       </DropdownMenuItem>
       <DropdownMenuItem onclick={() => createUntitledTextSurface(folder)}>
-        <FilePlusIcon size={14} class="text-muted" />
-        New File
+        <FilePlusIcon size={14} class="shrink-0 text-muted" />
+        <span>New File</span>
       </DropdownMenuItem>
       {#if connectedAgents.length > 0}
         <DropdownMenuSeparator />
         {#each connectedAgents as provider (provider.id)}
           <DropdownMenuItem onclick={() => createSession(provider.id, provider.label)}>
-            <img src={provider.icon} alt="" width={14} height={14} />
-            {provider.label}
+            <img src={provider.icon} alt="" width={14} height={14} class="shrink-0" />
+            <span>{provider.label}</span>
           </DropdownMenuItem>
         {/each}
       {/if}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onclick={() => void openFolderPicker()}>
+        <FolderOpen size={14} class="shrink-0 text-muted" />
+        <span>Open Folder…</span>
+      </DropdownMenuItem>
     </DropdownMenuContent>
   </DropdownMenuRoot>
 {:else}
