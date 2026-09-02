@@ -1,25 +1,25 @@
 // Agent activity store.
 //
-// Tracks per-session activity state derived from PTY output
+// Tracks per-session-tab activity state derived from PTY output
 // classification. Uses debouncing to prevent flicker: busy state is
 // held for a minimum duration even if the output goes neutral briefly.
 //
 // Activity states:
 //   working   - agent is thinking/executing (accent dot)
 //   waiting   - agent waiting for user input (yellow dot)
-//   completed - agent finished its work, PTY exited (green dot)
 //   idle      - no activity / not running (no dot)
 //
-// Reactivity uses [`ReactiveMap`] so each session has its own version.
-// A session dot in the tab strip subscribes to its session's signal
-// only and never wakes for a sibling session's chunk.
+// Reactivity uses [`ReactiveMap`] so each tab has its own version.
+// A session dot in the tab strip subscribes to its tab's signal
+// only and never wakes for a sibling tab's chunk.
 
 import { classifyActivity, type ActivitySignal } from '$lib/features/sessions/terminal/activityClassifier'
+import type { TabId } from '$lib/features/workbench/model'
 import { ReactiveMap } from '$lib/utils/reactiveMap.svelte'
 
 // TYPES //
 
-export type AgentActivity = 'working' | 'waiting' | 'completed' | 'idle'
+export type AgentActivity = 'working' | 'waiting' | 'idle'
 
 interface ActivityEntry {
   signal: ActivitySignal
@@ -39,12 +39,12 @@ const NEUTRAL_TIMEOUT_MS = 6_000
 
 // STATE //
 
-const activities = new ReactiveMap<string, ActivityEntry>()
+const activities = new ReactiveMap<TabId, ActivityEntry>()
 
 // HELPERS //
 
-function getOrCreate(sessionId: string): ActivityEntry {
-  let entry = activities.get(sessionId)
+function getOrCreate(tabId: TabId): ActivityEntry {
+  let entry = activities.get(tabId)
   if (!entry) {
     entry = {
       signal: 'neutral',
@@ -52,19 +52,19 @@ function getOrCreate(sessionId: string): ActivityEntry {
       updatedAt: Date.now(),
       holdTimer: null
     }
-    activities.set(sessionId, entry)
+    activities.set(tabId, entry)
   }
   return entry
 }
 
 // Mutate an entry's signal/activity fields in place, refresh
-// `updatedAt`, and bump the session's signal so subscribed effects
+// `updatedAt`, and bump the tab's signal so subscribed effects
 // re-run. Use for every change that consumers may observe.
-function updateEntry(sessionId: string, patch: Partial<Pick<ActivityEntry, 'signal' | 'activity'>>) {
-  const entry = activities.get(sessionId)
+function updateEntry(tabId: TabId, patch: Partial<Pick<ActivityEntry, 'signal' | 'activity'>>) {
+  const entry = activities.get(tabId)
   if (!entry) return
   Object.assign(entry, patch, { updatedAt: Date.now() })
-  activities.bumpKey(sessionId)
+  activities.bumpKey(tabId)
 }
 
 function touchEntry(entry: ActivityEntry, signal: ActivitySignal) {
@@ -72,8 +72,8 @@ function touchEntry(entry: ActivityEntry, signal: ActivitySignal) {
   entry.updatedAt = Date.now()
 }
 
-function clearHold(sessionId: string) {
-  const entry = activities.get(sessionId)
+function clearHold(tabId: TabId) {
+  const entry = activities.get(tabId)
   if (entry?.holdTimer) {
     clearTimeout(entry.holdTimer)
     entry.holdTimer = null
@@ -86,14 +86,14 @@ function clearHold(sessionId: string) {
  * Feed a PTY output chunk for classification.
  * Called from TerminalSessionManager on every output callback.
  */
-export function feedOutput(sessionId: string, providerId: string, chunk: string) {
+export function feedOutput(tabId: TabId, providerId: string, chunk: string) {
   const signal = classifyActivity(providerId, chunk)
-  const entry = getOrCreate(sessionId)
+  const entry = getOrCreate(tabId)
 
   if (signal === 'busy') {
-    clearHold(sessionId)
+    clearHold(tabId)
     if (entry.activity !== 'working') {
-      updateEntry(sessionId, { signal, activity: 'working' })
+      updateEntry(tabId, { signal, activity: 'working' })
     } else {
       touchEntry(entry, signal)
     }
@@ -101,9 +101,9 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
   }
 
   if (signal === 'idle') {
-    clearHold(sessionId)
+    clearHold(tabId)
     if (entry.activity !== 'waiting') {
-      updateEntry(sessionId, { signal, activity: 'waiting' })
+      updateEntry(tabId, { signal, activity: 'waiting' })
     } else {
       touchEntry(entry, signal)
     }
@@ -115,10 +115,10 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
   // only read `.activity`, which doesn't change until the timer fires.
   if (entry.activity === 'working' && !entry.holdTimer) {
     entry.holdTimer = setTimeout(() => {
-      const current = activities.get(sessionId)
+      const current = activities.get(tabId)
       if (current && current.activity === 'working') {
         current.holdTimer = null
-        updateEntry(sessionId, { signal: 'neutral', activity: 'idle' })
+        updateEntry(tabId, { signal: 'neutral', activity: 'idle' })
       }
     }, BUSY_HOLD_MS)
   }
@@ -126,38 +126,28 @@ export function feedOutput(sessionId: string, providerId: string, chunk: string)
   // If currently waiting, drop to idle after a longer timeout.
   if (entry.activity === 'waiting' && !entry.holdTimer) {
     entry.holdTimer = setTimeout(() => {
-      const current = activities.get(sessionId)
+      const current = activities.get(tabId)
       if (current && current.activity === 'waiting') {
         current.holdTimer = null
-        updateEntry(sessionId, { signal: 'neutral', activity: 'idle' })
+        updateEntry(tabId, { signal: 'neutral', activity: 'idle' })
       }
     }, NEUTRAL_TIMEOUT_MS)
   }
 }
 
-/** Mark a session as completed (PTY exited cleanly). */
-export function markCompleted(sessionId: string) {
-  clearHold(sessionId)
-  const entry = getOrCreate(sessionId)
-  // Only transition completed if the session was actually doing something.
-  if (entry.activity === 'working' || entry.activity === 'waiting') {
-    updateEntry(sessionId, { signal: 'neutral', activity: 'completed' })
-  }
-}
-
 /**
- * Get current activity for a session. Returns 'idle' if unknown.
+ * Get current activity for a session tab. Returns 'idle' if unknown.
  *
- * Subscribes the calling effect to this session's signal only;
- * activity changes for other sessions do not re-fire.
+ * Subscribes the calling effect to this tab's signal only;
+ * activity changes for other tabs do not re-fire.
  */
-export function getActivity(sessionId: string): AgentActivity {
-  void activities.keyVersion(sessionId)
-  return activities.get(sessionId)?.activity ?? 'idle'
+export function getActivity(tabId: TabId): AgentActivity {
+  void activities.keyVersion(tabId)
+  return activities.get(tabId)?.activity ?? 'idle'
 }
 
-/** Clean up timers for a session (call on session removal). */
-export function removeSession(sessionId: string) {
-  clearHold(sessionId)
-  activities.delete(sessionId)
+/** Clean up timers for a session tab (call when its manager is disposed). */
+export function removeSession(tabId: TabId) {
+  clearHold(tabId)
+  activities.delete(tabId)
 }

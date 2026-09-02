@@ -16,7 +16,7 @@ export function sessionDotClass(tab: SessionTab): string {
   if (tab.status === 'failed') return 'bg-danger'
 
   if (isProcessLive(tab.status)) {
-    const activity = getActivity(tab.sessionId)
+    const activity = getActivity(tab.id)
     if (activity === 'working') return 'bg-accent'
     if (activity === 'waiting') return 'bg-warning'
     return 'bg-success'

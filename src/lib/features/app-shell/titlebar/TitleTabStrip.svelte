@@ -81,11 +81,11 @@
     return item ? tabs.findIndex((t) => t.id === item.tabId) : -1
   })
 
-  // The source adapter clears LocalTransfer on dragend/drop; piggyback on
-  // that to drop the insertion marker when a drag ends anywhere.
-  $effect(() => {
-    if (dragFrom < 0) dropIndex = null
-  })
+  // The source adapter clears LocalTransfer on dragend/drop, so the
+  // marker only renders while a tab drag is in flight. A cancelled drag
+  // additionally resets `dropIndex` via `ondragend` on the dragged tab so
+  // the next drag doesn't briefly show the stale slot before its first hover.
+  let effectiveDropIndex = $derived(dragFrom >= 0 ? dropIndex : null)
 
   function handleDragOver(e: DragEvent, index: number) {
     if (dragFrom < 0) return
@@ -108,7 +108,7 @@
 
   // SESSION MENU //
   async function stopSession(tab: SessionTab) {
-    await runNotifiedTask(() => stopSessionProcess(tab.sessionId), {
+    await runNotifiedTask(() => stopSessionProcess(tab.id), {
       loading: { title: 'Stopping session', description: tab.title },
       success: { title: 'Session stopped', description: tab.title },
       error: { title: 'Stop session failed' }
@@ -120,7 +120,7 @@
     await tick()
     await runNotifiedTask(
       async () => {
-        const manager = sessionRegistry.getOrCreate(tab.sessionId)
+        const manager = sessionRegistry.getOrCreate(tab.id)
         if (manager.isPtyActive()) await manager.stopPty()
         await startSessionProcess(manager, tab)
       },
@@ -173,8 +173,10 @@
         <ContextMenuTrigger
           class={cn(
             'contents',
-            dropIndex === i && '[&>button]:shadow-[inset_2px_0_0_var(--color-accent)]',
-            dropIndex === i + 1 && i === tabs.length - 1 && '[&>button]:shadow-[inset_-2px_0_0_var(--color-accent)]'
+            effectiveDropIndex === i && '[&>button]:shadow-[inset_2px_0_0_var(--color-accent)]',
+            effectiveDropIndex === i + 1 &&
+              i === tabs.length - 1 &&
+              '[&>button]:shadow-[inset_-2px_0_0_var(--color-accent)]'
           )}
           draggable={!tab.locked}
           {@attach tabDragSource({ tab })}
@@ -193,6 +195,7 @@
             onauxclick={(e) => handleAuxClick(e, tab.id)}
             ondragover={(e) => handleDragOver(e, i)}
             ondrop={handleDrop}
+            ondragend={() => (dropIndex = null)}
             onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
           >
             {#snippet leading()}

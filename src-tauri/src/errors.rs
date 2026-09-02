@@ -9,9 +9,6 @@ pub enum ApiError {
     #[error("Database error: {0}")]
     Database(String),
 
-    #[error("Keyring error: {0}")]
-    Keyring(String),
-
     #[error("PTY error: {0}")]
     Pty(String),
 

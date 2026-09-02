@@ -1,7 +1,8 @@
+use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::folder::FolderInfo;
 use crate::services::folders::{folder_name, resolve_folder};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
@@ -25,6 +26,24 @@ pub async fn folder_resolve(path: String) -> Result<FolderInfo, ApiError> {
         name: folder_name(&folder),
         path: folder.to_string_lossy().into_owned(),
     })
+}
+
+/// Release backend resources held for a folder once the workbench has
+/// closed its last tab: stop settings watches and the issue-bridge
+/// socket, then drop the cached issue DB handle. Silent no-op when
+/// nothing was held. The workbench only ever hands us paths it got
+/// from `folder_resolve`, so when canonicalization fails (folder
+/// deleted meanwhile), the raw path is already the resource key.
+#[tauri::command]
+pub async fn folder_release(
+    folder_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let folder = resolve_folder(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
+    state.issue_bridge.stop(&folder);
+    state.issues.evict(&folder);
+    state.settings_watchers.stop(&folder);
+    Ok(())
 }
 
 /// Spawn a detached system terminal emulator rooted at the given path.

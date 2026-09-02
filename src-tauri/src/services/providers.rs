@@ -1,28 +1,9 @@
-use crate::models::provider::{
-    PromptMode, ProviderConnectionStatus, ProviderId, ProviderStatus, ResumeMode, SessionIdMode,
-};
+use crate::models::provider::{ProviderConnectionStatus, ProviderId, ProviderStatus, ResumeMode};
 use crate::services::folders::home_dir;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tracing::{info, warn};
-
-/// Derive a deterministic UUID from a provider prefix and session ID.
-/// Providers that use session-id flags (Claude Code) need valid
-/// UUIDs. We hash `<prefix>:<session_id>` and format as UUID v4.
-pub fn deterministic_session_uuid(prefix: &str, app_session_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{}:{}", prefix, app_session_id));
-    let hash = hasher.finalize();
-
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&hash[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
-
-    uuid::Uuid::from_bytes(bytes).to_string()
-}
 
 /// Encode a working directory the same way Claude Code does for its
 /// `~/.claude/projects/<dir>/<uuid>.jsonl` transcript layout: every `/`
@@ -67,33 +48,47 @@ pub fn antigravity_conversation_exists(id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Newest `conversations/*.db` modified at or after `since` whose stem is
-/// not in `exclude`. Fails closed (None) on any filesystem error.
-pub fn antigravity_find_new_conversation(
+/// Visit `conversations/*.db` files whose birth time is at or after
+/// `since`, oldest first, excluding known ids. Returning `false` stops
+/// iteration.
+///
+/// Fails closed: any error from `read_dir`, an entry, its metadata or
+/// `created()` yields `None`, so a filesystem without birth times never
+/// binds a conversation rather than binding the wrong one.
+pub fn antigravity_visit_conversations_created_since(
     since: SystemTime,
     exclude: &HashSet<String>,
-) -> Option<String> {
+    mut visit: impl FnMut(SystemTime, String) -> bool,
+) -> Option<()> {
     let entries = std::fs::read_dir(antigravity_dir()?.join("conversations")).ok()?;
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension()? != "db" {
-                return None;
-            }
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            if modified < since {
-                return None;
-            }
-            let id = path.file_stem()?.to_str()?.to_string();
-            (!exclude.contains(&id)).then_some((modified, id))
-        })
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, id)| id)
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
+            continue;
+        }
+        let created_at = entry.metadata().ok()?.created().ok()?;
+        if created_at < since {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !exclude.contains(id) {
+            candidates.push((created_at, id.to_string()));
+        }
+    }
+    candidates.sort_by_key(|(created_at, _)| *created_at);
+    for (created_at, id) in candidates {
+        if !visit(created_at, id) {
+            break;
+        }
+    }
+    Some(())
 }
 
-/// Static provider definitions for Phase 1.
-#[allow(dead_code)]
+/// Static provider definitions.
 pub struct ProviderDef {
     pub id: ProviderId,
     pub label: &'static str,
@@ -101,10 +96,7 @@ pub struct ProviderDef {
     pub detect_commands: &'static [&'static str],
     pub version_args: &'static [&'static str],
     pub install_hint: &'static str,
-    pub docs_url: &'static str,
-    pub prompt_mode: PromptMode,
     pub resume_mode: ResumeMode,
-    pub session_id_mode: SessionIdMode,
     pub default_args: &'static [&'static str],
 }
 
@@ -116,14 +108,9 @@ const PROVIDERS: &[ProviderDef] = &[
         detect_commands: &["claude"],
         version_args: &["--version"],
         install_hint: "Install with: npm install -g @anthropic-ai/claude-code",
-        docs_url: "https://docs.anthropic.com/en/docs/claude-code",
-        prompt_mode: PromptMode::ArgvTail,
         resume_mode: ResumeMode::SessionId {
             session_flag: "--session-id",
             continue_flags: &["--resume"],
-        },
-        session_id_mode: SessionIdMode::Deterministic {
-            flag: "--session-id",
         },
         default_args: &[],
     },
@@ -134,12 +121,9 @@ const PROVIDERS: &[ProviderDef] = &[
         detect_commands: &["codex"],
         version_args: &["--version"],
         install_hint: "Install with: npm install -g @openai/codex",
-        docs_url: "https://github.com/openai/codex",
-        prompt_mode: PromptMode::ArgvTail,
         resume_mode: ResumeMode::ThreadId {
             resume_command: "resume",
         },
-        session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
     ProviderDef {
@@ -149,11 +133,9 @@ const PROVIDERS: &[ProviderDef] = &[
         detect_commands: &["omp"],
         version_args: &["--version"],
         install_hint: "Install OMP from your Nix/home-manager configuration or package manager.",
-        docs_url: "https://github.com/can1357/oh-my-pi",
-        prompt_mode: PromptMode::ArgvTail,
-        // `--continue` depends on the per-session dir; session_start appends it.
-        resume_mode: ResumeMode::None,
-        session_id_mode: SessionIdMode::None,
+        resume_mode: ResumeMode::ThreadId {
+            resume_command: "--resume",
+        },
         default_args: &[],
     },
     ProviderDef {
@@ -163,14 +145,9 @@ const PROVIDERS: &[ProviderDef] = &[
         detect_commands: &["agy"],
         version_args: &["--version"],
         install_hint: "Install the Antigravity CLI (agy).",
-        docs_url: "https://antigravity.google",
-        prompt_mode: PromptMode::FlagThenValue {
-            flag: "--prompt-interactive",
-        },
         resume_mode: ResumeMode::ConversationId {
             flag: "--conversation",
         },
-        session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
     ProviderDef {
@@ -180,28 +157,17 @@ const PROVIDERS: &[ProviderDef] = &[
         detect_commands: &[], // detected via $SHELL, not PATH lookup
         version_args: &["--version"],
         install_hint: "",
-        docs_url: "",
-        prompt_mode: PromptMode::KeystrokeInjection,
         resume_mode: ResumeMode::None,
-        session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
 ];
 
-/// Provider service: detection, registry, status caching.
-pub struct ProviderService {
-    cache: HashMap<String, ProviderStatus>,
-}
+/// Provider service: detection and static registry.
+pub struct ProviderService;
 
 impl ProviderService {
-    pub fn new() -> Self {
-        Self {
-            cache: HashMap::new(),
-        }
-    }
-
     pub fn detect_all(
-        &mut self,
+        &self,
         merged_path: &str,
         binary_overrides: &HashMap<String, String>,
         detected_shell: Option<&str>,
@@ -231,32 +197,13 @@ impl ProviderService {
         });
 
         results.sort_by_key(|status| provider_order(status.id));
-        self.cache = results
-            .iter()
-            .cloned()
-            .map(|status| (status.id.to_string(), status))
-            .collect();
-
         results
-    }
-
-    pub fn list(
-        &mut self,
-        merged_path: &str,
-        binary_overrides: &HashMap<String, String>,
-        detected_shell: Option<&str>,
-    ) -> Vec<ProviderStatus> {
-        self.detect_all(merged_path, binary_overrides, detected_shell)
     }
 
     pub fn definition(provider_id: &str) -> Option<&'static ProviderDef> {
         PROVIDERS
             .iter()
             .find(|provider| provider.id.as_str() == provider_id)
-    }
-
-    pub fn exists(provider_id: &str) -> bool {
-        Self::definition(provider_id).is_some()
     }
 
     pub fn cli_command(provider_id: &str) -> Option<&'static str> {
@@ -288,7 +235,6 @@ impl ProviderService {
         provider_id: &str,
         resume_token: Option<&str>,
         session_app_id: Option<&str>,
-        initial_prompt: Option<&str>,
     ) -> Vec<String> {
         let Some(definition) = Self::definition(provider_id) else {
             return Vec::new();
@@ -310,7 +256,7 @@ impl ProviderService {
                         args.push(token.to_string());
                     }
                 } else if let Some(app_id) = session_app_id {
-                    // First start with deterministic ID: e.g. `claude --session-id <uuid>`
+                    // First start with a fresh ID: e.g. `claude --session-id <uuid>`
                     args.push((*session_flag).to_string());
                     args.push(app_id.to_string());
                 }
@@ -330,21 +276,6 @@ impl ProviderService {
         }
 
         args.extend(definition.default_args.iter().map(|arg| (*arg).to_string()));
-
-        match &definition.prompt_mode {
-            PromptMode::ArgvTail => {
-                if let Some(prompt) = initial_prompt {
-                    args.push(prompt.to_string());
-                }
-            }
-            PromptMode::FlagThenValue { flag } => {
-                if let Some(prompt) = initial_prompt {
-                    args.push((*flag).to_string());
-                    args.push(prompt.to_string());
-                }
-            }
-            PromptMode::KeystrokeInjection => {}
-        }
 
         args
     }

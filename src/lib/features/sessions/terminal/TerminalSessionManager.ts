@@ -1,8 +1,9 @@
 import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
-import { feedOutput, markCompleted } from '$lib/features/sessions/state/sessionActivity.svelte'
+import { feedOutput, removeSession } from '$lib/features/sessions/state/sessionActivity.svelte'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
+import type { TabId } from '$lib/features/workbench/model'
 import { setSessionTabResumeToken, setSessionTabStatus } from '$lib/features/workbench/state.svelte'
 import type { PtyEvent, SessionSpec, SessionStartInfo } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
@@ -52,7 +53,9 @@ type EventListener = (event: PtyEvent) => void
 type ErrorListener = (message: string) => void
 
 export class TerminalSessionManager {
-  readonly sessionId: string
+  readonly tabId: TabId
+  // Ephemeral PTY identity, minted per spawn; null while no run is live.
+  private runId: string | null = null
 
   private terminal: Terminal | null = null
   private writeQueue: XtermWriteQueue | null = null
@@ -104,8 +107,8 @@ export class TerminalSessionManager {
   private deferredByteCount = 0
   private static readonly DEFERRED_BYTES_CAP = 4 * 1024 * 1024
 
-  constructor(sessionId: string) {
-    this.sessionId = sessionId
+  constructor(tabId: TabId) {
+    this.tabId = tabId
   }
 
   isPtyActive(): boolean {
@@ -153,7 +156,7 @@ export class TerminalSessionManager {
 
   async attach(container: HTMLElement): Promise<void> {
     if (this.disposed) {
-      throw new Error(`Terminal session ${this.sessionId} has been disposed`)
+      throw new Error(`Terminal session ${this.tabId} has been disposed`)
     }
 
     await this.ensureTerminal()
@@ -216,9 +219,9 @@ export class TerminalSessionManager {
     this.container = null
   }
 
-  async startPty(spec: SessionSpec): Promise<SessionStartInfo> {
+  async startPty(spec: Omit<SessionSpec, 'runId'>): Promise<SessionStartInfo> {
     if (this.disposed || this.ptyActive) {
-      return { resumed: false }
+      return { resumed: false, resumeToken: null }
     }
     if (this.startPromise) {
       return this.startPromise
@@ -233,17 +236,19 @@ export class TerminalSessionManager {
     }
   }
 
-  private async spawnPty(spec: SessionSpec): Promise<SessionStartInfo> {
+  private async spawnPty(spec: Omit<SessionSpec, 'runId'>): Promise<SessionStartInfo> {
     await this.ensureTerminal()
     this.releaseChannels()
 
     const terminal = this.terminal
     if (!terminal) {
-      return { resumed: false }
+      return { resumed: false, resumeToken: null }
     }
 
     this.lastError = null
     this.providerId = spec.providerId
+    const runId = crypto.randomUUID()
+    this.runId = runId
 
     const output = backend.sessions.createOutputChannel((data) => {
       const bytes = new Uint8Array(data)
@@ -254,31 +259,35 @@ export class TerminalSessionManager {
       } else {
         this.deferDetachedBytes(bytes)
       }
-      feedOutput(this.sessionId, spec.providerId, this.textDecoder.decode(bytes, { stream: true }))
+      feedOutput(this.tabId, spec.providerId, this.textDecoder.decode(bytes, { stream: true }))
     })
     const events = backend.sessions.createEventChannel((event) => {
+      // A stale run's late events must not touch the tab that has since
+      // restarted with a fresh runId.
+      if (event.run_id !== runId) return
+
       if (event.type === 'started') {
         this.ptyActive = true
         this.lastError = null
-        setSessionTabStatus(this.sessionId, 'running')
+        setSessionTabStatus(this.tabId, 'running')
       }
 
       if (event.type === 'exit') {
         this.ptyActive = false
+        this.runId = null
         this.writeTerminalInBackground(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'))
         this.releaseChannels()
-        markCompleted(this.sessionId)
-        setSessionTabStatus(this.sessionId, 'exited')
+        setSessionTabStatus(this.tabId, 'exited')
       }
 
       if (event.type === 'error') {
         this.lastError = event.message ?? 'Unknown PTY error'
         this.emitError(this.lastError)
-        setSessionTabStatus(this.sessionId, 'failed')
+        setSessionTabStatus(this.tabId, 'failed')
       }
 
       if (event.type === 'resumeTokenBound' && event.token) {
-        setSessionTabResumeToken(this.sessionId, event.token)
+        setSessionTabResumeToken(this.tabId, event.token)
       }
 
       this.emitEvent(event)
@@ -290,25 +299,40 @@ export class TerminalSessionManager {
     this.fitAndSyncSize()
 
     try {
-      const info = await backend.sessions.start(spec, terminal.cols, terminal.rows, output, events)
+      const info = await backend.sessions.start({ ...spec, runId }, terminal.cols, terminal.rows, output, events)
+      if (this.disposed) {
+        // Disposed while the spawn was in flight: nobody owns this PTY
+        // any more, so kill it rather than leak it until app exit.
+        void backend.sessions.stop(runId).catch((error) => {
+          console.error('Failed to stop disposed session:', error)
+        })
+        this.runId = null
+        this.releaseChannels()
+        return info
+      }
       this.ptyActive = true
       return info
     } catch (error) {
       this.ptyActive = false
+      this.runId = null
       this.releaseChannels()
       this.lastError = String(error)
       this.emitError(this.lastError)
-      setSessionTabStatus(this.sessionId, 'failed')
+      setSessionTabStatus(this.tabId, 'failed')
       throw error
     }
   }
 
   async stopPty(): Promise<void> {
+    const runId = this.runId
+    if (!runId) return
     try {
-      await backend.sessions.stop(this.sessionId)
+      await backend.sessions.stop(runId)
     } finally {
       this.ptyActive = false
+      this.runId = null
       this.releaseChannels()
+      setSessionTabStatus(this.tabId, 'exited')
     }
   }
 
@@ -320,11 +344,14 @@ export class TerminalSessionManager {
     this.disposed = true
     this.detach()
 
+    // An in-flight spawn is handled by `spawnPty` itself once the
+    // backend answers (see the `disposed` check there).
     if (this.ptyActive) {
       void this.stopPty().catch(() => {})
     } else {
       this.releaseChannels()
     }
+    removeSession(this.tabId)
 
     this.inputDisposable?.dispose()
     this.inputDisposable = null
@@ -568,17 +595,17 @@ export class TerminalSessionManager {
   }
 
   private writeToPty(data: string): void {
-    if (!this.ptyActive || !this.inputEnabled) return
+    if (!this.ptyActive || !this.inputEnabled || !this.runId) return
     const encoded = textEncoder.encode(data)
-    backend.sessions.write(this.sessionId, encoded).catch((error) => {
+    backend.sessions.write(this.runId, encoded).catch((error) => {
       console.error('Session write error:', error)
     })
   }
 
   private fitAndSyncSize(): void {
     this.fitTerminal()
-    if (this.ptyActive && this.terminal) {
-      void backend.sessions.resize(this.sessionId, this.terminal.cols, this.terminal.rows).catch(() => {})
+    if (this.ptyActive && this.terminal && this.runId) {
+      void backend.sessions.resize(this.runId, this.terminal.cols, this.terminal.rows).catch(() => {})
     }
   }
 

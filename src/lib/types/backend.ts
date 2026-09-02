@@ -1,23 +1,9 @@
 // Typed interfaces for the Rust backend IPC responses.
 // Keep in sync with models in src-tauri/src/models/ and commands/.
 
-export interface AppInfo {
-  name: string
-  version: string
-}
-
-export interface EnvProbeResult {
-  detected_shell: string
-  base_path: string
-  shell_path: string | null
-  merged_path: string
-  probe_succeeded: boolean
-  gdk_backend: string | null
-}
-
 export interface PtyEvent {
   type: 'started' | 'exit' | 'error' | 'resumeTokenBound'
-  session_id: string
+  run_id: string
   pid?: number | null
   code?: number | null
   message?: string
@@ -31,11 +17,13 @@ export interface FolderInfo {
 
 export interface SessionStartInfo {
   resumed: boolean
+  /** Token the launched process is known to own at spawn time; null until discovery binds one. */
+  resumeToken: string | null
 }
 
-/** Everything the backend needs to (re)spawn a session tab's process. */
+/** Everything the backend needs to spawn a session tab's process under an ephemeral run id. */
 export interface SessionSpec {
-  sessionId: string
+  runId: string
   folderPath: string
   providerId: string
   resumeToken: string | null
@@ -102,7 +90,7 @@ export interface EffectiveSettings {
   lsp: { servers: Record<string, EffectiveLspServerSettings> }
 }
 
-export type SettingsLayerKind = 'global' | 'project'
+export type SettingsLayerKind = 'global' | 'folder'
 export type SettingsDiagnosticCode =
   | 'parse_error'
   | 'type_error'
@@ -562,10 +550,6 @@ export interface IssueConfigEntry {
   value: string
 }
 
-export interface FileEntryStat {
-  isDir: boolean
-}
-
 export interface StashEntry {
   index: number
   message: string
@@ -615,7 +599,6 @@ export interface DiscoveredProject {
   path: string
   name: string
   path_exists: boolean
-  is_recent: boolean
   last_active: string
   providers: DiscoveredProviderActivity[]
 }

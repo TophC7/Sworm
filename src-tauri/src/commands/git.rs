@@ -758,21 +758,6 @@ pub async fn git_list_branches(
         .map_err(ApiError::Internal)
 }
 
-/// Single-branch lookup. Used by the StatusBar popover and post-
-/// mutation refresh path.
-#[tauri::command]
-pub async fn git_branch_info(
-    path: String,
-    name: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<BranchSummary, ApiError> {
-    validated_ref_name(&name)?;
-    state
-        .git
-        .branch_info(Path::new(&path), &name)
-        .map_err(ApiError::NotFound)
-}
-
 /// Current paused-state of the working tree (idle / rebasing / merging).
 #[tauri::command]
 pub async fn git_branch_status(

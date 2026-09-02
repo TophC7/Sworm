@@ -265,29 +265,6 @@ pub async fn issue_config_list(
     run_blocking(move || issues.list_config(&folder)).await
 }
 
-#[tauri::command]
-pub async fn issue_config_get(
-    folder_path: String,
-    key: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<IssueConfigEntry>, ApiError> {
-    let folder = resolve_folder(&folder_path)?;
-    let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.get_config(&folder, &key)).await
-}
-
-#[tauri::command]
-pub async fn issue_config_set(
-    folder_path: String,
-    key: String,
-    value: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<IssueConfigEntry, ApiError> {
-    let folder = resolve_folder(&folder_path)?;
-    let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.set_config(&folder, &key, &value)).await
-}
-
 /// Run an [`IssueService`] call on a blocking worker and translate
 /// errors into the typed [`ApiError`] variants the frontend matches on.
 async fn run_blocking<T, F>(work: F) -> Result<T, ApiError>

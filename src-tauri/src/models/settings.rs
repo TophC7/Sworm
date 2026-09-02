@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 pub const SETTINGS_FILE_NAME: &str = "settings.jsonc";
 pub const SHORTCUTS_FILE_NAME: &str = "shortcuts.jsonc";
-pub const PROJECT_SETTINGS_PATH: &str = ".sworm/settings.jsonc";
+pub const FOLDER_SETTINGS_PATH: &str = ".sworm/settings.jsonc";
 pub const GLOBAL_SETTINGS_DIR_NAME: &str = "sworm";
 
 /// Default timeout for `nix develop --command env -0` evaluations, in seconds.
@@ -211,7 +211,7 @@ fn default_provider_settings() -> BTreeMap<String, ProviderSettings> {
 #[serde(rename_all = "snake_case")]
 pub enum SettingsLayerKind {
     Global,
-    Project,
+    Folder,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

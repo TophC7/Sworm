@@ -12,7 +12,7 @@ use crate::services::{
     settings_patch::patch_top_level_section,
     settings_resolution::{
         provider_binary_overrides, provider_config_record, resolve_effective_settings,
-        resolve_effective_settings_for_project_path, SettingsLayerLoad,
+        resolve_effective_settings_for_folder_path, SettingsLayerLoad,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -73,13 +73,13 @@ pub struct PatchSettingsSectionInput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ProjectSettingsFileInput {
-    pub project_path: String,
+pub struct FolderSettingsFileInput {
+    pub folder_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EffectiveSettingsInput {
-    pub project_path: Option<String>,
+    pub folder_path: Option<String>,
 }
 
 #[tauri::command]
@@ -88,11 +88,10 @@ pub async fn settings_get(
     state: tauri::State<'_, AppState>,
 ) -> Result<SettingsPayload, ApiError> {
     watch_settings_paths(&app, &state, None);
-    let resolved = resolve_effective_settings_for_project_path(None).map_err(ApiError::Internal)?;
+    let resolved = resolve_effective_settings_for_folder_path(None).map_err(ApiError::Internal)?;
     let overrides = provider_binary_overrides(&resolved.settings);
 
-    let mut providers = state.providers.lock();
-    let statuses = providers.detect_all(
+    let statuses = state.providers.detect_all(
         &state.env.merged_path,
         &overrides,
         Some(&state.env.detected_shell),
@@ -118,9 +117,9 @@ pub async fn settings_get_effective(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EffectiveSettingsPayload, ApiError> {
-    let project_path = input.project_path.map(PathBuf::from);
-    watch_settings_paths(&app, &state, project_path.as_deref());
-    let resolved = resolve_effective_settings_for_project_path(project_path.as_deref())
+    let folder_path = input.folder_path.map(PathBuf::from);
+    watch_settings_paths(&app, &state, folder_path.as_deref());
+    let resolved = resolve_effective_settings_for_folder_path(folder_path.as_deref())
         .map_err(ApiError::Internal)?;
     Ok(EffectiveSettingsPayload {
         settings: resolved.settings,
@@ -182,22 +181,12 @@ pub async fn settings_open_global_file(
 }
 
 #[tauri::command]
-pub async fn settings_create_project_file(
-    input: ProjectSettingsFileInput,
+pub async fn settings_open_folder_file(
+    input: FolderSettingsFileInput,
 ) -> Result<SettingsFileResult, ApiError> {
-    let path = ensure_project_settings_file(PathBuf::from(input.project_path))?;
-    Ok(SettingsFileResult {
-        path: path.to_string_lossy().into_owned(),
-    })
-}
-
-#[tauri::command]
-pub async fn settings_open_project_file(
-    input: ProjectSettingsFileInput,
-) -> Result<SettingsFileResult, ApiError> {
-    // Project files are opened by the frontend editor once the backend has
+    // Folder files are opened by the frontend editor once the backend has
     // created the file and returned the absolute path.
-    let path = ensure_project_settings_file(PathBuf::from(input.project_path))?;
+    let path = ensure_folder_settings_file(PathBuf::from(input.folder_path))?;
     Ok(SettingsFileResult {
         path: path.to_string_lossy().into_owned(),
     })
@@ -255,20 +244,20 @@ pub async fn settings_set_provider_config(
 fn watch_settings_paths(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
-    project_path: Option<&Path>,
+    folder_path: Option<&Path>,
 ) {
     let generation = Arc::clone(&state.settings_generation);
     if let Err(error) = state.settings_watchers.watch_global(app, generation) {
         tracing::warn!("settings global watcher failed: {error}");
     }
 
-    if let Some(project_path) = project_path {
+    if let Some(folder_path) = folder_path {
         let generation = Arc::clone(&state.settings_generation);
         if let Err(error) = state
             .settings_watchers
-            .watch_project(app, project_path, generation)
+            .watch_folder(app, folder_path, generation)
         {
-            tracing::warn!("settings project watcher failed: {error}");
+            tracing::warn!("settings folder watcher failed: {error}");
         }
     }
 }
@@ -423,9 +412,9 @@ fn ensure_global_settings_file() -> Result<PathBuf, ApiError> {
     Ok(path)
 }
 
-fn ensure_project_settings_file(project_path: PathBuf) -> Result<PathBuf, ApiError> {
+fn ensure_folder_settings_file(folder_path: PathBuf) -> Result<PathBuf, ApiError> {
     let path =
-        SettingsService::ensure_project_settings_parent(&project_path).map_err(ApiError::Io)?;
+        SettingsService::ensure_folder_settings_parent(&folder_path).map_err(ApiError::Io)?;
     ensure_file_exists(&path)?;
     Ok(path)
 }
@@ -535,11 +524,11 @@ mod tests {
     }
 
     #[test]
-    fn ensure_project_settings_file_creates_parent_and_file() {
-        let root = temp_root("project-file");
-        fs::create_dir_all(&root).expect("project root created");
+    fn ensure_folder_settings_file_creates_parent_and_file() {
+        let root = temp_root("folder-file");
+        fs::create_dir_all(&root).expect("folder root created");
 
-        let path = ensure_project_settings_file(root.clone()).expect("settings file created");
+        let path = ensure_folder_settings_file(root.clone()).expect("settings file created");
 
         assert_eq!(path, root.join(".sworm/settings.jsonc"));
         assert_eq!(fs::read_to_string(&path).expect("file read"), "{\n}\n");

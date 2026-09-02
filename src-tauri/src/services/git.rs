@@ -1055,20 +1055,6 @@ impl GitService {
         Ok(out)
     }
 
-    /// Single-branch lookup. Used by the StatusBar popover and post-
-    /// mutation refresh. Returns `Err` if the branch is unknown so the
-    /// command layer can surface a 404-shaped error.
-    pub fn branch_info(
-        &self,
-        path: &Path,
-        name: &str,
-    ) -> Result<crate::models::branch::BranchSummary, String> {
-        let all = self.list_branches(path)?;
-        all.into_iter()
-            .find(|b| b.name == name)
-            .ok_or_else(|| format!("Branch not found: {}", name))
-    }
-
     /// Inspect `.git/` sentinel dirs to determine paused state.
     ///
     /// `rebase-merge` is the interactive / new-style rebase dir;
@@ -2336,28 +2322,6 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&remote).ok();
-    }
-
-    /// `branch_info` happy path + missing-branch error for P0.T3.
-    #[test]
-    fn branch_info_returns_one_or_errors() {
-        let dir = temp_repo("info");
-        let svc = GitService::new();
-
-        let main = svc.branch_info(&dir, "main").expect("main should resolve");
-        assert_eq!(main.name, "main");
-        assert!(main.is_current);
-
-        let err = svc
-            .branch_info(&dir, "does-not-exist")
-            .expect_err("missing branch should error");
-        assert!(
-            err.contains("does-not-exist"),
-            "error should mention the missing name, got: {}",
-            err
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

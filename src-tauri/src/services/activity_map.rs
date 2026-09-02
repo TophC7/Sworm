@@ -2,7 +2,7 @@ use crate::models::activity_map::{DiscoveredProject, DiscoveredProviderActivity}
 use crate::services::folders::{folder_name, home_dir};
 use chrono::{Local, TimeZone};
 use rusqlite::{Connection, OpenFlags};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -20,11 +20,9 @@ const PROVIDER_OMP: &str = "omp";
 pub struct ActivityMapService;
 
 impl ActivityMapService {
-    /// Scan all external agent CLIs for project history, merge results, and
-    /// cross-reference against Sworm's recent folders.
-    pub fn scan(recent_folders: &[String]) -> Vec<DiscoveredProject> {
-        let recent_set: HashSet<&str> = recent_folders.iter().map(String::as_str).collect();
-
+    /// Scan all external agent CLIs for project history and merge the
+    /// results per project folder.
+    pub fn scan() -> Vec<DiscoveredProject> {
         let (day_starts, _) = day_boundaries();
 
         // Collect (path, activity) pairs from each provider
@@ -53,13 +51,10 @@ impl ActivityMapService {
 
                 let path_exists = Path::new(&path).is_dir();
 
-                let is_recent = recent_set.contains(path.as_str());
-
                 DiscoveredProject {
                     path,
                     name,
                     path_exists,
-                    is_recent,
                     last_active,
                     providers,
                 }

@@ -21,8 +21,6 @@ pub struct DiscoveredProject {
     pub name: String,
     /// Whether the path exists on disk (deleted projects get greyed out).
     pub path_exists: bool,
-    /// Whether this path is in Sworm's recent-folders list.
-    pub is_recent: bool,
     /// ISO 8601 timestamp of most recent activity across all providers.
     pub last_active: String,
     /// Per-provider activity data.

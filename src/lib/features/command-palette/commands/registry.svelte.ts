@@ -15,7 +15,7 @@ import {
 } from '$lib/features/editor/renderers/monaco/text/indentRainbow.svelte'
 import {
   closeActiveTab,
-  createSessionWithSharedWorkspaceWarning,
+  createSession,
   newEmptyFile,
   newTerminalSession,
   openActiveFolderInExternalTerminal,
@@ -105,12 +105,8 @@ function activeFolderVisible(): boolean {
   return getActiveFolderPath() !== null
 }
 
-function connectedProviderIds(): Set<string> {
-  return new Set(getConnectedProviders().map((provider) => provider.id))
-}
-
 function hasConnectedProvider(providerId: string): boolean {
-  return connectedProviderIds().has(providerId)
+  return getConnectedProviders(getActiveFolderPath()).some((provider) => provider.id === providerId)
 }
 
 function lastTaskLabel(): string | null {
@@ -135,7 +131,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       iconSrc: provider.icon,
       keywords: ['new', 'session', 'agent', provider.label],
       visible: () => activeFolderVisible() && hasConnectedProvider(provider.id),
-      run: () => createSessionWithSharedWorkspaceWarning(provider.id, provider.label)
+      run: () => createSession(provider.id, provider.label)
     })
   )
 

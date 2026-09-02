@@ -1,7 +1,9 @@
 //! Per-project issue store backed by `.sworm/issues.db` (SQLite, WAL).
 //!
-//! Owns the schema, an LRU of per-project [`IssueProjectDb`] handles, and
-//! the full read/write API consumed by Tauri commands and the bridge.
+//! Owns the schema, per-folder [`IssueProjectDb`] handles (opened lazily
+//! and dropped by [`IssueService::evict`] when the workbench releases the
+//! folder), and the full read/write API consumed by Tauri commands and
+//! the bridge.
 //! Each project DB carries one writer connection and a small reader pool
 //! mirroring [`crate::services::db::DatabaseService`], so list/search/get
 //! never serialize behind a long write.
@@ -47,6 +49,13 @@ impl IssueService {
     /// startup code can verify the file location without opening the DB.
     pub fn issue_db_path(project_path: &Path) -> PathBuf {
         project_path.join(ISSUE_DB_REL)
+    }
+
+    /// Drop the cached [`IssueProjectDb`] for `project_path`. The
+    /// connections close once every in-flight op releases its `Arc`.
+    /// No-op when the folder's DB was never opened.
+    pub fn evict(&self, project_path: &Path) {
+        self.dbs.lock().remove(&Self::issue_db_path(project_path));
     }
 
     /// Resolve (and lazily create) the [`IssueProjectDb`] for a

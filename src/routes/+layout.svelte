@@ -8,6 +8,7 @@
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
+  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
@@ -23,7 +24,7 @@
     hasAnyDirtyTextSurfaces
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { flushWorkbench } from '$lib/features/workbench/persistence'
-  import { getActiveSessionId } from '$lib/features/workbench/state.svelte'
+  import { getActiveSessionTabId } from '$lib/features/workbench/state.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
@@ -48,11 +49,11 @@
   // the effect will fire again when it closes. rAF waits one frame so
   // bits-ui's own restoration attempt completes first and we override
   // it last.
-  const activeSessionId = $derived(getActiveSessionId())
+  const activeSessionTabId = $derived(getActiveSessionTabId())
   const anyModalOpen = $derived(isAnyModalOpen())
 
   $effect(() => {
-    const id = activeSessionId
+    const id = activeSessionTabId
     const open = anyModalOpen
     if (open || !id) return
     requestAnimationFrame(() => sessionRegistry.focus(id))
@@ -80,11 +81,22 @@
       }
 
       // Persist pending workbench mutations before tearing down — the
-      // backend knows nothing about the frontend's debounce queue.
+      // backend knows nothing about the frontend's debounce queue. A
+      // failed write would silently lose the layout, so let the user
+      // choose between quitting anyway and keeping the app open.
       try {
         await flushWorkbench()
       } catch (error) {
-        console.warn('Close-request flush failed:', error)
+        const proceed = await confirmAsync({
+          title: 'Could not save workbench layout',
+          message: `${getErrorMessage(error)}\n\nQuit anyway? Open tabs will not be restored.`,
+          confirmLabel: 'Quit',
+          cancelLabel: 'Keep working'
+        })
+        if (!proceed) {
+          event.preventDefault()
+          return
+        }
       }
       disposeAll()
     })
@@ -97,7 +109,7 @@
 
     const cleanupShortcuts = setupGlobalShortcuts()
 
-    // Fetch project-scoped JSON schemas (tasks, settings, ...) from
+    // Fetch folder-scoped JSON schemas (tasks, settings, ...) from
     // the backend and push them into the Monaco registry. Fire-and-
     // forget: schemas apply whenever they arrive, and a missing schema
     // just means no autocomplete, not a broken editor.

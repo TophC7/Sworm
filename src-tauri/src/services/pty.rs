@@ -24,26 +24,28 @@ const PTY_READ_BUF_SIZE: usize = 64 * 1024;
 // in the IPC tick rate.
 const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Events emitted over the lifecycle channel.
+/// Events emitted over the lifecycle channel. `run_id` is the ephemeral
+/// PTY identity minted by the frontend for one spawn; the durable tab
+/// identity never reaches this layer.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PtyEvent {
     Started {
-        session_id: String,
+        run_id: String,
         pid: Option<u32>,
     },
     Exit {
-        session_id: String,
+        run_id: String,
         code: Option<i32>,
     },
     Error {
-        session_id: String,
+        run_id: String,
         message: String,
     },
-    /// A provider-side resume identity was discovered for a session
-    /// after spawn (Codex thread id, Antigravity conversation id).
+    /// A provider-side resume identity was discovered for a run after
+    /// spawn (Codex thread id, Antigravity conversation id, OMP session id).
     ResumeTokenBound {
-        session_id: String,
+        run_id: String,
         token: String,
     },
 }
@@ -72,10 +74,10 @@ impl PtyService {
 
     /// Spawn a new PTY running the given command.
     ///
-    /// If a PTY already exists for this session_id, it is killed first.
+    /// If a PTY already exists for this run_id, it is killed first.
     pub fn spawn(
         &self,
-        session_id: String,
+        run_id: String,
         cmd: &str,
         args: &[&str],
         cwd: Option<&str>,
@@ -86,9 +88,9 @@ impl PtyService {
         event_channel: tauri::ipc::Channel<PtyEvent>,
         on_exit: Option<Box<dyn FnOnce(&str, Option<i32>) + Send>>,
     ) -> Result<(), String> {
-        if self.is_alive(&session_id) {
-            info!("Killing existing PTY for {} before respawn", session_id);
-            let _ = self.kill(&session_id);
+        if self.sessions.lock().contains_key(&run_id) {
+            info!("Killing existing PTY for {} before respawn", run_id);
+            let _ = self.kill(&run_id);
         }
 
         let pty_system = native_pty_system();
@@ -138,7 +140,7 @@ impl PtyService {
         let runtime_id = uuid::Uuid::new_v4().to_string();
 
         self.sessions.lock().insert(
-            session_id.clone(),
+            run_id.clone(),
             LivePty {
                 master: pair.master,
                 writer,
@@ -150,15 +152,15 @@ impl PtyService {
         );
 
         let _ = event_channel.send(PtyEvent::Started {
-            session_id: session_id.clone(),
+            run_id: run_id.clone(),
             pid,
         });
 
-        let sid_for_thread = session_id.clone();
+        let sid_for_thread = run_id.clone();
         let sessions_for_thread = Arc::clone(&self.sessions);
 
         std::thread::Builder::new()
-            .name(format!("pty-reader-{}", &session_id))
+            .name(format!("pty-reader-{}", &run_id))
             .spawn(move || {
                 let mut buf = [0u8; PTY_READ_BUF_SIZE];
 
@@ -274,7 +276,7 @@ impl PtyService {
                             } else {
                                 error!("PTY read error for {}: {}", sid_for_thread, err);
                                 let _ = event_channel.send(PtyEvent::Error {
-                                    session_id: sid_for_thread.clone(),
+                                    run_id: sid_for_thread.clone(),
                                     message: err.to_string(),
                                 });
                             }
@@ -333,7 +335,7 @@ impl PtyService {
                 }
 
                 let _ = event_channel.send(PtyEvent::Exit {
-                    session_id: sid_for_thread,
+                    run_id: sid_for_thread,
                     code: exit_code,
                 });
             })
@@ -343,11 +345,11 @@ impl PtyService {
     }
 
     /// Write data to the PTY's stdin.
-    pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
+    pub fn write(&self, run_id: &str, data: &[u8]) -> Result<(), String> {
         let mut sessions = self.sessions.lock();
         let live = sessions
-            .get_mut(session_id)
-            .ok_or_else(|| format!("No active PTY session: {}", session_id))?;
+            .get_mut(run_id)
+            .ok_or_else(|| format!("No active PTY session: {}", run_id))?;
 
         live.writer
             .write_all(data)
@@ -359,11 +361,11 @@ impl PtyService {
     }
 
     /// Resize the PTY.
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize(&self, run_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let sessions = self.sessions.lock();
         let live = sessions
-            .get(session_id)
-            .ok_or_else(|| format!("No active PTY session: {}", session_id))?;
+            .get(run_id)
+            .ok_or_else(|| format!("No active PTY session: {}", run_id))?;
 
         live.master
             .resize(PtySize {
@@ -378,8 +380,8 @@ impl PtyService {
     }
 
     /// Kill the PTY process and clean up.
-    pub fn kill(&self, session_id: &str) -> Result<(), String> {
-        let live = self.sessions.lock().remove(session_id);
+    pub fn kill(&self, run_id: &str) -> Result<(), String> {
+        let live = self.sessions.lock().remove(run_id);
         if let Some(mut live) = live {
             live.shutdown.store(true, Ordering::Relaxed);
             // Pre-mark finalized so the reader thread won't double-fire
@@ -390,10 +392,10 @@ impl PtyService {
                 .kill()
                 .map_err(|e| format!("Failed to kill PTY child: {}", e))?;
 
-            info!("PTY session {} killed", session_id);
+            info!("PTY session {} killed", run_id);
             Ok(())
         } else {
-            Err(format!("No active PTY session: {}", session_id))
+            Err(format!("No active PTY session: {}", run_id))
         }
     }
 
@@ -402,25 +404,20 @@ impl PtyService {
         let live_sessions: Vec<(String, LivePty)> = self.sessions.lock().drain().collect();
         let total = live_sessions.len();
 
-        for (session_id, mut live) in live_sessions {
+        for (run_id, mut live) in live_sessions {
             live.shutdown.store(true, Ordering::Relaxed);
             live.finalized.store(true, Ordering::Release);
 
             if let Err(err) = live.killer.kill() {
                 warn!(
                     "Failed to kill PTY child {} during shutdown: {}",
-                    session_id, err
+                    run_id, err
                 );
             } else {
-                info!("Cleanup: killed PTY {}", session_id);
+                info!("Cleanup: killed PTY {}", run_id);
             }
         }
 
         total
-    }
-
-    /// Check if a session is alive.
-    pub fn is_alive(&self, session_id: &str) -> bool {
-        self.sessions.lock().contains_key(session_id)
     }
 }

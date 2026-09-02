@@ -17,7 +17,8 @@
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import type { BuiltinSettingsPage, FormatterSelection, LspServerSettingsEntry } from '$lib/types/backend'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
+  import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
   import { createAutoSaver } from './autoSaver'
 
   type StatusHook = () => void
@@ -53,32 +54,41 @@
 
   let drafts = $state<Record<string, Draft>>({})
   let expanded = $state<Record<string, boolean>>({})
-  const seeded = new Set<string>()
 
+  // Seed a draft for every server that has none yet. Only `servers` is
+  // tracked: editing a draft or resetting `drafts` on a folder switch must
+  // not re-run the pass with the previous folder's servers.
   $effect(() => {
-    for (const entry of servers) {
-      const id = entry.server.server_definition_id
-      if (seeded.has(id)) continue
-      seeded.add(id)
-      drafts[id] = {
-        enabled: entry.config.enabled,
-        binaryPath: entry.config.binary_path_override ?? '',
-        extraArgs: entry.config.extra_args.join(' '),
-        trace: entry.config.trace,
-        settings: entry.config.settings ?? null
+    const entries = servers
+    untrack(() => {
+      for (const entry of entries) {
+        const id = entry.server.server_definition_id
+        if (id in drafts) continue
+        drafts[id] = {
+          enabled: entry.config.enabled,
+          binaryPath: entry.config.binary_path_override ?? '',
+          extraArgs: entry.config.extra_args.join(' '),
+          trace: entry.config.trace,
+          settings: entry.config.settings ?? null
+        }
       }
-    }
+    })
   })
 
   const saver = createAutoSaver({
     onBusyChange: (busy) => (busy ? onSaving() : onSaved())
   })
 
-  let lastLoadedFolderPath = $state<string | undefined>(undefined)
+  // Drafts belong to the folder they were seeded from; a folder switch
+  // discards them and the seeding effect refills from the new servers.
+  const lspLoader = createTrackedAsyncLoad<string | undefined>()
   $effect(() => {
-    if (lastLoadedFolderPath === activeFolderPath) return
-    lastLoadedFolderPath = activeFolderPath
-    void loadLspServers(activeFolderPath)
+    const folderPath = activeFolderPath
+    lspLoader.run(folderPath, async () => {
+      drafts = {}
+      expanded = {}
+      await loadLspServers(folderPath)
+    })
   })
 
   onDestroy(() => saver.dispose())

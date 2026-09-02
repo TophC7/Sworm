@@ -29,8 +29,8 @@ pub struct ResolvedSettings {
     pub diagnostics: Vec<SettingsDiagnostic>,
 }
 
-pub fn resolve_effective_settings_for_project_path(
-    project_path: Option<&Path>,
+pub fn resolve_effective_settings_for_folder_path(
+    folder_path: Option<&Path>,
 ) -> Result<ResolvedSettings, String> {
     let lsp_server_ids = BuiltinCatalogService::list_server_definitions()?
         .into_iter()
@@ -38,14 +38,14 @@ pub fn resolve_effective_settings_for_project_path(
         .collect::<Vec<_>>();
     let global_path = SettingsService::global_settings_path()?;
     let global = load_settings_layer(SettingsLayerKind::Global, global_path);
-    let project = project_path.map(|project_path| {
+    let folder = folder_path.map(|folder_path| {
         load_settings_layer(
-            SettingsLayerKind::Project,
-            SettingsService::project_settings_path(project_path),
+            SettingsLayerKind::Folder,
+            SettingsService::folder_settings_path(folder_path),
         )
     });
 
-    Ok(resolve_effective_settings(global, project, lsp_server_ids))
+    Ok(resolve_effective_settings(global, folder, lsp_server_ids))
 }
 
 pub fn provider_binary_overrides(settings: &EffectiveSettings) -> HashMap<String, String> {
@@ -111,7 +111,7 @@ fn load_settings_layer(layer: SettingsLayerKind, path: PathBuf) -> SettingsLayer
 
 pub fn resolve_effective_settings<I, S>(
     global: SettingsLayerLoad,
-    project: Option<SettingsLayerLoad>,
+    folder: Option<SettingsLayerLoad>,
     valid_lsp_server_ids: I,
 ) -> ResolvedSettings
 where
@@ -130,8 +130,8 @@ where
     };
 
     ctx.apply_layer(SettingsLayerKind::Global, global);
-    if let Some(project) = project {
-        ctx.apply_layer(SettingsLayerKind::Project, project);
+    if let Some(folder) = folder {
+        ctx.apply_layer(SettingsLayerKind::Folder, folder);
     }
 
     ResolvedSettings {
@@ -924,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_project_overrides_global() {
+    fn valid_folder_overrides_global() {
         let resolved = resolve(
             loaded(
                 SettingsLayerKind::Global,
@@ -932,8 +932,8 @@ mod tests {
                 json!({ "general": { "terminal_font_size": 15 } }),
             ),
             Some(loaded(
-                SettingsLayerKind::Project,
-                "project",
+                SettingsLayerKind::Folder,
+                "folder",
                 json!({ "general": { "terminal_font_size": 17 } }),
             )),
         );
@@ -946,8 +946,8 @@ mod tests {
         let resolved = resolve(
             invalid(SettingsLayerKind::Global, "global"),
             Some(loaded(
-                SettingsLayerKind::Project,
-                "project",
+                SettingsLayerKind::Folder,
+                "folder",
                 json!({ "general": { "terminal_font_size": 18 } }),
             )),
         );
@@ -961,14 +961,14 @@ mod tests {
     }
 
     #[test]
-    fn invalid_project_fails_only_project_layer() {
+    fn invalid_folder_fails_only_folder_layer() {
         let resolved = resolve(
             loaded(
                 SettingsLayerKind::Global,
                 "global",
                 json!({ "general": { "terminal_font_size": 16 } }),
             ),
-            Some(invalid(SettingsLayerKind::Project, "project")),
+            Some(invalid(SettingsLayerKind::Folder, "folder")),
         );
 
         assert_eq!(resolved.settings.general.terminal_font_size, 16);
@@ -976,7 +976,7 @@ mod tests {
             resolved.diagnostics[0].code,
             SettingsDiagnosticCode::ParseError
         );
-        assert_eq!(resolved.diagnostics[0].layer, SettingsLayerKind::Project);
+        assert_eq!(resolved.diagnostics[0].layer, SettingsLayerKind::Folder);
     }
 
     #[test]
@@ -1002,8 +1002,8 @@ mod tests {
                 }),
             ),
             Some(loaded(
-                SettingsLayerKind::Project,
-                "project",
+                SettingsLayerKind::Folder,
+                "folder",
                 json!({
                     "providers": {
                         "claude_code": { "extra_args": ["--project"] }
@@ -1057,8 +1057,8 @@ mod tests {
                 }),
             ),
             Some(loaded(
-                SettingsLayerKind::Project,
-                "project",
+                SettingsLayerKind::Folder,
+                "folder",
                 json!({
                     "providers": {
                         "claude_code": {

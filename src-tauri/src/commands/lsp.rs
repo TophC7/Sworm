@@ -9,7 +9,7 @@ use crate::services::nix::NixService;
 use crate::services::settings::SettingsService;
 use crate::services::settings_patch::patch_top_level_section;
 use crate::services::settings_resolution::{
-    lsp_config_record, resolve_effective_settings_for_project_path,
+    lsp_config_record, resolve_effective_settings_for_folder_path,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -45,7 +45,7 @@ pub async fn lsp_list_servers(
         (None, ProjectLspEnvironment::from_host(&state.env))
     };
 
-    let effective = resolve_effective_settings_for_project_path(project_path.as_deref())
+    let effective = resolve_effective_settings_for_folder_path(project_path.as_deref())
         .map_err(ApiError::Internal)?;
 
     let mut entries = Vec::new();
@@ -104,7 +104,7 @@ pub async fn lsp_start(
 
     let root_path = normalize_root_path(&folder_path, &root_path)?;
     let effective =
-        resolve_effective_settings_for_project_path(Some(&folder)).map_err(ApiError::Internal)?;
+        resolve_effective_settings_for_folder_path(Some(&folder)).map_err(ApiError::Internal)?;
     let config = lsp_config_record(&effective.settings, &server_definition_id);
 
     if !config.enabled {

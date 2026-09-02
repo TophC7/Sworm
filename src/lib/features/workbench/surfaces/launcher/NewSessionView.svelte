@@ -6,21 +6,21 @@
   import { allProviders, directOptions, type ProviderMeta } from '$lib/features/sessions/providers/catalog'
   import { getConnectedProviders, getProvidersLoading } from '$lib/features/sessions/providers/state.svelte'
   import { startSession } from '$lib/features/sessions/service.svelte'
-  import { createSessionWithSharedWorkspaceWarning } from '$lib/features/app-actions/actions.svelte'
+  import { createSession } from '$lib/features/app-actions/actions.svelte'
 
   let { folderPath }: { folderPath: string } = $props()
 
   let providersLoading = $derived(getProvidersLoading())
   // Pre-compute Map for O(1) provider status lookups
-  let providerMap = $derived(new Map(getConnectedProviders().map((p) => [p.id, p])))
+  let providerMap = $derived(new Map(getConnectedProviders(folderPath).map((p) => [p.id, p])))
 
-  async function handleSelect(provider: ProviderMeta) {
+  function handleSelect(provider: ProviderMeta) {
     if (!providerMap.has(provider.id)) return
     if (provider.id === 'terminal') {
       startSession(folderPath, 'terminal', 'Terminal')
       return
     }
-    await createSessionWithSharedWorkspaceWarning(provider.id, provider.label)
+    createSession(provider.id, provider.label)
   }
 </script>
 

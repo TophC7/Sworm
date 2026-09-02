@@ -413,37 +413,6 @@ impl NixService {
         }
     }
 
-    /// Format Nix source via `nixfmt` (stdin/stdout pipe).
-    pub fn format_nix(content: &str) -> Result<String, String> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
-
-        let mut child = Command::new("nixfmt")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("nixfmt not found: {e}"))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(content.as_bytes())
-                .map_err(|e| format!("failed to write to nixfmt stdin: {e}"))?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("nixfmt failed: {e}"))?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout)
-                .map_err(|e| format!("nixfmt output not valid UTF-8: {e}"))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("nixfmt error: {stderr}"))
-        }
-    }
-
     /// Parse-check a Nix file and return diagnostics from stderr.
     ///
     /// nix-instantiate errors look like:

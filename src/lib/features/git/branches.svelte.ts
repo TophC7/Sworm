@@ -49,6 +49,11 @@ const branchStore = createFolderKeyedStore<FolderEntry>()
 // different folder starts a fresh fetch.
 const inFlightLoads = new Map<string, Promise<void>>()
 const inFlightFetches = new Map<string, Promise<void>>()
+const folderGenerations = new Map<string, number>()
+
+function folderGeneration(folderPath: string): number {
+  return folderGenerations.get(folderPath) ?? 0
+}
 const OP_STATE_POLL_MS = 1500
 
 interface LoadOptions {
@@ -64,6 +69,14 @@ export const byFolder = {
   get(folderPath: string): FolderEntry | undefined {
     return branchStore.get(folderPath)
   }
+}
+
+/** Forget the folder's branch state and stop op-state polling; called when the workbench releases the folder. */
+export function releaseBranchFolder(folderPath: string) {
+  folderGenerations.set(folderPath, folderGeneration(folderPath) + 1)
+  branchStore.delete(folderPath)
+  inFlightLoads.delete(folderPath)
+  inFlightFetches.delete(folderPath)
 }
 
 // PERSISTENCE //
@@ -123,6 +136,7 @@ function patchPrefs(folderPath: string, patch: Partial<BranchesViewPrefs>) {
  * immediately; use `refresh` to force a re-fetch. */
 export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<void> {
   const autoFetch = options.autoFetch ?? true
+  const generation = folderGeneration(folderPath)
   const existing = inFlightLoads.get(folderPath)
   if (existing) {
     if (!autoFetch) return existing
@@ -133,7 +147,8 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
     return Promise.resolve()
   }
 
-  const promise = (async () => {
+  let promise: Promise<void>
+  promise = (async () => {
     const prefs = await loadPrefs(folderPath)
     let list: BranchSummary[] = []
     let opState: BranchOpState = 'idle'
@@ -142,6 +157,7 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
     } catch (e) {
       console.error(`Failed to load branches for ${folderPath}:`, e)
     }
+    if (folderGeneration(folderPath) !== generation || inFlightLoads.get(folderPath) !== promise) return
     branchStore.set(folderPath, {
       list,
       opState,
@@ -152,20 +168,21 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
     })
     if (autoFetch) void autoFetchOnce(folderPath)
   })().finally(() => {
-    inFlightLoads.delete(folderPath)
+    if (inFlightLoads.get(folderPath) === promise) inFlightLoads.delete(folderPath)
   })
-  inFlightLoads.set(folderPath, promise)
   return promise
 }
 
 /** Re-pull `branch.list` + `branch.status` and merge into the entry.
  * Prefs and transient flags survive. */
 export async function refresh(folderPath: string): Promise<void> {
+  const generation = folderGeneration(folderPath)
   try {
     const [list, opState] = await Promise.all([
       backend.git.branch.list(folderPath),
       backend.git.branch.status(folderPath)
     ])
+    if (folderGeneration(folderPath) !== generation) return
     branchStore.patch(folderPath, { list, opState })
   } catch (e) {
     console.error(`Failed to refresh branches for ${folderPath}:`, e)
@@ -198,6 +215,7 @@ export function markRecent(folderPath: string, name: string) {
 // FETCH STATE //
 
 export function fetchBranches(folderPath: string): Promise<void> {
+  const generation = folderGeneration(folderPath)
   const existing = inFlightFetches.get(folderPath)
   if (existing) return existing
 
@@ -205,19 +223,23 @@ export function fetchBranches(folderPath: string): Promise<void> {
   if (!current) return Promise.resolve()
 
   branchStore.patch(folderPath, { fetching: true, fetchedThisSession: true })
-  const promise = (async () => {
+  let promise: Promise<void>
+  promise = (async () => {
     try {
       await backend.git.fetch(folderPath)
+      if (folderGeneration(folderPath) !== generation || inFlightFetches.get(folderPath) !== promise) return
       await refresh(folderPath)
+      if (folderGeneration(folderPath) !== generation || inFlightFetches.get(folderPath) !== promise) return
       branchStore.patch(folderPath, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
     } catch (e) {
-      branchStore.patch(folderPath, { fetching: false })
+      if (folderGeneration(folderPath) === generation && inFlightFetches.get(folderPath) === promise) {
+        branchStore.patch(folderPath, { fetching: false })
+      }
       throw e
     }
   })().finally(() => {
-    inFlightFetches.delete(folderPath)
+    if (inFlightFetches.get(folderPath) === promise) inFlightFetches.delete(folderPath)
   })
-  inFlightFetches.set(folderPath, promise)
   return promise
 }
 

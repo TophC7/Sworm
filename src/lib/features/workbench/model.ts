@@ -17,10 +17,12 @@ export type SessionStatus = 'dormant' | 'starting' | 'running' | 'exited' | 'fai
 
 export interface SessionTab extends TabBase {
   kind: 'session'
-  sessionId: string
   title: string
   providerId: string
-  /** Provider-specific resume identity (Codex thread id, Antigravity conversation id); null when unbound. */
+  /**
+   * Provider-owned conversation identity (Claude session uuid, Codex thread
+   * id, Antigravity conversation id, OMP session id); null until known.
+   */
   resumeToken: string | null
   status: SessionStatus
 }
@@ -121,7 +123,6 @@ export interface Workbench {
 export type PersistedTab = { folderPath: string } & (
   | {
       kind: 'session'
-      sessionId: string
       title: string
       providerId: string
       resumeToken: string | null
@@ -178,8 +179,8 @@ export type PersistedTab = { folderPath: string } & (
     }
 )
 
-export interface PersistedWorkbenchV3 {
-  version: 3
+export interface PersistedWorkbenchV4 {
+  version: 4
   activeTabIndex: number
   tabs: PersistedTab[]
 }

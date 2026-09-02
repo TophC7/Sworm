@@ -6,6 +6,7 @@
 // its tabs or seeds a launcher tab for it.
 
 import { backend } from '$lib/api/backend'
+import { releaseFolder } from '$lib/features/folders/lifecycle'
 import { filterExistingFolders, getRecentFolders, pushRecentFolder } from '$lib/features/folders/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -28,7 +29,7 @@ import type {
   ToolTab,
   Workbench
 } from '$lib/features/workbench/model'
-import { canLockTab, isProcessLive } from '$lib/features/workbench/model'
+import { canLockTab } from '$lib/features/workbench/model'
 import {
   loadPersistedWorkbench,
   persistedToTab,
@@ -61,8 +62,7 @@ export { canLockTab }
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
 
 // LIFO stack of recently closed tabs for Ctrl+Shift+T. In-memory only: a
-// fresh launch has nothing to reopen beyond what restore hydrates. When a
-// session tab falls off the end its Sworm-owned provider state is discarded.
+// fresh launch has nothing to reopen beyond what restore hydrates.
 const MAX_CLOSED_TABS = 20
 let closedTabs = $state<PersistedTab[]>([])
 
@@ -112,26 +112,39 @@ function findTab(tabId: TabId): Tab | undefined {
   return workbench.tabs.find((t) => t.id === tabId)
 }
 
-function findSessionTab(sessionId: string): SessionTab | undefined {
-  return workbench.tabs.find((t): t is SessionTab => t.kind === 'session' && t.sessionId === sessionId)
-}
-
 /**
  * Single choke point for layout mutation: reassigns the workbench so
  * `$derived` consumers see a new reference, then schedules a debounced
- * persist. Callers mutate `tabs`/`activeTabId` via the `next` object.
+ * persist. Callers mutate `tabs`/`activeTabId` via the `next` object and
+ * identify folders whose tabs they removed. A folder that loses its last
+ * tab releases every folder-scoped cache and process (git, nix, LSP,
+ * providers, issue bridge). Reopening it later repopulates them lazily.
  */
-function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}): void {
+function commit(
+  next: { tabs?: Tab[]; activeTabId?: TabId | null } = {},
+  possiblyReleasedFolderPaths: readonly string[] = []
+): void {
   const tabs = next.tabs ?? workbench.tabs
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
   workbench = { tabs: [...tabs], activeTabId }
   const active = activeTabId ? tabs.find((t) => t.id === activeTabId) : undefined
   if (active) lastActiveByFolder.set(active.folderPath, active.id)
+  for (const folderPath of possiblyReleasedFolderPaths) {
+    if (!tabs.some((tab) => tab.folderPath === folderPath)) releaseFolder(folderPath)
+  }
   if (restored) schedulePersistWorkbench(() => serializeWorkbench(workbench))
 }
 
+/**
+ * Append and activate a tab. Launcher tabs are transient: the first real
+ * tab opened in a folder replaces that folder's launcher.
+ */
 function appendTab(tab: Tab): TabId {
-  commit({ tabs: [...workbench.tabs, tab], activeTabId: tab.id })
+  const tabs =
+    tab.kind === 'launcher'
+      ? workbench.tabs
+      : workbench.tabs.filter((t) => !(t.kind === 'launcher' && t.folderPath === tab.folderPath))
+  commit({ tabs: [...tabs, tab], activeTabId: tab.id })
   return tab.id
 }
 
@@ -147,13 +160,7 @@ function updateTab(tabId: TabId, update: (tab: Tab) => Tab): void {
 }
 
 function pushClosedTab(snapshot: PersistedTab): void {
-  const next = [snapshot, ...closedTabs]
-  for (const evicted of next.splice(MAX_CLOSED_TABS)) {
-    if (evicted.kind === 'session') {
-      void backend.sessions.discard(evicted.sessionId).catch(() => {})
-    }
-  }
-  closedTabs = next
+  closedTabs = [snapshot, ...closedTabs].slice(0, MAX_CLOSED_TABS)
 }
 
 // READS //
@@ -173,10 +180,10 @@ export function getActiveFolderPath(): string | null {
   return getActiveTab()?.folderPath ?? null
 }
 
-/** The session behind the active tab, when it is a session tab. */
-export function getActiveSessionId(): string | null {
+/** The active tab's id when it is a session tab. */
+export function getActiveSessionTabId(): TabId | null {
   const tab = getActiveTab()
-  return tab?.kind === 'session' ? tab.sessionId : null
+  return tab?.kind === 'session' ? tab.id : null
 }
 
 export function hasClosedTabs(): boolean {
@@ -187,12 +194,6 @@ export function hasClosedTabs(): boolean {
 export function getRecentUnopenedFolders(): string[] {
   const open = new Set(workbench.tabs.map((t) => t.folderPath))
   return getRecentFolders().filter((path) => !open.has(path))
-}
-
-export function hasRunningSessionInFolder(folderPath: string): boolean {
-  return workbench.tabs.some(
-    (t) => t.kind === 'session' && t.folderPath === folderPath && t.providerId !== 'terminal' && isProcessLive(t.status)
-  )
 }
 
 /** Find an existing live task tab by its source task id (singleton rerun). */
@@ -281,9 +282,6 @@ export async function restoreWorkbench(): Promise<void> {
         survivors.findLast((s) => s.index < persisted.activeTabIndex)
       const activeTabId = active?.tab.id ?? null
 
-      const sessionIds = tabs.filter((t): t is SessionTab => t.kind === 'session').map((t) => t.sessionId)
-      void backend.sessions.pruneOrphans(sessionIds).catch((error) => console.warn('Session prune failed:', error))
-
       commit({ tabs, activeTabId })
     }
   } catch (error) {
@@ -295,7 +293,6 @@ export async function restoreWorkbench(): Promise<void> {
 
 // SESSION TABS //
 export interface SessionTabInit {
-  sessionId: string
   providerId: string
   title: string
   resumeToken: string | null
@@ -303,16 +300,10 @@ export interface SessionTabInit {
 
 /** Add a dormant session tab; the mounted surface spawns its process. */
 export function addSessionTab(folderPath: string, init: SessionTabInit): TabId {
-  const existing = findSessionTab(init.sessionId)
-  if (existing) {
-    setActiveTab(existing.id)
-    return existing.id
-  }
   return appendTab({
     kind: 'session',
     id: generateTabId(),
     folderPath,
-    sessionId: init.sessionId,
     title: init.title,
     providerId: init.providerId,
     resumeToken: init.resumeToken,
@@ -321,22 +312,19 @@ export function addSessionTab(folderPath: string, init: SessionTabInit): TabId {
   })
 }
 
-export function setSessionTabStatus(sessionId: string, status: SessionStatus): void {
-  const tab = findSessionTab(sessionId)
-  if (!tab) return
-  updateTab(tab.id, (t) => (t.kind === 'session' && t.status !== status ? { ...t, status } : t))
+export function setSessionTabStatus(tabId: TabId, status: SessionStatus): void {
+  updateTab(tabId, (t) => (t.kind === 'session' && t.status !== status ? { ...t, status } : t))
 }
 
-export function setSessionTabResumeToken(sessionId: string, resumeToken: string | null): void {
-  const tab = findSessionTab(sessionId)
-  if (!tab) return
-  updateTab(tab.id, (t) => (t.kind === 'session' && t.resumeToken !== resumeToken ? { ...t, resumeToken } : t))
+export function setSessionTabResumeToken(tabId: TabId, resumeToken: string | null): void {
+  updateTab(tabId, (t) => (t.kind === 'session' && t.resumeToken !== resumeToken ? { ...t, resumeToken } : t))
 }
 
-export function clearSessionTabResumeToken(sessionId: string, expectedToken: string): void {
-  const tab = findSessionTab(sessionId)
-  if (!tab || tab.resumeToken !== expectedToken) return
-  updateTab(tab.id, (t) => (t.kind === 'session' ? { ...t, resumeToken: null } : t))
+/** Drop the tab's token only if it still equals `expectedToken`; a token bound meanwhile wins. */
+export function clearSessionTabResumeToken(tabId: TabId, expectedToken: string): void {
+  updateTab(tabId, (t) =>
+    t.kind === 'session' && t.resumeToken === expectedToken ? { ...t, resumeToken: null } : t
+  )
 }
 
 // TASK TABS //
@@ -451,10 +439,13 @@ function addContentTab(
         setActiveTab(existingTemp.id)
         return existingTemp.id
       }
-      commit({
-        tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
-        activeTabId: existingTemp.id
-      })
+      commit(
+        {
+          tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
+          activeTabId: existingTemp.id
+        },
+        existingTemp.folderPath === newTab.folderPath ? [] : [existingTemp.folderPath]
+      )
       return existingTemp.id
     }
   }
@@ -728,7 +719,7 @@ export function closeTab(tabId: TabId): void {
   if (snapshot) pushClosedTab(snapshot)
 
   if (tab.kind === 'session') {
-    sessionRegistry.dispose(tab.sessionId)
+    sessionRegistry.dispose(tab.id)
   } else if (tab.kind === 'task') {
     taskRegistry.dispose(tab.runId)
   }
@@ -739,7 +730,7 @@ export function closeTab(tabId: TabId): void {
     activeTabId = (tabs[index] ?? tabs[index - 1])?.id ?? null
   }
   if (lastActiveByFolder.get(tab.folderPath) === tabId) lastActiveByFolder.delete(tab.folderPath)
-  commit({ tabs, activeTabId })
+  commit({ tabs, activeTabId }, [tab.folderPath])
 }
 
 /**
@@ -755,7 +746,6 @@ export function reopenLastClosedTab(): TabId | null {
   switch (head.kind) {
     case 'session':
       return addSessionTab(head.folderPath, {
-        sessionId: head.sessionId,
         providerId: head.providerId,
         title: head.title,
         resumeToken: head.resumeToken

@@ -15,7 +15,7 @@
     DropdownMenuSeparator,
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
-  import { createSessionWithSharedWorkspaceWarning, openFolderPicker } from '$lib/features/app-actions/actions.svelte'
+  import { createSession, openFolderPicker } from '$lib/features/app-actions/actions.svelte'
   import { allProviders } from '$lib/features/sessions/providers/catalog'
   import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
   import { startSession } from '$lib/features/sessions/service.svelte'
@@ -25,7 +25,7 @@
 
   let folderPath = $derived(getActiveFolderPath())
   let connectedAgents = $derived.by(() => {
-    const connected = new Set(getConnectedProviders().map((p) => p.id))
+    const connected = new Set(getConnectedProviders(folderPath).map((p) => p.id))
     return allProviders.filter((p) => connected.has(p.id))
   })
 
@@ -54,7 +54,7 @@
       {#if connectedAgents.length > 0}
         <DropdownMenuSeparator />
         {#each connectedAgents as provider (provider.id)}
-          <DropdownMenuItem onclick={() => void createSessionWithSharedWorkspaceWarning(provider.id, provider.label)}>
+          <DropdownMenuItem onclick={() => createSession(provider.id, provider.label)}>
             <img src={provider.icon} alt="" width={14} height={14} />
             {provider.label}
           </DropdownMenuItem>

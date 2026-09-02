@@ -38,8 +38,8 @@ pub struct BranchCommitRef {
     pub date: String,
 }
 
-/// One row in the Branches view. Produced by `list_branches`,
-/// `branch_info`, and used as the post-mutation refresh payload.
+/// One row in the Branches view. Produced by `list_branches` and used
+/// as the post-mutation refresh payload.
 ///
 /// `upstream` is `None` for branches that have no tracking ref set;
 /// in that case `ahead` and `behind` are zero rather than an error.

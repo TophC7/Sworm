@@ -20,12 +20,6 @@
   Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent and unblocks reusing `LazyRender.svelte` inside `MonacoDiffBody.svelte`.
 - [ ] Split `DiffModelStore` into entry registry + content source
   `DiffModelStore` now owns metadata + Monaco-model lifecycle AND lazy-fetch coordination (`contentLoaded`, `inflight`, `hasContent`). Split into `DiffEntryRegistry` (registry + Monaco models) and a thin `DiffContentSource` strategy that either pre-fills entries (commit/stash) or lazily fetches them (working).
-- [ ] Recursive split-tree panes with size + count caps
-  Replace the fixed `SplitMode` / `QuadLayout` state machine in `workspace.svelte.ts` with a recursive `Node = Leaf | Branch` tree.
-  Gate splits with:
-  - measured minimum pane size via `getBoundingClientRect()` and `MIN_PANE_PX` around 240px
-  - a hard `MAX_PANES` count cap around 8
-  Update `PaneGrid.svelte`, `Pane.svelte`, and the pane drop observer, plus the workspace persistence migration.
 - [ ] Pane overscroll feature
   Allow elastic overscroll when scrolling past the end of a pane.
   Start with a single-pane prototype and settle the threshold, max distance, trigger input, and return behavior before expanding it.
@@ -51,8 +45,6 @@
   Start with `renderWhitespace`, indent rainbow, `tabSize`, `fontSize`, and `wordWrap`.
 - [ ] Bundled LSP runtime support
   Add runtime support for `bundled_binary` and `bundled_js` extension manifests by packaging server assets and resolving them at runtime.
-- [ ] Open in Fresh from editor toolbar
-  Fix the gap between session readiness and Fresh accepting commands when opening a file from the toolbar.
 
 ### Language Support
 
@@ -97,8 +89,6 @@
 
 ### Project & Session Recovery
 
-- [ ] Workspace view-state persistence
-  Persist pane layout, active tabs, and remaining sidebar state such as collapsed directories.
 - [x] App-level tab restoration
   Persisted content tabs now restore across reopened projects via app-shell and workspace hydration.
 - [ ] Non-blocking restoration
@@ -156,7 +146,7 @@
   `services::git::get_summary` is still 5+ seconds occasionally on `/repo/Minecraft/...` (filesystem latency or cross-process `.git/index` lock contention). The freeze fix made it non-blocking, but the work is still wasted. Options: extend the existing 300 ms TTL summary cache, drop poll frequency from 10 s to 30 s, or add a debounce so concurrent project polls don't all queue at once.
 - [ ] Reduce xterm scrollback default
   Currently 10 000 lines × N sessions. With many resident sessions this is a lot of buffered text. 2 000-3 000 is enough for typical TUI use.
-- [ ] Convert remaining sync `pub fn env_probe` and `pub fn app_take_pending_open_path` to async-friendly forms
-  Both refused the `pub fn` → `pub async fn` sweep because they don't return `Result` (Tauri requires it for async commands with state references). Both are trivial / fast so left sync. If either ever grows real work, change return type to `Result<T, ApiError>` and convert.
+- [ ] Convert the remaining sync `pub fn app_take_pending_open_path` to an async-friendly form
+  It refused the `pub fn` → `pub async fn` sweep because it doesn't return `Result` (Tauri requires it for async commands with state references). It is trivial / fast so left sync. If it ever grows real work, change the return type to `Result<T, ApiError>` and convert.
 - [ ] Audit Sworm services for shared mutex contention with the main thread
   The freeze investigation showed slow git was the proximate cause, but the deeper question is: does any service hold a sync `Mutex` that the webview thread needs? If a sync command runs on a tokio worker but blocks on a mutex held by another worker doing slow work, you'll see stalls even with `async fn`. Worth a sweep of `parking_lot::Mutex` usage across `services/`.

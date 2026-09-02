@@ -6,9 +6,10 @@ import { dragObserver, frameAt } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import type { TabId } from '$lib/features/workbench/model'
 
 interface TerminalDropObserverArgs {
-  sessionId: string
+  tabId: TabId
   folderPath: string
   canAcceptDrop?: () => boolean
   onInsertText: (text: string) => void
@@ -16,12 +17,12 @@ interface TerminalDropObserverArgs {
 
 const hoverStore = createHoverStore<true>()
 
-function setHover(sessionId: string): void {
-  hoverStore.set(sessionId, true)
+function setHover(tabId: TabId): void {
+  hoverStore.set(tabId, true)
 }
 
-function clearHover(sessionId: string): void {
-  hoverStore.clear(sessionId)
+function clearHover(tabId: TabId): void {
+  hoverStore.clear(tabId)
 }
 
 function canAccept(payload: DragPayload | null): boolean {
@@ -111,16 +112,16 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     },
     onOver: (_event, frame) => {
       if (!dropEnabled(args) || !isCenterDropFrame(frame)) {
-        clearHover(args.sessionId)
+        clearHover(args.tabId)
         return
       }
-      setHover(args.sessionId)
+      setHover(args.tabId)
     },
     onLeave: () => {
-      clearHover(args.sessionId)
+      clearHover(args.tabId)
     },
     onDrop: async (event, payload, frame) => {
-      clearHover(args.sessionId)
+      clearHover(args.tabId)
       if (!dropEnabled(args) || (frame && !isCenterDropFrame(frame))) return
       await insertFromPayload(args, payload, event)
     }
@@ -129,18 +130,18 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
   return (element: HTMLElement) => {
     const disposeObserver = observer(element)
     const disposeRegistry = DropRegistry.register({
-      id: `terminal:${args.sessionId}`,
+      id: `terminal:${args.tabId}`,
       element,
       accept: (payload) => dropEnabled(args) && canAccept(payload),
       hitTest: (_payload, clientX, clientY) => isCenterDropPoint(element, clientX, clientY),
       hover: () => {
-        setHover(args.sessionId)
+        setHover(args.tabId)
       },
       leave: () => {
-        clearHover(args.sessionId)
+        clearHover(args.tabId)
       },
       dispatch: async (payload) => {
-        clearHover(args.sessionId)
+        clearHover(args.tabId)
         if (!dropEnabled(args)) return
         await insertFromPayload(args, payload)
       }
@@ -148,14 +149,14 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
 
     return () => {
       disposeRegistry()
-      clearHover(args.sessionId)
+      clearHover(args.tabId)
       disposeObserver()
     }
   }
 }
 
-export function isTerminalDropActive(sessionId: string): boolean {
-  return hoverStore.has(sessionId)
+export function isTerminalDropActive(tabId: TabId): boolean {
+  return hoverStore.has(tabId)
 }
 
 export function preparePathForShell(path: string, shell: 'posix' | 'powershell' = 'posix'): string {

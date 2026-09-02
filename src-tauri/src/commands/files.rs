@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::services::files::{FileEntryStat, FilePasteCollision};
+use crate::services::files::FilePasteCollision;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -48,16 +48,6 @@ pub async fn file_rename(
     state
         .files
         .rename(Path::new(&project_path), &old_path, &new_path)
-}
-
-/// Return project-relative file metadata, or null if the path does not exist.
-#[tauri::command]
-pub async fn file_stat(
-    project_path: String,
-    file_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<FileEntryStat>, ApiError> {
-    state.files.stat(Path::new(&project_path), &file_path)
 }
 
 /// Paste files into a target directory inside the project.

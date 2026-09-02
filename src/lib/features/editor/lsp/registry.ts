@@ -192,6 +192,14 @@ class LspRegistry {
     await Promise.all([...folderPaths].map((folderPath) => this.refreshFolder(folderPath)))
   }
 
+  /** Forget the folder and stop its servers; called when the workbench releases the folder. */
+  async releaseFolder(folderPath: string): Promise<void> {
+    this.knownFolders.delete(folderPath)
+    this.serverEntriesByFolder.delete(folderPath)
+    const instances = [...this.serverInstances.values()].filter((instance) => instance.folderPath === folderPath)
+    await Promise.all(instances.map((instance) => this.stopInstance(instance)))
+  }
+
   async restartServerDefinition(serverDefinitionId: string): Promise<void> {
     const matchingInstances = [...this.serverInstances.values()].filter(
       (instance) => instance.entry.server.server_definition_id === serverDefinitionId
@@ -873,6 +881,10 @@ export function refreshLspFolderEnvironment(folderPath: string) {
 
 export function refreshAllLspFolderEnvironments() {
   return registry.refreshAllFolders()
+}
+
+export function releaseLspFolder(folderPath: string) {
+  return registry.releaseFolder(folderPath)
 }
 
 export function formatDocumentWithLsp(model: MonacoModel) {

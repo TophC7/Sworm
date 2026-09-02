@@ -10,9 +10,6 @@
         let detailPre
         let copyButton
 
-        // FIXME: This global runtime error overlay is intentionally loud for
-        // local development. Remove it for release builds or gate it behind a
-        // dev-only flag before shipping.
         const ensureOverlay = () => {
           if (overlay instanceof HTMLDivElement && detailPre instanceof HTMLPreElement) {
             overlay.hidden = false
@@ -56,21 +53,7 @@
           title.style.font = '700 16px/1.2 Lexend, sans-serif'
           title.style.color = '#fff3ef'
 
-          const fixme = document.createElement('div')
-          fixme.textContent = 'FIXME: remove for release or gate behind dev'
-          fixme.style.display = 'inline-flex'
-          fixme.style.alignItems = 'center'
-          fixme.style.width = 'fit-content'
-          fixme.style.padding = '4px 8px'
-          fixme.style.border = '1px solid rgba(255, 229, 114, 0.45)'
-          fixme.style.borderRadius = '999px'
-          fixme.style.background = 'rgba(255, 229, 114, 0.12)'
-          fixme.style.color = '#ffeea5'
-          fixme.style.font = '600 11px/1.2 Lexend, sans-serif'
-          fixme.style.letterSpacing = '0.08em'
-          fixme.style.textTransform = 'uppercase'
-
-          titleGroup.append(title, fixme)
+          titleGroup.append(title)
 
           const actions = document.createElement('div')
           actions.style.display = 'flex'

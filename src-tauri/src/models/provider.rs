@@ -47,18 +47,6 @@ pub enum ProviderConnectionStatus {
     Error,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum PromptMode {
-    /// Append prompt text as the final argument.
-    ArgvTail,
-    /// Pass prompt via a named flag.
-    FlagThenValue { flag: &'static str },
-    /// Inject prompt after PTY start.
-    KeystrokeInjection,
-}
-
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ResumeMode {
     None,
@@ -66,6 +54,9 @@ pub enum ResumeMode {
         session_flag: &'static str,
         continue_flags: &'static [&'static str],
     },
+    /// Resume by thread/session id: emits `<resume_command> <id>`, where
+    /// `resume_command` is the flag or subcommand preceding the id
+    /// (`codex resume <id>`, `omp --resume <id>`).
     ThreadId {
         resume_command: &'static str,
     },
@@ -74,11 +65,4 @@ pub enum ResumeMode {
     ConversationId {
         flag: &'static str,
     },
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum SessionIdMode {
-    None,
-    Deterministic { flag: &'static str },
 }

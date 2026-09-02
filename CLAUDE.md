@@ -29,7 +29,7 @@ Sworm is a Linux-first desktop app for running coding-agent CLIs inside a local 
   - Tauri commands in `src-tauri/src/commands/`
   - business logic in `src-tauri/src/services/`
   - serialized models in `src-tauri/src/models/`
-- Keep sessions project-scoped and be explicit when behavior is non-isolated.
+- Keep sessions folder-scoped; tabs drive the workbench, and a folder is open exactly while it has a tab.
 
 ## Validation
 
@@ -85,4 +85,4 @@ Do not claim lint/format/test commands exist if they are not defined in the curr
 ## Important Notes
 
 - Terminal/session lifecycle correctness matters more than adding surface features quickly.
-- Multiple sessions may exist in one project, but they still share the same working tree unless and until worktrees land.
+- Multiple sessions in one folder share its working tree; be explicit in the UI when behavior is non-isolated.

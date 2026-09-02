@@ -19,12 +19,7 @@ import {
   openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { flushWorkbench } from '$lib/features/workbench/persistence'
-import {
-  getActiveFolderPath,
-  hasRunningSessionInFolder,
-  openFolder,
-  reopenLastClosedTab
-} from '$lib/features/workbench/state.svelte'
+import { getActiveFolderPath, openFolder, reopenLastClosedTab } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
@@ -85,7 +80,7 @@ export async function openFolderSettingsFile(): Promise<void> {
   }
 
   try {
-    await backend.settings.openProjectFile(folderPath)
+    await backend.settings.openFolderFile(folderPath)
     await openTextFile(folderPath, '.sworm/settings.jsonc', { temporary: false })
   } catch (error) {
     notify.error('Open Folder Settings failed', getErrorMessage(error))
@@ -108,32 +103,18 @@ export function openActiveFolderInExternalTerminal(): void {
   })
 }
 
-export async function createSessionWithSharedWorkspaceWarning(providerId: string, label: string): Promise<void> {
+export function createSession(providerId: string, label: string): void {
   const folderPath = getActiveFolderPath()
   if (!folderPath) return
-  if (!getConnectedProviders().some((p) => p.id === providerId)) {
+  if (!getConnectedProviders(folderPath).some((p) => p.id === providerId)) {
     notify.error(`${label} unavailable`, `Connect the ${label} provider in Settings first.`)
     return
   }
-
-  if (hasRunningSessionInFolder(folderPath)) {
-    const proceed = await confirmAsync({
-      title: 'Shared Workspace Warning',
-      message:
-        'Another session is already running in this folder.\n\n' +
-        'Sessions in the same folder share the same working tree and branch.\n' +
-        'Changes made by one session may conflict with another.',
-      confirmLabel: 'Start Anyway',
-      cancelLabel: 'Cancel'
-    })
-    if (!proceed) return
-  }
-
   startSession(folderPath, providerId, `${label} session`)
 }
 
-export async function newTerminalSession(): Promise<void> {
-  await createSessionWithSharedWorkspaceWarning('terminal', 'Terminal')
+export function newTerminalSession(): void {
+  createSession('terminal', 'Terminal')
 }
 
 export function showTasks(): void {

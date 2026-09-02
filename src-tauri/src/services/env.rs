@@ -1,4 +1,3 @@
-use serde::Serialize;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -38,26 +37,11 @@ const ENV_ALLOWLIST: &[&str] = &[
 pub struct EnvironmentService {
     /// The user's login shell (from $SHELL)
     pub detected_shell: String,
-    /// PATH as inherited by the Tauri process
-    pub base_path: String,
-    /// PATH obtained by probing the login shell
-    pub shell_path: Option<String>,
-    /// Merged PATH: shell_path preferred, fallback to base_path
+    /// Merged PATH: login-shell PATH preferred, fallback to the PATH
+    /// inherited by the Tauri process
     pub merged_path: String,
-    /// Whether the shell probe succeeded
-    pub probe_succeeded: bool,
     /// Merged environment for child processes
     pub child_env: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct EnvProbeResult {
-    pub detected_shell: String,
-    pub base_path: String,
-    pub shell_path: Option<String>,
-    pub merged_path: String,
-    pub probe_succeeded: bool,
-    pub gdk_backend: Option<String>,
 }
 
 impl EnvironmentService {
@@ -119,23 +103,8 @@ impl EnvironmentService {
 
         Self {
             detected_shell,
-            base_path,
-            shell_path,
             merged_path,
-            probe_succeeded,
             child_env,
-        }
-    }
-
-    /// Return a diagnostic probe result for the frontend.
-    pub fn probe_result(&self) -> EnvProbeResult {
-        EnvProbeResult {
-            detected_shell: self.detected_shell.clone(),
-            base_path: self.base_path.clone(),
-            shell_path: self.shell_path.clone(),
-            merged_path: self.merged_path.clone(),
-            probe_succeeded: self.probe_succeeded,
-            gdk_backend: std::env::var("GDK_BACKEND").ok(),
         }
     }
 }

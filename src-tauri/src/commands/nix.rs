@@ -5,7 +5,7 @@ use crate::models::provider::ProviderStatus;
 use crate::services::folders::resolve_folder;
 use crate::services::nix::{NixDiagnostic, NixService};
 use crate::services::settings_resolution::{
-    provider_binary_overrides, resolve_effective_settings_for_project_path,
+    provider_binary_overrides, resolve_effective_settings_for_folder_path,
 };
 
 /// Detect Nix files in a folder and return current selection.
@@ -99,7 +99,7 @@ pub async fn nix_evaluate(
                 )
             })?;
 
-        let effective_settings = resolve_effective_settings_for_project_path(Some(&folder))
+        let effective_settings = resolve_effective_settings_for_folder_path(Some(&folder))
             .map_err(ApiError::Internal)?;
         // Clamp to a sane range so a bad config value can't hang the app forever or
         // fire a timeout before nix has even finished spawning.
@@ -156,26 +156,6 @@ pub async fn nix_clear(
     NixService::remove(db.conn(), &folder.to_string_lossy()).map_err(ApiError::Database)
 }
 
-/// Get the current Nix environment status for a folder.
-#[tauri::command]
-pub async fn nix_status(
-    folder_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<NixEnvRecord>, ApiError> {
-    let folder = resolve_folder(&folder_path)?;
-    let db = state.db.read();
-    NixService::get(db.conn(), &folder.to_string_lossy()).map_err(ApiError::Database)
-}
-
-/// Format Nix source code via nixfmt.
-#[tauri::command]
-pub async fn nix_format(content: String) -> Result<String, ApiError> {
-    tokio::task::spawn_blocking(move || NixService::format_nix(&content))
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .map_err(ApiError::Internal)
-}
-
 /// Parse-check a Nix file and return diagnostics.
 /// Joins folder_path + file_path server-side to avoid frontend path construction.
 #[tauri::command]
@@ -209,9 +189,10 @@ pub async fn provider_list_for_folder(
     drop(db);
 
     let effective =
-        resolve_effective_settings_for_project_path(Some(&folder)).map_err(ApiError::Internal)?;
+        resolve_effective_settings_for_folder_path(Some(&folder)).map_err(ApiError::Internal)?;
     let overrides = provider_binary_overrides(&effective.settings);
 
-    let mut providers = state.providers.lock();
-    Ok(providers.detect_all(&merged_path, &overrides, Some(&state.env.detected_shell)))
+    Ok(state
+        .providers
+        .detect_all(&merged_path, &overrides, Some(&state.env.detected_shell)))
 }

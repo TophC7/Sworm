@@ -2,12 +2,12 @@
   import '@xterm/xterm/css/xterm.css'
   import { onMount, untrack } from 'svelte'
   import { isTerminalDropActive, terminalDropObserver } from '$lib/features/dnd/adapters/terminal.svelte'
-  import type { SessionTab } from '$lib/features/workbench/model'
+  import type { SessionTab, TabId } from '$lib/features/workbench/model'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { startSessionProcess } from '$lib/features/sessions/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import type { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
-  import { getActiveSessionId } from '$lib/features/workbench/state.svelte'
+  import { getActiveSessionTabId } from '$lib/features/workbench/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
 
   // Dormant tabs (restored or newly created) wait this long after
@@ -22,9 +22,9 @@
   let error = $state<string | null>(null)
   let ended = $derived(tab.status === 'exited' || tab.status === 'failed')
   let canAcceptDrop = $derived(!tab.locked && tab.status === 'running')
-  let dropActive = $derived(canAcceptDrop && isTerminalDropActive(tab.sessionId))
+  let dropActive = $derived(canAcceptDrop && isTerminalDropActive(tab.id))
 
-  let attachedSessionId: string | null = null
+  let attachedTabId: TabId | null = null
   // Generation counter invalidates stale awaits. Rapid A→B→A tab
   // switches would otherwise have two attach calls in flight; the
   // slower one would overwrite state the newer one already set.
@@ -73,10 +73,10 @@
   // path after layout/fit.
   function focusIfCurrent(mgr: TerminalSessionManager) {
     if (isAnyModalOpen()) return
-    if (mgr.sessionId !== getActiveSessionId()) return
+    if (mgr.tabId !== getActiveSessionTabId()) return
     mgr.focus()
     requestAnimationFrame(() => {
-      if (mgr.sessionId !== getActiveSessionId()) return
+      if (mgr.tabId !== getActiveSessionTabId()) return
       mgr.focus()
     })
   }
@@ -91,27 +91,27 @@
     }
   }
 
-  async function attachSession(sessionId: string) {
+  async function attachSession(tabId: TabId) {
     if (!containerEl) return
     const gen = ++attachGen
     cancelStartTimer()
 
-    if (attachedSessionId && attachedSessionId !== sessionId) {
-      sessionRegistry.detach(attachedSessionId)
+    if (attachedTabId && attachedTabId !== tabId) {
+      sessionRegistry.detach(attachedTabId)
       clearManagerListeners()
     }
 
-    const nextManager = await sessionRegistry.attach(sessionId, containerEl)
+    const nextManager = await sessionRegistry.attach(tabId, containerEl)
     if (gen !== attachGen) return
-    attachedSessionId = sessionId
+    attachedTabId = tabId
     bindManager(nextManager)
     focusIfCurrent(nextManager)
 
-    if (nextManager.isPtyActive() || tab.sessionId !== sessionId || tab.status !== 'dormant') return
+    if (nextManager.isPtyActive() || tab.id !== tabId || tab.status !== 'dormant') return
 
     startTimer = setTimeout(() => {
       startTimer = null
-      if (tab.sessionId !== sessionId || tab.status !== 'dormant') return
+      if (tab.id !== tabId || tab.status !== 'dormant') return
       void startProcess(nextManager)
     }, START_DELAY_MS)
   }
@@ -119,20 +119,20 @@
   onMount(() => {
     return () => {
       cancelStartTimer()
-      if (attachedSessionId) {
-        sessionRegistry.detach(attachedSessionId)
+      if (attachedTabId) {
+        sessionRegistry.detach(attachedTabId)
       }
       clearManagerListeners()
     }
   })
 
-  // Re-attach only when the session *id* changes. Every status update
+  // Re-attach only when the tab *id* changes. Every status update
   // yields a new tab object — tracking identity here would re-run
   // attach on every status tick and storm the PTY with resizes.
   $effect(() => {
-    const id = tab.sessionId
+    const id = tab.id
     if (!containerEl) return
-    if (id === attachedSessionId) return
+    if (id === attachedTabId) return
     untrack(() => void attachSession(id))
   })
 
@@ -177,7 +177,7 @@
     data-terminal-focus-scope
     bind:this={containerEl}
     {@attach terminalDropObserver({
-      sessionId: tab.sessionId,
+      tabId: tab.id,
       folderPath: tab.folderPath,
       canAcceptDrop: () => canAcceptDrop,
       onInsertText: (text) => manager?.sendText(text)

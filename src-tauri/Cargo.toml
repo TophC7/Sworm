@@ -33,7 +33,6 @@ portable-pty = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util"] }
 rusqlite = { version = "0.33", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 which = "8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

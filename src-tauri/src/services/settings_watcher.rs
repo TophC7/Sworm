@@ -1,7 +1,7 @@
 use crate::commands::settings::SETTINGS_CHANGED_EVENT;
 use crate::models::settings::{SettingsChangedEvent, SettingsDiagnostic, SettingsLayerKind};
 use crate::services::settings::SettingsService;
-use crate::services::settings_resolution::resolve_effective_settings_for_project_path;
+use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -9,21 +9,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Emitter;
 
-struct ProjectSettingsWatcher {
+struct FolderSettingsWatcher {
     watcher: RecommendedWatcher,
     watching_sworm_dir: bool,
 }
 
 pub struct SettingsWatcherService {
     global_watcher: Mutex<Option<RecommendedWatcher>>,
-    project_watchers: Mutex<HashMap<PathBuf, ProjectSettingsWatcher>>,
+    folder_watchers: Mutex<HashMap<PathBuf, FolderSettingsWatcher>>,
 }
 
 impl SettingsWatcherService {
     pub fn new() -> Self {
         Self {
             global_watcher: Mutex::new(None),
-            project_watchers: Mutex::new(HashMap::new()),
+            folder_watchers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -63,27 +63,27 @@ impl SettingsWatcherService {
         Ok(())
     }
 
-    pub fn watch_project(
+    pub fn watch_folder(
         &self,
         app: &tauri::AppHandle,
-        project_path: &Path,
+        folder_path: &Path,
         generation: Arc<Mutex<u64>>,
     ) -> Result<(), String> {
-        let project_path = project_path.to_path_buf();
-        let sworm_dir = project_path.join(".sworm");
-        let mut watchers = self.project_watchers.lock();
-        if let Some(project_watcher) = watchers.get_mut(&project_path) {
+        let folder_path = folder_path.to_path_buf();
+        let sworm_dir = folder_path.join(".sworm");
+        let mut watchers = self.folder_watchers.lock();
+        if let Some(folder_watcher) = watchers.get_mut(&folder_path) {
             if !sworm_dir.exists() {
-                project_watcher.watching_sworm_dir = false;
+                folder_watcher.watching_sworm_dir = false;
             }
-            ensure_sworm_watch(project_watcher, &sworm_dir)?;
+            ensure_sworm_watch(folder_watcher, &sworm_dir)?;
             return Ok(());
         }
 
-        let settings_file = SettingsService::project_settings_path(&project_path);
+        let settings_file = SettingsService::folder_settings_path(&folder_path);
         let handle = app.clone();
         let settings_file_for_events = settings_file.clone();
-        let project_path_for_events = project_path.clone();
+        let folder_path_for_events = folder_path.clone();
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
@@ -97,31 +97,32 @@ impl SettingsWatcherService {
             emit_settings_changed(
                 &handle,
                 &generation,
-                SettingsLayerKind::Project,
-                Some(project_path_for_events.as_path()),
+                SettingsLayerKind::Folder,
+                Some(folder_path_for_events.as_path()),
                 None,
             );
         })
-        .map_err(|error| format!("Failed to create project settings watcher: {error}"))?;
+        .map_err(|error| format!("Failed to create folder settings watcher: {error}"))?;
 
         watcher
-            .watch(&project_path, RecursiveMode::NonRecursive)
-            .map_err(|error| format!("Failed to watch {}: {error}", project_path.display()))?;
+            .watch(&folder_path, RecursiveMode::NonRecursive)
+            .map_err(|error| format!("Failed to watch {}: {error}", folder_path.display()))?;
 
-        let mut project_watcher = ProjectSettingsWatcher {
+        let mut folder_watcher = FolderSettingsWatcher {
             watcher,
             watching_sworm_dir: false,
         };
-        ensure_sworm_watch(&mut project_watcher, &sworm_dir)?;
-        watchers.insert(project_path, project_watcher);
+        ensure_sworm_watch(&mut folder_watcher, &sworm_dir)?;
+        watchers.insert(folder_path, folder_watcher);
         Ok(())
+    }
+
+    pub fn stop(&self, folder_path: &Path) {
+        self.folder_watchers.lock().remove(folder_path);
     }
 }
 
-fn ensure_sworm_watch(
-    watcher: &mut ProjectSettingsWatcher,
-    sworm_dir: &Path,
-) -> Result<(), String> {
+fn ensure_sworm_watch(watcher: &mut FolderSettingsWatcher, sworm_dir: &Path) -> Result<(), String> {
     if watcher.watching_sworm_dir || !sworm_dir.exists() {
         return Ok(());
     }
@@ -157,10 +158,10 @@ fn emit_settings_changed(
     app: &tauri::AppHandle,
     generation: &Arc<Mutex<u64>>,
     layer: SettingsLayerKind,
-    project_path: Option<&Path>,
+    folder_path: Option<&Path>,
     diagnostics: Option<Vec<SettingsDiagnostic>>,
 ) {
-    let diagnostics = diagnostics.unwrap_or_else(|| diagnostics_for(project_path));
+    let diagnostics = diagnostics.unwrap_or_else(|| diagnostics_for(folder_path));
     let generation = {
         let mut generation = generation.lock();
         *generation += 1;
@@ -170,15 +171,15 @@ fn emit_settings_changed(
         SETTINGS_CHANGED_EVENT,
         SettingsChangedEvent {
             layer,
-            folder_path: project_path.map(|p| p.to_string_lossy().into_owned()),
+            folder_path: folder_path.map(|path| path.to_string_lossy().into_owned()),
             generation,
             diagnostics,
         },
     );
 }
 
-fn diagnostics_for(project_path: Option<&Path>) -> Vec<SettingsDiagnostic> {
-    resolve_effective_settings_for_project_path(project_path)
+fn diagnostics_for(folder_path: Option<&Path>) -> Vec<SettingsDiagnostic> {
+    resolve_effective_settings_for_folder_path(folder_path)
         .map(|resolved| resolved.diagnostics)
         .unwrap_or_else(|message| {
             vec![SettingsDiagnostic {

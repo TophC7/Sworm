@@ -1,10 +1,13 @@
-import { backend } from '$lib/api/backend'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { providerLabel } from '$lib/features/sessions/providers/labels'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import type { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
 import type { SessionTab, TabId } from '$lib/features/workbench/model'
-import { addSessionTab, clearSessionTabResumeToken, setSessionTabStatus } from '$lib/features/workbench/state.svelte'
+import {
+  addSessionTab,
+  clearSessionTabResumeToken,
+  setSessionTabResumeToken,
+  setSessionTabStatus
+} from '$lib/features/workbench/state.svelte'
 
 /**
  * Open a dormant session tab for `folderPath`. The mounted
@@ -12,35 +15,33 @@ import { addSessionTab, clearSessionTabResumeToken, setSessionTabStatus } from '
  * tab itself.
  */
 export function startSession(folderPath: string, providerId: string, title: string): TabId {
-  return addSessionTab(folderPath, {
-    sessionId: crypto.randomUUID(),
-    providerId,
-    title,
-    resumeToken: null
-  })
+  return addSessionTab(folderPath, { providerId, title, resumeToken: null })
 }
 
 /**
  * Spawn the process behind a session tab. Snapshot the resume token
- * *before* spawning: the backend binds a token during start (Claude
- * always, Codex/Antigravity when a new thread appears), so reading
- * `tab.resumeToken` afterwards can't tell "resumed" from "just bound".
+ * *before* spawning: the backend may bind a token during start, so
+ * reading `tab.resumeToken` afterwards can't tell "resumed" from "just
+ * bound". `clearSessionTabResumeToken` no-ops when discovery has
+ * meanwhile set a different token.
  */
 export async function startSessionProcess(manager: TerminalSessionManager, tab: SessionTab): Promise<void> {
-  const { sessionId, folderPath, providerId, resumeToken } = tab
-  setSessionTabStatus(sessionId, 'starting')
-  const info = await manager.startPty({ sessionId, folderPath, providerId, resumeToken })
-  if (!info.resumed && resumeToken !== null) {
-    // Claude reuses its deterministic token for the fresh replacement.
-    // Codex/Antigravity bind a different token asynchronously.
-    if (providerId !== 'claude_code') clearSessionTabResumeToken(sessionId, resumeToken)
-    notify.info('Previous conversation not found', `Started a new ${providerLabel(providerId)} conversation.`)
+  const supplied = tab.resumeToken
+  setSessionTabStatus(tab.id, 'starting')
+  const info = await manager.startPty({
+    folderPath: tab.folderPath,
+    providerId: tab.providerId,
+    resumeToken: supplied
+  })
+  if (info.resumeToken) {
+    setSessionTabResumeToken(tab.id, info.resumeToken)
+  } else if (supplied !== null) {
+    clearSessionTabResumeToken(tab.id, supplied)
+    notify.info('Started a new conversation', 'The previous one no longer exists.')
   }
 }
 
-/** Stop a session's process; falls back to the backend when no terminal manager is mounted. */
-export async function stopSessionProcess(sessionId: string): Promise<void> {
-  const manager = sessionRegistry.get(sessionId)
-  if (manager) await manager.stopPty()
-  else await backend.sessions.stop(sessionId)
+/** Stop a session tab's process. No manager means no run: nothing to stop. */
+export async function stopSessionProcess(tabId: TabId): Promise<void> {
+  await sessionRegistry.get(tabId)?.stopPty()
 }

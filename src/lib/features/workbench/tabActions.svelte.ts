@@ -46,7 +46,7 @@ export async function closeTabWithChecks(tabId: TabId): Promise<boolean> {
 
   if (tab.kind === 'session' && isProcessLive(tab.status)) {
     try {
-      await stopSessionProcess(tab.sessionId)
+      await stopSessionProcess(tab.id)
     } catch (err) {
       notify.error('Stop session failed', getErrorMessage(err))
       return false

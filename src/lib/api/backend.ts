@@ -6,7 +6,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  AppInfo,
   BranchOpState,
   BranchSummary,
   BuiltinCatalog,
@@ -15,10 +14,8 @@ import type {
   DiffFileContent,
   DiffSource,
   DiscoveredProject,
-  EnvProbeResult,
   EffectiveSettingsPayload,
   FileDiff,
-  FileEntryStat,
   FilePasteCollision,
   FormattingSettings,
   GeneralSettings,
@@ -74,21 +71,6 @@ export const backend = {
   },
 
   app: {
-    healthPing(): Promise<string> {
-      return invoke<string>('health_ping')
-    },
-    getInfo(): Promise<AppInfo> {
-      return invoke<AppInfo>('app_get_info')
-    },
-    dbSmokeTest(): Promise<string> {
-      return invoke<string>('db_smoke_test')
-    },
-    keyringSmokeTest(): Promise<string> {
-      return invoke<string>('keyring_smoke_test')
-    },
-    envProbe(): Promise<EnvProbeResult> {
-      return invoke<EnvProbeResult>('env_probe')
-    },
     stateGet(key: string): Promise<string | null> {
       return invoke<string | null>('app_state_get', { key })
     },
@@ -134,15 +116,16 @@ export const backend = {
     },
     openInTerminal(path: string): Promise<void> {
       return invoke<void>('folder_open_in_terminal', { path })
+    },
+    /** Drop backend resources scoped to a folder that no longer has any open tab. */
+    release(folderPath: string): Promise<void> {
+      return invoke<void>('folder_release', { folderPath })
     }
   },
 
   providers: {
     list(): Promise<ProviderStatus[]> {
       return invoke<ProviderStatus[]>('provider_list')
-    },
-    refresh(): Promise<ProviderStatus[]> {
-      return invoke<ProviderStatus[]>('provider_refresh')
     },
     listForFolder(folderPath: string): Promise<ProviderStatus[]> {
       return invoke<ProviderStatus[]>('provider_list_for_folder', { folderPath })
@@ -161,9 +144,11 @@ export const backend = {
       return events
     },
     /**
-     * Spawn the provider process for a session tab. `resumeToken` is the
-     * provider identity bound on a previous run (Codex thread, Antigravity
-     * conversation); the backend validates it and reports `resumed`.
+     * Spawn the provider process for a session tab under a fresh `runId`.
+     * `resumeToken` is the provider conversation identity known from a
+     * previous run; the backend validates it and reports `resumed` plus
+     * the token the launched process owns at spawn time (null until
+     * discovery binds one).
      */
     start(
       spec: SessionSpec,
@@ -173,7 +158,7 @@ export const backend = {
       events: Channel<PtyEvent>
     ): Promise<SessionStartInfo> {
       return invoke<SessionStartInfo>('session_start', {
-        sessionId: spec.sessionId,
+        runId: spec.runId,
         folderPath: spec.folderPath,
         providerId: spec.providerId,
         resumeToken: spec.resumeToken,
@@ -183,29 +168,17 @@ export const backend = {
         events
       })
     },
-    write(sessionId: string, data: Uint8Array): Promise<void> {
+    write(runId: string, data: Uint8Array): Promise<void> {
       return invoke<void>('session_write', {
-        sessionId,
+        runId,
         data: Array.from(data)
       })
     },
-    resize(sessionId: string, cols: number, rows: number): Promise<void> {
-      return invoke<void>('session_resize', { sessionId, cols, rows })
+    resize(runId: string, cols: number, rows: number): Promise<void> {
+      return invoke<void>('session_resize', { runId, cols, rows })
     },
-    stop(sessionId: string): Promise<void> {
-      return invoke<void>('session_stop', { sessionId })
-    },
-    /** Whether the backend currently holds a live PTY for this session. */
-    isAlive(sessionId: string): Promise<boolean> {
-      return invoke<boolean>('session_is_alive', { sessionId })
-    },
-    /** Kill the PTY if alive and drop Sworm-owned provider state (OMP session dir). */
-    discard(sessionId: string): Promise<void> {
-      return invoke<void>('session_discard', { sessionId })
-    },
-    /** Remove Sworm-owned provider state for sessions no open tab references. */
-    pruneOrphans(keepSessionIds: string[]): Promise<void> {
-      return invoke<void>('session_prune_orphans', { keepSessionIds })
+    stop(runId: string): Promise<void> {
+      return invoke<void>('session_stop', { runId })
     }
   },
 
@@ -346,9 +319,6 @@ export const backend = {
       list(path: string): Promise<BranchSummary[]> {
         return invoke<BranchSummary[]>('git_list_branches', { path })
       },
-      info(path: string, name: string): Promise<BranchSummary> {
-        return invoke<BranchSummary>('git_branch_info', { path, name })
-      },
       commits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
         return invoke<GraphCommit[]>('git_get_branch_commits', {
           path,
@@ -450,12 +420,6 @@ export const backend = {
     rename(projectPath: string, oldPath: string, newPath: string): Promise<void> {
       return invoke<void>('file_rename', { projectPath, oldPath, newPath })
     },
-    stat(projectPath: string, filePath: string): Promise<FileEntryStat | null> {
-      return invoke<FileEntryStat | null>('file_stat', {
-        projectPath,
-        filePath
-      })
-    },
     delete(projectPath: string, filePath: string): Promise<void> {
       return invoke<void>('file_delete', { projectPath, filePath })
     },
@@ -498,12 +462,6 @@ export const backend = {
     clear(folderPath: string): Promise<void> {
       return invoke<void>('nix_clear', { folderPath })
     },
-    status(folderPath: string): Promise<NixEnvRecord | null> {
-      return invoke<NixEnvRecord | null>('nix_status', { folderPath })
-    },
-    format(content: string): Promise<string> {
-      return invoke<string>('nix_format', { content })
-    },
     lint(folderPath: string, filePath: string): Promise<NixDiagnostic[]> {
       return invoke<NixDiagnostic[]>('nix_lint', { folderPath, filePath })
     }
@@ -513,9 +471,9 @@ export const backend = {
     get(): Promise<SettingsPayload> {
       return invoke<SettingsPayload>('settings_get')
     },
-    getEffective(projectPath?: string): Promise<EffectiveSettingsPayload> {
+    getEffective(folderPath?: string): Promise<EffectiveSettingsPayload> {
       return invoke<EffectiveSettingsPayload>('settings_get_effective', {
-        input: { project_path: projectPath ?? null }
+        input: { folder_path: folderPath ?? null }
       })
     },
     getGlobalLayer(): Promise<SettingsLayerPayload> {
@@ -535,14 +493,9 @@ export const backend = {
     openGlobalFile(): Promise<SettingsFileResult> {
       return invoke<SettingsFileResult>('settings_open_global_file')
     },
-    createProjectFile(projectPath: string): Promise<SettingsFileResult> {
-      return invoke<SettingsFileResult>('settings_create_project_file', {
-        input: { project_path: projectPath }
-      })
-    },
-    openProjectFile(projectPath: string): Promise<SettingsFileResult> {
-      return invoke<SettingsFileResult>('settings_open_project_file', {
-        input: { project_path: projectPath }
+    openFolderFile(folderPath: string): Promise<SettingsFileResult> {
+      return invoke<SettingsFileResult>('settings_open_folder_file', {
+        input: { folder_path: folderPath }
       })
     },
     onChanged(handler: (event: SettingsChangedEvent) => void): Promise<UnlistenFn> {
@@ -679,19 +632,6 @@ export const backend = {
     config: {
       list(folderPath: string): Promise<IssueConfigEntry[]> {
         return invoke<IssueConfigEntry[]>('issue_config_list', { folderPath })
-      },
-      get(folderPath: string, key: string): Promise<IssueConfigEntry | null> {
-        return invoke<IssueConfigEntry | null>('issue_config_get', {
-          folderPath,
-          key
-        })
-      },
-      set(folderPath: string, key: string, value: string): Promise<IssueConfigEntry> {
-        return invoke<IssueConfigEntry>('issue_config_set', {
-          folderPath,
-          key,
-          value
-        })
       }
     }
   },

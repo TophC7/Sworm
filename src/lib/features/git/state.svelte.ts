@@ -75,6 +75,11 @@ export function stopGitPolling(folderPath: string) {
   gitStore.stopPolling(folderPath)
 }
 
+/** Forget the folder's summary and stop its polling; called when the workbench releases the folder. */
+export function releaseGitFolder(folderPath: string) {
+  gitStore.delete(folderPath)
+}
+
 /**
  * Run a git operation against a folder, then refresh git state.
  * Errors propagate to the caller.

@@ -9,6 +9,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
+/// Accept loop for one folder's bridge socket. Owners unlink the socket
+/// synchronously when they send `shutdown_rx`, so this task must not
+/// touch the path then: a replacement listener may already be bound to it.
+/// Only the self-initiated exit (accept failure) cleans up here.
 pub(super) async fn run_bridge(
     listener: UnixListener,
     issues: Arc<IssueService>,
@@ -19,7 +23,7 @@ pub(super) async fn run_bridge(
 ) {
     loop {
         tokio::select! {
-            _ = &mut shutdown_rx => break,
+            _ = &mut shutdown_rx => return,
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _)) => {
@@ -32,13 +36,13 @@ pub(super) async fn run_bridge(
                     }
                     Err(error) => {
                         tracing::warn!("Issue bridge accept failed: {}", error);
-                        break;
+                        let _ = std::fs::remove_file(socket_path);
+                        return;
                     }
                 }
             }
         }
     }
-    let _ = std::fs::remove_file(socket_path);
 }
 
 async fn handle_client(

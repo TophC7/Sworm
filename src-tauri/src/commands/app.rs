@@ -1,6 +1,5 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::services::env::EnvProbeResult;
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -69,39 +68,9 @@ fn normalize_absolute_path(path: &Path) -> PathBuf {
 }
 
 #[derive(Serialize)]
-pub struct AppInfo {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Serialize)]
 pub struct ClipboardFiles {
     pub op: String,
     pub paths: Vec<String>,
-}
-
-/// Trivial health check to prove the IPC bridge works.
-#[tauri::command]
-pub async fn health_ping() -> String {
-    "pong".to_string()
-}
-
-/// Return basic app metadata.
-#[tauri::command]
-pub async fn app_get_info() -> AppInfo {
-    AppInfo {
-        name: "Sworm".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-}
-
-/// Database smoke test: open DB, run migrations, verify a query works.
-#[tauri::command]
-pub async fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
-    state
-        .db
-        .smoke_test()
-        .map_err(|e| ApiError::Database(e.to_string()))
 }
 
 /// Read a value from the app-state key/value store. Returns `None`
@@ -130,21 +99,6 @@ pub async fn app_state_put(
         .app_state_kv
         .put(db.conn(), &key, &value_json)
         .map_err(ApiError::Database)
-}
-
-/// Keyring smoke test: write/read/delete a test secret.
-#[tauri::command]
-pub async fn keyring_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, ApiError> {
-    state
-        .credentials
-        .smoke_test()
-        .map_err(|e| ApiError::Keyring(e))
-}
-
-/// Return environment probe diagnostics.
-#[tauri::command]
-pub fn env_probe(state: tauri::State<'_, AppState>) -> EnvProbeResult {
-    state.env.probe_result()
 }
 
 /// Copy file paths to the system clipboard in file-manager format.

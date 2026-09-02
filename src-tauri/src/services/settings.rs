@@ -70,8 +70,8 @@ impl SettingsService {
             .join(file_name))
     }
 
-    pub fn project_settings_path(project_path: &Path) -> PathBuf {
-        project_path.join(settings::PROJECT_SETTINGS_PATH)
+    pub fn folder_settings_path(folder_path: &Path) -> PathBuf {
+        folder_path.join(settings::FOLDER_SETTINGS_PATH)
     }
 
     pub fn ensure_global_settings_parent() -> Result<PathBuf, String> {
@@ -86,8 +86,8 @@ impl SettingsService {
         Ok(path)
     }
 
-    pub fn ensure_project_settings_parent(project_path: &Path) -> Result<PathBuf, String> {
-        let path = Self::project_settings_path(project_path);
+    pub fn ensure_folder_settings_parent(folder_path: &Path) -> Result<PathBuf, String> {
+        let path = Self::folder_settings_path(folder_path);
         ensure_parent_dir(&path)?;
         Ok(path)
     }

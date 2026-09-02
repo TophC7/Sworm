@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import { getActiveFolderPath, getTabs } from '$lib/features/workbench/state.svelte'
+  import { isProcessLive, type SessionTab } from '$lib/features/workbench/model'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
@@ -19,7 +20,13 @@
   import { folderCrumbs } from '$lib/utils/paths'
 
   let folderPath = $derived(getActiveFolderPath())
-  let liveSessionCount = $derived(getTabs().filter((t) => t.kind === 'session' && t.status === 'running').length)
+  let folderSessions = $derived(
+    getTabs().filter(
+      (t): t is SessionTab => t.kind === 'session' && t.folderPath === folderPath && isProcessLive(t.status)
+    )
+  )
+  let liveSessionCount = $derived(folderSessions.length)
+  let sharedAgentCount = $derived(folderSessions.filter((t) => t.providerId !== 'terminal').length)
   let zoom = $derived(getZoomLevel())
   let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
   let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
@@ -86,8 +93,8 @@
         {liveSessionCount} live
       </span>
     {/if}
-    {#if liveSessionCount > 1}
-      <span class="flex items-center gap-1 text-warning" title="Sessions may share the same working tree">
+    {#if sharedAgentCount > 1}
+      <span class="flex items-center gap-1 text-warning" title="Multiple agents share this folder's working tree">
         <AlertTriangle size={10} /> shared
       </span>
     {/if}

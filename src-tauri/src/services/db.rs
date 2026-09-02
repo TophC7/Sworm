@@ -3,7 +3,7 @@ use refinery::embed_migrations;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::info;
+use tracing::{info, warn};
 
 embed_migrations!("migrations");
 
@@ -33,33 +33,54 @@ pub struct DatabaseService {
     /// load spread across connections instead of always hammering
     /// the first one.
     read_cursor: AtomicUsize,
-    db_path: PathBuf,
+}
+
+/// Open the writer connection, apply its PRAGMAs and run every pending
+/// migration. Fails when the on-disk schema is incompatible with the
+/// embedded migrations (refinery checksum mismatch, missing tables).
+fn open_migrated(db_path: &Path) -> Result<Connection, anyhow::Error> {
+    let mut writer = Connection::open(db_path)?;
+    // WAL is per-database (the journal_mode pragma persists), but
+    // we still issue it on every connection so a fresh file gets
+    // upgraded on its first open.
+    writer.execute_batch("PRAGMA journal_mode=WAL;")?;
+    writer.execute_batch("PRAGMA foreign_keys=ON;")?;
+    // 5s busy timeout so a concurrent writer (e.g. a second Sworm
+    // build sharing the file) waits briefly instead of SQLITE_BUSY.
+    writer.execute_batch("PRAGMA busy_timeout=5000;")?;
+
+    info!("Running database migrations from {:?}", db_path);
+    migrations::runner().run(&mut writer)?;
+    info!("Database migrations complete");
+    Ok(writer)
 }
 
 impl DatabaseService {
     /// Open (or create) the database at the given path and run all
-    /// pending migrations on the writer connection. Builds the read
-    /// pool after migrations succeed so readers don't observe a
-    /// half-migrated schema.
+    /// pending migrations on the writer connection. An incompatible
+    /// existing file is deleted and recreated: everything persisted
+    /// here (workbench layout, recent folders, Nix env cache) is
+    /// rebuildable. Builds the read pool after migrations succeed so
+    /// readers don't observe a half-migrated schema.
     pub fn new(db_path: PathBuf) -> Result<Self, anyhow::Error> {
         // Ensure the parent directory exists
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut writer = Connection::open(&db_path)?;
-        // WAL is per-database (the journal_mode pragma persists), but
-        // we still issue it on every connection so a fresh file gets
-        // upgraded on its first open.
-        writer.execute_batch("PRAGMA journal_mode=WAL;")?;
-        writer.execute_batch("PRAGMA foreign_keys=ON;")?;
-        // 5s busy timeout so a concurrent writer (e.g. a second Sworm
-        // build sharing the file) waits briefly instead of SQLITE_BUSY.
-        writer.execute_batch("PRAGMA busy_timeout=5000;")?;
-
-        info!("Running database migrations from {:?}", db_path);
-        migrations::runner().run(&mut writer)?;
-        info!("Database migrations complete");
+        let writer = match open_migrated(&db_path) {
+            Ok(conn) => conn,
+            Err(error) => {
+                warn!(
+                    "Database at {} is incompatible ({error}); recreating it",
+                    db_path.display()
+                );
+                for suffix in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+                }
+                open_migrated(&db_path)?
+            }
+        };
 
         let mut readers = Vec::with_capacity(READ_POOL_SIZE);
         for _ in 0..READ_POOL_SIZE {
@@ -77,7 +98,6 @@ impl DatabaseService {
             writer: Mutex::new(writer),
             readers,
             read_cursor: AtomicUsize::new(0),
-            db_path,
         })
     }
 
@@ -107,29 +127,6 @@ impl DatabaseService {
         ReadGuard {
             inner: self.readers[start].lock(),
         }
-    }
-
-    /// Tauri app-data directory: parent of the DB file. Used as the
-    /// root for sibling state (OMP session dirs, future per-app caches).
-    pub fn app_data_dir(&self) -> &Path {
-        // `db_path` is always built via `app_data_dir.join("sworm.db")`
-        // in `resolve_db_path`, so the parent is guaranteed non-None.
-        self.db_path
-            .parent()
-            .expect("db_path always has an app-data parent")
-    }
-
-    /// Simple smoke test: count rows in the app_state table.
-    pub fn smoke_test(&self) -> Result<String, anyhow::Error> {
-        let guard = self.read();
-        let count: i64 = guard
-            .conn()
-            .query_row("SELECT COUNT(*) FROM app_state", [], |row| row.get(0))?;
-
-        Ok(format!(
-            "DB OK at {:?}, app_state rows: {}",
-            self.db_path, count
-        ))
     }
 }
 

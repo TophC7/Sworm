@@ -6,6 +6,7 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { allProviders } from '$lib/features/sessions/providers/catalog'
   import { openFolder } from '$lib/features/workbench/state.svelte'
+  import { getRecentFolders } from '$lib/features/folders/state.svelte'
   import {
     getDiscoveredProjects,
     isActivityMapLoading,
@@ -25,7 +26,10 @@
   let projects = $derived(getDiscoveredProjects())
   let loading = $derived(isActivityMapLoading())
   // Recent folders already appear in the primary list.
-  let externalProjects = $derived(projects.filter((folder) => !folder.is_recent))
+  let externalProjects = $derived.by(() => {
+    const recent = new Set(getRecentFolders())
+    return projects.filter((folder) => !recent.has(folder.path))
+  })
 
   onMount(() => {
     loadActivityMap()

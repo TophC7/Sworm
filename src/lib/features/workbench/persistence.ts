@@ -5,7 +5,7 @@
 // state. One blob under the `workbench` app-state key holds every tab.
 
 import { backend } from '$lib/api/backend'
-import type { PersistedTab, PersistedWorkbenchV3, Tab, Workbench } from '$lib/features/workbench/model'
+import type { PersistedTab, PersistedWorkbenchV4, Tab, Workbench } from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
 
 const APP_STATE_KEY_WORKBENCH = 'workbench'
@@ -21,7 +21,6 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       return {
         kind: 'session',
         folderPath: tab.folderPath,
-        sessionId: tab.sessionId,
         title: tab.title,
         providerId: tab.providerId,
         resumeToken: tab.resumeToken,
@@ -106,7 +105,7 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
   }
 }
 
-export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV3 {
+export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV4 {
   const tabs: PersistedTab[] = []
   let activeTabIndex = -1
   for (const tab of wb.tabs) {
@@ -119,7 +118,7 @@ export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV3 {
   // run), fall back to the last persisted tab so restore lands on
   // something instead of an empty surface.
   if (activeTabIndex < 0 && tabs.length > 0) activeTabIndex = tabs.length - 1
-  return { version: 3, activeTabIndex, tabs }
+  return { version: 4, activeTabIndex, tabs }
 }
 
 export function persistedToTab(persisted: PersistedTab, id: string): Tab {
@@ -129,7 +128,6 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
         kind: 'session',
         id,
         folderPath: persisted.folderPath,
-        sessionId: persisted.sessionId,
         title: persisted.title,
         providerId: persisted.providerId,
         resumeToken: persisted.resumeToken,
@@ -212,20 +210,26 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
 // ---------------------------------------------------------------------------
 
 let timer: ReturnType<typeof setTimeout> | undefined
-let pending: (() => PersistedWorkbenchV3) | null = null
+let pending: (() => PersistedWorkbenchV4) | null = null
 // Session/task status ticks commit the workbench without changing the
 // persisted shape; skip the SQLite write when the blob is byte-identical.
 let lastWrittenJson: string | null = null
 
-export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV3): void {
+export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV4): void {
   pending = produce
   clearTimeout(timer)
   timer = setTimeout(() => {
-    void flushWorkbench()
+    // `flushWorkbench` requeues on failure, so the next scheduled
+    // mutation retries the write.
+    void flushWorkbench().catch((error) => console.warn('Workbench persist failed:', error))
   }, WORKBENCH_DEBOUNCE_MS)
 }
 
-/** Force an immediate write of any pending mutation (managed reload, app exit). */
+/**
+ * Force an immediate write of any pending mutation (managed reload, app
+ * exit). Rethrows on failure so callers can refuse to proceed; the failed
+ * producer is requeued unless a newer mutation was scheduled meanwhile.
+ */
 export async function flushWorkbench(): Promise<void> {
   const produce = pending
   pending = null
@@ -238,7 +242,8 @@ export async function flushWorkbench(): Promise<void> {
     await backend.app.statePut(APP_STATE_KEY_WORKBENCH, json)
     lastWrittenJson = json
   } catch (error) {
-    console.warn('Workbench persist failed:', error)
+    if (pending === null) pending = produce
+    throw error
   }
 }
 
@@ -246,13 +251,14 @@ export async function flushWorkbench(): Promise<void> {
 // Restore
 // ---------------------------------------------------------------------------
 
-function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV3 {
+// Pre-release: any other version is treated as absent, no migration.
+function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV4 {
   if (!value || typeof value !== 'object') return false
   const obj = value as Record<string, unknown>
-  return obj.version === 3 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
+  return obj.version === 4 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
 }
 
-export async function loadPersistedWorkbench(): Promise<PersistedWorkbenchV3 | null> {
+export async function loadPersistedWorkbench(): Promise<PersistedWorkbenchV4 | null> {
   try {
     const raw = await backend.app.stateGet(APP_STATE_KEY_WORKBENCH)
     if (!raw) return null

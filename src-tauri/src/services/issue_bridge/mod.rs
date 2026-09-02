@@ -51,6 +51,17 @@ struct BridgeRuntime {
     shutdown: Option<oneshot::Sender<()>>,
 }
 
+impl BridgeRuntime {
+    /// Signal the accept loop to exit and unlink the socket file. This is
+    /// the only unlink on the shutdown path (see `run_bridge`).
+    fn teardown(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let _ = std::fs::remove_file(&self.info.socket_path);
+    }
+}
+
 /// Per-project Unix-socket listeners that expose [`IssueService`] to
 /// agent child processes via NDJSON RPC.
 pub struct IssueBridgeService {
@@ -88,10 +99,8 @@ impl IssueBridgeService {
                 }
             }
         }
-        if let Some(mut stale) = self.runtimes.lock().remove(key.as_ref()) {
-            if let Some(shutdown) = stale.shutdown.take() {
-                let _ = shutdown.send(());
-            }
+        if let Some(stale) = self.runtimes.lock().remove(key.as_ref()) {
+            stale.teardown();
         }
 
         // Bind the socket and prep the runtime *outside* the map mutex.
@@ -181,16 +190,24 @@ impl IssueBridgeService {
 
         Ok(info)
     }
+
+    /// Tear down the bridge for the folder at `project_path`: stop the
+    /// listener task and unlink its socket. No-op when no bridge is
+    /// running for that folder.
+    pub fn stop(&self, project_path: &Path) {
+        let key = project_path.to_string_lossy();
+        let runtime = self.runtimes.lock().remove(key.as_ref());
+        if let Some(runtime) = runtime {
+            runtime.teardown();
+        }
+    }
 }
 
 impl Drop for IssueBridgeService {
     fn drop(&mut self) {
         let runtimes = std::mem::take(&mut *self.runtimes.lock());
-        for (_, mut runtime) in runtimes {
-            if let Some(shutdown) = runtime.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-            let _ = std::fs::remove_file(runtime.info.socket_path);
+        for (_, runtime) in runtimes {
+            runtime.teardown();
         }
     }
 }

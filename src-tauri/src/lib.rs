@@ -79,11 +79,6 @@ pub fn run() {
             commands::activity_map::activity_map_get,
             commands::activity_map::activity_map_refresh,
             // App commands
-            commands::app::health_ping,
-            commands::app::app_get_info,
-            commands::app::db_smoke_test,
-            commands::app::keyring_smoke_test,
-            commands::app::env_probe,
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
             commands::app::app_take_pending_open_path,
@@ -117,15 +112,13 @@ pub fn run() {
             commands::issues::issue_dependencies_list,
             commands::issues::issue_current_git_user,
             commands::issues::issue_config_list,
-            commands::issues::issue_config_get,
-            commands::issues::issue_config_set,
             // Folder commands
             commands::folders::folder_select_directory,
             commands::folders::folder_resolve,
             commands::folders::folder_open_in_terminal,
+            commands::folders::folder_release,
             // Provider commands
             commands::providers::provider_list,
-            commands::providers::provider_refresh,
             // Settings commands
             commands::settings::settings_get,
             commands::settings::settings_get_effective,
@@ -133,8 +126,7 @@ pub fn run() {
             commands::settings::settings_patch_global_section,
             commands::settings::settings_create_global_file,
             commands::settings::settings_open_global_file,
-            commands::settings::settings_create_project_file,
-            commands::settings::settings_open_project_file,
+            commands::settings::settings_open_folder_file,
             commands::settings::settings_set_general,
             commands::settings::settings_set_formatting,
             commands::settings::settings_set_provider_config,
@@ -157,8 +149,6 @@ pub fn run() {
             commands::nix::nix_select,
             commands::nix::nix_evaluate,
             commands::nix::nix_clear,
-            commands::nix::nix_status,
-            commands::nix::nix_format,
             commands::nix::nix_lint,
             commands::nix::provider_list_for_folder,
             // File commands
@@ -166,7 +156,6 @@ pub fn run() {
             commands::files::file_write,
             commands::files::file_create_dir,
             commands::files::file_rename,
-            commands::files::file_stat,
             commands::files::file_delete,
             commands::files::file_paste,
             commands::files::file_paste_collisions,
@@ -206,7 +195,6 @@ pub fn run() {
             commands::git::git_clone_in_place,
             // Git branch commands
             commands::git::git_list_branches,
-            commands::git::git_branch_info,
             commands::git::git_branch_status,
             commands::git::git_diff_branch_against_head,
             commands::git::git_checkout_branch,
@@ -234,9 +222,6 @@ pub fn run() {
             commands::sessions::session_write,
             commands::sessions::session_resize,
             commands::sessions::session_stop,
-            commands::sessions::session_is_alive,
-            commands::sessions::session_discard,
-            commands::sessions::session_prune_orphans,
         ])
         .build(tauri::generate_context!())
         .expect("error building Sworm");

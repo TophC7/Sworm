@@ -1,51 +1,52 @@
 import { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
+import type { TabId } from '$lib/features/workbench/model'
 
-const sessions = new Map<string, TerminalSessionManager>()
+const sessions = new Map<TabId, TerminalSessionManager>()
 
-export function getOrCreate(sessionId: string): TerminalSessionManager {
-  let manager = sessions.get(sessionId)
+export function getOrCreate(tabId: TabId): TerminalSessionManager {
+  let manager = sessions.get(tabId)
   if (!manager) {
-    manager = new TerminalSessionManager(sessionId)
-    sessions.set(sessionId, manager)
+    manager = new TerminalSessionManager(tabId)
+    sessions.set(tabId, manager)
   }
   return manager
 }
 
-export async function attach(sessionId: string, container: HTMLElement): Promise<TerminalSessionManager> {
-  const manager = getOrCreate(sessionId)
+export async function attach(tabId: TabId, container: HTMLElement): Promise<TerminalSessionManager> {
+  const manager = getOrCreate(tabId)
   await manager.attach(container)
   return manager
 }
 
-export function detach(sessionId: string): void {
-  sessions.get(sessionId)?.detach()
+export function detach(tabId: TabId): void {
+  sessions.get(tabId)?.detach()
 }
 
-export function dispose(sessionId: string): void {
-  const manager = sessions.get(sessionId)
+export function dispose(tabId: TabId): void {
+  const manager = sessions.get(tabId)
   if (!manager) {
     return
   }
 
   manager.dispose()
-  sessions.delete(sessionId)
+  sessions.delete(tabId)
 }
 
 export function disposeAll(): void {
-  for (const [sessionId, manager] of sessions) {
+  for (const [tabId, manager] of sessions) {
     manager.dispose()
-    sessions.delete(sessionId)
+    sessions.delete(tabId)
   }
 }
 
-export function get(sessionId: string): TerminalSessionManager | undefined {
-  return sessions.get(sessionId)
+export function get(tabId: TabId): TerminalSessionManager | undefined {
+  return sessions.get(tabId)
 }
 
 /**
- * Give DOM focus to a specific session's xterm, if we know about it.
+ * Give DOM focus to a specific session tab's xterm, if we know about it.
  * No-op for unknown ids or managers that haven't mounted yet. Idempotent.
  */
-export function focus(sessionId: string): void {
-  sessions.get(sessionId)?.focus()
+export function focus(tabId: TabId): void {
+  sessions.get(tabId)?.focus()
 }

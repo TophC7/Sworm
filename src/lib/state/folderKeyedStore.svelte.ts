@@ -72,6 +72,23 @@ export function createFolderKeyedStore<T extends object>() {
     pollers.delete(folderPath)
   }
 
+  /** Drop the entry and stop every poller for `folderPath`. No-op when unknown. */
+  function del(folderPath: string) {
+    stopAllPolling(folderPath)
+    if (!entries.has(folderPath)) return
+    const next = new Map(entries)
+    next.delete(folderPath)
+    entries = next
+  }
+
+  /** Drop every entry and stop every poller. */
+  function clear() {
+    for (const poller of pollers.values()) clearInterval(poller.interval)
+    pollers.clear()
+    if (entries.size === 0) return
+    entries = new Map()
+  }
+
   return {
     get,
     has,
@@ -80,6 +97,8 @@ export function createFolderKeyedStore<T extends object>() {
     patch,
     startPolling,
     stopPolling,
-    stopAllPolling
+    stopAllPolling,
+    delete: del,
+    clear
   }
 }

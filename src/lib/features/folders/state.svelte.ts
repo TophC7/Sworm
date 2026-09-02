@@ -1,6 +1,6 @@
 // Recent folders — bounded MRU of canonical folder paths, persisted under
 // the `recent_folders` app-state key. Feeds the empty state, the hamburger
-// menu's "Open Recent" group, and the activity map's `is_recent` marker.
+// menu's "Open Recent" group, and the activity map's discovered-folder filter.
 
 import { backend } from '$lib/api/backend'
 

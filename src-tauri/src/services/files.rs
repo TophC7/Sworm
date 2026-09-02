@@ -32,12 +32,6 @@ pub struct FilePasteCollision {
     pub destination: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileEntryStat {
-    pub is_dir: bool,
-}
-
 pub struct FileService;
 
 impl FileService {
@@ -133,30 +127,6 @@ impl FileService {
                 old_path, new_path, e
             ))
         })
-    }
-
-    /// Return whether a project-relative path exists and is a directory.
-    pub fn stat(
-        &self,
-        project_path: &Path,
-        file_path: &str,
-    ) -> Result<Option<FileEntryStat>, ApiError> {
-        self.validate_path(file_path)?;
-        let abs = project_path.join(file_path);
-        let metadata = match std::fs::metadata(&abs) {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => {
-                return Err(ApiError::Io(format!(
-                    "Failed to stat {}: {}",
-                    file_path, err
-                )))
-            }
-        };
-
-        Ok(Some(FileEntryStat {
-            is_dir: metadata.is_dir(),
-        }))
     }
 
     /// Paste files/directories into a target directory inside the project.
