@@ -8,7 +8,6 @@
     selectNixFile
   } from '$lib/features/settings/state/nix.svelte'
   import { loadProvidersForFolder } from '$lib/features/sessions/providers/state.svelte'
-  import { Badge } from '$lib/components/ui/badge'
   import {
     DropdownMenuRoot,
     DropdownMenuTrigger,
@@ -118,7 +117,7 @@
 {#if hasNixFiles}
   <DropdownMenuRoot>
     <DropdownMenuTrigger
-      class="flex items-center gap-1 text-xs {statusColor()} cursor-pointer border-none bg-transparent p-0 transition-colors hover:text-bright"
+      class="flex cursor-pointer items-center gap-1 rounded-full border border-edge bg-raised px-2 py-0.5 text-xs {statusColor()} transition-colors hover:border-accent/50 hover:text-bright"
     >
       {#if evaluatingNow}
         <LoaderCircle size={10} class="animate-spin" />

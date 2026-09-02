@@ -84,6 +84,7 @@ pub fn run() {
             commands::app::app_take_pending_open_path,
             commands::app::app_state_get,
             commands::app::app_state_put,
+            commands::app::app_runtime_info,
             // Builtins commands
             commands::builtins::builtins_get_catalog,
             // Config schema commands (drives Monaco autocomplete for .sworm/*.json)
@@ -115,6 +116,7 @@ pub fn run() {
             // Folder commands
             commands::folders::folder_select_directory,
             commands::folders::folder_resolve,
+            commands::folders::folder_list_directories,
             commands::folders::folder_open_in_terminal,
             commands::folders::folder_release,
             // Provider commands

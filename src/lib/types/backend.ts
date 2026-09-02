@@ -15,6 +15,16 @@ export interface FolderInfo {
   name: string
 }
 
+export interface AppRuntimeInfo {
+  name: string
+  version: string
+  memory_bytes: number | null
+  app_cpu_time_ticks: number | null
+  system_cpu_time_ticks: number | null
+  thread_count: number | null
+  file_descriptor_count: number | null
+}
+
 export interface SessionStartInfo {
   resumed: boolean
   /** Token the launched process is known to own at spawn time; null until discovery binds one. */

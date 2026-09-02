@@ -6,6 +6,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
+  AppRuntimeInfo,
   BranchOpState,
   BranchSummary,
   BuiltinCatalog,
@@ -71,6 +72,9 @@ export const backend = {
   },
 
   app: {
+    runtimeInfo(): Promise<AppRuntimeInfo> {
+      return invoke<AppRuntimeInfo>('app_runtime_info')
+    },
     stateGet(key: string): Promise<string | null> {
       return invoke<string | null>('app_state_get', { key })
     },
@@ -113,6 +117,9 @@ export const backend = {
     /** Canonicalize a folder path; rejects missing paths and non-directories. */
     resolve(path: string): Promise<FolderInfo> {
       return invoke<FolderInfo>('folder_resolve', { path })
+    },
+    listDirectories(path: string): Promise<FolderInfo[]> {
+      return invoke<FolderInfo[]>('folder_list_directories', { path })
     },
     openInTerminal(path: string): Promise<void> {
       return invoke<void>('folder_open_in_terminal', { path })

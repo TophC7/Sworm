@@ -7,8 +7,7 @@
     type SidebarView
   } from '$lib/features/app-shell/sidebar/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitBranchIcon, FolderOpen, ClipboardListIcon, SettingsIcon } from '$lib/icons/lucideExports'
-  import { openSettings } from '$lib/features/app-actions/actions.svelte'
+  import { GitBranchIcon, FolderOpen, ClipboardListIcon } from '$lib/icons/lucideExports'
 
   let { gitChangeCount = 0 }: { gitChangeCount?: number } = $props()
 
@@ -63,11 +62,4 @@
       {/if}
     </div>
   {/each}
-
-  <!-- Settings pinned to the far bottom of the rail. -->
-  <div class="mt-auto">
-    <IconButton size="md" tooltip="Settings" tooltipSide="right" onclick={openSettings}>
-      <SettingsIcon size={16} />
-    </IconButton>
-  </div>
 </div>

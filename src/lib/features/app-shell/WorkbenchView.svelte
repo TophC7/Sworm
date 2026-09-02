@@ -60,7 +60,9 @@
 </script>
 
 <div class="flex min-h-0 flex-1 overflow-hidden">
-  <SidebarRail {gitChangeCount} />
+  {#if folderPath}
+    <SidebarRail {gitChangeCount} />
+  {/if}
 
   {#if !sidebarCollapsed && folderPath}
     {#key folderPath}

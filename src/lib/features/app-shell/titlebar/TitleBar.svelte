@@ -1,9 +1,11 @@
 <script lang="ts">
   import { CommandPill } from '$lib/components/ui/command-pill'
+  import { IconButton } from '$lib/components/ui/button'
   import TitleBarMenu from './TitleBarMenu.svelte'
   import TitleTabStrip from './TitleTabStrip.svelte'
   import WindowControls from './WindowControls.svelte'
   import { setCommandPaletteOpen } from '$lib/features/command-palette/state.svelte'
+  import { SettingsIcon } from '$lib/icons/lucideExports'
 
   let { onSettings }: { onSettings: () => void } = $props()
 
@@ -13,14 +15,19 @@
 </script>
 
 <header class="flex min-h-9 shrink-0 items-center border-b border-edge bg-surface">
-  <TitleBarMenu {onSettings} />
+  <div class="flex shrink-0 items-center gap-0.5 self-stretch border-r border-edge px-1">
+    <TitleBarMenu />
+    <IconButton size="md" tooltip="Settings" onclick={onSettings}>
+      <SettingsIcon size={14} />
+    </IconButton>
+  </div>
 
   <TitleTabStrip />
 
   <!-- Draggable spacer: the only window-drag surface on the bar. -->
   <div data-tauri-drag-region class="min-w-0 flex-1 self-stretch"></div>
 
-  <CommandPill onclick={openPalette} label="Search" class="w-56 shrink-0" />
+  <CommandPill onclick={openPalette} class="mr-1 w-60 shrink-0" />
 
   <WindowControls />
 </header>

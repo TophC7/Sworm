@@ -28,6 +28,40 @@ pub async fn folder_resolve(path: String) -> Result<FolderInfo, ApiError> {
     })
 }
 
+/// List immediate child directories of a canonicalized directory.
+#[tauri::command]
+pub async fn folder_list_directories(path: String) -> Result<Vec<FolderInfo>, ApiError> {
+    list_directories(Path::new(&path))
+}
+
+fn list_directories(path: &Path) -> Result<Vec<FolderInfo>, ApiError> {
+    let directory = resolve_folder(&path.to_string_lossy())?;
+    let mut folders = Vec::new();
+
+    for entry in std::fs::read_dir(directory)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let entry_path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() && !(file_type.is_symlink() && entry_path.is_dir()) {
+            continue;
+        }
+        let Ok(canonical_path) = entry_path.canonicalize() else {
+            continue;
+        };
+        folders.push(FolderInfo {
+            path: canonical_path.to_string_lossy().into_owned(),
+            name: entry.file_name().to_string_lossy().into_owned(),
+        });
+    }
+
+    folders.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(folders)
+}
+
 /// Release backend resources held for a folder once the workbench has
 /// closed its last tab: stop settings watches and the issue-bridge
 /// socket, then drop the cached issue DB handle. Silent no-op when
@@ -160,4 +194,27 @@ fn spawn_terminal(_cwd: &Path) -> Result<(), ApiError> {
     Err(ApiError::Internal(
         "Open in terminal is only implemented on Linux".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_directories;
+    use std::fs;
+
+    #[test]
+    fn lists_only_immediate_directories_in_name_order() {
+        let root = std::env::temp_dir().join(format!("sworm-folder-list-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("zeta")).unwrap();
+        fs::create_dir(root.join("alpha")).unwrap();
+        fs::write(root.join("notes.txt"), "not a folder").unwrap();
+
+        let names = list_directories(&root)
+            .unwrap()
+            .into_iter()
+            .map(|folder| folder.name)
+            .collect::<Vec<_>>();
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(names, ["alpha", "zeta"]);
+    }
 }

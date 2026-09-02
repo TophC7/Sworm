@@ -8,6 +8,8 @@
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
+  import StatusBarFolderPopover from '$lib/features/app-shell/status/StatusBarFolderPopover.svelte'
+  import StatusBarAppInfo from '$lib/features/app-shell/status/StatusBarAppInfo.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
@@ -16,7 +18,7 @@
     getSettingsDiagnostics,
     refreshSettingsDiagnostics
   } from '$lib/features/settings/state/diagnostics.svelte'
-  import { Circle, AlertTriangle, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
+  import { Circle, AlertTriangle, FolderOpen, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
   import { folderCrumbs } from '$lib/utils/paths'
 
   let folderPath = $derived(getActiveFolderPath())
@@ -29,6 +31,12 @@
   let sharedAgentCount = $derived(folderSessions.filter((t) => t.providerId !== 'terminal').length)
   let zoom = $derived(getZoomLevel())
   let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
+  let branchDirty = $derived((gitSummary?.changes.length ?? 0) > 0)
+  let branchStatus = $derived(
+    branchDirty
+      ? `${gitSummary?.staged_count ?? 0} staged, ${gitSummary?.unstaged_count ?? 0} unstaged, ${gitSummary?.untracked_count ?? 0} untracked`
+      : 'Clean working tree'
+  )
   let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
   let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))
   let zoomInShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-in', ['Ctrl+=', 'Ctrl++'])[0]))
@@ -41,16 +49,32 @@
 </script>
 
 <footer
-  class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-xs"
+  class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-1 py-0.5 text-xs"
 >
-  <div class="flex items-center gap-2.5">
+  <div class="flex items-center gap-1">
+    <StatusBarAppInfo />
     {#if folderPath}
-      <span class="truncate text-muted" title={folderPath}>{folderCrumbs(folderPath)}</span>
+      <StatusBarFolderPopover {folderPath}>
+        {#snippet children()}
+          <span
+            class="inline-flex max-w-[min(32rem,40vw)] items-center gap-1 rounded-full border border-edge bg-raised px-2 py-0.5 text-muted transition-colors hover:border-accent/50 hover:text-fg"
+            title={folderPath}
+          >
+            <FolderOpen size={10} class="shrink-0" />
+            <span class="truncate">{folderCrumbs(folderPath)}</span>
+          </span>
+        {/snippet}
+      </StatusBarFolderPopover>
     {/if}
     {#if gitSummary?.branch && folderPath}
       <StatusBarBranchPopover {folderPath}>
         {#snippet children()}
-          <span class="flex items-center gap-1 font-mono text-muted">
+          <span
+            class="flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono transition-colors {branchDirty
+              ? 'border-warning/40 bg-warning/10 text-warning-bright hover:bg-warning/20'
+              : 'border-success/40 bg-success/10 text-success hover:bg-success/20'}"
+            title={branchStatus}
+          >
             <GitBranchIcon size={10} />
             {gitSummary.branch}
             <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} size="xs" twoColor />

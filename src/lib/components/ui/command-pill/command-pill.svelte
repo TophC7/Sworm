@@ -32,7 +32,7 @@
 
   let {
     class: className,
-    label = 'Search commands\u2026',
+    label = 'Commands\u2026',
     onclick,
     ...rest
   }: HTMLButtonAttributes & { class?: string; label?: string } = $props()

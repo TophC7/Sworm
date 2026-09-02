@@ -157,7 +157,7 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
     } catch (e) {
       console.error(`Failed to load branches for ${folderPath}:`, e)
     }
-    if (folderGeneration(folderPath) !== generation || inFlightLoads.get(folderPath) !== promise) return
+    if (folderGeneration(folderPath) !== generation) return
     branchStore.set(folderPath, {
       list,
       opState,
@@ -170,6 +170,7 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
   })().finally(() => {
     if (inFlightLoads.get(folderPath) === promise) inFlightLoads.delete(folderPath)
   })
+  inFlightLoads.set(folderPath, promise)
   return promise
 }
 
@@ -227,12 +228,12 @@ export function fetchBranches(folderPath: string): Promise<void> {
   promise = (async () => {
     try {
       await backend.git.fetch(folderPath)
-      if (folderGeneration(folderPath) !== generation || inFlightFetches.get(folderPath) !== promise) return
+      if (folderGeneration(folderPath) !== generation) return
       await refresh(folderPath)
-      if (folderGeneration(folderPath) !== generation || inFlightFetches.get(folderPath) !== promise) return
+      if (folderGeneration(folderPath) !== generation) return
       branchStore.patch(folderPath, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
     } catch (e) {
-      if (folderGeneration(folderPath) === generation && inFlightFetches.get(folderPath) === promise) {
+      if (folderGeneration(folderPath) === generation) {
         branchStore.patch(folderPath, { fetching: false })
       }
       throw e
@@ -240,6 +241,7 @@ export function fetchBranches(folderPath: string): Promise<void> {
   })().finally(() => {
     if (inFlightFetches.get(folderPath) === promise) inFlightFetches.delete(folderPath)
   })
+  inFlightFetches.set(folderPath, promise)
   return promise
 }
 

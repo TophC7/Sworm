@@ -21,7 +21,7 @@
 </script>
 
 {#if !config.useSystemDecorations}
-  <div class="flex shrink-0 items-center pr-1">
+  <div class="flex shrink-0 items-center self-stretch border-l border-edge px-1">
     {#if config.showMinimize}
       <IconButton size="md" tooltip="Minimize" onclick={() => appWindow.minimize()}>
         <Minus size={12} strokeWidth={2} />

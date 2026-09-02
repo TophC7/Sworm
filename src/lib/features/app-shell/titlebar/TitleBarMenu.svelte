@@ -18,9 +18,7 @@
   import { MenuIcon } from '$lib/icons/lucideExports'
   import { buildAppMenu } from './menuModel'
 
-  let { onSettings }: { onSettings: () => void } = $props()
-
-  let entries = $derived(buildAppMenu({ onSettings }))
+  let entries = $derived(buildAppMenu())
 </script>
 
 <DropdownMenuRoot>

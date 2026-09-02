@@ -39,7 +39,7 @@ export interface MenuSeparator {
 
 export type MenuEntry = MenuItem | MenuSubmenu | MenuSeparator
 
-export function buildAppMenu(handlers: { onSettings: () => void }): MenuEntry[] {
+export function buildAppMenu(): MenuEntry[] {
   const hasActive = getActiveTabId() !== null
   const recent = getRecentUnopenedFolders()
 
@@ -83,9 +83,7 @@ export function buildAppMenu(handlers: { onSettings: () => void }): MenuEntry[] 
     },
     { kind: 'item', label: 'Zoom In', onSelect: zoomIn },
     { kind: 'item', label: 'Zoom Out', onSelect: zoomOut },
-    { kind: 'item', label: 'Reset Zoom', onSelect: zoomReset },
-    { kind: 'separator' },
-    { kind: 'item', label: 'Settings…', onSelect: handlers.onSettings }
+    { kind: 'item', label: 'Reset Zoom', onSelect: zoomReset }
   )
   return entries
 }
