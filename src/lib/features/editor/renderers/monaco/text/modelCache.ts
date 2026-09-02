@@ -4,7 +4,6 @@ type MonacoViewState = import('monaco-editor').editor.ICodeEditorViewState
 
 interface TextModelEntry {
   key: string
-  projectId: string
   filePath: string | null
   tabId: string
   model: MonacoModel
@@ -25,7 +24,7 @@ export interface TextModelHandle {
 
 interface AcquireTextModelOptions {
   monaco: Monaco
-  projectId: string | null
+  folderPath: string | null
   tabId: string
   filePath: string | null
   uriPath: string | null
@@ -38,12 +37,12 @@ const MAX_RETAINED_TEXT_MODELS = 64
 const MAX_RETAINED_TEXT_MODEL_BYTES = 50 * 1024 * 1024
 let monacoRef: Monaco | null = null
 
-function fileKey(projectId: string, filePath: string): string {
-  return `${projectId}:file:${filePath}`
+function fileKey(folderPath: string, filePath: string): string {
+  return `${folderPath}:file:${filePath}`
 }
 
-function untitledKey(projectId: string, tabId: string): string {
-  return `${projectId}:untitled:${tabId}`
+function untitledKey(folderPath: string, tabId: string): string {
+  return `${folderPath}:untitled:${tabId}`
 }
 
 function isDisposed(model: MonacoModel): boolean {
@@ -125,11 +124,11 @@ function reconcileWithDisk(entry: TextModelEntry, diskValue: string): void {
 }
 
 export function acquireTextModel(options: AcquireTextModelOptions): TextModelHandle | null {
-  const { monaco, projectId, tabId, filePath, uriPath, value, language } = options
-  if (!projectId) return null
+  const { monaco, folderPath, tabId, filePath, uriPath, value, language } = options
+  if (!folderPath) return null
 
   monacoRef = monaco
-  const key = filePath != null ? fileKey(projectId, filePath) : untitledKey(projectId, tabId)
+  const key = filePath != null ? fileKey(folderPath, filePath) : untitledKey(folderPath, tabId)
   const existing = entries.get(key)
   if (existing && !isDisposed(existing.model)) {
     existing.discardOnRelease = false
@@ -151,7 +150,6 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
 
   const entry: TextModelEntry = {
     key,
-    projectId,
     filePath,
     tabId,
     model,
@@ -166,8 +164,8 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
   return makeHandle(entry)
 }
 
-export function markTextModelBufferSaved(projectId: string, filePath: string, value: string): void {
-  const entry = entries.get(fileKey(projectId, filePath))
+export function markTextModelBufferSaved(folderPath: string, filePath: string, value: string): void {
+  const entry = entries.get(fileKey(folderPath, filePath))
   if (!entry) return
   entry.savedValue = value
   touchEntry(entry)
@@ -175,16 +173,16 @@ export function markTextModelBufferSaved(projectId: string, filePath: string, va
 }
 
 export function renameTextModelBuffer(
-  projectId: string,
+  folderPath: string,
   oldFilePath: string,
   newFilePath: string,
   newUriPath: string
 ): void {
-  const oldKey = fileKey(projectId, oldFilePath)
+  const oldKey = fileKey(folderPath, oldFilePath)
   const entry = entries.get(oldKey)
   if (!entry) return
 
-  const newKey = fileKey(projectId, newFilePath)
+  const newKey = fileKey(folderPath, newFilePath)
   const existingTarget = entries.get(newKey)
   if (existingTarget && existingTarget !== entry) {
     if (existingTarget.refs > 0) {
@@ -245,8 +243,8 @@ function createRenamedModel(entry: TextModelEntry, uriPath: string): MonacoModel
   return monacoRef.editor.createModel(value, language, uri)
 }
 
-export function discardTextModelBuffer(projectId: string, filePath: string): void {
-  const entry = entries.get(fileKey(projectId, filePath))
+export function discardTextModelBuffer(folderPath: string, filePath: string): void {
+  const entry = entries.get(fileKey(folderPath, filePath))
   if (!entry) return
   if (entry.refs > 0) {
     entry.discardOnRelease = true
@@ -255,24 +253,12 @@ export function discardTextModelBuffer(projectId: string, filePath: string): voi
   disposeEntry(entry)
 }
 
-export function discardUntitledTextModelBuffer(projectId: string, tabId: string): void {
-  const entry = entries.get(untitledKey(projectId, tabId))
+export function discardUntitledTextModelBuffer(folderPath: string, tabId: string): void {
+  const entry = entries.get(untitledKey(folderPath, tabId))
   if (!entry) return
   if (entry.refs > 0) {
     entry.discardOnRelease = true
     return
   }
   disposeEntry(entry)
-}
-
-export function discardProjectTextModelBuffers(projectId: string): void {
-  for (const entry of [...entries.values()]) {
-    if (entry.projectId !== projectId) continue
-    if (entry.refs > 0) {
-      entry.discardOnRelease = true
-      continue
-    }
-    disposeEntry(entry)
-  }
-  trimRetainedModels()
 }

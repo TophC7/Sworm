@@ -1,10 +1,11 @@
 use crate::models::activity_map::{DiscoveredProject, DiscoveredProviderActivity};
+use crate::services::folders::{folder_name, home_dir};
 use chrono::{Local, TimeZone};
 use rusqlite::{Connection, OpenFlags};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Maximum number of discovered projects to return.
 const MAX_RESULTS: usize = 50;
@@ -15,20 +16,14 @@ const WINDOW_DAYS: usize = 7;
 const PROVIDER_CLAUDE_CODE: &str = "claude_code";
 const PROVIDER_CODEX: &str = "codex";
 const PROVIDER_OMP: &str = "omp";
-const PROVIDER_GEMINI: &str = "gemini";
 
 pub struct ActivityMapService;
 
 impl ActivityMapService {
     /// Scan all external agent CLIs for project history, merge results, and
-    /// cross-reference against Sworm's known projects.
-    ///
-    /// `sworm_projects` is a list of `(path, project_id)` pairs.
-    pub fn scan(sworm_projects: &[(String, String)]) -> Vec<DiscoveredProject> {
-        let sworm_map: HashMap<&str, &str> = sworm_projects
-            .iter()
-            .map(|(path, id)| (path.as_str(), id.as_str()))
-            .collect();
+    /// cross-reference against Sworm's recent folders.
+    pub fn scan(recent_folders: &[String]) -> Vec<DiscoveredProject> {
+        let recent_set: HashSet<&str> = recent_folders.iter().map(String::as_str).collect();
 
         let (day_starts, _) = day_boundaries();
 
@@ -36,7 +31,7 @@ impl ActivityMapService {
         let mut by_path: HashMap<String, Vec<DiscoveredProviderActivity>> = HashMap::new();
 
         let scanners: Vec<fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>> =
-            vec![scan_claude_code, scan_codex, scan_omp, scan_gemini];
+            vec![scan_claude_code, scan_codex, scan_omp];
         for scanner in scanners {
             for (path, activity) in scanner(&day_starts) {
                 by_path.entry(path).or_default().push(activity);
@@ -54,24 +49,17 @@ impl ActivityMapService {
                     .unwrap_or("")
                     .to_string();
 
-                let name = Path::new(&path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.clone());
+                let name = folder_name(Path::new(&path));
 
                 let path_exists = Path::new(&path).is_dir();
 
-                let (is_sworm, sworm_id) = match sworm_map.get(path.as_str()) {
-                    Some(id) => (true, Some(id.to_string())),
-                    None => (false, None),
-                };
+                let is_recent = recent_set.contains(path.as_str());
 
                 DiscoveredProject {
                     path,
                     name,
                     path_exists,
-                    is_sworm_project: is_sworm,
-                    sworm_project_id: sworm_id,
+                    is_recent,
                     last_active,
                     providers,
                 }
@@ -119,10 +107,6 @@ fn ts_to_iso(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_default()
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 // -- Per-provider scanners --
@@ -445,67 +429,6 @@ fn read_omp_session_cwd(path: &Path) -> Option<String> {
     }
     None
 }
-fn scan_gemini(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
-    let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let gemini_dir = home_dir()?.join(".gemini");
-        let projects_json = gemini_dir.join("projects.json");
-        if !projects_json.exists() {
-            return None;
-        }
-
-        let content = fs::read_to_string(&projects_json).ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-        let projects = parsed.get("projects")?.as_object()?;
-
-        let mut results = Vec::new();
-
-        for (abs_path, short_name) in projects {
-            let short = short_name.as_str().unwrap_or("");
-
-            // Check both tmp/<name>/chats/ and history/<name>/
-            let mut max_ts: i64 = 0;
-            let mut daily = [0u32; WINDOW_DAYS];
-
-            let chats_dir = gemini_dir.join("tmp").join(short).join("chats");
-            if chats_dir.is_dir() {
-                if let Ok(files) = fs::read_dir(&chats_dir) {
-                    for file in files.flatten() {
-                        if let Ok(meta) = file.metadata() {
-                            if let Ok(mtime) = meta.modified() {
-                                let ts = mtime
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64;
-                                if ts > max_ts {
-                                    max_ts = ts;
-                                }
-                                if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                                    daily[idx] += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if max_ts > 0 {
-                results.push((
-                    abs_path.clone(),
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_GEMINI.into(),
-                        last_active: ts_to_iso(max_ts),
-                        daily_counts: daily,
-                    },
-                ));
-            }
-        }
-
-        Some(results)
-    };
-
-    inner().unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

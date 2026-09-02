@@ -16,22 +16,16 @@
   import { GitBranchPlusIcon, GitGraphIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
   import * as branches from '$lib/features/git/branches.svelte'
-  import {
-    getGitSidebarTab,
-    setGitSidebarTab,
-    type GitSidebarTab
-  } from '$lib/features/app-shell/sidebar/state.svelte'
+  import { getGitSidebarTab, setGitSidebarTab, type GitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
 
   let {
-    projectPath,
-    projectId,
+    folderPath,
     onFileClick,
     onStashFileClick,
     onPersistTab,
     onMutate
   }: {
-    projectPath: string
-    projectId: string
+    folderPath: string
     onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => TabId | Promise<TabId> | void
     onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
@@ -43,7 +37,7 @@
   let renders = $derived(rows.map(computeRowRender))
   let currentPath = ''
   let stashCount = $state(0)
-  let branchEntry = $derived(branches.byProject.get(projectId))
+  let branchEntry = $derived(branches.byFolder.get(folderPath))
 
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
@@ -56,7 +50,7 @@
   let detailCache = new SvelteMap<string, CommitDetail>()
 
   $effect(() => {
-    const path = projectPath
+    const path = folderPath
     if (path === currentPath) return
     currentPath = path
     expandedHash = null
@@ -90,7 +84,7 @@
   async function fetchDetail(hash: string): Promise<CommitDetail | null> {
     const cached = detailCache.get(hash)
     if (cached) return cached
-    const detail = await backend.git.getCommitDetail(projectPath, hash)
+    const detail = await backend.git.getCommitDetail(folderPath, hash)
     if (detail) detailCache.set(hash, detail)
     return detail
   }
@@ -149,7 +143,7 @@
   })
 
   function handleStashMutate() {
-    void loadStashCount(projectPath)
+    void loadStashCount(folderPath)
     onMutate?.()
   }
 
@@ -250,13 +244,13 @@
     {/if}
   {:else if activeTab === 'stashes'}
     <GitStashList
-      {projectPath}
+      {folderPath}
       {branchColorMap}
       onMutate={handleStashMutate}
       onFileClick={onStashFileClick}
       {onPersistTab}
     />
   {:else}
-    <GitBranches {projectPath} {projectId} {branchColorMap} />
+    <GitBranches {folderPath} {branchColorMap} />
   {/if}
 </div>

@@ -23,8 +23,7 @@
     scrollNonce = 0,
     label = '',
     idPrefix = 'diff',
-    projectId = '',
-    projectPath = '',
+    folderPath,
     workingStaged = null,
     commitHash = null,
     stashIndex = null,
@@ -36,8 +35,7 @@
     scrollNonce?: number
     label?: string
     idPrefix?: string
-    projectId?: string
-    projectPath?: string
+    folderPath?: string
     workingStaged?: boolean | null
     commitHash?: string | null
     stashIndex?: number | null
@@ -265,8 +263,7 @@
         {storeReady}
         {store}
         {idPrefix}
-        {projectId}
-        {projectPath}
+        {folderPath}
         {workingStaged}
         {commitHash}
         {stashIndex}

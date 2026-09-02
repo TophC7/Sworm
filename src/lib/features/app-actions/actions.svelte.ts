@@ -4,28 +4,25 @@
 // these functions so confirmation and side effects stay on one path.
 
 import { backend } from '$lib/api/backend'
-import { showProjectPicker } from '$lib/features/app-shell/project-picker/state.svelte'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
-import { addProject, getActiveProject } from '$lib/features/projects/state.svelte'
+import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
-import { createAndOpenSession, hasRunningSessions } from '$lib/features/sessions/state/sessions.svelte'
+import { startSession } from '$lib/features/sessions/service.svelte'
 import { setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
 import { getLastTaskId, rerunLastTask } from '$lib/features/tasks/service.svelte'
 import { openCommandPaletteWithSearch } from '$lib/features/command-palette/state.svelte'
-import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/service.svelte'
 import {
   createUntitledTextSurface,
   getDirtyTextSurfaceCount,
   hasAnyDirtyTextSurfaces,
   openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
+import { flushWorkbench } from '$lib/features/workbench/persistence'
 import {
-  closeProject,
-  flushPersistencePending,
-  getActiveProjectId,
-  openProject,
+  getActiveFolderPath,
+  hasRunningSessionInFolder,
+  openFolder,
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
@@ -45,27 +42,26 @@ export async function reloadView(): Promise<void> {
     if (!proceed) return
   }
   try {
-    await flushPersistencePending()
+    await flushWorkbench()
   } catch (error) {
     console.warn('Reload flush failed:', error)
   }
   window.location.reload()
 }
 
-export async function newEmptyFile(): Promise<void> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
-  await createUntitledTextSurface(projectId)
+export function newEmptyFile(): void {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return
+  createUntitledTextSurface(folderPath)
 }
 
-export async function openProjectDirectory(): Promise<void> {
+/** Native directory picker → open (or focus) that folder. */
+export async function openFolderPicker(): Promise<void> {
   try {
-    const path = await backend.projects.selectDirectory()
-    if (!path) return
-    const project = await addProject(path)
-    openProject(project.id)
+    const path = await backend.folders.selectDirectory()
+    if (path) await openFolder(path)
   } catch (error) {
-    notify.error('Failed to add project', getErrorMessage(error))
+    notify.error('Open folder failed', getErrorMessage(error))
   }
 }
 
@@ -81,87 +77,63 @@ export async function openGlobalSettingsFile(): Promise<void> {
   }
 }
 
-export async function openProjectSettingsFile(): Promise<void> {
-  const project = getActiveProject()
-  if (!project) {
-    notify.error('No active project', 'Open a project before opening project settings.')
+export async function openFolderSettingsFile(): Promise<void> {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) {
+    notify.error('No active folder', 'Open a folder before opening folder settings.')
     return
   }
 
   try {
-    await backend.settings.openProjectFile(project.path)
-    await openTextFile(project.id, '.sworm/settings.jsonc', { temporary: false })
+    await backend.settings.openProjectFile(folderPath)
+    await openTextFile(folderPath, '.sworm/settings.jsonc', { temporary: false })
   } catch (error) {
-    notify.error('Open Project Settings failed', getErrorMessage(error))
+    notify.error('Open Folder Settings failed', getErrorMessage(error))
   }
 }
 
-export function closeActiveProject(): void {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
-  void closeProject(projectId)
-}
-
-export function revealActiveProjectInFileManager(): void {
-  const project = getActiveProject()
-  if (!project) return
-  void revealItemInDir(project.path).catch((error) => {
+export function revealActiveFolderInFileManager(): void {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return
+  void revealItemInDir(folderPath).catch((error) => {
     notify.error('Reveal in file manager failed', getErrorMessage(error))
   })
 }
 
-export function openActiveProjectInExternalTerminal(): void {
-  const project = getActiveProject()
-  if (!project) return
-  void backend.projects.openInTerminal(project.path).catch((error) => {
+export function openActiveFolderInExternalTerminal(): void {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return
+  void backend.folders.openInTerminal(folderPath).catch((error) => {
     notify.error('Open in terminal failed', getErrorMessage(error))
   })
 }
 
-export async function createSessionWithSharedWorkspaceWarning(providerId: string, label: string): Promise<boolean> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return false
-  const connected = getConnectedProviders()
-  if (!connected.some((p) => p.id === providerId)) {
+export async function createSessionWithSharedWorkspaceWarning(providerId: string, label: string): Promise<void> {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return
+  if (!getConnectedProviders().some((p) => p.id === providerId)) {
     notify.error(`${label} unavailable`, `Connect the ${label} provider in Settings first.`)
-    return false
+    return
   }
 
-  if (hasRunningSessions(projectId)) {
+  if (hasRunningSessionInFolder(folderPath)) {
     const proceed = await confirmAsync({
       title: 'Shared Workspace Warning',
       message:
-        'Another session is already running in this project.\n\n' +
-        'Sessions in the same project share the same working tree and branch.\n' +
+        'Another session is already running in this folder.\n\n' +
+        'Sessions in the same folder share the same working tree and branch.\n' +
         'Changes made by one session may conflict with another.',
       confirmLabel: 'Start Anyway',
       cancelLabel: 'Cancel'
     })
-    if (!proceed) return false
+    if (!proceed) return
   }
 
-  const created = await runNotifiedTask(() => createAndOpenSession(projectId, providerId, `${label} session`), {
-    loading: { title: `Starting ${label} session` },
-    error: { title: `Failed to start ${label} session` }
-  })
-  return !!created
+  startSession(folderPath, providerId, `${label} session`)
 }
 
 export async function newTerminalSession(): Promise<void> {
   await createSessionWithSharedWorkspaceWarning('terminal', 'Terminal')
-}
-
-export async function openFreshSession(): Promise<void> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
-  if (!getConnectedProviders().some((provider) => provider.id === 'fresh')) {
-    notify.error('Fresh unavailable', 'Connect the Fresh provider in Settings first.')
-    return
-  }
-  await runNotifiedTask(() => ensureFreshSession(projectId), {
-    loading: { title: 'Opening Fresh' },
-    error: { title: 'Failed to open Fresh' }
-  })
 }
 
 export function showTasks(): void {
@@ -170,41 +142,30 @@ export function showTasks(): void {
 
 /**
  * Opens the command palette in file-search mode. Bound to Ctrl+P,
- * mirroring VSCode's Quick Open. Trailing space matches the `> ` /
- * `! ` convention so the prefix reads as a discrete mode token rather
- * than a runtogether path query.
+ * matching VS Code's Quick Open.
  */
 export function showFiles(): void {
   openCommandPaletteWithSearch('/ ')
 }
 
-export async function rerunLastProjectTask(): Promise<void> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
-  const lastId = getLastTaskId(projectId)
-  if (!lastId) return
-  const tabId = await rerunLastTask(projectId)
+export async function rerunLastFolderTask(): Promise<void> {
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return
+  if (!getLastTaskId(folderPath)) return
+  const tabId = await rerunLastTask(folderPath)
   if (tabId === null) {
     notify.error('Cannot re-run task', 'The last task is no longer defined in .sworm/tasks.json')
   }
 }
 
 export async function closeActiveTab(): Promise<void> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
   try {
-    await closeFocusedTab(projectId)
+    await closeFocusedTab()
   } catch (error) {
     notify.error('Close tab failed', getErrorMessage(error))
   }
 }
 
-export async function reopenTab(): Promise<void> {
-  const projectId = getActiveProjectId()
-  if (!projectId) return
-  await reopenLastClosedTab(projectId)
-}
-
-export function openProjectPicker(): void {
-  showProjectPicker()
+export function reopenTab(): void {
+  reopenLastClosedTab()
 }

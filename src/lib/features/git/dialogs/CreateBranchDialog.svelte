@@ -30,13 +30,11 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     defaultBase
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     defaultBase: string
   } = $props()
 
@@ -50,17 +48,17 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.create(projectPath, name, base, { checkout: alsoCheckout })
+      await backend.git.branch.create(folderPath, name, base, { checkout: alsoCheckout })
       if (alsoCheckout) {
-        branches.markRecent(projectId, name)
-        await refreshGit(projectId, projectPath)
+        branches.markRecent(folderPath, name)
+        await refreshGit(folderPath)
       }
-      await branches.refresh(projectId, projectPath)
+      await branches.refresh(folderPath)
     },
     onDone: () => (open = false)
   })
 
-  let entry = $derived(branches.byProject.get(projectId))
+  let entry = $derived(branches.byFolder.get(folderPath))
   let baseOptions = $derived.by(() => {
     if (!entry) return [] as string[]
     const out = new Set<string>()
@@ -69,9 +67,7 @@
   })
 
   let nameError = $derived(name.length === 0 ? null : validateBranchName(name))
-  let canSubmit = $derived(
-    name.length > 0 && !nameError && base.length > 0 && !submitState.busy
-  )
+  let canSubmit = $derived(name.length > 0 && !nameError && base.length > 0 && !submitState.busy)
 </script>
 
 <DialogRoot bind:open>
@@ -85,13 +81,7 @@
       <div class="mt-2 space-y-3">
         <label class="block space-y-1">
           <span class="text-xs font-medium text-muted">Name</span>
-          <Input
-            bind:value={name}
-            placeholder="feature/my-branch"
-            class="text-sm"
-            spellcheck={false}
-            autofocus
-          />
+          <Input bind:value={name} placeholder="feature/my-branch" class="text-sm" spellcheck={false} autofocus />
           <DialogError message={nameError} />
         </label>
 

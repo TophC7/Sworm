@@ -2,15 +2,14 @@ import { join } from '@tauri-apps/api/path'
 import { backend } from '$lib/api/backend'
 import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
 import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
-import { computeZone } from '$lib/features/dnd/overlay'
 import { dragObserver, frameAt } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
+import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
 interface TerminalDropObserverArgs {
   sessionId: string
-  projectId: string
-  projectPath: string
+  folderPath: string
   canAcceptDrop?: () => boolean
   onInsertText: (text: string) => void
 }
@@ -25,24 +24,26 @@ function clearHover(sessionId: string): void {
   hoverStore.clear(sessionId)
 }
 
-function canAccept(payload: DragPayload | null, projectId: string): boolean {
+function canAccept(payload: DragPayload | null): boolean {
   if (!payload) return false
   return payload.items.some((item) => {
-    if (item.kind === 'file') return item.projectId === projectId && !item.isDir
+    if (item.kind === 'file') return !item.isDir
     if (item.kind === 'os-files') return item.paths.length > 0
     return false
   })
 }
 
-async function collectPathsFromPayload(
-  payload: DragPayload,
-  projectPath: string,
-  projectId: string
-): Promise<string[]> {
+/**
+ * Absolute paths for the payload, or `null` when a file item belongs
+ * to another folder — its path is relative to a different workspace
+ * root, so inserting it into this shell would be wrong.
+ */
+async function collectPathsFromPayload(payload: DragPayload, folderPath: string): Promise<string[] | null> {
   const paths: string[] = []
   for (const item of payload.items) {
-    if (item.kind === 'file' && item.projectId === projectId && !item.isDir) {
-      paths.push(await join(projectPath, item.path))
+    if (item.kind === 'file' && !item.isDir) {
+      if (item.folderPath !== folderPath) return null
+      paths.push(await join(folderPath, item.path))
     } else if (item.kind === 'os-files') {
       paths.push(...item.paths)
     }
@@ -68,22 +69,31 @@ async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
   return tempPaths
 }
 
-function uniquePaths(paths: string[]): string[] {
-  return Array.from(new Set(paths))
-}
-
-function emitPaths(paths: string[], onInsertText: (text: string) => void): void {
-  if (paths.length === 0) return
-  const quoted = paths.map((path) => preparePathForShell(path)).join(' ')
-  onInsertText(`${quoted} `)
+/** Shared drop handler for both the DOM observer and the DropRegistry path. */
+async function insertFromPayload(args: TerminalDropObserverArgs, payload: DragPayload, event?: DragEvent) {
+  try {
+    const payloadPaths = await collectPathsFromPayload(payload, args.folderPath)
+    if (payloadPaths === null) {
+      notify.warning('Different folder')
+      return
+    }
+    const insertPaths = payloadPaths.length > 0 || !event ? payloadPaths : await collectImagePathsFromEvent(event)
+    const unique = Array.from(new Set(insertPaths))
+    if (unique.length === 0) return
+    args.onInsertText(`${unique.map((path) => preparePathForShell(path)).join(' ')} `)
+  } catch (error) {
+    notify.error('Terminal drop failed', getErrorMessage(error))
+  }
 }
 
 function isCenterDropFrame(frame: { localX: number; localY: number; width: number; height: number }): boolean {
+  const edgeX = frame.width * 0.15
+  const edgeY = frame.height * 0.15
   return (
-    computeZone(frame.localX, frame.localY, frame.width, frame.height, {
-      allowSplit: true,
-      edgeMarginRatio: 0.15
-    }) === 'merge'
+    frame.localX >= edgeX &&
+    frame.localX <= frame.width - edgeX &&
+    frame.localY >= edgeY &&
+    frame.localY <= frame.height - edgeY
   )
 }
 
@@ -96,7 +106,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
   const observer = dragObserver({
     accept: (payload, types) => {
       if (!dropEnabled(args)) return false
-      if (payload) return canAccept(payload, args.projectId)
+      if (payload) return canAccept(payload)
       return types.includes(DND_MIME.FILES)
     },
     onOver: (_event, frame) => {
@@ -112,13 +122,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     onDrop: async (event, payload, frame) => {
       clearHover(args.sessionId)
       if (!dropEnabled(args) || (frame && !isCenterDropFrame(frame))) return
-      try {
-        const payloadPaths = await collectPathsFromPayload(payload, args.projectPath, args.projectId)
-        const insertPaths = payloadPaths.length > 0 ? payloadPaths : await collectImagePathsFromEvent(event)
-        emitPaths(uniquePaths(insertPaths), args.onInsertText)
-      } catch (error) {
-        notify.error('Terminal drop failed', error instanceof Error ? error.message : String(error))
-      }
+      await insertFromPayload(args, payload, event)
     }
   })
 
@@ -127,7 +131,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     const disposeRegistry = DropRegistry.register({
       id: `terminal:${args.sessionId}`,
       element,
-      accept: (payload) => dropEnabled(args) && canAccept(payload, args.projectId),
+      accept: (payload) => dropEnabled(args) && canAccept(payload),
       hitTest: (_payload, clientX, clientY) => isCenterDropPoint(element, clientX, clientY),
       hover: () => {
         setHover(args.sessionId)
@@ -138,12 +142,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
       dispatch: async (payload) => {
         clearHover(args.sessionId)
         if (!dropEnabled(args)) return
-        try {
-          const payloadPaths = await collectPathsFromPayload(payload, args.projectPath, args.projectId)
-          emitPaths(uniquePaths(payloadPaths), args.onInsertText)
-        } catch (error) {
-          notify.error('Terminal drop failed', error instanceof Error ? error.message : String(error))
-        }
+        await insertFromPayload(args, payload)
       }
     })
 

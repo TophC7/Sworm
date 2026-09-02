@@ -34,10 +34,10 @@ impl NixEnvStatus {
     }
 }
 
-/// Persisted Nix environment record for a project.
+/// Persisted Nix environment record for a folder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NixEnvRecord {
-    pub project_id: String,
+    pub folder_path: String,
     pub nix_file: String,
     pub status: NixEnvStatus,
     #[serde(skip_serializing)]
@@ -48,11 +48,10 @@ pub struct NixEnvRecord {
     pub updated_at: String,
 }
 
-/// Result of detecting Nix files for a project.
+/// Result of detecting Nix files for a folder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NixDetection {
-    pub project_id: String,
-    pub project_path: String,
+    pub folder_path: String,
     pub detected_files: Vec<String>,
     pub selected: Option<NixEnvRecord>,
 }

@@ -9,13 +9,11 @@
 
   let {
     commitHash,
-    projectId,
-    projectPath,
+    folderPath,
     initialFile = null
   }: {
     commitHash: string
-    projectId: string
-    projectPath: string
+    folderPath: string
     initialFile?: string | null
   } = $props()
 
@@ -27,7 +25,7 @@
 
   $effect(() => {
     const hash = commitHash
-    const path = projectPath
+    const path = folderPath
     commitLoad.run(hash, async (isCurrent) => {
       detail = null
       files = []
@@ -105,6 +103,6 @@
       </div>
     </div>
 
-    <DiffStack {files} {loading} {initialFile} idPrefix="commit-file" {projectId} {projectPath} {commitHash} />
+    <DiffStack {files} {loading} {initialFile} idPrefix="commit-file" {folderPath} {commitHash} />
   </div>
 {/if}

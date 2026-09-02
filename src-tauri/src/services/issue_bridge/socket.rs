@@ -11,9 +11,11 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 pub(super) const SOCKET_PATH_LIMIT: usize = 100;
 
-pub(super) fn socket_path_for(project_id: &str, project_path: &Path) -> Result<PathBuf, String> {
-    let hash = short_hash(project_path.to_string_lossy().as_ref());
-    let file = format!("{}-{}.sock", safe_project_id(project_id), hash);
+pub(super) fn socket_path_for(project_path: &Path) -> Result<PathBuf, String> {
+    let file = format!(
+        "{}.sock",
+        short_hash(project_path.to_string_lossy().as_ref())
+    );
     let primary = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -56,14 +58,6 @@ fn hex_prefix(bytes: &[u8], chars: usize) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
-}
-
-fn safe_project_id(project_id: &str) -> String {
-    project_id
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .take(8)
-        .collect::<String>()
 }
 
 /// Create `dir` (and any missing ancestors) with mode 0o700 set

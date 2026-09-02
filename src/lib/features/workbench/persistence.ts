@@ -1,31 +1,15 @@
-// Workspace persistence — debounced save/restore for tab+pane layout
-// and app-shell state (which projects are open, which is active).
+// Workbench persistence — debounced save/restore of the global tab list.
 //
-// The plan wants persistence to be part of normal operation, not a
-// reload-only hook, so a crash or force-quit can never drop more
-// than one debounce window of state.
+// Persistence is part of normal operation, not a reload-only hook, so a
+// crash or force-quit can never drop more than one debounce window of
+// state. One blob under the `workbench` app-state key holds every tab.
 
 import { backend } from '$lib/api/backend'
-import type {
-  PaneSlot,
-  PersistedTab,
-  PersistedWorkspaceV2,
-  ProjectWorkspace,
-  QuadLayout,
-  SplitMode,
-  Tab
-} from '$lib/features/workbench/model'
+import type { PersistedTab, PersistedWorkbenchV3, Tab, Workbench } from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const APP_STATE_KEY_OPEN_PROJECTS = 'open_project_ids'
-const APP_STATE_KEY_ACTIVE_PROJECT = 'active_project_id'
-
-const WORKSPACE_DEBOUNCE_MS = 250
-const APP_SHELL_DEBOUNCE_MS = 250
+const APP_STATE_KEY_WORKBENCH = 'workbench'
+const WORKBENCH_DEBOUNCE_MS = 250
 
 // ---------------------------------------------------------------------------
 // Serialization
@@ -36,9 +20,11 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
     case 'session':
       return {
         kind: 'session',
+        folderPath: tab.folderPath,
         sessionId: tab.sessionId,
         title: tab.title,
         providerId: tab.providerId,
+        resumeToken: tab.resumeToken,
         locked: tab.locked
       }
     case 'text':
@@ -48,6 +34,7 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       if (tab.filePath == null) return null
       return {
         kind: 'text',
+        folderPath: tab.folderPath,
         filePath: tab.filePath,
         gitRef: tab.gitRef,
         refLabel: tab.refLabel,
@@ -57,6 +44,7 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
     case 'diff':
       return {
         kind: 'diff',
+        folderPath: tab.folderPath,
         source:
           tab.source.kind === 'working'
             ? {
@@ -87,216 +75,135 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       // Title is a cache; on hydrate we re-fetch detail and refresh it.
       return {
         kind: 'issue',
+        folderPath: tab.folderPath,
         issueId: tab.issueId,
         title: tab.title,
         temporary: tab.temporary,
         locked: tab.locked
       }
     case 'epic':
-      // Title is a cache; refreshed when surface loads detail.
       return {
         kind: 'epic',
+        folderPath: tab.folderPath,
         epicId: tab.epicId,
         title: tab.title,
         temporary: tab.temporary,
         locked: tab.locked
       }
     case 'launcher':
-      // The picker tab is a transient UI surface, not content. On restore
-      // the empty-pane fallback in workbench/Pane.svelte covers the "no active tab"
-      // case by rendering NewSessionView inline.
-      return null
+      // Persisted so a folder whose only tab is the launcher survives a
+      // restart instead of silently vanishing from the tab strip.
+      return { kind: 'launcher', folderPath: tab.folderPath, locked: tab.locked }
     case 'task':
       // Tasks are ephemeral runs. Their PTY is tied to a live runId
       // that dies with the process, so persisting the tab across
       // restarts would resurrect a dead handle.
       return null
     default: {
-      // Exhaustiveness: any new Tab kind forces the compiler to add a
-      // case above. Without this the default path would silently drop
-      // new kinds and callers would never know their tab vanished.
       const _exhaustive: never = tab
       return _exhaustive
     }
   }
 }
 
-export function serializeWorkspace(ws: ProjectWorkspace, focusedPaneSlot: PaneSlot): PersistedWorkspaceV2 {
-  // Tabs are persisted by index — id-based references would be unstable
-  // across restore (we mint fresh tab ids on hydrate), so panes record
-  // the position of each tab inside the `tabs` array.
-  const tabIndexById = new Map<string, number>()
-  const persistedTabs: PersistedTab[] = []
-  for (const tab of ws.tabs) {
+export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV3 {
+  const tabs: PersistedTab[] = []
+  let activeTabIndex = -1
+  for (const tab of wb.tabs) {
     const persisted = tabToPersisted(tab)
     if (!persisted) continue
-    tabIndexById.set(tab.id, persistedTabs.length)
-    persistedTabs.push(persisted)
+    if (tab.id === wb.activeTabId) activeTabIndex = tabs.length
+    tabs.push(persisted)
   }
-
-  const panes = ws.panes.map((pane) => {
-    const tabIndices: number[] = []
-    for (const tabId of pane.tabs) {
-      const idx = tabIndexById.get(tabId)
-      if (idx !== undefined) tabIndices.push(idx)
-    }
-    let activeTabIndex = -1
-    if (pane.activeTabId) {
-      const idx = tabIndexById.get(pane.activeTabId)
-      if (idx !== undefined) activeTabIndex = tabIndices.indexOf(idx)
-    }
-    // If the active tab was one we dropped from persistence (e.g. a home
-    // tab), fall back to the last persisted tab in the pane. Otherwise
-    // the restored pane would mount with no active tab even though its
-    // tab list is non-empty, and the user would lose their active-tab
-    // selection across reloads whenever a home tab happened to be active.
-    if (activeTabIndex < 0 && tabIndices.length > 0) {
-      activeTabIndex = tabIndices.length - 1
-    }
-    return {
-      slot: pane.slot,
-      activeTabIndex,
-      tabIndices
-    }
-  })
-
-  return {
-    version: 2,
-    focusedPaneSlot,
-    splitMode: ws.splitMode,
-    quadLayout: ws.quadLayout,
-    panes,
-    tabs: persistedTabs
-  }
+  // If the active tab was dropped from persistence (untitled buffer, task
+  // run), fall back to the last persisted tab so restore lands on
+  // something instead of an empty surface.
+  if (activeTabIndex < 0 && tabs.length > 0) activeTabIndex = tabs.length - 1
+  return { version: 3, activeTabIndex, tabs }
 }
 
-export interface DeserializedWorkspace {
-  tabs: Tab[]
-  panes: ProjectWorkspace['panes']
-  splitMode: SplitMode
-  quadLayout: QuadLayout
-  focusedPaneSlot: PaneSlot
-}
-
-export function deserializeWorkspace(data: PersistedWorkspaceV2, generateTabId: () => string): DeserializedWorkspace {
-  const newIdByOldIndex = new Map<number, string>()
-  const tabs: Tab[] = []
-
-  data.tabs.forEach((persisted, oldIndex) => {
-    const id = generateTabId()
-    let tab: Tab | null = null
-
-    switch (persisted.kind) {
-      case 'session':
-        tab = {
-          kind: 'session',
-          id,
-          sessionId: persisted.sessionId,
-          title: persisted.title,
-          providerId: persisted.providerId,
-          locked: persisted.locked
-        }
-        break
-      case 'text': {
-        const fileName = basename(persisted.filePath)
-        tab = {
-          kind: 'text',
-          id,
-          filePath: persisted.filePath,
-          fileName,
-          temporary: persisted.temporary,
-          locked: persisted.locked,
-          gitRef: persisted.gitRef,
-          refLabel: persisted.refLabel
-        }
-        break
+export function persistedToTab(persisted: PersistedTab, id: string): Tab {
+  switch (persisted.kind) {
+    case 'session':
+      return {
+        kind: 'session',
+        id,
+        folderPath: persisted.folderPath,
+        sessionId: persisted.sessionId,
+        title: persisted.title,
+        providerId: persisted.providerId,
+        resumeToken: persisted.resumeToken,
+        // Restored processes start lazily on first activation.
+        status: 'dormant',
+        locked: persisted.locked
       }
-      case 'diff':
-        tab = {
-          kind: 'diff',
-          id,
-          source:
-            persisted.source.kind === 'working'
+    case 'text':
+      return {
+        kind: 'text',
+        id,
+        folderPath: persisted.folderPath,
+        filePath: persisted.filePath,
+        fileName: basename(persisted.filePath),
+        temporary: persisted.temporary,
+        locked: persisted.locked,
+        gitRef: persisted.gitRef,
+        refLabel: persisted.refLabel
+      }
+    case 'diff':
+      return {
+        kind: 'diff',
+        id,
+        folderPath: persisted.folderPath,
+        source:
+          persisted.source.kind === 'working'
+            ? {
+                kind: 'working',
+                staged: persisted.source.staged,
+                scopePath: persisted.source.scopePath ?? null,
+                revealNonce: 0
+              }
+            : persisted.source.kind === 'commit'
               ? {
-                  kind: 'working',
-                  staged: persisted.source.staged,
-                  scopePath: persisted.source.scopePath ?? null,
-                  revealNonce: 0
+                  kind: 'commit',
+                  commitHash: persisted.source.commitHash,
+                  shortHash: persisted.source.shortHash,
+                  message: persisted.source.message
                 }
-              : persisted.source.kind === 'commit'
-                ? {
-                    kind: 'commit',
-                    commitHash: persisted.source.commitHash,
-                    shortHash: persisted.source.shortHash,
-                    message: persisted.source.message
-                  }
-                : {
-                    kind: 'stash',
-                    stashIndex: persisted.source.stashIndex,
-                    message: persisted.source.message
-                  },
-          initialFile: persisted.initialFile,
-          temporary: persisted.temporary,
-          locked: persisted.locked
-        }
-        break
-      case 'tool':
-        // Legacy blobs may still contain this; we stopped persisting
-        // the dev-only tab, so drop it on restore too.
-        tab = null
-        break
-      case 'issue':
-        tab = {
-          kind: 'issue',
-          id,
-          issueId: persisted.issueId,
-          title: persisted.title,
-          temporary: persisted.temporary,
-          locked: persisted.locked
-        }
-        break
-      case 'epic':
-        tab = {
-          kind: 'epic',
-          id,
-          epicId: persisted.epicId,
-          title: persisted.title,
-          temporary: persisted.temporary,
-          locked: persisted.locked
-        }
-        break
-      default: {
-        const _exhaustive: never = persisted
-        tab = _exhaustive
+              : {
+                  kind: 'stash',
+                  stashIndex: persisted.source.stashIndex,
+                  message: persisted.source.message
+                },
+        initialFile: persisted.initialFile,
+        temporary: persisted.temporary,
+        locked: persisted.locked
       }
+    case 'launcher':
+      return { kind: 'launcher', id, folderPath: persisted.folderPath, locked: persisted.locked, temporary: false }
+    case 'issue':
+      return {
+        kind: 'issue',
+        id,
+        folderPath: persisted.folderPath,
+        issueId: persisted.issueId,
+        title: persisted.title,
+        temporary: persisted.temporary,
+        locked: persisted.locked
+      }
+    case 'epic':
+      return {
+        kind: 'epic',
+        id,
+        folderPath: persisted.folderPath,
+        epicId: persisted.epicId,
+        title: persisted.title,
+        temporary: persisted.temporary,
+        locked: persisted.locked
+      }
+    default: {
+      const _exhaustive: never = persisted
+      return _exhaustive
     }
-
-    if (tab) {
-      tabs.push(tab)
-      newIdByOldIndex.set(oldIndex, id)
-    }
-  })
-
-  const panes = data.panes.map((pane) => {
-    const tabIds: string[] = []
-    for (const oldIdx of pane.tabIndices) {
-      const id = newIdByOldIndex.get(oldIdx)
-      if (id) tabIds.push(id)
-    }
-    const activeTabId = pane.activeTabIndex >= 0 ? (tabIds[pane.activeTabIndex] ?? null) : null
-    return {
-      slot: pane.slot,
-      tabs: tabIds,
-      activeTabId
-    }
-  })
-
-  return {
-    tabs,
-    panes: panes.length > 0 ? panes : [{ slot: 'sole' as PaneSlot, tabs: [], activeTabId: null }],
-    splitMode: data.splitMode,
-    quadLayout: data.quadLayout,
-    focusedPaneSlot: data.focusedPaneSlot
   }
 }
 
@@ -304,165 +211,59 @@ export function deserializeWorkspace(data: PersistedWorkspaceV2, generateTabId: 
 // Debounced persistence
 // ---------------------------------------------------------------------------
 
-/**
- * Per-key debounced writer. Producers return the payload to persist,
- * or `null` to skip the write (e.g. the project was closed mid-debounce
- * and there's nothing coherent to persist for that id anymore).
- */
-class DebouncedWriter<K, T> {
-  private readonly timers = new Map<K, ReturnType<typeof setTimeout>>()
-  private readonly pending = new Map<K, () => T | null>()
+let timer: ReturnType<typeof setTimeout> | undefined
+let pending: (() => PersistedWorkbenchV3) | null = null
+// Session/task status ticks commit the workbench without changing the
+// persisted shape; skip the SQLite write when the blob is byte-identical.
+let lastWrittenJson: string | null = null
 
-  constructor(
-    private readonly delayMs: number,
-    private readonly write: (key: K, value: T) => Promise<void>,
-    private readonly onError: (key: K, error: unknown) => void
-  ) {}
-
-  schedule(key: K, produce: () => T | null): void {
-    this.pending.set(key, produce)
-    const existing = this.timers.get(key)
-    if (existing) clearTimeout(existing)
-    this.timers.set(
-      key,
-      setTimeout(() => {
-        void this.flush(key)
-      }, this.delayMs)
-    )
-  }
-
-  async flush(key: K): Promise<void> {
-    const produce = this.pending.get(key)
-    this.pending.delete(key)
-    const timer = this.timers.get(key)
-    if (timer) {
-      clearTimeout(timer)
-      this.timers.delete(key)
-    }
-    if (!produce) return
-    try {
-      const value = produce()
-      if (value === null) return
-      await this.write(key, value)
-    } catch (error) {
-      this.onError(key, error)
-    }
-  }
-
-  async flushAll(): Promise<void> {
-    await Promise.all(Array.from(this.pending.keys()).map((key) => this.flush(key)))
-  }
+export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV3): void {
+  pending = produce
+  clearTimeout(timer)
+  timer = setTimeout(() => {
+    void flushWorkbench()
+  }, WORKBENCH_DEBOUNCE_MS)
 }
 
-const workspaceWriter = new DebouncedWriter<string, PersistedWorkspaceV2>(
-  WORKSPACE_DEBOUNCE_MS,
-  async (projectId, payload) => {
-    await backend.workspace.putState(projectId, JSON.stringify(payload))
-  },
-  (id, err) => console.warn(`Workspace persist failed for ${id}:`, err)
-)
-
-interface AppShellState {
-  openProjectIds: string[]
-  activeProjectId: string | null
-}
-
-// App-shell is a single global key, so the keyed DebouncedWriter would
-// need a sentinel. Plain closure state is simpler and lighter.
-let appShellTimer: ReturnType<typeof setTimeout> | null = null
-let appShellPending: AppShellState | null = null
-
-async function writeAppShell(state: AppShellState): Promise<void> {
-  await Promise.all([
-    backend.workspace.appStatePut(APP_STATE_KEY_OPEN_PROJECTS, JSON.stringify(state.openProjectIds)),
-    backend.workspace.appStatePut(APP_STATE_KEY_ACTIVE_PROJECT, JSON.stringify(state.activeProjectId))
-  ])
-}
-
-export function schedulePersistWorkspace(projectId: string, produce: () => PersistedWorkspaceV2 | null): void {
-  workspaceWriter.schedule(projectId, produce)
-}
-
-export function flushWorkspace(projectId: string): Promise<void> {
-  return workspaceWriter.flush(projectId)
-}
-
-export function schedulePersistAppShell(state: AppShellState): void {
-  appShellPending = {
-    openProjectIds: [...state.openProjectIds],
-    activeProjectId: state.activeProjectId
-  }
-  if (appShellTimer) clearTimeout(appShellTimer)
-  appShellTimer = setTimeout(() => {
-    void flushAppShell()
-  }, APP_SHELL_DEBOUNCE_MS)
-}
-
-export async function flushAppShell(): Promise<void> {
-  const state = appShellPending
-  appShellPending = null
-  if (appShellTimer) {
-    clearTimeout(appShellTimer)
-    appShellTimer = null
-  }
-  if (!state) return
+/** Force an immediate write of any pending mutation (managed reload, app exit). */
+export async function flushWorkbench(): Promise<void> {
+  const produce = pending
+  pending = null
+  clearTimeout(timer)
+  timer = undefined
+  if (!produce) return
+  const json = JSON.stringify(produce())
+  if (json === lastWrittenJson) return
   try {
-    await writeAppShell(state)
+    await backend.app.statePut(APP_STATE_KEY_WORKBENCH, json)
+    lastWrittenJson = json
   } catch (error) {
-    console.warn('App-shell persist failed:', error)
+    console.warn('Workbench persist failed:', error)
   }
-}
-
-export async function flushAllWorkspaces(): Promise<void> {
-  await workspaceWriter.flushAll()
-  await flushAppShell()
 }
 
 // ---------------------------------------------------------------------------
 // Restore
 // ---------------------------------------------------------------------------
 
-function isPersistedWorkspaceShape(value: unknown): value is PersistedWorkspaceV2 {
+function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV3 {
   if (!value || typeof value !== 'object') return false
   const obj = value as Record<string, unknown>
-  if (obj.version !== 2) return false
-  if (!Array.isArray(obj.tabs)) return false
-  if (!Array.isArray(obj.panes)) return false
-  return true
+  return obj.version === 3 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
 }
 
-export async function loadPersistedWorkspace(projectId: string): Promise<PersistedWorkspaceV2 | null> {
+export async function loadPersistedWorkbench(): Promise<PersistedWorkbenchV3 | null> {
   try {
-    const raw = await backend.workspace.getState(projectId)
+    const raw = await backend.app.stateGet(APP_STATE_KEY_WORKBENCH)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
-    if (!isPersistedWorkspaceShape(parsed)) {
-      console.warn(`Discarding malformed workspace blob for ${projectId}`)
+    if (!isPersistedWorkbenchShape(parsed)) {
+      console.warn('Discarding malformed workbench blob')
       return null
     }
     return parsed
   } catch (error) {
-    console.warn(`Failed to load workspace blob for ${projectId}:`, error)
+    console.warn('Failed to load workbench blob:', error)
     return null
-  }
-}
-
-export async function loadPersistedAppShell(): Promise<AppShellState> {
-  const fallback: AppShellState = { openProjectIds: [], activeProjectId: null }
-  try {
-    const [rawOpen, rawActive] = await Promise.all([
-      backend.workspace.appStateGet(APP_STATE_KEY_OPEN_PROJECTS),
-      backend.workspace.appStateGet(APP_STATE_KEY_ACTIVE_PROJECT)
-    ])
-    const parsedOpen: unknown = rawOpen ? JSON.parse(rawOpen) : []
-    const parsedActive: unknown = rawActive ? JSON.parse(rawActive) : null
-    return {
-      openProjectIds: Array.isArray(parsedOpen) ? parsedOpen.filter((id): id is string => typeof id === 'string') : [],
-      activeProjectId:
-        typeof parsedActive === 'string' || parsedActive === null ? (parsedActive as string | null) : null
-    }
-  } catch (error) {
-    console.warn('App-shell restore failed:', error)
-    return fallback
   }
 }

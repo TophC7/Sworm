@@ -6,16 +6,23 @@
 
 export type TabId = string
 
-export type PaneSlot = 'sole' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
-export type SplitDirection = 'left' | 'right' | 'up' | 'down'
-
-export interface SessionTab {
-  kind: 'session'
+export interface TabBase {
   id: TabId
+  /** Canonical absolute folder this tab belongs to; drives sidebar/status/commands when active. */
+  folderPath: string
+  locked: boolean
+}
+
+export type SessionStatus = 'dormant' | 'starting' | 'running' | 'exited' | 'failed'
+
+export interface SessionTab extends TabBase {
+  kind: 'session'
   sessionId: string
   title: string
   providerId: string
-  locked: boolean
+  /** Provider-specific resume identity (Codex thread id, Antigravity conversation id); null when unbound. */
+  resumeToken: string | null
+  status: SessionStatus
 }
 
 export interface WorkingDiffSource {
@@ -40,47 +47,38 @@ export interface StashDiffSource {
 
 export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource
 
-export interface DiffTab {
+export interface DiffTab extends TabBase {
   kind: 'diff'
-  id: TabId
   source: DiffSource
   initialFile: string | null
   temporary: boolean
-  locked: boolean
 }
 
-export interface TextTab {
+export interface TextTab extends TabBase {
   kind: 'text'
-  id: TabId
   filePath: string | null
   fileName: string
   temporary: boolean
-  locked: boolean
   gitRef?: string
   refLabel?: string
 }
 
-export interface ToolTab {
+export interface ToolTab extends TabBase {
   kind: 'tool'
-  id: TabId
   tool: 'notification-test'
   label: string
   temporary: boolean
-  locked: boolean
 }
 
-export interface LauncherTab {
+export interface LauncherTab extends TabBase {
   kind: 'launcher'
-  id: TabId
-  locked: boolean
   temporary: false
 }
 
 export type TaskRunStatus = 'starting' | 'running' | 'exited' | 'failed'
 
-export interface TaskTab {
+export interface TaskTab extends TabBase {
   kind: 'task'
-  id: TabId
   /** Frontend-generated UUID used as the PTY key for the live run. */
   runId: string
   /** Stable task id from .sworm/tasks.json; used to re-resolve on restart. */
@@ -95,55 +93,38 @@ export interface TaskTab {
   group: string | null
   status: TaskRunStatus
   exitCode: number | null
-  locked: boolean
 }
 
-export interface IssueTab {
+export interface IssueTab extends TabBase {
   kind: 'issue'
-  id: TabId
   issueId: string
   /** Cached title for tab label; refreshed when surface loads detail. */
   title: string
   temporary: boolean
-  locked: boolean
 }
 
-export interface EpicTab {
+export interface EpicTab extends TabBase {
   kind: 'epic'
-  id: TabId
   epicId: string
   /** Cached title for tab label; refreshed when surface loads detail. */
   title: string
   temporary: boolean
-  locked: boolean
 }
 
 export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab | IssueTab | EpicTab
 
-export interface PaneState {
-  slot: PaneSlot
-  tabs: TabId[]
+export interface Workbench {
+  tabs: Tab[]
   activeTabId: TabId | null
 }
 
-export type SplitMode = 'single' | 'horizontal' | 'vertical' | 'quad'
-export type QuadLayout = 'top' | 'bottom' | 'left' | 'right' | null
-
-export interface ProjectWorkspace {
-  projectId: string
-  tabs: Tab[]
-  panes: PaneState[]
-  splitMode: SplitMode
-  quadLayout: QuadLayout
-  focusedPaneSlot: PaneSlot
-}
-
-export type PersistedTab =
+export type PersistedTab = { folderPath: string } & (
   | {
       kind: 'session'
       sessionId: string
       title: string
       providerId: string
+      resumeToken: string | null
       locked: boolean
     }
   | {
@@ -178,10 +159,7 @@ export type PersistedTab =
       locked: boolean
     }
   | {
-      kind: 'tool'
-      tool: 'notification-test'
-      label: string
-      temporary: boolean
+      kind: 'launcher'
       locked: boolean
     }
   | {
@@ -198,26 +176,21 @@ export type PersistedTab =
       temporary: boolean
       locked: boolean
     }
+)
 
-export interface PersistedWorkspaceV2 {
-  version: 2
-  focusedPaneSlot: PaneSlot
-  splitMode: SplitMode
-  quadLayout: QuadLayout
-  panes: Array<{
-    slot: PaneSlot
-    activeTabIndex: number
-    tabIndices: number[]
-  }>
+export interface PersistedWorkbenchV3 {
+  version: 3
+  activeTabIndex: number
   tabs: PersistedTab[]
-}
-
-export function createPane(slot: PaneSlot): PaneState {
-  return { slot, tabs: [], activeTabId: null }
 }
 
 export function canLockTab(tab: Tab): boolean {
   return (
     tab.kind === 'session' || tab.kind === 'text' || tab.kind === 'task' || tab.kind === 'issue' || tab.kind === 'epic'
   )
+}
+
+/** True while a session/task tab owns a live process (spawning or running). */
+export function isProcessLive(status: SessionStatus | TaskRunStatus): boolean {
+  return status === 'running' || status === 'starting'
 }

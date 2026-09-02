@@ -1,62 +1,50 @@
-// Per-project Nix environment state using Svelte 5 runes.
+// Per-folder Nix environment state using Svelte 5 runes.
 
 import { backend } from '$lib/api/backend'
-import { refreshLspProjectEnvironment } from '$lib/features/editor/lsp/registry'
+import { refreshLspFolderEnvironment } from '$lib/features/editor/lsp/registry'
+import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import type { NixDetection, NixEnvRecord } from '$lib/types/backend'
 
-let nixState = $state<Map<string, NixDetection>>(new Map())
+const detections = createFolderKeyedStore<NixDetection>()
 let evaluating = $state<Set<string>>(new Set())
 
-export function getNixDetection(projectId: string): NixDetection | undefined {
-  return nixState.get(projectId)
+export function getNixDetection(folderPath: string): NixDetection | undefined {
+  return detections.get(folderPath)
 }
 
-export function isNixEvaluating(projectId: string): boolean {
-  return evaluating.has(projectId)
+export function isNixEvaluating(folderPath: string): boolean {
+  return evaluating.has(folderPath)
 }
 
-export async function detectNix(projectId: string): Promise<NixDetection> {
-  const detection = await backend.nix.detect(projectId)
-  nixState.set(projectId, detection)
-  nixState = new Map(nixState)
+export async function detectNix(folderPath: string): Promise<NixDetection> {
+  const detection = await backend.nix.detect(folderPath)
+  detections.set(folderPath, detection)
   return detection
 }
 
-export async function selectNixFile(projectId: string, nixFile: string): Promise<NixEnvRecord> {
-  const record = await backend.nix.select(projectId, nixFile)
-  const current = nixState.get(projectId)
-  if (current) {
-    nixState.set(projectId, { ...current, selected: record })
-    nixState = new Map(nixState)
-  }
-  await refreshLspProjectEnvironment(projectId)
+export async function selectNixFile(folderPath: string, nixFile: string): Promise<NixEnvRecord> {
+  const record = await backend.nix.select(folderPath, nixFile)
+  detections.patch(folderPath, { selected: record })
+  await refreshLspFolderEnvironment(folderPath)
   return record
 }
 
-export async function evaluateNix(projectId: string): Promise<NixEnvRecord> {
-  evaluating.add(projectId)
-  evaluating = new Set(evaluating)
+export async function evaluateNix(folderPath: string): Promise<NixEnvRecord> {
+  evaluating = new Set(evaluating).add(folderPath)
   try {
-    const record = await backend.nix.evaluate(projectId)
-    const current = nixState.get(projectId)
-    if (current) {
-      nixState.set(projectId, { ...current, selected: record })
-      nixState = new Map(nixState)
-    }
-    await refreshLspProjectEnvironment(projectId)
+    const record = await backend.nix.evaluate(folderPath)
+    detections.patch(folderPath, { selected: record })
+    await refreshLspFolderEnvironment(folderPath)
     return record
   } finally {
-    evaluating.delete(projectId)
-    evaluating = new Set(evaluating)
+    const next = new Set(evaluating)
+    next.delete(folderPath)
+    evaluating = next
   }
 }
 
-export async function clearNix(projectId: string): Promise<void> {
-  await backend.nix.clear(projectId)
-  const current = nixState.get(projectId)
-  if (current) {
-    nixState.set(projectId, { ...current, selected: null })
-    nixState = new Map(nixState)
-  }
-  await refreshLspProjectEnvironment(projectId)
+export async function clearNix(folderPath: string): Promise<void> {
+  await backend.nix.clear(folderPath)
+  detections.patch(folderPath, { selected: null })
+  await refreshLspFolderEnvironment(folderPath)
 }

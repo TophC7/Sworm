@@ -11,7 +11,7 @@ import { logicalKey } from '$lib/utils/keyboardEvent'
 //
 // Tier 1 fires first via a capture-phase window listener but yields to
 // the shell whenever a terminal has DOM focus, unless the binding is
-// tagged `skipShell` (palette, zoom, reload, project picker). Anything
+// tagged `skipShell` (palette, zoom, reload). Anything
 // Tier 1 doesn't claim continues into the focused surface, where xterm's
 // `attachCustomKeyEventHandler` calls `resolveTerminalKey()`. The
 // returned `KeyAction` tells `TerminalSessionManager` exactly what to
@@ -45,7 +45,7 @@ interface ProviderProfile {
    *              terminfo agents (Claude Code, Codex).
    *   'kitty'  — `\x1b[9;2u` and `\x1b[13;2u`. Required by agents that
    *              negotiate the kitty keyboard protocol and reject the
-   *              legacy bytes (Gemini CLI).
+   *              legacy bytes (Antigravity).
    */
   shiftEncoding: 'legacy' | 'kitty'
 }
@@ -53,8 +53,8 @@ interface ProviderProfile {
 const DEFAULT_PROFILE: ProviderProfile = { shiftEncoding: 'legacy' }
 
 const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
-  gemini: { shiftEncoding: 'kitty' }
-  // claude_code, codex, omp, fresh, terminal: legacy default.
+  antigravity: { shiftEncoding: 'kitty' }
+  // claude_code, codex, omp, terminal: legacy default.
 }
 
 function profileFor(providerId: string | null): ProviderProfile {

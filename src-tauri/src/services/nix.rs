@@ -110,9 +110,9 @@ pub struct NixDiagnostic {
 pub struct NixService;
 
 impl NixService {
-    /// Scan a project directory for known Nix files.
-    pub fn detect(project_path: &str) -> Vec<String> {
-        let root = Path::new(project_path);
+    /// Scan a folder for known Nix files.
+    pub fn detect(folder_path: &str) -> Vec<String> {
+        let root = Path::new(folder_path);
         NIX_FILES
             .iter()
             .filter(|f| root.join(f).exists())
@@ -120,17 +120,17 @@ impl NixService {
             .collect()
     }
 
-    /// Load the Nix env record for a project from the database.
-    pub fn get(conn: &Connection, project_id: &str) -> Result<Option<NixEnvRecord>, String> {
+    /// Load the Nix env record for a folder from the database.
+    pub fn get(conn: &Connection, folder_path: &str) -> Result<Option<NixEnvRecord>, String> {
         conn.query_row(
-            "SELECT project_id, nix_file, status, env_json, error_message, \
+            "SELECT folder_path, nix_file, status, env_json, error_message, \
              evaluated_at, created_at, updated_at \
-             FROM project_nix_envs WHERE project_id = ?1",
-            [project_id],
+             FROM folder_nix_envs WHERE folder_path = ?1",
+            [folder_path],
             |row| {
                 let status_str: String = row.get(2)?;
                 Ok(NixEnvRecord {
-                    project_id: row.get(0)?,
+                    folder_path: row.get(0)?,
                     nix_file: row.get(1)?,
                     status: NixEnvStatus::from_db_str(&status_str),
                     env_json: row.get(3)?,
@@ -145,36 +145,37 @@ impl NixService {
         .map_err(|e| e.to_string())
     }
 
-    /// Select a Nix file for a project. Creates or updates the DB row
+    /// Select a Nix file for a folder. Creates or updates the DB row
     /// with status=pending.
     pub fn select(
         conn: &Connection,
-        project_id: &str,
+        folder_path: &str,
         nix_file: &str,
     ) -> Result<NixEnvRecord, String> {
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO project_nix_envs (project_id, nix_file, status, created_at, updated_at) \
+            "INSERT INTO folder_nix_envs (folder_path, nix_file, status, created_at, updated_at) \
              VALUES (?1, ?2, 'pending', ?3, ?4) \
-             ON CONFLICT(project_id) DO UPDATE SET \
+             ON CONFLICT(folder_path) DO UPDATE SET \
              nix_file = excluded.nix_file, \
              status = 'pending', \
              env_json = NULL, \
              error_message = NULL, \
              evaluated_at = NULL, \
              updated_at = excluded.updated_at",
-            rusqlite::params![project_id, nix_file, now, now],
+            rusqlite::params![folder_path, nix_file, now, now],
         )
         .map_err(|e| e.to_string())?;
 
-        Self::get(conn, project_id)?.ok_or_else(|| "Failed to read back Nix env record".to_string())
+        Self::get(conn, folder_path)?
+            .ok_or_else(|| "Failed to read back Nix env record".to_string())
     }
 
-    /// Remove the Nix env association for a project.
-    pub fn remove(conn: &Connection, project_id: &str) -> Result<(), String> {
+    /// Remove the Nix env association for a folder.
+    pub fn remove(conn: &Connection, folder_path: &str) -> Result<(), String> {
         conn.execute(
-            "DELETE FROM project_nix_envs WHERE project_id = ?1",
-            [project_id],
+            "DELETE FROM folder_nix_envs WHERE folder_path = ?1",
+            [folder_path],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -183,13 +184,13 @@ impl NixService {
     /// Update the DB row to reflect evaluation status.
     pub fn set_status(
         conn: &Connection,
-        project_id: &str,
+        folder_path: &str,
         status: NixEnvStatus,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE project_nix_envs SET status = ?1, updated_at = ?2 WHERE project_id = ?3",
-            rusqlite::params![status.as_str(), now, project_id],
+            "UPDATE folder_nix_envs SET status = ?1, updated_at = ?2 WHERE folder_path = ?3",
+            rusqlite::params![status.as_str(), now, folder_path],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -198,16 +199,16 @@ impl NixService {
     /// Save a successful evaluation result to the database.
     pub fn save_success(
         conn: &Connection,
-        project_id: &str,
+        folder_path: &str,
         env_vars: &HashMap<String, String>,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
         let json = serde_json::to_string(env_vars).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE project_nix_envs SET status = 'ready', env_json = ?1, \
+            "UPDATE folder_nix_envs SET status = 'ready', env_json = ?1, \
              error_message = NULL, evaluated_at = ?2, updated_at = ?3 \
-             WHERE project_id = ?4",
-            rusqlite::params![json, now, now, project_id],
+             WHERE folder_path = ?4",
+            rusqlite::params![json, now, now, folder_path],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -216,7 +217,7 @@ impl NixService {
     /// Save a failed evaluation result to the database.
     pub fn save_error(
         conn: &Connection,
-        project_id: &str,
+        folder_path: &str,
         error: &NixEvalError,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -225,10 +226,10 @@ impl NixService {
             _ => "error",
         };
         conn.execute(
-            "UPDATE project_nix_envs SET status = ?1, env_json = NULL, \
+            "UPDATE folder_nix_envs SET status = ?1, env_json = NULL, \
              error_message = ?2, evaluated_at = ?3, updated_at = ?4 \
-             WHERE project_id = ?5",
-            rusqlite::params![status, error.to_string(), now, now, project_id],
+             WHERE folder_path = ?5",
+            rusqlite::params![status, error.to_string(), now, now, folder_path],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -239,7 +240,7 @@ impl NixService {
     /// This is a blocking operation that can take 30+ seconds. Call from
     /// a blocking thread context.
     pub fn evaluate(
-        project_path: &str,
+        folder_path: &str,
         nix_file: &str,
         timeout_secs: u64,
     ) -> Result<HashMap<String, String>, NixEvalError> {
@@ -252,14 +253,14 @@ impl NixService {
 
         info!(
             "Evaluating Nix env: {} in {} (timeout={}s)",
-            nix_file, project_path, timeout_secs
+            nix_file, folder_path, timeout_secs
         );
 
         let mut cmd = if is_flake {
             let mut c = std::process::Command::new("nix");
             c.args([
                 "develop",
-                project_path,
+                folder_path,
                 "--no-write-lock-file",
                 "--command",
                 "env",
@@ -267,7 +268,7 @@ impl NixService {
             ]);
             c
         } else {
-            let file_path = Path::new(project_path).join(nix_file);
+            let file_path = Path::new(folder_path).join(nix_file);
             let mut c = std::process::Command::new("nix-shell");
             c.args([file_path.to_str().unwrap_or(nix_file), "--run", "env -0"]);
             c
@@ -391,13 +392,13 @@ impl NixService {
         }
     }
 
-    /// Load the cached Nix env vars from the DB for a project.
+    /// Load the cached Nix env vars from the DB for a folder.
     /// Returns None if no Nix env is configured or not yet evaluated.
     pub fn load_env_vars(
         conn: &Connection,
-        project_id: &str,
+        folder_path: &str,
     ) -> Result<Option<HashMap<String, String>>, String> {
-        let record = Self::get(conn, project_id)?;
+        let record = Self::get(conn, folder_path)?;
         match record {
             Some(rec) if rec.status == NixEnvStatus::Ready => {
                 if let Some(ref json) = rec.env_json {

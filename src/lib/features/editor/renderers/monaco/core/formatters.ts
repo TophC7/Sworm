@@ -42,7 +42,7 @@ class FormatterRegistry {
     const context = getLspDocumentContext(model)
     if (!context) return []
 
-    const formatter = await resolveFormatterSelection(group, context.projectPath)
+    const formatter = await resolveFormatterSelection(group, context.folderPath)
     if (formatter === 'disabled') return []
     if (formatter === 'lsp') {
       return formatDocumentWithLsp(model)
@@ -52,12 +52,12 @@ class FormatterRegistry {
       if (formatter === 'biome') {
         const filePath = fileUriToPath(model)
         if (!filePath) return []
-        const formatted = await backend.formatting.biome(context.projectId, filePath, model.getValue())
+        const formatted = await backend.formatting.biome(context.folderPath, filePath, model.getValue())
         return toFullDocumentEdit(model, formatted)
       }
 
       if (formatter === 'nixfmt') {
-        const formatted = await backend.formatting.nixfmt(context.projectId, model.getValue())
+        const formatted = await backend.formatting.nixfmt(context.folderPath, model.getValue())
         return toFullDocumentEdit(model, formatted)
       }
     } catch (error) {
@@ -69,7 +69,7 @@ class FormatterRegistry {
 }
 
 const registry = new FormatterRegistry()
-const formatterSettingsByProjectPath = new Map<string, Promise<FormattingSettings>>()
+const formatterSettingsByFolder = new Map<string, Promise<FormattingSettings>>()
 let formatterSettingsInvalidationStarted = false
 let formatterSettingsCachingEnabled = true
 
@@ -77,9 +77,9 @@ export function ensureMonacoFormatters(monaco: Monaco) {
   return registry.ensureMonaco(monaco)
 }
 
-async function resolveFormatterSelection(group: FormattingGroupId, projectPath: string): Promise<FormatterSelection> {
+async function resolveFormatterSelection(group: FormattingGroupId, folderPath: string): Promise<FormatterSelection> {
   try {
-    const formatting = await resolveProjectFormattingSettings(projectPath)
+    const formatting = await resolveProjectFormattingSettings(folderPath)
     return formatting[group]?.formatter ?? defaultFormatterForGroup(group)
   } catch (error) {
     console.warn('Failed to load project-effective formatter settings', error)
@@ -93,30 +93,30 @@ function ensureFormatterSettingsCacheInvalidation(): void {
   formatterSettingsInvalidationStarted = true
   backend.settings
     .onChanged(() => {
-      formatterSettingsByProjectPath.clear()
+      formatterSettingsByFolder.clear()
     })
     .catch(() => {
       formatterSettingsCachingEnabled = false
-      formatterSettingsByProjectPath.clear()
+      formatterSettingsByFolder.clear()
     })
 }
 
-async function resolveProjectFormattingSettings(projectPath: string): Promise<FormattingSettings> {
+async function resolveProjectFormattingSettings(folderPath: string): Promise<FormattingSettings> {
   if (!formatterSettingsCachingEnabled) {
-    const effective = await backend.settings.getEffective(projectPath)
+    const effective = await backend.settings.getEffective(folderPath)
     return effective.settings.formatting
   }
 
-  let cached = formatterSettingsByProjectPath.get(projectPath)
+  let cached = formatterSettingsByFolder.get(folderPath)
   if (!cached) {
     cached = backend.settings
-      .getEffective(projectPath)
+      .getEffective(folderPath)
       .then((effective) => effective.settings.formatting)
       .catch((error) => {
-        formatterSettingsByProjectPath.delete(projectPath)
+        formatterSettingsByFolder.delete(folderPath)
         throw error
       })
-    formatterSettingsByProjectPath.set(projectPath, cached)
+    formatterSettingsByFolder.set(folderPath, cached)
   }
   return cached
 }

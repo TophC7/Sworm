@@ -46,7 +46,6 @@ const BRIDGE_METHODS: &[&str] = &[
 pub(super) fn handle_request(
     request: BridgeRequest,
     issues: &IssueService,
-    project_id: &str,
     project_path: &Path,
     token: &str,
 ) -> BridgeResponse {
@@ -58,7 +57,6 @@ pub(super) fn handle_request(
     let result: Result<Value, String> = (|| match request.method.as_str() {
         "bridge.info" => Ok(json!({
             "protocol_version": PROTOCOL_VERSION,
-            "project_id": project_id,
             "project_path": project_path.to_string_lossy(),
             "capabilities": ["issues.v1", "issues.full.v1"],
             "methods": BRIDGE_METHODS

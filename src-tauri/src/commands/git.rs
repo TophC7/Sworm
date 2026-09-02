@@ -709,6 +709,7 @@ pub async fn git_stash_drop(
 
 /// Return file content at a specific git revision.
 /// Validates both the ref and file path before executing.
+/// Uses the raw blob (no textconv) capped at `MAX_CONTENT_BYTES`.
 #[tauri::command]
 pub async fn git_show_file(
     project_path: String,
@@ -720,7 +721,7 @@ pub async fn git_show_file(
 
     let repo = Path::new(&project_path);
     let rev_spec = format!("{}:{}", git_ref, file_path);
-    super::fresh::git_show(repo, &rev_spec)
+    git_show_raw_text(repo, &rev_spec)
         .ok_or_else(|| ApiError::NotFound(format!("Could not resolve {}:{}", git_ref, file_path)))
 }
 

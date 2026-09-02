@@ -31,7 +31,7 @@ Agent CLIs like Claude Code and Codex already have excellent tool ecosystems (MC
 ### Agent-Native Integration
 - **Thread Tracking:** Deep integration with tools like **Codex** to link terminal sessions with agent conversation history.
 - **Activity Mapping:** Scans your filesystem to discover where agents have been active, providing a "heatmap" of agent-driven development, helping you locate your AI projects.
-- **Multi-Session PTY:** Run `claude`, `codex`, `omp`, `gemini`, or standard shells in a project-scoped, persistent terminal.
+- **Multi-Session PTY:** Run `claude`, `codex`, `omp`, `agy`, or standard shells in folder-scoped terminal tabs.
 
 ### Nix-Powered Environments
 - **Flake Integration:** Point Sworm at a `flake.nix` and its `devShell` becomes the environment for every shell, session, and task. 
@@ -45,7 +45,6 @@ Agent CLIs like Claude Code and Codex already have excellent tool ecosystems (MC
 ### High-Performance Editor
 - **Monaco + Shiki:** The reliability of Monaco with the accuracy of TextMate-based syntax highlighting.
 - **Extension System:** LSP support via a manifest system (built-in support for Rust, Nix, TS/JS, and more).
-- **Bundled Tools:** Includes [Fresh](https://github.com/sinelaw/fresh) as an alternate in-terminal editor for quick edits.
 
 ---
 
@@ -82,7 +81,6 @@ bun run app:dev
 ## Credits
 
 - **[Emdash](https://github.com/generalaction/emdash)** — An agent-centric IDE The initial inspiration for sworm.
-- **[Fresh](https://github.com/sinelaw/fresh)** — Bundled as an alternate in-terminal editor.
 
 ## License
 

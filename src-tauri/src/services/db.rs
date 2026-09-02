@@ -8,8 +8,8 @@ use tracing::info;
 embed_migrations!("migrations");
 
 /// Number of read-only connections in the pool. Four covers concurrent
-/// UI fetches (sessions list + transcripts + workspace state + git
-/// summary writeback) without exhausting per-process file handles.
+/// UI fetches (app state + nix env + issue queries + git summary
+/// writeback) without exhausting per-process file handles.
 const READ_POOL_SIZE: usize = 4;
 
 /// SQLite database service.
@@ -24,8 +24,8 @@ const READ_POOL_SIZE: usize = 4;
 ///   `INSERT` / `UPDATE` / `DELETE` and any `SELECT` that must see
 ///   in-flight writes immediately).
 /// - [`Self::read`]; least-busy reader from the pool. Use for
-///   read-only queries on hot paths (session lists, transcripts,
-///   workspace state) so a long-running write doesn't block them.
+///   read-only queries on hot paths (app state, nix env records) so a
+///   long-running write doesn't block them.
 pub struct DatabaseService {
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
@@ -53,8 +53,8 @@ impl DatabaseService {
         // upgraded on its first open.
         writer.execute_batch("PRAGMA journal_mode=WAL;")?;
         writer.execute_batch("PRAGMA foreign_keys=ON;")?;
-        // 5s busy timeout so concurrent writers (transcript service +
-        // command thread) wait briefly instead of returning SQLITE_BUSY.
+        // 5s busy timeout so a concurrent writer (e.g. a second Sworm
+        // build sharing the file) waits briefly instead of SQLITE_BUSY.
         writer.execute_batch("PRAGMA busy_timeout=5000;")?;
 
         info!("Running database migrations from {:?}", db_path);
@@ -109,12 +109,7 @@ impl DatabaseService {
         }
     }
 
-    /// Return the database file path.
-    pub fn db_path(&self) -> &PathBuf {
-        &self.db_path
-    }
-
-    /// Tauri app-data directory: parent of [`db_path`]. Used as the
+    /// Tauri app-data directory: parent of the DB file. Used as the
     /// root for sibling state (OMP session dirs, future per-app caches).
     pub fn app_data_dir(&self) -> &Path {
         // `db_path` is always built via `app_data_dir.join("sworm.db")`
@@ -124,15 +119,15 @@ impl DatabaseService {
             .expect("db_path always has an app-data parent")
     }
 
-    /// Simple smoke test: count rows in the projects table.
+    /// Simple smoke test: count rows in the app_state table.
     pub fn smoke_test(&self) -> Result<String, anyhow::Error> {
         let guard = self.read();
         let count: i64 = guard
             .conn()
-            .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
+            .query_row("SELECT COUNT(*) FROM app_state", [], |row| row.get(0))?;
 
         Ok(format!(
-            "DB OK at {:?}, projects count: {}",
+            "DB OK at {:?}, app_state rows: {}",
             self.db_path, count
         ))
     }

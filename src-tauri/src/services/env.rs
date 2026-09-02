@@ -108,8 +108,8 @@ impl EnvironmentService {
             .or_insert_with(|| "xterm-256color".to_string());
 
         // Guarantee 24-bit color support to child CLIs. Without this,
-        // agents like Gemini CLI render monochrome because their
-        // capability probe checks COLORTERM before trusting the bare
+        // some agent CLIs render monochrome because their capability
+        // probe checks COLORTERM before trusting the bare
         // TERM value. We only set the default when the parent didn't
         // provide one, so launches from a colour-aware terminal (e.g.
         // Ghostty setting `truecolor`) win over the default.

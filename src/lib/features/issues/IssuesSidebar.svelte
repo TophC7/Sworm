@@ -121,12 +121,12 @@
     ['archived', 'Archive']
   ]
 
-  let { projectId }: { projectId: string } = $props()
+  let { folderPath }: { folderPath: string } = $props()
 
-  let issues = $derived(getIssues(projectId))
-  let epics = $derived(getIssueEpics(projectId))
-  let loading = $derived(isIssuesLoading(projectId))
-  let error = $derived(getIssuesError(projectId))
+  let issues = $derived(getIssues(folderPath))
+  let epics = $derived(getIssueEpics(folderPath))
+  let loading = $derived(isIssuesLoading(folderPath))
+  let error = $derived(getIssuesError(folderPath))
 
   // `query` is the single source of truth for what's visible. The
   // filter dropdown writes literal DSL tokens into this string;
@@ -139,17 +139,17 @@
   // Epics default expanded; entries here are the user-collapsed ones.
   let collapsedEpics = $state<Set<string>>(new Set())
 
-  // `loadIssues` reads + writes the same `loadingByProject` / `errorByProject`
-  // / `issuesByProject` $state via `setMapValue(map, ...)` (which clones from
+  // `loadIssues` reads + writes the same `loadingByFolder` / `errorByFolder`
+  // / `issuesByFolder` $state via `setMapValue(map, ...)` (which clones from
   // the existing map). Without `untrack`, those reads make the effect
   // self-retrigger.
   $effect(() => {
-    const id = projectId
+    const id = folderPath
     untrack(() => void loadIssues(id))
   })
 
   async function refresh() {
-    await loadIssues(projectId)
+    await loadIssues(folderPath)
   }
 
   function openCapture(mode: CaptureMode, epicId?: string) {
@@ -162,11 +162,11 @@
 
   async function commitCapture(title: string) {
     if (captureMode === 'epic') {
-      const epic = await createEpic(projectId, title)
+      const epic = await createEpic(folderPath, title)
       if (epic) captureEpicId = epic.id
     } else {
-      const issue = await createIssue(projectId, title, captureEpicId)
-      if (issue) await openIssueTab(projectId, issue.id, issue.title)
+      const issue = await createIssue(folderPath, title, captureEpicId)
+      if (issue) await openIssueTab(folderPath, issue.id, issue.title)
     }
     captureOpen = false
   }
@@ -200,7 +200,7 @@
 
   async function setStatus(issueId: string, status: IssueStatus) {
     try {
-      await updateIssue(projectId, issueId, { status })
+      await updateIssue(folderPath, issueId, { status })
     } catch (e) {
       console.error('Update status failed:', e)
     }
@@ -208,7 +208,7 @@
 
   async function archiveEpic(epic: IssueEpic) {
     try {
-      await updateEpic(projectId, epic.id, { status: 'archived' })
+      await updateEpic(folderPath, epic.id, { status: 'archived' })
     } catch (e) {
       console.error('Archive epic failed:', e)
     }
@@ -222,7 +222,7 @@
     })
     if (!ok) return
     try {
-      await deleteEpic(projectId, epic.id)
+      await deleteEpic(folderPath, epic.id)
     } catch (e) {
       console.error('Delete epic failed:', e)
     }
@@ -236,7 +236,7 @@
     })
     if (!ok) return
     try {
-      await deleteIssue(projectId, issue.id)
+      await deleteIssue(folderPath, issue.id)
     } catch (e) {
       console.error('Delete issue failed:', e)
     }
@@ -473,7 +473,7 @@
             type="button"
             class={sidebarRowVariants({ variant: 'section' })}
             onclick={() => toggleEpic(id)}
-            ondblclick={() => void openEpicTab(projectId, epic.id, epic.title)}
+            ondblclick={() => void openEpicTab(folderPath, epic.id, epic.title)}
             aria-expanded={!collapsed}
           >
             <Layers size={12} class="shrink-0 text-warning" />
@@ -487,7 +487,7 @@
         </TooltipRoot>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onclick={() => void openEpicTab(projectId, epic.id, epic.title)}>
+        <ContextMenuItem onclick={() => void openEpicTab(folderPath, epic.id, epic.title)}>
           <Layers size={14} class="shrink-0 text-muted" />
           <span>Open epic</span>
         </ContextMenuItem>
@@ -549,7 +549,7 @@
           type="button"
           class="group/row relative flex h-6 w-full cursor-pointer items-center gap-1.5 pr-2.5 text-left text-sm hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none"
           style="padding-left: {treeIndent(depth)}"
-          onclick={() => void openIssueTab(projectId, issue.id, issue.title)}
+          onclick={() => void openIssueTab(folderPath, issue.id, issue.title)}
         >
           {@render indentGuides(depth)}
           <StatusIcon size={12} class="shrink-0 {tone}" />
@@ -563,11 +563,11 @@
       </TooltipRoot>
     </ContextMenuTrigger>
     <ContextMenuContent>
-      <ContextMenuItem onclick={() => void openIssueTab(projectId, issue.id, issue.title)}>
+      <ContextMenuItem onclick={() => void openIssueTab(folderPath, issue.id, issue.title)}>
         <CircleDot size={14} class="shrink-0 text-muted" />
         <span>Open issue</span>
       </ContextMenuItem>
-      <ContextMenuItem onclick={() => void claimIssue(projectId, issue.id)}>
+      <ContextMenuItem onclick={() => void claimIssue(folderPath, issue.id)}>
         <Check size={14} class="shrink-0 text-muted" />
         <span>Claim</span>
       </ContextMenuItem>

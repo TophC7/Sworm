@@ -18,8 +18,7 @@ pub const CANONICAL_PROVIDER_IDS: &[ProviderId] = &[
     ProviderId::ClaudeCode,
     ProviderId::Codex,
     ProviderId::Omp,
-    ProviderId::Gemini,
-    ProviderId::Fresh,
+    ProviderId::Antigravity,
     ProviderId::Terminal,
 ];
 
@@ -248,7 +247,7 @@ pub struct SettingsDiagnostic {
 pub struct SettingsChangedEvent {
     pub layer: SettingsLayerKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
+    pub folder_path: Option<String>,
     pub generation: u64,
     pub diagnostics: Vec<SettingsDiagnostic>,
 }
@@ -265,7 +264,7 @@ mod tests {
 
         assert_eq!(
             provider_ids,
-            vec!["claude_code", "codex", "fresh", "gemini", "omp", "terminal"]
+            vec!["antigravity", "claude_code", "codex", "omp", "terminal"]
         );
         assert_eq!(
             settings.providers["claude_code"],

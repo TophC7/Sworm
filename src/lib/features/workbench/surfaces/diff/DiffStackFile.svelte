@@ -25,8 +25,7 @@
     storeReady: boolean
     store: DiffModelStore
     idPrefix?: string
-    projectId?: string
-    projectPath?: string
+    folderPath?: string
     workingStaged?: boolean | null
     commitHash?: string | null
     stashIndex?: number | null
@@ -40,8 +39,7 @@
     storeReady,
     store,
     idPrefix = 'diff',
-    projectId = '',
-    projectPath = '',
+    folderPath,
     workingStaged = null,
     commitHash = null,
     stashIndex = null,
@@ -53,18 +51,18 @@
   let statusLabel = $derived(gitStatusLabel(file.status))
 
   function openInEditor(filePath: string) {
-    if (!projectId || !projectPath) return
-    openCurrentFileFromDiff(projectId, filePath)
+    if (!folderPath) return
+    openCurrentFileFromDiff(folderPath, filePath)
   }
 
   function viewAtCommit(filePath: string) {
-    if (!projectId || !commitHash) return
-    openCommitSnapshot(projectId, filePath, commitHash)
+    if (!folderPath || !commitHash) return
+    openCommitSnapshot(folderPath, filePath, commitHash)
   }
 
   function viewAtStash(filePath: string) {
-    if (!projectId || stashIndex == null) return
-    openStashSnapshot(projectId, filePath, stashIndex)
+    if (!folderPath || stashIndex == null) return
+    openStashSnapshot(folderPath, filePath, stashIndex)
   }
 
   // Per-file "expand all unchanged code" toggle. Seeded from the store
@@ -145,7 +143,7 @@
           toggleHideUnchanged
         )}
       {/if}
-      {#if projectId}
+      {#if folderPath}
         {#if expanded && storeReady && !file.binary}
           <Separator orientation="vertical" class="mx-1 h-4" />
         {/if}
@@ -177,8 +175,8 @@
         {store}
         {hideUnchanged}
         {hideUnchangedCommandSeq}
-        gitActionContext={projectId && projectPath && workingStaged !== null
-          ? { projectId, projectPath, staged: workingStaged, status: file.status }
+        gitActionContext={folderPath && workingStaged !== null
+          ? { folderPath, staged: workingStaged, status: file.status }
           : null}
         onExpandedUnchangedChange={handleExpandedUnchangedChange}
       />

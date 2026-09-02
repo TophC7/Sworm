@@ -62,11 +62,10 @@ export function classifyActivity(providerId: string | null | undefined, chunk: s
     if (/send\s+\S*\s*newline|transcript|quit/i.test(text)) return 'idle'
   }
 
-  // -- Gemini CLI --
-  if (p === 'gemini') {
-    if (/esc\s*to\s*cancel/i.test(text)) return 'busy'
-    if (/Thinking\.{0,3}/i.test(text)) return 'busy'
-    if (/Running|Working|Executing|Generating|Applying|Planning|Analyzing/i.test(text)) return 'busy'
+  // -- Antigravity --
+  if (p === 'antigravity') {
+    if (/esc\s*to\s*(cancel|interrupt)/i.test(text)) return 'busy'
+    if (/Thinking|Running|Working|Executing|Generating/i.test(text)) return 'busy'
     if (/Ready|Awaiting|Press Enter/i.test(text)) return 'idle'
   }
 

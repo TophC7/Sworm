@@ -6,26 +6,23 @@
 
   let {
     tab = null,
-    projectId,
-    projectPath
+    folderPath
   }: {
     tab: DiffTab | null
-    projectId: string
-    projectPath: string
+    folderPath: string
   } = $props()
 </script>
 
 {#if tab?.source.kind === 'commit'}
-  <CommitDiffView commitHash={tab.source.commitHash} {projectId} {projectPath} initialFile={tab.initialFile} />
+  <CommitDiffView commitHash={tab.source.commitHash} {folderPath} initialFile={tab.initialFile} />
 {:else if tab?.source.kind === 'working'}
   <WorkingDiffView
-    {projectId}
-    {projectPath}
+    {folderPath}
     staged={tab.source.staged}
     scopePath={tab.source.scopePath}
     initialFile={tab.initialFile}
     revealNonce={tab.source.revealNonce}
   />
 {:else if tab?.source.kind === 'stash'}
-  <StashDiffView stashIndex={tab.source.stashIndex} {projectId} {projectPath} initialFile={tab.initialFile} />
+  <StashDiffView stashIndex={tab.source.stashIndex} {folderPath} initialFile={tab.initialFile} />
 {/if}

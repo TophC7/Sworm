@@ -16,48 +16,30 @@ export interface EnvProbeResult {
 }
 
 export interface PtyEvent {
-  type: 'started' | 'exit' | 'error'
+  type: 'started' | 'exit' | 'error' | 'resumeTokenBound'
   session_id: string
   pid?: number | null
   code?: number | null
   message?: string
+  token?: string
 }
 
-export interface Project {
-  id: string
-  name: string
+export interface FolderInfo {
   path: string
-  default_branch: string | null
-  base_ref: string | null
-  created_at: string
-  updated_at: string
+  name: string
 }
 
-export interface Session {
-  id: string
-  project_id: string
-  provider_id: string
-  title: string
-  cwd: string
-  branch: string | null
-  status: SessionStatus
-  shared_workspace: boolean
-  auto_approve: boolean
-  provider_resume_token: string | null
-  archived: boolean
-  created_at: string
-  updated_at: string
-  last_started_at: string | null
-  last_stopped_at: string | null
+export interface SessionStartInfo {
+  resumed: boolean
 }
 
-export interface ProjectSessionGroup {
-  project_id: string
-  sessions: Session[]
-  archived_sessions: Session[]
+/** Everything the backend needs to (re)spawn a session tab's process. */
+export interface SessionSpec {
+  sessionId: string
+  folderPath: string
+  providerId: string
+  resumeToken: string | null
 }
-
-export type SessionStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'exited' | 'failed'
 
 export type ProviderConnectionStatus = 'connected' | 'missing' | 'error'
 
@@ -168,7 +150,7 @@ export interface ShortcutsFileResult {
 
 export interface SettingsChangedEvent {
   layer: SettingsLayerKind
-  project_id?: string | null
+  folder_path?: string | null
   generation: number
   diagnostics: SettingsDiagnostic[]
 }
@@ -367,19 +349,10 @@ export interface GitQuickDiffData {
 // Monaco models and hands them to a `DiffEditor`.
 
 export type GitStatusKind =
-  | 'added'
-  | 'modified'
-  | 'deleted'
-  | 'renamed'
-  | 'copied'
-  | 'untracked'
-  | 'unmerged'
-  | 'unknown'
+  'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'unmerged' | 'unknown'
 
 export type DiffSource =
-  | { kind: 'working'; staged: boolean | null }
-  | { kind: 'commit'; hash: string }
-  | { kind: 'stash'; index: number }
+  { kind: 'working'; staged: boolean | null } | { kind: 'commit'; hash: string } | { kind: 'stash'; index: number }
 
 export interface FileDiff {
   path: string
@@ -642,8 +615,7 @@ export interface DiscoveredProject {
   path: string
   name: string
   path_exists: boolean
-  is_sworm_project: boolean
-  sworm_project_id: string | null
+  is_recent: boolean
   last_active: string
   providers: DiscoveredProviderActivity[]
 }
@@ -659,7 +631,7 @@ export interface NixDiagnostic {
 }
 
 export interface NixEnvRecord {
-  project_id: string
+  folder_path: string
   nix_file: string
   status: NixEnvStatus
   error_message: string | null
@@ -669,8 +641,7 @@ export interface NixEnvRecord {
 }
 
 export interface NixDetection {
-  project_id: string
-  project_path: string
+  folder_path: string
   detected_files: string[]
   selected: NixEnvRecord | null
 }

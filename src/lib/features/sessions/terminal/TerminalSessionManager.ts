@@ -3,7 +3,8 @@ import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { feedOutput, markCompleted } from '$lib/features/sessions/state/sessionActivity.svelte'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
-import type { PtyEvent, Session } from '$lib/types/backend'
+import { setSessionTabResumeToken, setSessionTabStatus } from '$lib/features/workbench/state.svelte'
+import type { PtyEvent, SessionSpec, SessionStartInfo } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
@@ -47,23 +48,8 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
 
 const textEncoder = new TextEncoder()
 
-function decodeBase64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
-}
-
 type EventListener = (event: PtyEvent) => void
 type ErrorListener = (message: string) => void
-
-/**
- * Whether a terminal is currently bound to a live PTY in the backend
- * process, or only displaying historical transcript (input disabled).
- */
-export type TerminalMode = 'historical' | 'live'
 
 export class TerminalSessionManager {
   readonly sessionId: string
@@ -88,14 +74,13 @@ export class TerminalSessionManager {
   private viewportPosition = 0
   private lastError: string | null = null
   private providerId: string | null = null
-  private transcriptLoaded = false
-  private transcriptByteCount = 0
+  // Single-flight PTY spawn: concurrent callers (mount debounce, Restart)
+  // await the same promise instead of spawning twice.
+  private startPromise: Promise<SessionStartInfo> | null = null
   // Terminal creation yields while the font loads. Every entry path
   // shares this promise so concurrent attach/load/start calls cannot
   // create competing xterm instances or WebGL contexts.
   private terminalPromise: Promise<void> | null = null
-  // Dedup concurrent transcript loads so history is fetched once.
-  private transcriptPromise: Promise<void> | null = null
   private readonly textDecoder = new TextDecoder()
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
@@ -129,24 +114,6 @@ export class TerminalSessionManager {
 
   isAttached(): boolean {
     return this.container !== null
-  }
-
-  getMode(): TerminalMode {
-    return this.ptyActive ? 'live' : 'historical'
-  }
-
-  hasTranscriptLoaded(): boolean {
-    return this.transcriptLoaded
-  }
-
-  /**
-   * Whether the loaded transcript contained any bytes. Used by the
-   * mount path to decide whether a session is genuinely "fresh" (and
-   * should auto-spawn) or has prior history (and should be treated
-   * as historical until the user explicitly resumes).
-   */
-  hasHistory(): boolean {
-    return this.transcriptByteCount > 0
   }
 
   getLastError(): string | null {
@@ -203,6 +170,11 @@ export class TerminalSessionManager {
     if (this.hostEl.parentElement !== container) {
       container.replaceChildren(this.hostEl)
     }
+    // detach() drops the WebGL context so hidden sessions don't hold
+    // GPU resources; bring it back for the visible one.
+    if (this.webglAddon === null) {
+      this.enableWebglRenderer()
+    }
 
     this.resizeObserver?.disconnect()
     this.resizeObserver = new ResizeObserver(() => {
@@ -232,6 +204,10 @@ export class TerminalSessionManager {
     this.viewportPosition = ((this.terminal as any).buffer?.active?.viewportY as number | undefined) ?? 0
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
+    this.webglContextLossDisposable?.dispose()
+    this.webglContextLossDisposable = null
+    this.webglAddon?.dispose()
+    this.webglAddon = null
 
     if (this.hostEl?.parentElement) {
       this.hostEl.parentElement.removeChild(this.hostEl)
@@ -240,97 +216,34 @@ export class TerminalSessionManager {
     this.container = null
   }
 
-  /**
-   * Replay the persisted transcript into xterm exactly once per
-   * manager lifetime. Awaits xterm's write-callback so subsequent
-   * live-attach output is guaranteed to land after the history.
-   *
-   * Safe to call multiple times — concurrent calls dedupe on a
-   * single in-flight promise, and after success this is a no-op.
-   */
-  async loadTranscript(): Promise<void> {
-    if (this.transcriptLoaded || this.disposed) {
-      return
+  async startPty(spec: SessionSpec): Promise<SessionStartInfo> {
+    if (this.disposed || this.ptyActive) {
+      return { resumed: false }
     }
-    if (this.transcriptPromise) {
-      return this.transcriptPromise
+    if (this.startPromise) {
+      return this.startPromise
     }
 
-    this.transcriptPromise = (async () => {
-      await this.ensureTerminal()
-      const terminal = this.terminal
-      if (!terminal) return
-
-      let b64: string
-      try {
-        b64 = await backend.sessions.getTranscript(this.sessionId)
-      } catch (error) {
-        // Log but do not throw — a missing transcript is not fatal.
-        // This typically happens for sessions that pre-date the
-        // transcript table or were freshly reset.
-        console.warn(`Transcript fetch failed for ${this.sessionId}:`, error)
-        this.transcriptLoaded = true
-        return
-      }
-
-      if (b64.length > 0) {
-        const bytes = decodeBase64ToBytes(b64)
-        this.transcriptByteCount = bytes.byteLength
-        await this.writeQueue?.write(bytes)
-      }
-      this.transcriptLoaded = true
-    })()
-
+    const promise = this.spawnPty(spec)
+    this.startPromise = promise
     try {
-      await this.transcriptPromise
+      return await promise
     } finally {
-      this.transcriptPromise = null
+      if (this.startPromise === promise) this.startPromise = null
     }
   }
 
-  /**
-   * Reattach to a live PTY that already exists in the backend.
-   *
-   * Used after a webview reload where the backend process kept
-   * running. Ordering matters: callers must `loadTranscript()` first
-   * so the historical write completes before live bytes start
-   * streaming, otherwise we'd get reordered output.
-   */
-  async attachLive(session: Session): Promise<boolean> {
-    if (this.disposed || this.ptyActive) {
-      return this.ptyActive
-    }
-
-    let alive = false
-    try {
-      alive = await backend.sessions.isAlive(session.id)
-    } catch (error) {
-      console.warn(`isAlive failed for ${session.id}:`, error)
-      return false
-    }
-    if (!alive) {
-      return false
-    }
-
-    await this.startPty(session)
-    return true
-  }
-
-  async startPty(session: Session): Promise<void> {
-    if (this.disposed || this.ptyActive) {
-      return
-    }
-
+  private async spawnPty(spec: SessionSpec): Promise<SessionStartInfo> {
     await this.ensureTerminal()
     this.releaseChannels()
 
     const terminal = this.terminal
     if (!terminal) {
-      return
+      return { resumed: false }
     }
 
     this.lastError = null
-    this.providerId = session.provider_id
+    this.providerId = spec.providerId
 
     const output = backend.sessions.createOutputChannel((data) => {
       const bytes = new Uint8Array(data)
@@ -341,12 +254,13 @@ export class TerminalSessionManager {
       } else {
         this.deferDetachedBytes(bytes)
       }
-      feedOutput(this.sessionId, session.provider_id, this.textDecoder.decode(bytes, { stream: true }))
+      feedOutput(this.sessionId, spec.providerId, this.textDecoder.decode(bytes, { stream: true }))
     })
     const events = backend.sessions.createEventChannel((event) => {
       if (event.type === 'started') {
         this.ptyActive = true
         this.lastError = null
+        setSessionTabStatus(this.sessionId, 'running')
       }
 
       if (event.type === 'exit') {
@@ -354,11 +268,17 @@ export class TerminalSessionManager {
         this.writeTerminalInBackground(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'))
         this.releaseChannels()
         markCompleted(this.sessionId)
+        setSessionTabStatus(this.sessionId, 'exited')
       }
 
       if (event.type === 'error') {
         this.lastError = event.message ?? 'Unknown PTY error'
         this.emitError(this.lastError)
+        setSessionTabStatus(this.sessionId, 'failed')
+      }
+
+      if (event.type === 'resumeTokenBound' && event.token) {
+        setSessionTabResumeToken(this.sessionId, event.token)
       }
 
       this.emitEvent(event)
@@ -370,23 +290,15 @@ export class TerminalSessionManager {
     this.fitAndSyncSize()
 
     try {
-      await backend.sessions.startWithChannels(
-        session.id,
-        this.terminal?.cols ?? 120,
-        this.terminal?.rows ?? 32,
-        output,
-        events
-      )
+      const info = await backend.sessions.start(spec, terminal.cols, terminal.rows, output, events)
       this.ptyActive = true
-      // After a successful startPty the PTY is the live source of
-      // truth; transcript replay (if any) already happened, so flag
-      // it loaded to prevent double-rendering on later attach.
-      this.transcriptLoaded = true
+      return info
     } catch (error) {
       this.ptyActive = false
       this.releaseChannels()
       this.lastError = String(error)
       this.emitError(this.lastError)
+      setSessionTabStatus(this.sessionId, 'failed')
       throw error
     }
   }
@@ -594,7 +506,7 @@ export class TerminalSessionManager {
       }
     })
 
-    // Handle OSC 52 clipboard sequences from TUI apps (Fresh, helix, neovim).
+    // Handle OSC 52 clipboard sequences from TUI apps (helix, neovim, …).
     // Format: \x1b]52;<target>;<base64-data>\x07
     this.oscDisposable = this.terminal.parser.registerOscHandler(52, (data) => {
       const sepIdx = data.indexOf(';')

@@ -35,11 +35,11 @@
 
   let {
     detail,
-    projectId,
+    folderPath,
     tab
   }: {
     detail: IssueDetail
-    projectId: string
+    folderPath: string
     tab: IssueTab
   } = $props()
 
@@ -71,7 +71,7 @@
       Number(d.priority) !== Number(base.priority) ||
       parseTags(d.tags).join(',') !== detail.issue.tags.join(','),
     save: async (drafts) => {
-      const next = await updateIssue(projectId, tab.issueId, {
+      const next = await updateIssue(folderPath, tab.issueId, {
         title: drafts.title.trim(),
         description: drafts.description.trim() || null,
         status: drafts.status,
@@ -79,15 +79,15 @@
         tags: parseTags(drafts.tags)
       })
       if (next.title !== tab.title) {
-        updateIssueTabTitle(projectId, tab.issueId, next.title)
+        updateIssueTabTitle(folderPath, tab.issueId, next.title)
       }
     }
   })
 
   let commentDraft = $state('')
 
-  let allIssues = $derived(getIssues(projectId))
-  let allEpics = $derived(getIssueEpics(projectId))
+  let allIssues = $derived(getIssues(folderPath))
+  let allEpics = $derived(getIssueEpics(folderPath))
   let parentIssue = $derived(
     detail.issue.parentIssueId ? (allIssues.find((i) => i.id === detail.issue.parentIssueId) ?? null) : null
   )
@@ -97,8 +97,7 @@
   // Backend scopes events by entity_id so comment/dependency events
   // don't leak in here.
   type ActivityItem =
-    | { kind: 'comment'; createdAt: string; data: IssueComment }
-    | { kind: 'event'; createdAt: string; data: IssueEvent }
+    { kind: 'comment'; createdAt: string; data: IssueComment } | { kind: 'event'; createdAt: string; data: IssueEvent }
 
   let activity = $derived.by<ActivityItem[]>(() => {
     const items: ActivityItem[] = []
@@ -128,7 +127,7 @@
 
   async function postComment() {
     if (!commentDraft.trim()) return
-    await addIssueComment(projectId, tab.issueId, commentDraft)
+    await addIssueComment(folderPath, tab.issueId, commentDraft)
     commentDraft = ''
   }
 </script>
@@ -142,7 +141,7 @@
         <button
           type="button"
           class="text-accent hover:underline focus-visible:shadow-focus-ring focus-visible:outline-none"
-          onclick={() => openIssueTab(projectId, id, id)}
+          onclick={() => openIssueTab(folderPath, id, id)}
         >
           {id}
         </button>
@@ -174,7 +173,7 @@
       {:else}
         <ul class="flex flex-col">
           {#each detail.subIssues as sub (sub.id)}
-            <IssueListRow issue={sub} onSelect={(issue: Issue) => openIssueTab(projectId, issue.id, issue.title)} />
+            <IssueListRow issue={sub} onSelect={(issue: Issue) => openIssueTab(folderPath, issue.id, issue.title)} />
           {/each}
         </ul>
       {/if}
@@ -284,7 +283,7 @@
             <button
               type="button"
               class="text-left font-mono text-2xs text-accent hover:underline focus-visible:shadow-focus-ring focus-visible:outline-none"
-              onclick={() => openIssueTab(projectId, parentIssue!.id, parentIssue!.title)}
+              onclick={() => openIssueTab(folderPath, parentIssue!.id, parentIssue!.title)}
             >
               ↑ {parentIssue.id}
             </button>
@@ -321,7 +320,7 @@
         <Button size="sm" variant="accent" onclick={form.save} disabled={form.saving || !form.dirty}>
           {form.saving ? 'Saving…' : 'Save'}
         </Button>
-        <Button size="sm" onclick={() => claimIssue(projectId, tab.issueId)}>Claim</Button>
+        <Button size="sm" onclick={() => claimIssue(folderPath, tab.issueId)}>Claim</Button>
       </div>
     </aside>
   </div>

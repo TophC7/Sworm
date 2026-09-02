@@ -16,13 +16,14 @@
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/setup.svelte'
-  import { openProjectDirectory, openSettings } from '$lib/features/app-actions/actions.svelte'
+  import { openSettings } from '$lib/features/app-actions/actions.svelte'
   import { initProjectSchemas } from '$lib/features/project-config/bootstrap'
   import {
     getDirtyTextSurfaceCount,
     hasAnyDirtyTextSurfaces
   } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { flushPersistencePending, getActiveSessionId } from '$lib/features/workbench/state.svelte'
+  import { flushWorkbench } from '$lib/features/workbench/persistence'
+  import { getActiveSessionId } from '$lib/features/workbench/state.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
@@ -30,7 +31,7 @@
   // Keep xterm's textarea focus aligned with the active session.
   //
   // Two classes of problem this solves:
-  //   1. Tab/pane switches. When the user moves between sessions, a
+  //   1. Tab switches. When the user moves between sessions, a
   //      different SessionTerminal becomes visible but the previously
   //      clicked terminal keeps real DOM focus. Visible-but-unfocused
   //      xterm means Shift+Tab falls through to the browser's focus-
@@ -78,11 +79,10 @@
         }
       }
 
-      // Persist pending workspace mutations before tearing down — the
-      // backend `Exit` event flushes transcripts but knows nothing
-      // about the frontend's debounce queue.
+      // Persist pending workbench mutations before tearing down — the
+      // backend knows nothing about the frontend's debounce queue.
       try {
-        await flushPersistencePending()
+        await flushWorkbench()
       } catch (error) {
         console.warn('Close-request flush failed:', error)
       }
@@ -114,7 +114,7 @@
 
 <TooltipProvider delayDuration={300}>
   <div class="flex h-screen flex-col overflow-hidden">
-    <TitleBar onNewProject={openProjectDirectory} onSettings={openSettings} />
+    <TitleBar onSettings={openSettings} />
 
     <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {@render children()}

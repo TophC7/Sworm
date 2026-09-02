@@ -14,44 +14,39 @@ import {
   toggleIndentRainbow
 } from '$lib/features/editor/renderers/monaco/text/indentRainbow.svelte'
 import {
-  closeActiveProject,
   closeActiveTab,
   createSessionWithSharedWorkspaceWarning,
   newEmptyFile,
   newTerminalSession,
-  openActiveProjectInExternalTerminal,
-  openFreshSession,
+  openActiveFolderInExternalTerminal,
+  openFolderPicker,
+  openFolderSettingsFile,
   openGlobalSettingsFile,
-  openProjectDirectory,
-  openProjectPicker,
-  openProjectSettingsFile,
   openSettings,
   reloadView,
   reopenTab,
-  rerunLastProjectTask,
-  revealActiveProjectInFileManager,
+  rerunLastFolderTask,
+  revealActiveFolderInFileManager,
   showFiles,
   showTasks
 } from '$lib/features/app-actions/actions.svelte'
 import {
-  fetchActiveProject,
-  forcePushActiveProject,
-  pullActiveProject,
-  pushActiveProject,
-  undoLastCommitActiveProject
+  fetchActiveFolder,
+  forcePushActiveFolder,
+  pullActiveFolder,
+  pushActiveFolder,
+  undoLastCommitActiveFolder
 } from '$lib/features/git/actions.svelte'
 import { getGitSummary } from '$lib/features/git/state.svelte'
 import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
-import { getActiveProjectId, hasClosedTabs } from '$lib/features/workbench/state.svelte'
-import { openNotificationTool } from '$lib/features/workbench/surfaces/tool/service.svelte'
+import { addNotificationToolTab, getActiveFolderPath, hasClosedTabs } from '$lib/features/workbench/state.svelte'
 import {
   ArrowDownToLineIcon,
   ArrowUpFromLineIcon,
   BellIcon,
   FilePlusIcon,
   FolderOpenIcon,
-  HomeIcon,
   PaintbrushIcon,
   PanelLeftIcon,
   Play,
@@ -106,8 +101,8 @@ function resolve<T>(value: Dynamic<T>): T {
   return typeof value === 'function' ? (value as () => T)() : value
 }
 
-function activeProjectVisible(): boolean {
-  return getActiveProjectId() !== null
+function activeFolderVisible(): boolean {
+  return getActiveFolderPath() !== null
 }
 
 function connectedProviderIds(): Set<string> {
@@ -119,11 +114,11 @@ function hasConnectedProvider(providerId: string): boolean {
 }
 
 function lastTaskLabel(): string | null {
-  const projectId = getActiveProjectId()
-  if (!projectId) return null
-  const lastId = getLastTaskId(projectId)
+  const folderPath = getActiveFolderPath()
+  if (!folderPath) return null
+  const lastId = getLastTaskId(folderPath)
   if (!lastId) return null
-  const tasks = getTasksReactive(projectId)
+  const tasks = getTasksReactive(folderPath)
   return tasks.find((task) => task.id === lastId)?.label ?? lastId
 }
 
@@ -139,12 +134,11 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Sessions',
       iconSrc: provider.icon,
       keywords: ['new', 'session', 'agent', provider.label],
-      visible: () => activeProjectVisible() && hasConnectedProvider(provider.id),
+      visible: () => activeFolderVisible() && hasConnectedProvider(provider.id),
       run: () => createSessionWithSharedWorkspaceWarning(provider.id, provider.label)
     })
   )
 
-  const freshIcon = directOptions.find((provider) => provider.id === 'fresh')?.icon ?? ''
   const terminalIcon = directOptions.find((provider) => provider.id === 'terminal')?.icon ?? ''
 
   return [
@@ -165,26 +159,17 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       icon: FilePlusIcon,
       keywords: ['new', 'empty', 'untitled', 'file', 'create'],
       defaultKeybindings: ['Ctrl+N'],
+      visible: activeFolderVisible,
       run: newEmptyFile
     }),
     appCommand({
-      id: 'open-project',
-      label: 'Open Project',
+      id: 'open-folder',
+      label: 'Open Folder',
       group: 'File',
       icon: FolderOpenIcon,
-      keywords: ['new', 'add', 'folder', 'directory'],
+      keywords: ['open', 'folder', 'directory'],
       defaultKeybindings: ['Ctrl+O'],
-      run: openProjectDirectory
-    }),
-    appCommand({
-      id: 'show-project-picker',
-      label: 'Show Project Picker',
-      group: 'File',
-      icon: HomeIcon,
-      keywords: ['home', 'picker', 'projects', 'empty', 'start'],
-      defaultKeybindings: ['Ctrl+Shift+N'],
-      terminalPolicy: 'skip-shell',
-      run: openProjectPicker
+      run: openFolderPicker
     }),
     appCommand({
       id: 'settings',
@@ -203,22 +188,13 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       run: openGlobalSettingsFile
     }),
     appCommand({
-      id: 'open-project-settings',
-      label: 'Open Project Settings',
+      id: 'open-folder-settings',
+      label: 'Open Folder Settings',
       group: 'General',
       icon: SettingsIcon,
-      keywords: ['settings', 'preferences', 'jsonc', 'project', 'sworm'],
-      visible: activeProjectVisible,
-      run: openProjectSettingsFile
-    }),
-    appCommand({
-      id: 'close-project',
-      label: 'Close Project',
-      group: 'File',
-      icon: XIcon,
-      keywords: ['remove', 'close'],
-      visible: activeProjectVisible,
-      run: closeActiveProject
+      keywords: ['settings', 'preferences', 'jsonc', 'folder', 'sworm'],
+      visible: activeFolderVisible,
+      run: openFolderSettingsFile
     }),
     appCommand({
       id: 'reveal-in-file-manager',
@@ -226,8 +202,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: SquareArrowOutUpRight,
       keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
-      visible: activeProjectVisible,
-      run: revealActiveProjectInFileManager
+      visible: activeFolderVisible,
+      run: revealActiveFolderInFileManager
     }),
     appCommand({
       id: 'open-in-external-terminal',
@@ -235,19 +211,10 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: TerminalIcon,
       keywords: ['terminal', 'shell', 'external', 'launch', 'kitty', 'alacritty', 'wezterm', 'gnome', 'konsole'],
-      visible: activeProjectVisible,
-      run: openActiveProjectInExternalTerminal
+      visible: activeFolderVisible,
+      run: openActiveFolderInExternalTerminal
     }),
     ...providerCommands,
-    appCommand({
-      id: 'open-fresh',
-      label: 'Open Fresh',
-      group: 'Sessions',
-      iconSrc: freshIcon,
-      keywords: ['fresh', 'editor', 'text'],
-      visible: () => activeProjectVisible() && hasConnectedProvider('fresh'),
-      run: openFreshSession
-    }),
     appCommand({
       id: 'new-terminal',
       label: 'New Terminal',
@@ -255,7 +222,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       iconSrc: terminalIcon,
       keywords: ['terminal', 'shell', 'console'],
       defaultKeybindings: ['Ctrl+T'],
-      visible: () => activeProjectVisible() && hasConnectedProvider('terminal'),
+      visible: activeFolderVisible,
       run: newTerminalSession
     }),
     appCommand({
@@ -266,7 +233,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       keywords: ['files', 'file', 'search', 'open', 'goto', 'quick', '/'],
       defaultKeybindings: ['Ctrl+P'],
       terminalPolicy: 'skip-shell-keeps-modals',
-      visible: activeProjectVisible,
+      visible: activeFolderVisible,
       run: showFiles
     }),
     appCommand({
@@ -275,7 +242,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Tasks',
       icon: Play,
       keywords: ['tasks', 'task', 'run', '!'],
-      visible: activeProjectVisible,
+      visible: activeFolderVisible,
       run: showTasks
     }),
     appCommand({
@@ -289,7 +256,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       },
       visible: () => lastTaskLabel() !== null,
       subtitle: () => lastTaskLabel() ?? undefined,
-      run: rerunLastProjectTask
+      run: rerunLastFolderTask
     }),
     appCommand({
       id: 'toggle-sidebar',
@@ -297,7 +264,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: PanelLeftIcon,
       keywords: ['sidebar', 'panel', 'show', 'hide'],
-      visible: activeProjectVisible,
+      visible: activeFolderVisible,
       run: toggleSidebar
     }),
     appCommand({
@@ -307,7 +274,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       icon: XIcon,
       keywords: ['close', 'tab', 'dismiss'],
       defaultKeybindings: ['Ctrl+W'],
-      visible: activeProjectVisible,
+      visible: activeFolderVisible,
       run: closeActiveTab
     }),
     appCommand({
@@ -317,10 +284,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       icon: Undo2Icon,
       keywords: ['reopen', 'undo', 'restore', 'tab'],
       defaultKeybindings: ['Ctrl+Shift+T'],
-      visible: () => {
-        const projectId = getActiveProjectId()
-        return projectId !== null && hasClosedTabs(projectId)
-      },
+      visible: hasClosedTabs,
       run: reopenTab
     }),
     appCommand({
@@ -377,8 +341,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Git',
       icon: ArrowDownToLineIcon,
       keywords: ['git', 'pull', 'download', 'sync'],
-      visible: activeProjectVisible,
-      run: pullActiveProject
+      visible: activeFolderVisible,
+      run: pullActiveFolder
     }),
     appCommand({
       id: 'git-push',
@@ -386,8 +350,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Git',
       icon: ArrowUpFromLineIcon,
       keywords: ['git', 'push', 'upload', 'sync'],
-      visible: activeProjectVisible,
-      run: pushActiveProject
+      visible: activeFolderVisible,
+      run: pushActiveFolder
     }),
     appCommand({
       id: 'git-fetch',
@@ -395,8 +359,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Git',
       icon: RefreshCwIcon,
       keywords: ['git', 'fetch', 'remote', 'update'],
-      visible: activeProjectVisible,
-      run: fetchActiveProject
+      visible: activeFolderVisible,
+      run: fetchActiveFolder
     }),
     appCommand({
       id: 'git-force-push',
@@ -405,8 +369,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       icon: ShieldAlertIcon,
       keywords: ['git', 'force', 'push', 'lease'],
       dangerous: true,
-      visible: activeProjectVisible,
-      run: forcePushActiveProject
+      visible: activeFolderVisible,
+      run: forcePushActiveFolder
     }),
     appCommand({
       id: 'git-undo-last-commit',
@@ -416,10 +380,10 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       keywords: ['git', 'undo', 'reset', 'revert', 'commit'],
       dangerous: true,
       visible: () => {
-        const projectId = getActiveProjectId()
-        return projectId !== null && !!getGitSummary(projectId)?.branch
+        const folderPath = getActiveFolderPath()
+        return folderPath !== null && !!getGitSummary(folderPath)?.branch
       },
-      run: undoLastCommitActiveProject
+      run: undoLastCommitActiveFolder
     }),
     appCommand({
       id: 'open-notifications',
@@ -444,10 +408,10 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Notifications',
       icon: BellIcon,
       keywords: ['notification', 'notifications', 'tester', 'preview', 'debug', 'demo', 'test'],
-      visible: activeProjectVisible,
+      visible: activeFolderVisible,
       run: () => {
-        const projectId = getActiveProjectId()
-        if (projectId) openNotificationTool(projectId)
+        const folderPath = getActiveFolderPath()
+        if (folderPath) addNotificationToolTab(folderPath)
       }
     })
   ]

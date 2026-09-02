@@ -1,6 +1,6 @@
 <!--
   @component
-  StatusBarBranchPopover: quick-switch popover for the active project branch.
+  StatusBarBranchPopover: quick-switch popover for the active folder branch.
 -->
 
 <script lang="ts">
@@ -24,12 +24,10 @@
   import { timeAgo } from '$lib/utils/date'
 
   let {
-    projectId,
-    projectPath,
+    folderPath,
     children
   }: {
-    projectId: string
-    projectPath: string
+    folderPath: string
     /** Snippet that renders the chunk visuals; passed in so the
      * trigger surface matches the existing branch chunk byte-for-byte. */
     children: import('svelte').Snippet
@@ -38,20 +36,20 @@
   let open = $state(false)
   let search = $state('')
 
-  let entry = $derived(branches.byProject.get(projectId))
+  let entry = $derived(branches.byFolder.get(folderPath))
 
   // Make sure the entry is loaded before the popover opens; the user
   // may click the chunk before any other view has loaded branches.
   $effect(() => {
     if (open && !entry) {
-      void branches.loadFor(projectId, projectPath, { autoFetch: false })
+      void branches.loadFor(folderPath, { autoFetch: false })
     }
   })
 
   $effect(() => {
     if (!open || !entry || entry.opState === 'idle') return
-    branches.pollOpState(projectId, projectPath)
-    return () => branches.stopOpStatePolling(projectId)
+    branches.pollOpState(folderPath)
+    return () => branches.stopOpStatePolling(folderPath)
   })
 
   // Resolve recents → BranchSummary, dropping names that no longer
@@ -76,9 +74,7 @@
     if (!entry) return [] as BranchSummary[]
     return entry.list
       .filter((b) => b.kind === 'local' && !b.isCurrent)
-      .toSorted(
-        (a, b) => new Date(b.tip.date).getTime() - new Date(a.tip.date).getTime()
-      )
+      .toSorted((a, b) => new Date(b.tip.date).getTime() - new Date(a.tip.date).getTime())
       .slice(0, 5)
   })
 
@@ -108,7 +104,7 @@
   async function selectBranch(name: string) {
     open = false
     try {
-      await branches.safeCheckout(projectId, projectPath, name)
+      await branches.safeCheckout(folderPath, name)
     } catch (e) {
       if (branches.isDirtyCheckoutError(e)) {
         checkoutTarget = name
@@ -123,7 +119,7 @@
   function viewAllBranches() {
     setSidebarCollapsed(false)
     setSidebarView('git')
-    requestGitBranchesFocus(projectId)
+    requestGitBranchesFocus(folderPath)
     open = false
   }
 </script>
@@ -137,13 +133,7 @@
 
   <DropdownMenuContent class="w-72 p-0" sideOffset={8} align="start">
     <div class="border-b border-edge p-2">
-      <SearchInput
-        bind:value={search}
-        placeholder="Switch to branch…"
-        class="text-sm"
-        spellcheck={false}
-        autofocus
-      />
+      <SearchInput bind:value={search} placeholder="Switch to branch…" class="text-sm" spellcheck={false} autofocus />
     </div>
 
     <div class="max-h-72 overflow-y-auto py-1">
@@ -153,10 +143,7 @@
         <div class="px-3 py-2 text-sm text-subtle">No matches.</div>
       {:else}
         {#each visible as branch (branch.name)}
-          <DropdownMenuItem
-            class="flex items-center gap-2 py-1 text-sm"
-            onclick={() => void selectBranch(branch.name)}
-          >
+          <DropdownMenuItem class="flex items-center gap-2 py-1 text-sm" onclick={() => void selectBranch(branch.name)}>
             <GitBranchIcon size={12} class="shrink-0 text-muted" />
             <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
             <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" twoColor />
@@ -175,11 +162,5 @@
 </DropdownMenuRoot>
 
 {#if checkoutOpen}
-  <CheckoutDialog
-    bind:open={checkoutOpen}
-    branchName={checkoutTarget}
-    summary={checkoutSummary}
-    {projectId}
-    {projectPath}
-  />
+  <CheckoutDialog bind:open={checkoutOpen} branchName={checkoutTarget} summary={checkoutSummary} {folderPath} />
 {/if}

@@ -1,9 +1,28 @@
 use crate::models::provider::{
     PromptMode, ProviderConnectionStatus, ProviderId, ProviderStatus, ResumeMode, SessionIdMode,
 };
-use std::collections::HashMap;
+use crate::services::folders::home_dir;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::SystemTime;
 use tracing::{info, warn};
+
+/// Derive a deterministic UUID from a provider prefix and session ID.
+/// Providers that use session-id flags (Claude Code) need valid
+/// UUIDs. We hash `<prefix>:<session_id>` and format as UUID v4.
+pub fn deterministic_session_uuid(prefix: &str, app_session_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}:{}", prefix, app_session_id));
+    let hash = hasher.finalize();
+
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
+
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
 
 /// Encode a working directory the same way Claude Code does for its
 /// `~/.claude/projects/<dir>/<uuid>.jsonl` transcript layout: every `/`
@@ -17,11 +36,10 @@ pub fn claude_project_dir_name(cwd: &str) -> String {
 /// Path to the Claude Code transcript file for a given cwd + session UUID.
 /// Returns None if `$HOME` is unset.
 pub fn claude_transcript_path(cwd: &str, session_uuid: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
+    let home = home_dir()?;
     let dir = claude_project_dir_name(cwd);
     Some(
-        PathBuf::from(home)
-            .join(".claude")
+        home.join(".claude")
             .join("projects")
             .join(dir)
             .join(format!("{}.jsonl", session_uuid)),
@@ -36,6 +54,44 @@ pub fn claude_session_transcript_exists(cwd: &str, session_uuid: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `~/.gemini/antigravity-cli` — the Antigravity CLI (`agy`) state root.
+fn antigravity_dir() -> Option<PathBuf> {
+    Some(home_dir()?.join(".gemini").join("antigravity-cli"))
+}
+
+/// Whether an Antigravity conversation store exists for `id`.
+/// Used to choose between `--conversation <id>` and a fresh start.
+pub fn antigravity_conversation_exists(id: &str) -> bool {
+    antigravity_dir()
+        .map(|dir| dir.join("conversations").join(format!("{id}.db")).exists())
+        .unwrap_or(false)
+}
+
+/// Newest `conversations/*.db` modified at or after `since` whose stem is
+/// not in `exclude`. Fails closed (None) on any filesystem error.
+pub fn antigravity_find_new_conversation(
+    since: SystemTime,
+    exclude: &HashSet<String>,
+) -> Option<String> {
+    let entries = std::fs::read_dir(antigravity_dir()?.join("conversations")).ok()?;
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "db" {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            if modified < since {
+                return None;
+            }
+            let id = path.file_stem()?.to_str()?.to_string();
+            (!exclude.contains(&id)).then_some((modified, id))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, id)| id)
+}
+
 /// Static provider definitions for Phase 1.
 #[allow(dead_code)]
 pub struct ProviderDef {
@@ -46,7 +102,6 @@ pub struct ProviderDef {
     pub version_args: &'static [&'static str],
     pub install_hint: &'static str,
     pub docs_url: &'static str,
-    pub auto_approve_flag: Option<&'static str>,
     pub prompt_mode: PromptMode,
     pub resume_mode: ResumeMode,
     pub session_id_mode: SessionIdMode,
@@ -62,7 +117,6 @@ const PROVIDERS: &[ProviderDef] = &[
         version_args: &["--version"],
         install_hint: "Install with: npm install -g @anthropic-ai/claude-code",
         docs_url: "https://docs.anthropic.com/en/docs/claude-code",
-        auto_approve_flag: Some("--dangerously-skip-permissions"),
         prompt_mode: PromptMode::ArgvTail,
         resume_mode: ResumeMode::SessionId {
             session_flag: "--session-id",
@@ -81,7 +135,6 @@ const PROVIDERS: &[ProviderDef] = &[
         version_args: &["--version"],
         install_hint: "Install with: npm install -g @openai/codex",
         docs_url: "https://github.com/openai/codex",
-        auto_approve_flag: Some("--full-auto"),
         prompt_mode: PromptMode::ArgvTail,
         resume_mode: ResumeMode::ThreadId {
             resume_command: "resume",
@@ -97,41 +150,26 @@ const PROVIDERS: &[ProviderDef] = &[
         version_args: &["--version"],
         install_hint: "Install OMP from your Nix/home-manager configuration or package manager.",
         docs_url: "https://github.com/can1357/oh-my-pi",
-        auto_approve_flag: Some("--auto-approve"),
         prompt_mode: PromptMode::ArgvTail,
-        resume_mode: ResumeMode::GenericFlag {
-            flags: &["--continue"],
-        },
-        session_id_mode: SessionIdMode::None,
-        default_args: &[],
-    },
-    ProviderDef {
-        id: ProviderId::Gemini,
-        label: "Gemini CLI",
-        cli_command: "gemini",
-        detect_commands: &["gemini"],
-        version_args: &["--version"],
-        install_hint: "",
-        docs_url: "https://github.com/google-gemini/gemini-cli",
-        auto_approve_flag: Some("--yolo"),
-        prompt_mode: PromptMode::FlagThenValue { flag: "-i" },
-        resume_mode: ResumeMode::GenericFlag {
-            flags: &["--resume", "latest"],
-        },
-        session_id_mode: SessionIdMode::None,
-        default_args: &[],
-    },
-    ProviderDef {
-        id: ProviderId::Fresh,
-        label: "Fresh",
-        cli_command: "fresh",
-        detect_commands: &["fresh"],
-        version_args: &["--version"],
-        install_hint: "Fresh is not installed",
-        docs_url: "",
-        auto_approve_flag: None,
-        prompt_mode: PromptMode::KeystrokeInjection,
+        // `--continue` depends on the per-session dir; session_start appends it.
         resume_mode: ResumeMode::None,
+        session_id_mode: SessionIdMode::None,
+        default_args: &[],
+    },
+    ProviderDef {
+        id: ProviderId::Antigravity,
+        label: "Antigravity",
+        cli_command: "agy",
+        detect_commands: &["agy"],
+        version_args: &["--version"],
+        install_hint: "Install the Antigravity CLI (agy).",
+        docs_url: "https://antigravity.google",
+        prompt_mode: PromptMode::FlagThenValue {
+            flag: "--prompt-interactive",
+        },
+        resume_mode: ResumeMode::ConversationId {
+            flag: "--conversation",
+        },
         session_id_mode: SessionIdMode::None,
         default_args: &[],
     },
@@ -143,7 +181,6 @@ const PROVIDERS: &[ProviderDef] = &[
         version_args: &["--version"],
         install_hint: "",
         docs_url: "",
-        auto_approve_flag: None,
         prompt_mode: PromptMode::KeystrokeInjection,
         resume_mode: ResumeMode::None,
         session_id_mode: SessionIdMode::None,
@@ -249,7 +286,6 @@ impl ProviderService {
     /// Build a provider-specific argument vector for session start/resume.
     pub fn build_start_args(
         provider_id: &str,
-        auto_approve: bool,
         resume_token: Option<&str>,
         session_app_id: Option<&str>,
         initial_prompt: Option<&str>,
@@ -285,19 +321,11 @@ impl ProviderService {
                     args.push(thread_id.to_string());
                 }
             }
-            ResumeMode::GenericFlag { flags } => {
-                // resume_token being Some signals "this is a restart, use resume flags"
-                if resume_token.is_some() {
-                    for flag in *flags {
-                        args.push((*flag).to_string());
-                    }
+            ResumeMode::ConversationId { flag } => {
+                if let Some(conversation_id) = resume_token {
+                    args.push((*flag).to_string());
+                    args.push(conversation_id.to_string());
                 }
-            }
-        }
-
-        if auto_approve {
-            if let Some(flag) = definition.auto_approve_flag {
-                args.push(flag.to_string());
             }
         }
 

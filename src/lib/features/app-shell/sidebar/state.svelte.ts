@@ -1,9 +1,9 @@
-export type SidebarView = 'git' | 'sessions' | 'files' | 'issues'
+export type SidebarView = 'files' | 'git' | 'issues'
 export type GitSidebarTab = 'graph' | 'stashes' | 'branches'
 
 let sidebarWidth = $state(280)
 let sidebarCollapsed = $state(false)
-let sidebarView = $state<SidebarView>('sessions')
+let sidebarView = $state<SidebarView>('files')
 let gitSidebarTab = $state<GitSidebarTab>('graph')
 let gitBranchesFocusRequests = $state<Map<string, number>>(new Map())
 
@@ -43,13 +43,13 @@ export function setGitSidebarTab(tab: GitSidebarTab) {
   gitSidebarTab = tab
 }
 
-export function requestGitBranchesFocus(projectId: string) {
+export function requestGitBranchesFocus(folderPath: string) {
   gitSidebarTab = 'branches'
   const next = new Map(gitBranchesFocusRequests)
-  next.set(projectId, (next.get(projectId) ?? 0) + 1)
+  next.set(folderPath, (next.get(folderPath) ?? 0) + 1)
   gitBranchesFocusRequests = next
 }
 
-export function getGitBranchesFocusRequest(projectId: string): number {
-  return gitBranchesFocusRequests.get(projectId) ?? 0
+export function getGitBranchesFocusRequest(folderPath: string): number {
+  return gitBranchesFocusRequests.get(folderPath) ?? 0
 }

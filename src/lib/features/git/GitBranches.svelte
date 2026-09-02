@@ -79,14 +79,12 @@
   import { SvelteMap } from 'svelte/reactivity'
 
   let {
-    projectPath,
-    projectId,
+    folderPath,
     branchColorMap,
     onConflictNotice,
     onFocusFileTree
   }: {
-    projectPath: string
-    projectId: string
+    folderPath: string
     branchColorMap?: Map<string, string>
     /** Surface a non-modal notice when a merge / rebase ends in
      * conflicts so the user knows to look at the working-tree pane. */
@@ -96,7 +94,7 @@
     onFocusFileTree?: () => void
   } = $props()
 
-  let entry = $derived(branches.byProject.get(projectId))
+  let entry = $derived(branches.byFolder.get(folderPath))
   let prefs = $derived(entry?.prefs)
 
   let search = $state('')
@@ -145,11 +143,11 @@
   // Mount: load entry. Don't depend on `entry` here; the load
   // populates it.
   $effect(() => {
-    void branches.loadFor(projectId, projectPath)
+    void branches.loadFor(folderPath)
   })
 
   $effect(() => {
-    const path = projectPath
+    const path = folderPath
     if (path === currentHistoryPath) return
     currentHistoryPath = path
     expandedBranch = null
@@ -159,7 +157,7 @@
 
   async function runFetch() {
     try {
-      await branches.fetchBranches(projectId, projectPath)
+      await branches.fetchBranches(folderPath)
     } catch (e) {
       console.error('Fetch failed:', e)
     }
@@ -209,7 +207,7 @@
   async function attemptCheckout(name: string) {
     if (!name) return
     try {
-      await branches.safeCheckout(projectId, projectPath, name)
+      await branches.safeCheckout(folderPath, name)
     } catch (e) {
       if (branches.isDirtyCheckoutError(e)) {
         checkoutTarget = name
@@ -223,15 +221,15 @@
   }
 
   function toggleLayout() {
-    branches.setLayout(projectId, prefs?.layout === 'tree' ? 'list' : 'tree')
+    branches.setLayout(folderPath, prefs?.layout === 'tree' ? 'list' : 'tree')
   }
 
   function toggleSort() {
-    branches.setSort(projectId, prefs?.sort === 'alpha' ? 'date' : 'alpha')
+    branches.setSort(folderPath, prefs?.sort === 'alpha' ? 'date' : 'alpha')
   }
 
   function toggleShowRemote() {
-    branches.setShowRemote(projectId, !prefs?.showRemote)
+    branches.setShowRemote(folderPath, !prefs?.showRemote)
   }
 
   function graphColor(branch: BranchSummary): string | null {
@@ -245,9 +243,9 @@
   async function fetchCommitDetail(hash: string): Promise<CommitDetail | null> {
     const cached = commitDetailCache.get(hash)
     if (cached) return cached
-    const path = projectPath
+    const path = folderPath
     const detail = await backend.git.getCommitDetail(path, hash)
-    if (path === projectPath && detail) commitDetailCache.set(hash, detail)
+    if (path === folderPath && detail) commitDetailCache.set(hash, detail)
     return detail
   }
 
@@ -267,9 +265,9 @@
     })
 
     try {
-      const path = projectPath
+      const path = folderPath
       const commits = await backend.git.branch.commits(path, branch.name, requestLimit)
-      if (path !== projectPath) return
+      if (path !== folderPath) return
       historyByBranch.set(branch.name, {
         commits: commits.slice(0, limit),
         limit,
@@ -303,14 +301,14 @@
   $effect(() => {
     if (!entry) return
     if (entry.opState !== 'idle') {
-      branches.pollOpState(projectId, projectPath)
+      branches.pollOpState(folderPath)
     }
-    return () => branches.stopOpStatePolling(projectId)
+    return () => branches.stopOpStatePolling(folderPath)
   })
 
   let lastFocusRequest = $state(0)
   $effect(() => {
-    const req = getGitBranchesFocusRequest(projectId)
+    const req = getGitBranchesFocusRequest(folderPath)
     if (req <= lastFocusRequest) return
     lastFocusRequest = req
     queueMicrotask(() => searchInputEl?.focus())
@@ -358,12 +356,12 @@
     if (!proceed) return
 
     try {
-      await backend.git.branch.rebaseOnto(projectPath, target)
-      await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+      await backend.git.branch.rebaseOnto(folderPath, target)
+      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
     } catch (e) {
       const msg = getErrorMessage(e)
       if (msg.toLowerCase().includes('conflict')) {
-        await branches.refresh(projectId, projectPath)
+        await branches.refresh(folderPath)
         return
       }
       notify.error('Rebase failed', msg)
@@ -392,19 +390,19 @@
     if (action.kind === 'disabled') return
     try {
       if (action.kind === 'push' && branch.isCurrent) {
-        await backend.git.push(projectPath)
+        await backend.git.push(folderPath)
       } else if (action.kind === 'pull' && branch.isCurrent) {
-        await backend.git.pull(projectPath)
+        await backend.git.pull(folderPath)
       } else if (action.kind === 'pull') {
         // Non-current branch: fast-forward against its upstream.
-        await backend.git.branch.fastForward(projectPath, branch.name)
+        await backend.git.branch.fastForward(folderPath, branch.name)
       } else if (action.kind === 'fetch') {
-        await backend.git.fetch(projectPath)
+        await backend.git.fetch(folderPath)
       } else {
         // Push for a non-current branch isn't a v1 case; refuse.
         return
       }
-      await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
     } catch (e) {
       console.error('Smart action failed:', e)
     }
@@ -414,31 +412,31 @@
 
   async function continueOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(projectPath)
-      else if (entry?.opState === 'merging') await backend.git.commit(projectPath, 'Merge')
+      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(folderPath)
+      else if (entry?.opState === 'merging') await backend.git.commit(folderPath, 'Merge')
     } catch (e) {
       console.error('Continue failed:', e)
     }
-    await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+    await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
   }
 
   async function skipOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseSkip(projectPath)
+      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseSkip(folderPath)
     } catch (e) {
       console.error('Skip failed:', e)
     }
-    await branches.refresh(projectId, projectPath)
+    await branches.refresh(folderPath)
   }
 
   async function abortOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseAbort(projectPath)
-      else if (entry?.opState === 'merging') await backend.git.branch.mergeAbort(projectPath)
+      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseAbort(folderPath)
+      else if (entry?.opState === 'merging') await backend.git.branch.mergeAbort(folderPath)
     } catch (e) {
       console.error('Abort failed:', e)
     }
-    await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+    await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
   }
 
   function handleConflict(message: string) {
@@ -461,8 +459,8 @@
 
   async function fastForwardFromMenu(name: string) {
     try {
-      await backend.git.branch.fastForward(projectPath, name)
-      await branches.refresh(projectId, projectPath)
+      await backend.git.branch.fastForward(folderPath, name)
+      await branches.refresh(folderPath)
     } catch (e) {
       console.error('Fast-forward failed:', e)
     }
@@ -472,7 +470,7 @@
     if (branch.kind !== 'remote') return
     const localName = localNameForRemoteRef(branch.name)
     try {
-      await branches.safeCheckoutRemoteAsLocal(projectId, projectPath, branch.name, localName)
+      await branches.safeCheckoutRemoteAsLocal(folderPath, branch.name, localName)
     } catch (e) {
       if (branches.isDirtyCheckoutError(e)) {
         checkoutTarget = localName
@@ -904,21 +902,20 @@
     branchName={checkoutTarget}
     remoteBranchName={checkoutRemoteTarget}
     summary={checkoutSummary}
-    {projectId}
-    {projectPath}
+    {folderPath}
   />
 {/if}
 
 {#if createOpen}
-  <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {projectId} {projectPath} />
+  <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {folderPath} />
 {/if}
 
 {#if renameOpen}
-  <RenameBranchDialog bind:open={renameOpen} oldName={renameTarget} {projectId} {projectPath} />
+  <RenameBranchDialog bind:open={renameOpen} oldName={renameTarget} {folderPath} />
 {/if}
 
 {#if deleteOpen && deleteBranch}
-  <DeleteBranchDialog bind:open={deleteOpen} branch={deleteBranch} {projectId} {projectPath} />
+  <DeleteBranchDialog bind:open={deleteOpen} branch={deleteBranch} {folderPath} />
 {/if}
 
 {#if upstreamOpen}
@@ -926,8 +923,7 @@
     bind:open={upstreamOpen}
     branchName={upstreamTarget}
     initialUpstream={upstreamInitial}
-    {projectId}
-    {projectPath}
+    {folderPath}
   />
 {/if}
 
@@ -937,11 +933,10 @@
     source={mergeSource}
     current={currentName}
     onConflict={handleConflict}
-    {projectId}
-    {projectPath}
+    {folderPath}
   />
 {/if}
 
 {#if compareOpen}
-  <CompareBranchModal bind:open={compareOpen} branchName={compareTarget} {projectId} {projectPath} />
+  <CompareBranchModal bind:open={compareOpen} branchName={compareTarget} {folderPath} />
 {/if}

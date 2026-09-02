@@ -9,13 +9,11 @@
 
   let {
     stashIndex,
-    projectId,
-    projectPath,
+    folderPath,
     initialFile = null
   }: {
     stashIndex: number
-    projectId: string
-    projectPath: string
+    folderPath: string
     initialFile?: string | null
   } = $props()
 
@@ -28,7 +26,7 @@
 
   $effect(() => {
     const idx = stashIndex
-    const path = projectPath
+    const path = folderPath
     stashLoad.run(idx, async (isCurrent) => {
       stashEntry = null
       files = []
@@ -69,6 +67,6 @@
       </div>
     </div>
 
-    <DiffStack {files} {loading} {initialFile} idPrefix="stash-file" {projectId} {projectPath} {stashIndex} />
+    <DiffStack {files} {loading} {initialFile} idPrefix="stash-file" {folderPath} {stashIndex} />
   </div>
 {/if}

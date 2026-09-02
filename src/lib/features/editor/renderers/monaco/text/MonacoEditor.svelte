@@ -35,8 +35,7 @@
     wordWrap = false,
     onchange,
     uriPath = null,
-    projectId = null,
-    projectPath = null,
+    folderPath = null,
     filePath = null,
     lspEnabled = true,
     gitDiffRevision = ''
@@ -49,8 +48,7 @@
     wordWrap?: boolean
     onchange?: (value: string) => void
     uriPath?: string | null
-    projectId?: string | null
-    projectPath?: string | null
+    folderPath?: string | null
     filePath?: string | null
     lspEnabled?: boolean
     gitDiffRevision?: string
@@ -62,8 +60,7 @@
   let model = $state<import('monaco-editor').editor.ITextModel | null>(null)
   let modelHandle: TextModelHandle | null = null
   let indentRainbow:
-    | import('$lib/features/editor/renderers/monaco/text/indentRainbow.svelte').IndentRainbowHandle
-    | null = null
+    import('$lib/features/editor/renderers/monaco/text/indentRainbow.svelte').IndentRainbowHandle | null = null
   let gitHunkReview: GitHunkReviewHandle | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
@@ -87,7 +84,7 @@
         ? null
         : acquireTextModel({
             monaco: m,
-            projectId,
+            folderPath,
             tabId,
             filePath,
             uriPath,
@@ -150,8 +147,8 @@
       const retainedViewState = modelHandle?.restoreViewState()
       if (retainedViewState) editor.restoreViewState(retainedViewState)
 
-      if (lspEnabled && model && projectId && projectPath) {
-        void attachLspModel(model, { projectId, projectPath })
+      if (lspEnabled && model && folderPath) {
+        void attachLspModel(model, { folderPath })
       }
 
       if (editor) {
@@ -171,7 +168,7 @@
             editor.revealPositionInCenter(target)
           }
         }
-        registerMountedTextSurface(projectId, tabId, mountedController)
+        registerMountedTextSurface(tabId, mountedController)
 
         const revealTarget = takePendingTextReveal(tabId)
         if (revealTarget?.kind === 'range') {
@@ -279,7 +276,7 @@
 
   $effect(() => {
     const revision = gitDiffRevision
-    if (!editor || !monaco || !model || readonly || !projectId || !projectPath || !filePath) {
+    if (!editor || !monaco || !model || readonly || !folderPath || !filePath) {
       gitHunkReview?.dispose()
       gitHunkReview = null
       return
@@ -290,8 +287,7 @@
         monaco,
         editor,
         model,
-        projectId,
-        projectPath,
+        folderPath,
         filePath,
         language
       })

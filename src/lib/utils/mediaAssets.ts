@@ -3,23 +3,23 @@ import { dirname, normalizeAbsolutePath } from '$lib/utils/paths'
 
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
-export function mediaAssetUrl(projectPath: string, filePath: string): string {
-  return convertFileSrc(normalizeAbsolutePath(`${projectPath}/${filePath}`))
+export function mediaAssetUrl(folderPath: string, filePath: string): string {
+  return convertFileSrc(normalizeAbsolutePath(`${folderPath}/${filePath}`))
 }
 
 // Markdown image URLs are document-relative. Browser-relative URLs point at Vite/Tauri chrome, not the repo.
 export function markdownImageSrc(
   href: string | null | undefined,
-  projectPath?: string,
+  folderPath?: string,
   markdownPath?: string | null
 ): string {
   if (!href) return ''
   const trimmed = href.trim()
   if (!trimmed || URL_SCHEME_RE.test(trimmed) || trimmed.startsWith('//')) return trimmed
-  if (!projectPath || !markdownPath) return trimmed
+  if (!folderPath || !markdownPath) return trimmed
 
   const localPath = resolveMarkdownLocalPath(markdownPath, trimmed)
-  return localPath ? mediaAssetUrl(projectPath, localPath) : trimmed
+  return localPath ? mediaAssetUrl(folderPath, localPath) : trimmed
 }
 
 function resolveMarkdownLocalPath(markdownPath: string, href: string): string | null {

@@ -5,8 +5,7 @@
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { allProviders } from '$lib/features/sessions/providers/catalog'
-  import { addProject } from '$lib/features/projects/state.svelte'
-  import { openProject } from '$lib/features/workbench/state.svelte'
+  import { openFolder } from '$lib/features/workbench/state.svelte'
   import {
     getDiscoveredProjects,
     isActivityMapLoading,
@@ -25,28 +24,16 @@
 
   let projects = $derived(getDiscoveredProjects())
   let loading = $derived(isActivityMapLoading())
-
-  // Only show projects not already in Sworm
-  let externalProjects = $derived(projects.filter((p) => !p.is_sworm_project))
+  // Recent folders already appear in the primary list.
+  let externalProjects = $derived(projects.filter((folder) => !folder.is_recent))
 
   onMount(() => {
     loadActivityMap()
   })
 
-  async function handleOpen(project: DiscoveredProject) {
-    if (!project.path_exists) return
-    if (project.sworm_project_id) {
-      openProject(project.sworm_project_id)
-      return
-    }
-    try {
-      const added = await addProject(project.path)
-      openProject(added.id)
-    } catch (e) {
-      notify.error('Open project failed', getErrorMessage(e))
-    }
+  function handleOpen(folder: DiscoveredProject) {
+    if (folder.path_exists) void openFolder(folder.path)
   }
-
   async function handleRefresh() {
     try {
       await refreshActivityMap()
@@ -73,7 +60,7 @@
       <h2 class="text-xs tracking-widest text-muted uppercase">Activity</h2>
       <InfoTooltip ariaLabel="What is Activity?">
         <p class="max-w-56 text-sm leading-snug">
-          Projects where you've used coding agents on this machine. Scanned locally from CLI history — nothing leaves
+          Folders where you've used coding agents on this machine. Scanned locally from CLI history — nothing leaves
           your device.
         </p>
       </InfoTooltip>
@@ -82,7 +69,7 @@
       </IconButton>
     </div>
 
-    <div class="scrollbar-none flex gap-2.5 overflow-x-auto pb-1">
+    <div class="flex scrollbar-none gap-2.5 overflow-x-auto pb-1">
       {#each externalProjects.slice(0, 12) as project, i (project.path)}
         <BlurFade delay={0.1 + i * 0.06} duration={0.35} direction="up" offset={6}>
           <button

@@ -1,47 +1,15 @@
 <script lang="ts">
-  import { backend } from '$lib/api/backend'
   import DiscoveredProjectsPanel from '$lib/features/activity-map/DiscoveredProjectsPanel.svelte'
   import StageView from '$lib/components/layout/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
-  import { addProject, getProjects } from '$lib/features/projects/state.svelte'
-  import { notify } from '$lib/features/notifications/state.svelte'
-  import { getActiveProjectId, openProject } from '$lib/features/workbench/state.svelte'
-  import { hideProjectPicker, isProjectPickerOverride } from '$lib/features/app-shell/project-picker/state.svelte'
+  import { openFolderPicker } from '$lib/features/app-actions/actions.svelte'
+  import { getRecentFolders } from '$lib/features/folders/state.svelte'
+  import { openFolder } from '$lib/features/workbench/state.svelte'
   import { basename, parentPath } from '$lib/utils/paths'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { FolderOpen, Worm } from '$lib/icons/lucideExports'
 
-  let projects = $derived([...getProjects()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)))
-
-  async function handleOpen() {
-    try {
-      const path = await backend.projects.selectDirectory()
-      if (path) {
-        const project = await addProject(path)
-        openProject(project.id)
-      }
-    } catch (e) {
-      notify.error('Open project failed', getErrorMessage(e))
-    }
-  }
-
-  function dirName(path: string): string {
-    return basename(path)
-  }
-
-  // Esc dismisses the picker only when it's an override on top of a
-  // real active project. Without an active project there's nowhere to
-  // go back to, so we let the key fall through.
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Escape') return
-    if (!isProjectPickerOverride()) return
-    if (!getActiveProjectId()) return
-    e.preventDefault()
-    hideProjectPicker()
-  }
+  let recent = $derived(getRecentFolders())
 </script>
-
-<svelte:window onkeydown={handleKeydown} />
 
 <StageView>
   <div class="mx-auto w-full max-w-md">
@@ -57,30 +25,30 @@
       <h2 class="mb-3 text-xs tracking-widest text-muted uppercase">Start</h2>
       <button
         class="group flex w-full cursor-pointer items-center gap-2.5 rounded-sm border-none bg-transparent px-0 py-1.5 text-left text-md text-fg transition-colors hover:text-bright focus-visible:shadow-focus-ring focus-visible:outline-none"
-        onclick={handleOpen}
+        onclick={() => void openFolderPicker()}
       >
         <FolderOpen size={15} class="text-muted transition-colors group-hover:text-accent" />
-        Open Repository
+        Open Folder
       </button>
     </BlurFade>
 
     <DiscoveredProjectsPanel />
 
-    {#if projects.length > 0}
+    {#if recent.length > 0}
       <BlurFade delay={0.25} duration={0.4} direction="up" offset={8}>
         <h2 class="mt-8 mb-3 flex items-center gap-1.5 text-xs tracking-widest text-muted uppercase">Recent</h2>
         <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
-          {#each projects.slice(0, 8) as project (project.id)}
+          {#each recent.slice(0, 8) as path (path)}
             <li>
               <button
                 class="group flex w-full cursor-pointer items-baseline gap-2 rounded-sm border-none bg-transparent px-0 py-1.5 text-left transition-colors focus-visible:shadow-focus-ring focus-visible:outline-none"
-                onclick={() => openProject(project.id)}
+                onclick={() => void openFolder(path)}
               >
                 <span class="truncate text-md text-accent transition-colors group-hover:text-bright">
-                  {dirName(project.path)}
+                  {basename(path)}
                 </span>
                 <span class="truncate text-xs text-subtle transition-colors group-hover:text-muted">
-                  {parentPath(project.path)}
+                  {parentPath(path)}
                 </span>
               </button>
             </li>

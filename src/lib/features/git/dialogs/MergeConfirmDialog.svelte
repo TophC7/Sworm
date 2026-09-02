@@ -9,13 +9,7 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
-  import {
-    DialogContent,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import * as branches from '$lib/features/git/branches.svelte'
   import { refreshGit } from '$lib/features/git/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -24,15 +18,13 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     source,
     current,
     onConflict
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     source: string
     current: string
     onConflict?: (message: string) => void
@@ -43,8 +35,8 @@
   const submitState = runDialogSubmit({
     run: async () => {
       try {
-        await backend.git.branch.merge(projectPath, source, { noFf })
-        await Promise.all([branches.refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+        await backend.git.branch.merge(folderPath, source, { noFf })
+        await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
       } catch (e) {
         const msg = getErrorMessage(e)
         // Conflicts surface as a server error containing 'conflict'.
@@ -59,7 +51,6 @@
     },
     onDone: () => (open = false)
   })
-
 </script>
 
 <DialogRoot bind:open>

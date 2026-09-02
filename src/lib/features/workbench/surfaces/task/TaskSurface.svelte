@@ -8,7 +8,7 @@
   service so the tab title/status badge stay in sync.
 
   @param tab - the TaskTab describing this run
-  @param projectId - the project whose `.sworm/tasks.json` defines the task
+  @param folderPath - the folder whose `.sworm/tasks.json` defines the task
 -->
 
 <script lang="ts">
@@ -16,15 +16,15 @@
   import { onDestroy } from 'svelte'
   import type { TaskTab } from '$lib/features/workbench/model'
   import { findTask } from '$lib/features/tasks/state.svelte'
-  import { reportTaskStatus } from '$lib/features/tasks/service.svelte'
+  import { setTaskTabStatus } from '$lib/features/workbench/state.svelte'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 
   let {
     tab,
-    projectId
+    folderPath
   }: {
     tab: TaskTab
-    projectId: string
+    folderPath: string
   } = $props()
 
   let containerEl = $state<HTMLDivElement | null>(null)
@@ -35,7 +35,7 @@
     const container = containerEl
     if (!container || runId === attachedRunId) return
 
-    const def = findTask(projectId, tab.taskId)
+    const def = findTask(folderPath, tab.taskId)
     if (attachedRunId && attachedRunId !== runId) {
       taskRegistry.detach(attachedRunId)
     }
@@ -43,11 +43,11 @@
     const terminal = taskRegistry.attach(
       {
         runId,
-        projectId,
+        folderPath,
         taskId: tab.taskId,
         activeFilePath: tab.activeFilePath,
         clearBeforeStart: def?.clearOnRerun ?? false,
-        onStatusChange: (status, exitCode) => reportTaskStatus(projectId, tab.id, status, exitCode)
+        onStatusChange: (status, exitCode) => setTaskTabStatus(tab.id, status, exitCode)
       },
       container
     )

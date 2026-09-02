@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { getActiveProject } from '$lib/features/projects/state.svelte'
   import {
+    clearNix,
     detectNix,
     evaluateNix,
     getNixDetection,
     isNixEvaluating,
-    selectNixFile,
-    clearNix
+    selectNixFile
   } from '$lib/features/settings/state/nix.svelte'
-  import { loadProvidersForProject } from '$lib/features/sessions/providers/state.svelte'
+  import { loadProvidersForFolder } from '$lib/features/sessions/providers/state.svelte'
   import { Badge } from '$lib/components/ui/badge'
   import {
     DropdownMenuRoot,
@@ -22,35 +20,22 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
-  let project = $derived(getActiveProject())
-  let detection = $derived(project ? getNixDetection(project.id) : undefined)
-  let evaluatingNow = $derived(project ? isNixEvaluating(project.id) : false)
+  let { folderPath }: { folderPath: string } = $props()
+  let detection = $derived(getNixDetection(folderPath))
+  let evaluatingNow = $derived(isNixEvaluating(folderPath))
   let hasNixFiles = $derived(detection && detection.detected_files.length > 0)
 
-  let mounted = false
-  let lastProjectId: string | null = null
-
-  onMount(() => {
-    mounted = true
-  })
-
-  // Auto-detect when active project changes, and load project-specific
-  // providers if a Nix env was previously evaluated
+  // Detect once per active folder and refresh provider availability when
+  // an evaluated Nix environment contributes commands to PATH.
   $effect(() => {
-    if (!mounted || !project) return
-    if (project.id === lastProjectId) return
-    lastProjectId = project.id
-    void detectNix(project.id).then((det) => {
-      if (det.selected?.status === 'ready') {
-        void loadProvidersForProject(project!.id)
-      }
+    void detectNix(folderPath).then((result) => {
+      if (result.selected?.status === 'ready') void loadProvidersForFolder(folderPath)
     })
   })
 
   async function handleSelect(nixFile: string) {
-    if (!project) return
     try {
-      await selectNixFile(project.id, nixFile)
+      await selectNixFile(folderPath, nixFile)
       notify.success('Selected Nix file', nixFile)
     } catch (error) {
       notify.error('Select Nix file failed', getErrorMessage(error))
@@ -58,13 +43,10 @@
   }
 
   async function handleEvaluate() {
-    if (!project) return
     const notificationId = notify.loading('Evaluating Nix environment')
-
     try {
-      const record = await evaluateNix(project.id)
-      await loadProvidersForProject(project.id)
-
+      const record = await evaluateNix(folderPath)
+      await loadProvidersForFolder(folderPath)
       if (record.status === 'ready') {
         notify.update(notificationId, {
           title: 'Nix environment ready',
@@ -74,7 +56,6 @@
         })
         return
       }
-
       notify.update(notificationId, {
         title: record.status === 'timeout' ? 'Nix evaluation timed out' : 'Nix evaluation failed',
         description: record.error_message ?? record.nix_file,
@@ -92,10 +73,9 @@
   }
 
   async function handleClear() {
-    if (!project) return
     try {
-      await clearNix(project.id)
-      await loadProvidersForProject(project.id)
+      await clearNix(folderPath)
+      await loadProvidersForFolder(folderPath)
       notify.success('Cleared Nix environment')
     } catch (error) {
       notify.error('Clear Nix environment failed', getErrorMessage(error))
@@ -121,7 +101,6 @@
     if (!detection?.selected) return 'Nix available'
     switch (detection.selected.status) {
       case 'ready':
-        return detection.selected.nix_file
       case 'pending':
         return detection.selected.nix_file
       case 'evaluating':

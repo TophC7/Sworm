@@ -1,6 +1,7 @@
 import { backend } from '$lib/api/backend'
-import { refreshAllLspProjectEnvironments } from '$lib/features/editor/lsp/registry'
+import { refreshAllLspFolderEnvironments } from '$lib/features/editor/lsp/registry'
 import { notify } from '$lib/features/notifications/state.svelte'
+import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
 import type { SettingsDiagnostic } from '$lib/types/backend'
 
 let diagnostics = $state<SettingsDiagnostic[]>([])
@@ -11,8 +12,8 @@ export function getSettingsDiagnostics(): SettingsDiagnostic[] {
   return diagnostics
 }
 
-export async function refreshSettingsDiagnostics(projectPath?: string): Promise<void> {
-  const payload = await backend.settings.getEffective(projectPath)
+export async function refreshSettingsDiagnostics(folderPath?: string): Promise<void> {
+  const payload = await backend.settings.getEffective(folderPath)
   setDiagnostics(payload.diagnostics)
 }
 
@@ -21,8 +22,10 @@ export function ensureSettingsDiagnosticsListener(): void {
   listenerBooted = true
   backend.settings
     .onChanged((event) => {
+      // Folder-layer changes only matter for the folder currently in view.
+      if (event.folder_path != null && event.folder_path !== getActiveFolderPath()) return
       setDiagnostics(event.diagnostics)
-      void refreshAllLspProjectEnvironments()
+      void refreshAllLspFolderEnvironments()
     })
     .catch((error) => {
       listenerBooted = false

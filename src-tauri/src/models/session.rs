@@ -1,27 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
-    pub id: String,
-    pub project_id: String,
-    pub provider_id: String,
-    pub title: String,
-    pub cwd: String,
-    pub branch: Option<String>,
-    pub status: String,
-    pub shared_workspace: bool,
-    pub auto_approve: bool,
-    pub provider_resume_token: Option<String>,
-    pub archived: bool,
-    pub created_at: String,
-    pub updated_at: String,
-    pub last_started_at: Option<String>,
-    pub last_stopped_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectSessionGroup {
-    pub project_id: String,
-    pub sessions: Vec<Session>,
-    pub archived_sessions: Vec<Session>,
+/// Result of `session_start`: whether the provider resumed an existing
+/// conversation (true) or started a new one (false).
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionStartInfo {
+    pub resumed: bool,
 }

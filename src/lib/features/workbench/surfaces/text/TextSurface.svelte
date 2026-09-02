@@ -4,16 +4,14 @@
 
   let {
     tab = null,
-    locked = false,
-    projectId,
-    projectPath
+    folderPath,
+    locked = false
   }: {
     // SurfaceHost can clear the active tab before this branch fully tears
     // down, so tolerate a transient null during close.
     tab: TextTab | null
+    folderPath: string
     locked?: boolean
-    projectId: string
-    projectPath: string
   } = $props()
 
   interface RenderedTextTab extends Pick<TextTab, 'id' | 'filePath' | 'gitRef' | 'refLabel'> {
@@ -35,7 +33,7 @@
   }
 
   // Keep the last concrete tab props around until this branch unmounts.
-  // Without this, a split-pane close can null out `tab` before the keyed
+  // Without this, a tab close can null out `tab` before the keyed
   // FileEditor subtree finishes tearing down, and Svelte ends up reading
   // `tab.id` during destruction.
   let renderedTab = $state<RenderedTextTab | null>(null)
@@ -52,8 +50,7 @@
     <FileEditor
       tabId={renderedTab.id}
       filePath={renderedTab.filePath}
-      {projectPath}
-      {projectId}
+      {folderPath}
       gitRef={renderedTab.gitRef}
       refLabel={renderedTab.refLabel}
       initialTemporary={renderedTab.initialTemporary}

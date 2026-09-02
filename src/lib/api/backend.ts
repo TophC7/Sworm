@@ -47,12 +47,12 @@ import type {
   NixDetection,
   NixDiagnostic,
   NixEnvRecord,
-  Project,
-  ProjectSessionGroup,
+  FolderInfo,
   ProviderConfig,
   ProviderStatus,
   PtyEvent,
-  Session,
+  SessionSpec,
+  SessionStartInfo,
   SettingsChangedEvent,
   SettingsFileResult,
   SettingsLayerPayload,
@@ -89,6 +89,12 @@ export const backend = {
     envProbe(): Promise<EnvProbeResult> {
       return invoke<EnvProbeResult>('env_probe')
     },
+    stateGet(key: string): Promise<string | null> {
+      return invoke<string | null>('app_state_get', { key })
+    },
+    statePut(key: string, valueJson: string): Promise<void> {
+      return invoke<void>('app_state_put', { key, valueJson })
+    },
     /** Copy file paths to the system clipboard in file-manager format. */
     clipboardCopyFiles(paths: string[], op: 'copy' | 'cut'): Promise<void> {
       return invoke<void>('clipboard_copy_files', { paths, op })
@@ -118,32 +124,16 @@ export const backend = {
     }
   },
 
-  projects: {
+  folders: {
     selectDirectory(): Promise<string | null> {
-      return invoke<string | null>('project_select_directory')
+      return invoke<string | null>('folder_select_directory')
     },
-    add(path: string): Promise<Project> {
-      return invoke<Project>('project_add', { path })
-    },
-    /**
-     * Re-probe git for a project and persist the resolved branch +
-     * base ref. Called immediately after `add` to backfill metadata
-     * that the synchronous insert deliberately skips.
-     */
-    refreshGit(id: string): Promise<Project> {
-      return invoke<Project>('project_refresh_git', { id })
+    /** Canonicalize a folder path; rejects missing paths and non-directories. */
+    resolve(path: string): Promise<FolderInfo> {
+      return invoke<FolderInfo>('folder_resolve', { path })
     },
     openInTerminal(path: string): Promise<void> {
-      return invoke<void>('project_open_in_terminal', { path })
-    },
-    list(): Promise<Project[]> {
-      return invoke<Project[]>('project_list')
-    },
-    get(id: string): Promise<Project> {
-      return invoke<Project>('project_get', { id })
-    },
-    remove(id: string): Promise<void> {
-      return invoke<void>('project_remove', { id })
+      return invoke<void>('folder_open_in_terminal', { path })
     }
   },
 
@@ -154,27 +144,12 @@ export const backend = {
     refresh(): Promise<ProviderStatus[]> {
       return invoke<ProviderStatus[]>('provider_refresh')
     },
-    listForProject(projectId: string): Promise<ProviderStatus[]> {
-      return invoke<ProviderStatus[]>('provider_list_for_project', {
-        projectId
-      })
+    listForFolder(folderPath: string): Promise<ProviderStatus[]> {
+      return invoke<ProviderStatus[]>('provider_list_for_folder', { folderPath })
     }
   },
 
   sessions: {
-    create(projectId: string, providerId: string, title: string): Promise<Session> {
-      return invoke<Session>('session_create', {
-        projectId,
-        providerId,
-        title
-      })
-    },
-    list(projectId: string): Promise<Session[]> {
-      return invoke<Session[]>('session_list', { projectId })
-    },
-    get(id: string): Promise<Session> {
-      return invoke<Session>('session_get', { id })
-    },
     createOutputChannel(onOutput: (data: number[]) => void): Channel<number[]> {
       const output = new Channel<number[]>()
       output.onmessage = onOutput
@@ -185,31 +160,28 @@ export const backend = {
       events.onmessage = onEvent
       return events
     },
-    startWithChannels(
-      sessionId: string,
+    /**
+     * Spawn the provider process for a session tab. `resumeToken` is the
+     * provider identity bound on a previous run (Codex thread, Antigravity
+     * conversation); the backend validates it and reports `resumed`.
+     */
+    start(
+      spec: SessionSpec,
       cols: number,
       rows: number,
       output: Channel<number[]>,
       events: Channel<PtyEvent>
-    ): Promise<void> {
-      return invoke<void>('session_start', {
-        sessionId,
+    ): Promise<SessionStartInfo> {
+      return invoke<SessionStartInfo>('session_start', {
+        sessionId: spec.sessionId,
+        folderPath: spec.folderPath,
+        providerId: spec.providerId,
+        resumeToken: spec.resumeToken,
         cols,
         rows,
         output,
         events
       })
-    },
-    start(
-      sessionId: string,
-      cols: number,
-      rows: number,
-      onOutput: (data: number[]) => void,
-      onEvent: (event: PtyEvent) => void
-    ): Promise<void> {
-      const output = backend.sessions.createOutputChannel(onOutput)
-      const events = backend.sessions.createEventChannel(onEvent)
-      return backend.sessions.startWithChannels(sessionId, cols, rows, output, events)
     },
     write(sessionId: string, data: Uint8Array): Promise<void> {
       return invoke<void>('session_write', {
@@ -223,57 +195,17 @@ export const backend = {
     stop(sessionId: string): Promise<void> {
       return invoke<void>('session_stop', { sessionId })
     },
-    reset(sessionId: string): Promise<void> {
-      return invoke<void>('session_reset', { sessionId })
-    },
-    remove(sessionId: string): Promise<void> {
-      return invoke<void>('session_remove', { sessionId })
-    },
-    archive(sessionId: string): Promise<void> {
-      return invoke<void>('session_archive', { sessionId })
-    },
-    unarchive(sessionId: string): Promise<void> {
-      return invoke<void>('session_unarchive', { sessionId })
-    },
-    listArchived(projectId: string): Promise<Session[]> {
-      return invoke<Session[]>('session_list_archived', { projectId })
-    },
-    listProjectGroups(projectIds: string[]): Promise<ProjectSessionGroup[]> {
-      return invoke<ProjectSessionGroup[]>('session_list_project_groups', { projectIds })
-    },
-    /**
-     * Return whether the backend currently holds a live PTY for this
-     * session. Distinct from `status`; survives the truth even after
-     * a crash/restart that left a stale "running" row.
-     */
+    /** Whether the backend currently holds a live PTY for this session. */
     isAlive(sessionId: string): Promise<boolean> {
       return invoke<boolean>('session_is_alive', { sessionId })
     },
-    /**
-     * Fetch the persisted terminal transcript as base64-encoded bytes.
-     * Used by the terminal mount path to replay history before any
-     * live attach.
-     */
-    getTranscript(sessionId: string, limitBytes?: number): Promise<string> {
-      return invoke<string>('session_transcript_get', {
-        sessionId,
-        limitBytes: limitBytes ?? null
-      })
-    }
-  },
-
-  workspace: {
-    getState(projectId: string): Promise<string | null> {
-      return invoke<string | null>('workspace_state_get', { projectId })
+    /** Kill the PTY if alive and drop Sworm-owned provider state (OMP session dir). */
+    discard(sessionId: string): Promise<void> {
+      return invoke<void>('session_discard', { sessionId })
     },
-    putState(projectId: string, stateJson: string): Promise<void> {
-      return invoke<void>('workspace_state_put', { projectId, stateJson })
-    },
-    appStateGet(key: string): Promise<string | null> {
-      return invoke<string | null>('app_state_get', { key })
-    },
-    appStatePut(key: string, valueJson: string): Promise<void> {
-      return invoke<void>('app_state_put', { key, valueJson })
+    /** Remove Sworm-owned provider state for sessions no open tab references. */
+    pruneOrphans(keepSessionIds: string[]): Promise<void> {
+      return invoke<void>('session_prune_orphans', { keepSessionIds })
     }
   },
 
@@ -495,32 +427,6 @@ export const backend = {
     }
   },
 
-  fresh: {
-    openFile(projectId: string, projectPath: string, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_file', {
-        projectId,
-        projectPath,
-        filePath
-      })
-    },
-    openAtCommit(projectId: string, projectPath: string, commitHash: string, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_at_commit', {
-        projectId,
-        projectPath,
-        commitHash,
-        filePath
-      })
-    },
-    openAtStash(projectId: string, projectPath: string, stashIndex: number, filePath: string): Promise<void> {
-      return invoke<void>('editor_open_at_stash', {
-        projectId,
-        projectPath,
-        stashIndex,
-        filePath
-      })
-    }
-  },
-
   editor: {
     /** Return file content at a git revision (ref and path validated server-side). */
     showFile(projectPath: string, gitRef: string, filePath: string): Promise<string> {
@@ -580,26 +486,26 @@ export const backend = {
   },
 
   nix: {
-    detect(projectId: string): Promise<NixDetection> {
-      return invoke<NixDetection>('nix_detect', { projectId })
+    detect(folderPath: string): Promise<NixDetection> {
+      return invoke<NixDetection>('nix_detect', { folderPath })
     },
-    select(projectId: string, nixFile: string): Promise<NixEnvRecord> {
-      return invoke<NixEnvRecord>('nix_select', { projectId, nixFile })
+    select(folderPath: string, nixFile: string): Promise<NixEnvRecord> {
+      return invoke<NixEnvRecord>('nix_select', { folderPath, nixFile })
     },
-    evaluate(projectId: string): Promise<NixEnvRecord> {
-      return invoke<NixEnvRecord>('nix_evaluate', { projectId })
+    evaluate(folderPath: string): Promise<NixEnvRecord> {
+      return invoke<NixEnvRecord>('nix_evaluate', { folderPath })
     },
-    clear(projectId: string): Promise<void> {
-      return invoke<void>('nix_clear', { projectId })
+    clear(folderPath: string): Promise<void> {
+      return invoke<void>('nix_clear', { folderPath })
     },
-    status(projectId: string): Promise<NixEnvRecord | null> {
-      return invoke<NixEnvRecord | null>('nix_status', { projectId })
+    status(folderPath: string): Promise<NixEnvRecord | null> {
+      return invoke<NixEnvRecord | null>('nix_status', { folderPath })
     },
     format(content: string): Promise<string> {
       return invoke<string>('nix_format', { content })
     },
-    lint(projectPath: string, filePath: string): Promise<NixDiagnostic[]> {
-      return invoke<NixDiagnostic[]>('nix_lint', { projectPath, filePath })
+    lint(folderPath: string, filePath: string): Promise<NixDiagnostic[]> {
+      return invoke<NixDiagnostic[]>('nix_lint', { folderPath, filePath })
     }
   },
 
@@ -683,106 +589,106 @@ export const backend = {
   },
 
   issues: {
-    list(projectId: string, filters: IssueListFilters = {}): Promise<Issue[]> {
-      return invoke<Issue[]>('issues_list', { projectId, filters })
+    list(folderPath: string, filters: IssueListFilters = {}): Promise<Issue[]> {
+      return invoke<Issue[]>('issues_list', { folderPath, filters })
     },
-    ready(projectId: string, filters: IssueReadyFilters | number = {}): Promise<Issue[]> {
+    ready(folderPath: string, filters: IssueReadyFilters | number = {}): Promise<Issue[]> {
       const readyFilters = typeof filters === 'number' ? { limit: filters } : filters
       return invoke<Issue[]>('issues_ready', {
-        projectId,
+        folderPath,
         filters: readyFilters
       })
     },
-    search(projectId: string, query: string, filters: IssueSearchFilters = {}): Promise<Issue[]> {
-      return invoke<Issue[]>('issues_search', { projectId, query, filters })
+    search(folderPath: string, query: string, filters: IssueSearchFilters = {}): Promise<Issue[]> {
+      return invoke<Issue[]>('issues_search', { folderPath, query, filters })
     },
-    get(projectId: string, issueId: string): Promise<IssueDetail> {
-      return invoke<IssueDetail>('issues_get', { projectId, issueId })
+    get(folderPath: string, issueId: string): Promise<IssueDetail> {
+      return invoke<IssueDetail>('issues_get', { folderPath, issueId })
     },
-    create(projectId: string, input: IssueCreateInput): Promise<Issue> {
-      return invoke<Issue>('issues_create', { projectId, input })
+    create(folderPath: string, input: IssueCreateInput): Promise<Issue> {
+      return invoke<Issue>('issues_create', { folderPath, input })
     },
-    update(projectId: string, issueId: string, patch: IssueUpdateInput): Promise<Issue> {
-      return invoke<Issue>('issues_update', { projectId, issueId, patch })
+    update(folderPath: string, issueId: string, patch: IssueUpdateInput): Promise<Issue> {
+      return invoke<Issue>('issues_update', { folderPath, issueId, patch })
     },
-    delete(projectId: string, issueId: string): Promise<void> {
-      return invoke<void>('issues_delete', { projectId, issueId })
+    delete(folderPath: string, issueId: string): Promise<void> {
+      return invoke<void>('issues_delete', { folderPath, issueId })
     },
-    currentGitUser(projectId: string): Promise<string> {
-      return invoke<string>('issue_current_git_user', { projectId })
+    currentGitUser(folderPath: string): Promise<string> {
+      return invoke<string>('issue_current_git_user', { folderPath })
     },
     epics: {
-      create(projectId: string, input: IssueEpicCreateInput): Promise<IssueEpic> {
-        return invoke<IssueEpic>('issue_epics_create', { projectId, input })
+      create(folderPath: string, input: IssueEpicCreateInput): Promise<IssueEpic> {
+        return invoke<IssueEpic>('issue_epics_create', { folderPath, input })
       },
-      list(projectId: string): Promise<IssueEpic[]> {
-        return invoke<IssueEpic[]>('issue_epics_list', { projectId })
+      list(folderPath: string): Promise<IssueEpic[]> {
+        return invoke<IssueEpic[]>('issue_epics_list', { folderPath })
       },
-      get(projectId: string, epicId: string): Promise<IssueEpic> {
-        return invoke<IssueEpic>('issue_epics_get', { projectId, epicId })
+      get(folderPath: string, epicId: string): Promise<IssueEpic> {
+        return invoke<IssueEpic>('issue_epics_get', { folderPath, epicId })
       },
-      update(projectId: string, epicId: string, patch: IssueEpicUpdateInput): Promise<IssueEpic> {
+      update(folderPath: string, epicId: string, patch: IssueEpicUpdateInput): Promise<IssueEpic> {
         return invoke<IssueEpic>('issue_epics_update', {
-          projectId,
+          folderPath,
           epicId,
           patch
         })
       },
-      delete(projectId: string, epicId: string): Promise<void> {
-        return invoke<void>('issue_epics_delete', { projectId, epicId })
+      delete(folderPath: string, epicId: string): Promise<void> {
+        return invoke<void>('issue_epics_delete', { folderPath, epicId })
       }
     },
     comments: {
-      add(projectId: string, input: IssueCommentCreateInput): Promise<IssueComment> {
-        return invoke<IssueComment>('issue_comments_add', { projectId, input })
+      add(folderPath: string, input: IssueCommentCreateInput): Promise<IssueComment> {
+        return invoke<IssueComment>('issue_comments_add', { folderPath, input })
       },
-      list(projectId: string, issueId: string): Promise<IssueComment[]> {
+      list(folderPath: string, issueId: string): Promise<IssueComment[]> {
         return invoke<IssueComment[]>('issue_comments_list', {
-          projectId,
+          folderPath,
           issueId
         })
       },
-      update(projectId: string, commentId: string, input: IssueCommentUpdateInput): Promise<IssueComment> {
+      update(folderPath: string, commentId: string, input: IssueCommentUpdateInput): Promise<IssueComment> {
         return invoke<IssueComment>('issue_comments_update', {
-          projectId,
+          folderPath,
           commentId,
           input
         })
       },
-      delete(projectId: string, commentId: string): Promise<void> {
-        return invoke<void>('issue_comments_delete', { projectId, commentId })
+      delete(folderPath: string, commentId: string): Promise<void> {
+        return invoke<void>('issue_comments_delete', { folderPath, commentId })
       }
     },
     dependencies: {
-      add(projectId: string, input: IssueDependencyInput): Promise<IssueDependency> {
+      add(folderPath: string, input: IssueDependencyInput): Promise<IssueDependency> {
         return invoke<IssueDependency>('issue_dependencies_add', {
-          projectId,
+          folderPath,
           input
         })
       },
-      remove(projectId: string, input: IssueDependencyInput): Promise<void> {
-        return invoke<void>('issue_dependencies_remove', { projectId, input })
+      remove(folderPath: string, input: IssueDependencyInput): Promise<void> {
+        return invoke<void>('issue_dependencies_remove', { folderPath, input })
       },
-      list(projectId: string, issueId: string): Promise<IssueDependency[]> {
+      list(folderPath: string, issueId: string): Promise<IssueDependency[]> {
         return invoke<IssueDependency[]>('issue_dependencies_list', {
-          projectId,
+          folderPath,
           issueId
         })
       }
     },
     config: {
-      list(projectId: string): Promise<IssueConfigEntry[]> {
-        return invoke<IssueConfigEntry[]>('issue_config_list', { projectId })
+      list(folderPath: string): Promise<IssueConfigEntry[]> {
+        return invoke<IssueConfigEntry[]>('issue_config_list', { folderPath })
       },
-      get(projectId: string, key: string): Promise<IssueConfigEntry | null> {
+      get(folderPath: string, key: string): Promise<IssueConfigEntry | null> {
         return invoke<IssueConfigEntry | null>('issue_config_get', {
-          projectId,
+          folderPath,
           key
         })
       },
-      set(projectId: string, key: string, value: string): Promise<IssueConfigEntry> {
+      set(folderPath: string, key: string, value: string): Promise<IssueConfigEntry> {
         return invoke<IssueConfigEntry>('issue_config_set', {
-          projectId,
+          folderPath,
           key,
           value
         })
@@ -791,9 +697,9 @@ export const backend = {
   },
 
   tasks: {
-    /** Return the parsed task list for a project. Empty array when no `.sworm/tasks.json` exists. */
-    list(projectId: string): Promise<TaskDefinition[]> {
-      return invoke<TaskDefinition[]>('tasks_list', { projectId })
+    /** Return the parsed task list for a folder. Empty array when no `.sworm/tasks.json` exists. */
+    list(folderPath: string): Promise<TaskDefinition[]> {
+      return invoke<TaskDefinition[]>('tasks_list', { folderPath })
     },
     createOutputChannel(onOutput: (data: number[]) => void): Channel<number[]> {
       const output = new Channel<number[]>()
@@ -811,7 +717,7 @@ export const backend = {
      */
     start(
       runId: string,
-      projectId: string,
+      folderPath: string,
       taskId: string,
       activeFilePath: string | null,
       cols: number,
@@ -823,7 +729,7 @@ export const backend = {
       const events = backend.tasks.createEventChannel(onEvent)
       return invoke<void>('tasks_start', {
         runId,
-        projectId,
+        folderPath,
         taskId,
         activeFilePath,
         cols,
@@ -844,22 +750,22 @@ export const backend = {
   },
 
   formatting: {
-    biome(projectId: string, filePath: string, content: string): Promise<string> {
+    biome(folderPath: string, filePath: string, content: string): Promise<string> {
       return invoke<string>('formatting_format_biome', {
-        projectId,
+        folderPath,
         filePath,
         content
       })
     },
-    nixfmt(projectId: string, content: string): Promise<string> {
-      return invoke<string>('formatting_format_nixfmt', { projectId, content })
+    nixfmt(folderPath: string, content: string): Promise<string> {
+      return invoke<string>('formatting_format_nixfmt', { folderPath, content })
     }
   },
 
   lsp: {
-    listServers(projectId?: string): Promise<LspServerSettingsEntry[]> {
+    listServers(folderPath?: string): Promise<LspServerSettingsEntry[]> {
       return invoke<LspServerSettingsEntry[]>('lsp_list_servers', {
-        projectId: projectId ?? null
+        folderPath: folderPath ?? null
       })
     },
     setServerConfig(config: LspServerConfig): Promise<LspServerConfig> {
@@ -872,7 +778,7 @@ export const backend = {
     },
     start(
       sessionId: string,
-      projectId: string,
+      folderPath: string,
       serverDefinitionId: string,
       rootPath: string,
       onEvent: (event: LspEvent) => void
@@ -880,7 +786,7 @@ export const backend = {
       const events = backend.lsp.createEventChannel(onEvent)
       return invoke<void>('lsp_start', {
         sessionId,
-        projectId,
+        folderPath,
         serverDefinitionId,
         rootPath,
         events

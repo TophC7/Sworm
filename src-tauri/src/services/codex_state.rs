@@ -1,3 +1,4 @@
+use crate::services::folders::home_dir;
 use chrono::DateTime;
 use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
@@ -16,8 +17,7 @@ pub struct CodexStateReader;
 
 impl CodexStateReader {
     fn db_path() -> Option<PathBuf> {
-        let home = std::env::var("HOME").ok()?;
-        let path = PathBuf::from(home).join(".codex/state_5.sqlite");
+        let path = home_dir()?.join(".codex/state_5.sqlite");
         path.exists().then_some(path)
     }
 
@@ -69,29 +69,6 @@ impl CodexStateReader {
         Ok(threads)
     }
 
-    pub fn find_latest_thread_for_cwd(cwd: &str) -> Result<Option<CodexThread>, String> {
-        let conn = Self::open()?;
-        conn.query_row(
-            "SELECT id, cwd, created_at, updated_at, archived
-             FROM threads
-             WHERE cwd = ?1 AND archived = 0
-             ORDER BY updated_at DESC, created_at DESC
-             LIMIT 1",
-            rusqlite::params![cwd],
-            |row| {
-                Ok(CodexThread {
-                    id: row.get(0)?,
-                    cwd: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
-                    archived: row.get::<_, i64>(4)? != 0,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Failed to query Codex latest thread: {}", error))
-    }
-
     pub fn thread_exists(thread_id: &str, cwd: &str) -> Result<bool, String> {
         let conn = Self::open()?;
         let count: i64 = conn
@@ -105,5 +82,3 @@ impl CodexStateReader {
         Ok(count > 0)
     }
 }
-
-use rusqlite::OptionalExtension;

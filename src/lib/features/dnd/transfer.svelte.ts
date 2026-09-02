@@ -33,8 +33,8 @@ export const LocalTransfer = {
     // Safety net for dangling state. Per-source adapters already clear
     // on `dragend`, but WebKitGTK occasionally fails to emit it (source
     // element removed mid-drag, ESC cancel, drag leaves the window). A
-    // stuck payload keeps the pane content shield mounted, which eats
-    // subsequent clicks until another drag finally resets the state.
+    // stuck payload keeps drop targets armed and blocks subsequent drags
+    // until another drag finally resets the state.
     attachSafetyNet()
   },
   clear(): void {

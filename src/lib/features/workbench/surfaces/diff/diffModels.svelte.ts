@@ -224,7 +224,7 @@ export class DiffModelStore {
     if (e) e.hideUnchanged = hide
   }
 
-  /** Dispose every model. Call on viewer teardown / project switch. */
+  /** Dispose every model. Call on viewer teardown / folder switch. */
   dispose(): void {
     for (const [path, entry] of this.entries) {
       this.retire(path, entry)

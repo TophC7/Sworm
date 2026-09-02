@@ -29,8 +29,7 @@
     setCommandPaletteOpen
   } from '$lib/features/command-palette/state.svelte'
   import { ensureProjectFiles } from '$lib/features/files/projectFiles.svelte'
-  import { getActiveProjectId } from '$lib/features/workbench/state.svelte'
-  import { getProjectById } from '$lib/features/projects/state.svelte'
+  import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import { isTextEditorFocused } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
   import { getShortcutCommand } from '$lib/features/command-palette/shortcuts/registry.svelte'
@@ -65,8 +64,8 @@
   let lastPointerPosition = $state<{ x: number; y: number } | null>(null)
 
   // Prefix modes: `>` routes to editor commands, `!` routes to tasks,
-  // `/` routes to project file lookup (Quick Open). Default (no prefix)
-  // shows app commands + Recent.
+  // `/` routes to active-folder file lookup (Quick Open). Default (no
+  // prefix) shows app commands + Recent.
   const PREFIX_MODES = {
     '>': 'editor',
     '!': 'task',
@@ -88,17 +87,14 @@
   let appGroups = $derived(getAppCommandGroups())
   let editorGroups = $derived(getEditorCommandGroups())
   let taskGroups = $derived(getTaskCommandGroups())
-  let activeProjectId = $derived(getActiveProjectId())
-  let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeProjectId, filterQuery) : [])
+  let activeFolderPath = $derived(getActiveFolderPath())
+  let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeFolderPath, filterQuery) : [])
 
-  // Files mode reads from a per-project cache; warm it on entry so the
-  // first keystroke after typing `/` already sees results. Re-runs are
-  // cheap once the cache is populated (loadedAt short-circuits).
+  // Files mode reads from a per-folder cache; warm it on entry so the
+  // first keystroke after typing `/` already sees results.
   $effect(() => {
-    if (paletteMode !== 'files' || !activeProjectId) return
-    const project = getProjectById(activeProjectId)
-    if (!project) return
-    void ensureProjectFiles(activeProjectId, project.path)
+    if (paletteMode !== 'files' || !activeFolderPath) return
+    void ensureProjectFiles(activeFolderPath)
   })
   let scheduledRun = 0
   const COMMAND_NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'])

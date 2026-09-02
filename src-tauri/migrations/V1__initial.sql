@@ -4,43 +4,6 @@
 -- weight. Wipe the DB file on next launch and refinery will recreate
 -- everything from this one statement.
 
--- TABLES --
-CREATE TABLE projects (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  path TEXT NOT NULL UNIQUE,
-  default_branch TEXT,
-  base_ref TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  provider_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  cwd TEXT NOT NULL,
-  branch TEXT,
-  status TEXT NOT NULL,
-  shared_workspace INTEGER NOT NULL DEFAULT 1,
-  auto_approve INTEGER NOT NULL DEFAULT 0,
-  provider_resume_token TEXT,
-  archived INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_started_at TEXT,
-  last_stopped_at TEXT
-);
-
-CREATE TABLE session_entries (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
 CREATE TABLE mcp_servers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -70,9 +33,9 @@ CREATE TABLE credentials (
   updated_at TEXT NOT NULL
 );
 
--- Per-project Nix environment configuration and cached evaluation results.
-CREATE TABLE project_nix_envs (
-  project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+-- Per-folder Nix environment configuration and cached evaluation results.
+CREATE TABLE folder_nix_envs (
+  folder_path   TEXT PRIMARY KEY,
   nix_file      TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'pending',
   env_json      TEXT,
@@ -82,29 +45,10 @@ CREATE TABLE project_nix_envs (
   updated_at    TEXT NOT NULL
 );
 
--- Per-project workspace layout persistence (tab/pane blob, active tab,
--- splits) so workbench layout survives reloads.
-CREATE TABLE workspace_state (
-  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-  state_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
--- App-shell key/value for hot-restore data: open project ids, active
--- project, pending-open path, and other frontend-owned state.
+-- App-shell key/value for hot-restore data: workbench tabs, recent
+-- folders, and other frontend-owned state.
 CREATE TABLE app_state (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
--- INDEXES --
--- Transcript reads; bounds session_transcript_get to one session's
--- output log instead of full-scanning session_entries.
-CREATE INDEX idx_session_entries_session_kind
-  ON session_entries(session_id, kind, created_at, id);
-
--- Per-project session lists; covers the WHERE filter and ORDER BY for
--- session_list_for_project / session_list_archived in a single seek.
-CREATE INDEX idx_sessions_project_archived_updated
-  ON sessions(project_id, archived, updated_at DESC);

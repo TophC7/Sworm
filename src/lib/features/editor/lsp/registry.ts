@@ -41,8 +41,7 @@ function changedLspServerIds(oldEntries: LspServerSettingsEntry[], newEntries: L
 }
 
 interface DocumentContext {
-  projectId: string
-  projectPath: string
+  folderPath: string
 }
 
 interface ManagedDocument {
@@ -64,7 +63,7 @@ interface PendingRequest {
 interface ServerInstance {
   key: string
   sessionId: string
-  projectId: string
+  folderPath: string
   rootPath: string
   order: number
   entry: LspServerSettingsEntry
@@ -85,8 +84,8 @@ class LspRegistry {
   private registeredLanguages = new Set<string>()
   private documents = new Map<string, ManagedDocument>()
   private serverInstances = new Map<string, ServerInstance>()
-  private serverEntriesByProject = new Map<string, Promise<LspServerSettingsEntry[]>>()
-  private knownProjects = new Map<string, string>()
+  private serverEntriesByFolder = new Map<string, Promise<LspServerSettingsEntry[]>>()
+  private knownFolders = new Set<string>()
   private editorOpenerRegistered = false
 
   async ensureMonaco(monaco: Monaco): Promise<void> {
@@ -114,7 +113,7 @@ class LspRegistry {
 
     const uri = model.uri.toString()
     this.detachModel(model)
-    this.knownProjects.set(context.projectId, context.projectPath)
+    this.knownFolders.add(context.folderPath)
 
     const document: ManagedDocument = {
       model,
@@ -156,27 +155,28 @@ class LspRegistry {
     this.clearMarkers(document.model)
   }
 
-  invalidateServerEntries(projectId?: string) {
-    if (projectId) {
-      this.serverEntriesByProject.delete(projectId)
+  invalidateServerEntries(folderPath?: string) {
+    if (folderPath) {
+      this.serverEntriesByFolder.delete(folderPath)
       return
     }
-    this.serverEntriesByProject.clear()
+    this.serverEntriesByFolder.clear()
   }
 
-  async refreshProject(projectId: string): Promise<void> {
-    const oldEntries = await this.serverEntriesByProject.get(projectId)?.catch(() => [])
-    this.invalidateServerEntries(projectId)
-    const newEntries = await this.getProjectServerEntries(projectId)
+  async refreshFolder(folderPath: string): Promise<void> {
+    const oldEntries = await this.serverEntriesByFolder.get(folderPath)?.catch(() => [])
+    this.invalidateServerEntries(folderPath)
+    const newEntries = await this.getFolderServerEntries(folderPath)
     const changedServerIds = changedLspServerIds(oldEntries ?? [], newEntries)
     if (changedServerIds.size === 0) return
 
     const instances = [...this.serverInstances.values()].filter(
-      (instance) => instance.projectId === projectId && changedServerIds.has(instance.entry.server.server_definition_id)
+      (instance) =>
+        instance.folderPath === folderPath && changedServerIds.has(instance.entry.server.server_definition_id)
     )
     await Promise.all(instances.map((instance) => this.stopInstance(instance)))
 
-    const documents = [...this.documents.values()].filter((document) => document.context.projectId === projectId)
+    const documents = [...this.documents.values()].filter((document) => document.context.folderPath === folderPath)
     await Promise.all(
       documents.map((document) =>
         this.attachMatchingServers(document, (entry) => changedServerIds.has(entry.server.server_definition_id))
@@ -184,12 +184,12 @@ class LspRegistry {
     )
   }
 
-  async refreshAllProjects(): Promise<void> {
-    const projectIds = new Set([
-      ...this.knownProjects.keys(),
-      ...[...this.serverInstances.values()].map((instance) => instance.projectId)
+  async refreshAllFolders(): Promise<void> {
+    const folderPaths = new Set([
+      ...this.knownFolders,
+      ...[...this.serverInstances.values()].map((instance) => instance.folderPath)
     ])
-    await Promise.all([...projectIds].map((projectId) => this.refreshProject(projectId)))
+    await Promise.all([...folderPaths].map((folderPath) => this.refreshFolder(folderPath)))
   }
 
   async restartServerDefinition(serverDefinitionId: string): Promise<void> {
@@ -349,13 +349,13 @@ class LspRegistry {
         const context = this.resolveTargetContext(sourceModel.uri.toString(), targetPath)
         if (!context) return false
 
-        const relativePath = relativePathFromRoot(context.projectPath, targetPath)
+        const relativePath = relativePathFromRoot(context.folderPath, targetPath)
         if (!relativePath) return false
 
         const modelReady = await this.ensureFileModel(resource, context)
         if (!modelReady) return false
 
-        await openTextFile(context.projectId, relativePath, {
+        await openTextFile(context.folderPath, relativePath, {
           temporary: true,
           reveal: selectionOrPosition ? toEditorRevealTarget(selectionOrPosition) : null
         })
@@ -366,21 +366,21 @@ class LspRegistry {
     this.editorOpenerRegistered = true
   }
 
-  private async getProjectServerEntries(projectId: string): Promise<LspServerSettingsEntry[]> {
-    const cached = this.serverEntriesByProject.get(projectId)
+  private async getFolderServerEntries(folderPath: string): Promise<LspServerSettingsEntry[]> {
+    const cached = this.serverEntriesByFolder.get(folderPath)
     if (cached) return cached
 
-    const promise = backend.lsp.listServers(projectId).catch((error) => {
-      this.serverEntriesByProject.delete(projectId)
+    const promise = backend.lsp.listServers(folderPath).catch((error) => {
+      this.serverEntriesByFolder.delete(folderPath)
       throw error
     })
-    this.serverEntriesByProject.set(projectId, promise)
+    this.serverEntriesByFolder.set(folderPath, promise)
     return promise
   }
 
   private ensureServerInstance(context: DocumentContext, entry: LspServerSettingsEntry, order: number): ServerInstance {
-    const rootPath = context.projectPath
-    const key = `${context.projectId}:${entry.server.server_definition_id}:${rootPath}`
+    const rootPath = context.folderPath
+    const key = `${entry.server.server_definition_id}:${rootPath}`
     const existing = this.serverInstances.get(key)
     if (existing) return existing
 
@@ -388,7 +388,7 @@ class LspRegistry {
     const instance: ServerInstance = {
       key,
       sessionId: key,
-      projectId: context.projectId,
+      folderPath: context.folderPath,
       rootPath,
       order,
       entry,
@@ -412,7 +412,7 @@ class LspRegistry {
     try {
       await backend.lsp.start(
         instance.sessionId,
-        instance.projectId,
+        instance.folderPath,
         instance.entry.server.server_definition_id,
         instance.rootPath,
         (event) => this.onServerEvent(instance.key, event)
@@ -484,7 +484,7 @@ class LspRegistry {
     document: ManagedDocument,
     entryFilter: (entry: LspServerSettingsEntry) => boolean = () => true
   ): Promise<void> {
-    const entries = await this.getProjectServerEntries(document.context.projectId)
+    const entries = await this.getFolderServerEntries(document.context.folderPath)
     const matches = entries
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => entryFilter(entry))
@@ -547,14 +547,14 @@ class LspRegistry {
 
   private resolveTargetContext(sourceUri: string, targetPath: string): DocumentContext | null {
     const sourceContext = this.documents.get(sourceUri)?.context
-    if (sourceContext && isPathWithinRoot(targetPath, sourceContext.projectPath)) {
+    if (sourceContext && isPathWithinRoot(targetPath, sourceContext.folderPath)) {
       return sourceContext
     }
 
-    const candidates = [...this.knownProjects.entries()]
-      .map(([projectId, projectPath]) => ({ projectId, projectPath }))
-      .filter((context) => isPathWithinRoot(targetPath, context.projectPath))
-      .sort((a, b) => b.projectPath.length - a.projectPath.length)
+    const candidates = [...this.knownFolders]
+      .map((folderPath) => ({ folderPath }))
+      .filter((context) => isPathWithinRoot(targetPath, context.folderPath))
+      .sort((a, b) => b.folderPath.length - a.folderPath.length)
 
     return candidates[0] ?? null
   }
@@ -566,11 +566,11 @@ class LspRegistry {
     const targetPath = fileUriToPath(resource)
     if (!targetPath || isBinaryFile(targetPath)) return false
 
-    const relativePath = relativePathFromRoot(context.projectPath, targetPath)
+    const relativePath = relativePathFromRoot(context.folderPath, targetPath)
     if (!relativePath) return false
 
     try {
-      const content = await backend.files.read(context.projectPath, relativePath)
+      const content = await backend.files.read(context.folderPath, relativePath)
       this.monaco.editor.createModel(content, filePathToLanguage(targetPath), resource)
       return true
     } catch (error) {
@@ -859,20 +859,20 @@ export function detachLspModel(model: MonacoModel) {
   registry.detachModel(model)
 }
 
-export function invalidateLspServerEntries(projectId?: string) {
-  registry.invalidateServerEntries(projectId)
+export function invalidateLspServerEntries(folderPath?: string) {
+  registry.invalidateServerEntries(folderPath)
 }
 
 export function restartLspServerDefinition(serverDefinitionId: string) {
   return registry.restartServerDefinition(serverDefinitionId)
 }
 
-export function refreshLspProjectEnvironment(projectId: string) {
-  return registry.refreshProject(projectId)
+export function refreshLspFolderEnvironment(folderPath: string) {
+  return registry.refreshFolder(folderPath)
 }
 
-export function refreshAllLspProjectEnvironments() {
-  return registry.refreshAllProjects()
+export function refreshAllLspFolderEnvironments() {
+  return registry.refreshAllFolders()
 }
 
 export function formatDocumentWithLsp(model: MonacoModel) {
@@ -1090,8 +1090,7 @@ function toMonacoCompletionItem(
   }
 
   const textEdit = item.textEdit as
-    | { newText?: string; range?: unknown; insert?: unknown; replace?: unknown }
-    | undefined
+    { newText?: string; range?: unknown; insert?: unknown; replace?: unknown } | undefined
 
   const range =
     textEdit?.insert && textEdit?.replace

@@ -3,7 +3,6 @@
   import { save as saveDialog } from '@tauri-apps/plugin-dialog'
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import { IconButton } from '$lib/components/ui/button'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
@@ -13,13 +12,11 @@
   import { basename } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import MediaViewer from '$lib/features/workbench/surfaces/text/MediaViewer.svelte'
-  import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import {
     clearTextSurfaceDirtyIfClosed,
     discardTextSurfaceBuffer,
     isTextSurfaceDirty,
     markTextSurfaceSaved,
-    openTextInFresh,
     setTextSurfaceDirty
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
@@ -30,8 +27,7 @@
   let {
     tabId,
     filePath,
-    projectPath,
-    projectId,
+    folderPath,
     gitRef,
     refLabel,
     initialTemporary = false,
@@ -40,8 +36,7 @@
     tabId: string
     /** `null` = unsaved "Untitled" buffer. First save triggers save-as. */
     filePath: string | null
-    projectPath: string
-    projectId: string
+    folderPath: string
     /** If set, load content from this git ref (read-only). */
     gitRef?: string
     /** Display label for the snapshot (e.g. "abc1234"). */
@@ -72,8 +67,8 @@
   let mediaKindValue = $derived(filePath != null && !gitRef ? mediaKind(filePath) : null)
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
-  let lspUriPath = $derived(filePath != null && !gitRef ? `${projectPath}/${filePath}` : null)
-  let gitSummary = $derived(getGitSummary(projectId))
+  let lspUriPath = $derived(filePath != null && !gitRef ? `${folderPath}/${filePath}` : null)
+  let gitSummary = $derived(getGitSummary(folderPath))
   let gitDiffRevision = $derived(
     filePath == null || gitRef
       ? ''
@@ -94,10 +89,9 @@
   let promotedOnEdit = $state(false)
   let promoteTimer: ReturnType<typeof setTimeout> | null = null
   $effect.pre(() => {
-    const project = projectId
     const id = tabId
     untrack(() => {
-      retainedDirtyPending = isTextSurfaceDirty(project, id)
+      retainedDirtyPending = isTextSurfaceDirty(id)
     })
   })
   $effect(() => {
@@ -127,11 +121,11 @@
         editContent = ''
         debouncedEdit = ''
       } else if (gitRef) {
-        content = await backend.editor.showFile(projectPath, gitRef, filePath)
+        content = await backend.editor.showFile(folderPath, gitRef, filePath)
         editContent = content
         debouncedEdit = content
       } else {
-        content = await backend.files.read(projectPath, filePath)
+        content = await backend.files.read(folderPath, filePath)
         editContent = content
         debouncedEdit = content
       }
@@ -160,22 +154,22 @@
     if (filePath == null) {
       saving = true
       try {
-        const chosen = await saveDialog({ title: 'Save file', defaultPath: projectPath })
+        const chosen = await saveDialog({ title: 'Save file', defaultPath: folderPath })
         if (!chosen) {
           saving = false
           return
         }
         // Guard against sibling directories whose path happens to share
-        // the project root as a prefix (`/home/a/proj-backup/...` vs
+        // the folder root as a prefix (`/home/a/proj-backup/...` vs
         // `/home/a/proj`). Require an exact match OR a `/` boundary.
-        const inside = chosen === projectPath || chosen.startsWith(projectPath + '/')
+        const inside = chosen === folderPath || chosen.startsWith(folderPath + '/')
         if (!inside) {
-          error = 'File must be saved inside the project directory.'
+          error = 'File must be saved inside the folder.'
           saving = false
           return
         }
-        // backend.files.write takes a project-relative path.
-        targetRel = chosen.slice(projectPath.length).replace(/^\/+/, '')
+        // backend.files.write takes a folder-relative path.
+        targetRel = chosen.slice(folderPath.length).replace(/^\/+/, '')
       } catch (e) {
         error = e instanceof Error ? e.message : String(e)
         saving = false
@@ -188,14 +182,14 @@
 
     error = null
     try {
-      await backend.files.write(projectPath, targetRel, editContent)
-      markTextSurfaceSaved(projectId, targetRel, editContent)
+      await backend.files.write(folderPath, targetRel, editContent)
+      markTextSurfaceSaved(folderPath, targetRel, editContent)
       content = editContent
       if (filePath == null) {
-        discardTextSurfaceBuffer(projectId, { id: tabId, filePath: null })
+        discardTextSurfaceBuffer({ id: tabId, folderPath, filePath: null })
         // Promote the tab to the real path. The filePath effect will
         // reload, but editContent already matches so no flash.
-        renameTextTab(projectId, tabId, targetRel)
+        renameTextTab(tabId, targetRel)
       }
       if (isNix) {
         if (await shouldUseLegacyNixLint(targetRel)) {
@@ -213,7 +207,7 @@
 
   async function shouldUseLegacyNixLint(target: string): Promise<boolean> {
     try {
-      const servers = await backend.lsp.listServers(projectId)
+      const servers = await backend.lsp.listServers(folderPath)
       const fileName = basename(target)
       const extension = normalizeExtension(target.includes('.') ? target.slice(target.lastIndexOf('.')) : '')
 
@@ -240,7 +234,7 @@
     const target = filePath
     if (target == null) return
     try {
-      const diagnostics = await backend.nix.lint(projectPath, target)
+      const diagnostics = await backend.nix.lint(folderPath, target)
       if (filePath !== target) return
       lintDiagnostics = diagnostics
     } catch (e) {
@@ -253,15 +247,6 @@
     const trimmed = value.trim().toLowerCase()
     if (!trimmed) return ''
     return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
-  }
-
-  async function openInFresh() {
-    const path = filePath
-    if (path == null) return
-    await runNotifiedTask(() => openTextInFresh(projectId, projectPath, path), {
-      loading: { title: 'Opening in Fresh', description: path },
-      error: { title: 'Open in Fresh failed' }
-    })
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -277,13 +262,12 @@
     editContent = value
     if (initialTemporary && !promotedOnEdit) {
       promotedOnEdit = true
-      const project = projectId
       const id = tabId
-      // Keep the first edit's Monaco update isolated from the workspace
+      // Keep the first edit's Monaco update isolated from the workbench
       // commit that flips preview chrome to persistent chrome.
       promoteTimer = setTimeout(() => {
         promoteTimer = null
-        promoteTab(project, id)
+        promoteTab(id)
       }, 0)
     }
   }
@@ -299,7 +283,7 @@
     })
   })
 
-  // Mirror local dirty state into the workspace-level registry so the
+  // Mirror local dirty state into the workbench-level registry so the
   // reload / close paths can warn the user about unsaved buffers.
   //
   // Keyed by tabId (not filePath) so untitled buffers — which have no
@@ -312,20 +296,19 @@
   // $derived reader of the registry would see it flicker off and back
   // on every character typed.
   $effect(() => {
-    const project = projectId
     const id = tabId
     return () => {
-      clearTextSurfaceDirtyIfClosed(project, id)
+      clearTextSurfaceDirtyIfClosed(id)
     }
   })
   $effect(() => {
     if (dirty) {
       retainedDirtyPending = false
-      setTextSurfaceDirty(projectId, tabId, true)
+      setTextSurfaceDirty(tabId, true)
       return
     }
     if (retainedDirtyPending) return
-    setTextSurfaceDirty(projectId, tabId, dirty)
+    setTextSurfaceDirty(tabId, dirty)
   })
 </script>
 
@@ -379,12 +362,6 @@
           </TooltipContent>
         </TooltipRoot>
       {/if}
-
-      {#if !isReadonly && !isUntitled && mediaKindValue == null}
-        <IconButton tooltip="Open in Fresh" onclick={openInFresh}>
-          <img src="/svg/fresh.svg" alt="Fresh" width={14} height={14} class="opacity-60" />
-        </IconButton>
-      {/if}
     {/snippet}
   </ContentToolbar>
 
@@ -402,7 +379,7 @@
   <!-- Content -->
   <div class="min-h-0 flex-1">
     {#if mediaKindValue != null && filePath != null}
-      <MediaViewer {projectPath} {filePath} kind={mediaKindValue} />
+      <MediaViewer {folderPath} {filePath} kind={mediaKindValue} />
     {:else if loading}
       <div class="px-4 py-3 text-sm text-subtle">Loading&hellip;</div>
     {:else if isBinary}
@@ -411,7 +388,7 @@
       </div>
     {:else if isMarkdown && mode === 'preview'}
       <div class="h-full overflow-y-auto">
-        <MarkdownRenderer source={previewSource} {projectPath} {filePath} />
+        <MarkdownRenderer source={previewSource} {folderPath} {filePath} />
       </div>
     {:else if isMarkdown && mode === 'split'}
       <ResizablePaneGroup direction="horizontal">
@@ -427,8 +404,7 @@
               onchange={handleEditorChange}
               uriPath={lspUriPath}
               {filePath}
-              {projectId}
-              {projectPath}
+              {folderPath}
               lspEnabled={!isReadonly}
               {gitDiffRevision}
             />
@@ -437,7 +413,7 @@
         <ResizableHandle />
         <ResizablePane defaultSize={50} minSize={20}>
           <div class="h-full overflow-y-auto border-l border-edge">
-            <MarkdownRenderer source={previewSource} {projectPath} {filePath} />
+            <MarkdownRenderer source={previewSource} {folderPath} {filePath} />
           </div>
         </ResizablePane>
       </ResizablePaneGroup>
@@ -454,8 +430,7 @@
           onchange={handleEditorChange}
           uriPath={lspUriPath}
           {filePath}
-          {projectId}
-          {projectPath}
+          {folderPath}
           lspEnabled={!isReadonly}
           {gitDiffRevision}
         />

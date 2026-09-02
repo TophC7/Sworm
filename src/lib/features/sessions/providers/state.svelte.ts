@@ -37,10 +37,10 @@ export async function refreshProviders() {
   }
 }
 
-export async function loadProvidersForProject(projectId: string) {
+export async function loadProvidersForFolder(folderPath: string) {
   loading = true
   try {
-    providers = await backend.providers.listForProject(projectId)
+    providers = await backend.providers.listForFolder(folderPath)
   } catch {
     // Fall back to global detection
     providers = await backend.providers.list()

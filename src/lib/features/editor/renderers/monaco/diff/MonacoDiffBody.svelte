@@ -47,8 +47,7 @@
   }
 
   interface GitActionContext {
-    projectId: string
-    projectPath: string
+    folderPath: string
     staged: boolean
     status: GitStatusKind
   }
@@ -199,8 +198,7 @@
     try {
       await runDiffGitLineAction(
         {
-          projectId: context.projectId,
-          projectPath: context.projectPath,
+          folderPath: context.folderPath,
           filePath: path,
           status: context.status
         },
@@ -511,8 +509,7 @@
       const gutterContextOff =
         gitActionContext && retainedEntry.modified
           ? registerSwormDiffGutterContext(retainedEntry.modified.uri.toString(), {
-              projectId: gitActionContext.projectId,
-              projectPath: gitActionContext.projectPath,
+              folderPath: gitActionContext.folderPath,
               filePath: path,
               status: gitActionContext.status,
               staged: gitActionContext.staged,

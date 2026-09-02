@@ -1,8 +1,7 @@
 // Minimal xterm wrapper for task PTY runs.
 //
-// Deliberately simpler than TerminalSessionManager: tasks have no
-// transcript persistence, no resume tokens, no provider-specific
-// behavior. Just mount xterm, pipe output, forward input.
+// Just mount xterm, pipe output, forward input — no resume tokens, no
+// provider-specific behavior.
 
 import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
@@ -50,7 +49,7 @@ const textEncoder = new TextEncoder()
 
 export interface TaskTerminalInit {
   runId: string
-  projectId: string
+  folderPath: string
   taskId: string
   activeFilePath: string | null
   clearBeforeStart?: boolean
@@ -66,7 +65,7 @@ export class TaskTerminal {
   private resizeObserver: ResizeObserver | null = null
   private container: HTMLElement | null = null
   private readonly runId: string
-  private readonly projectId: string
+  private readonly folderPath: string
   private readonly taskId: string
   private readonly activeFilePath: string | null
   private readonly onStatusChange?: (status: TaskRunStatus, exitCode: number | null) => void
@@ -76,7 +75,7 @@ export class TaskTerminal {
 
   constructor(init: TaskTerminalInit) {
     this.runId = init.runId
-    this.projectId = init.projectId
+    this.folderPath = init.folderPath
     this.taskId = init.taskId
     this.activeFilePath = init.activeFilePath
     this.onStatusChange = init.onStatusChange
@@ -102,9 +101,7 @@ export class TaskTerminal {
       })
     )
 
-    // Tasks rely on native xterm key handling. Provider-specific
-    // quirks (Shift+Tab handling, Claude/Codex paste variants) live
-    // in the session keymap and don't apply here.
+    // Tasks rely on native xterm key handling.
   }
 
   attach(container: HTMLElement): void {
@@ -159,7 +156,7 @@ export class TaskTerminal {
     try {
       await backend.tasks.start(
         this.runId,
-        this.projectId,
+        this.folderPath,
         this.taskId,
         this.activeFilePath,
         cols,

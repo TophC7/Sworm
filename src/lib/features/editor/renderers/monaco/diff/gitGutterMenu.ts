@@ -28,8 +28,7 @@ export const SWORM_DIFF_GIT_ACTIONS_CONTEXT = 'swormDiffGitActions'
 export const SWORM_DIFF_STAGED_CONTEXT = 'swormDiffStaged'
 
 interface DiffGutterRegistration {
-  projectId: string
-  projectPath: string
+  folderPath: string
   filePath: string
   status: GitStatusKind
   staged: boolean
@@ -105,11 +104,11 @@ async function stageToolbarContent(
   content: string
 ): Promise<void> {
   await backend.git.stageFileContent(
-    registration.projectPath,
+    registration.folderPath,
     registration.filePath,
     indexContentForStatus(registration.status, content)
   )
-  await refreshGit(registration.projectId, registration.projectPath)
+  await refreshGit(registration.folderPath)
 }
 
 async function runToolbarAction(

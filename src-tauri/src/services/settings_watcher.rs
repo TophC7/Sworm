@@ -170,7 +170,7 @@ fn emit_settings_changed(
         SETTINGS_CHANGED_EVENT,
         SettingsChangedEvent {
             layer,
-            project_id: None,
+            folder_path: project_path.map(|p| p.to_string_lossy().into_owned()),
             generation,
             diagnostics,
         },

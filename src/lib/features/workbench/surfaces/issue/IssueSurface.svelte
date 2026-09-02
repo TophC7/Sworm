@@ -23,11 +23,11 @@
   import IssueDetailForm from './IssueDetailForm.svelte'
   import type { IssueTab } from '$lib/features/workbench/model'
 
-  let { tab, projectId }: { tab: IssueTab; projectId: string } = $props()
+  let { tab, folderPath }: { tab: IssueTab; folderPath: string } = $props()
 
-  let detail = $derived(getIssueDetail(projectId, tab.issueId))
-  let allIssues = $derived(getIssues(projectId))
-  let allEpics = $derived(getIssueEpics(projectId))
+  let detail = $derived(getIssueDetail(folderPath, tab.issueId))
+  let allIssues = $derived(getIssues(folderPath))
+  let allEpics = $derived(getIssueEpics(folderPath))
   let parentIssue = $derived(
     detail?.issue.parentIssueId ? (allIssues.find((i) => i.id === detail!.issue.parentIssueId) ?? null) : null
   )
@@ -38,11 +38,11 @@
   // reactive scope so it doesn't pull other dependencies.
   $effect(() => {
     const id = tab.issueId
-    untrack(() => void openIssueDetail(projectId, id))
+    untrack(() => void openIssueDetail(folderPath, id))
   })
 
   async function refresh() {
-    await openIssueDetail(projectId, tab.issueId)
+    await openIssueDetail(folderPath, tab.issueId)
   }
 </script>
 
@@ -64,7 +64,7 @@
               <button
                 type="button"
                 class="flex items-center gap-1 text-accent hover:underline focus-visible:shadow-focus-ring focus-visible:outline-none"
-                onclick={() => openIssueTab(projectId, parentIssue!.id, parentIssue!.title)}
+                onclick={() => openIssueTab(folderPath, parentIssue!.id, parentIssue!.title)}
                 title={parentIssue.title}
               >
                 <span>{parentIssue.id}</span>
@@ -95,7 +95,7 @@
     <div class="flex flex-1 items-center justify-center text-sm text-subtle">Loading issue…</div>
   {:else}
     {#key detail.issue.id}
-      <IssueDetailForm {detail} {projectId} {tab} />
+      <IssueDetailForm {detail} {folderPath} {tab} />
     {/key}
   {/if}
 </section>

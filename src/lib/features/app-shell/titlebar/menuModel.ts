@@ -1,15 +1,23 @@
-// Shared app-menu model.
-//
-// Single source of truth for the titlebar menu's contents, so the
-// horizontal menu bar (AppMenuBar) and the collapsed hamburger
-// (TitleBarMenu) never drift. Reads reactive getters; call it from a
-// `$derived` so the structure stays live.
+// App-menu model for the titlebar hamburger (TitleBarMenu). Reads
+// reactive getters; call it from a `$derived` so the structure stays live.
 
-import { getProjects } from '$lib/features/projects/state.svelte'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-import { closeActiveProject } from '$lib/features/app-actions/actions.svelte'
-import { getActiveProjectId, getOpenProjectIds, openProject } from '$lib/features/workbench/state.svelte'
+import {
+  closeActiveTab,
+  openActiveFolderInExternalTerminal,
+  openFolderPicker,
+  openFolderSettingsFile,
+  reopenTab,
+  revealActiveFolderInFileManager
+} from '$lib/features/app-actions/actions.svelte'
+import {
+  getActiveTabId,
+  getRecentUnopenedFolders,
+  hasClosedTabs,
+  openFolder
+} from '$lib/features/workbench/state.svelte'
+import { basename } from '$lib/utils/paths'
 
 export interface MenuItem {
   kind: 'item'
@@ -31,55 +39,53 @@ export interface MenuSeparator {
 
 export type MenuEntry = MenuItem | MenuSubmenu | MenuSeparator
 
-export interface MenuGroup {
-  label: string
-  entries: MenuEntry[]
-}
+export function buildAppMenu(handlers: { onSettings: () => void }): MenuEntry[] {
+  const hasActive = getActiveTabId() !== null
+  const recent = getRecentUnopenedFolders()
 
-export interface AppMenuHandlers {
-  onNewProject: () => void
-  onSettings: () => void
-}
-
-export function buildAppMenu(handlers: AppMenuHandlers): MenuGroup[] {
-  const openIds = getOpenProjectIds()
-  const openIdSet = new Set(openIds)
-  const activeId = getActiveProjectId()
-  const hasActive = activeId !== null
-  const recent = getProjects().filter((p) => !openIdSet.has(p.id))
-
-  const fileEntries: MenuEntry[] = [{ kind: 'item', label: 'Open Project', onSelect: handlers.onNewProject }]
+  const entries: MenuEntry[] = [{ kind: 'item', label: 'Open Folder…', onSelect: () => void openFolderPicker() }]
   if (recent.length > 0) {
-    fileEntries.push({
+    entries.push({
       kind: 'submenu',
       label: 'Open Recent',
-      items: recent.map((p) => ({ kind: 'item', label: p.name, title: p.path, onSelect: () => openProject(p.id) }))
+      items: recent.map((path) => ({
+        kind: 'item',
+        label: basename(path),
+        title: path,
+        onSelect: () => void openFolder(path)
+      }))
     })
   }
-  fileEntries.push({
-    kind: 'item',
-    label: 'Close Project',
-    disabled: !hasActive,
-    onSelect: closeActiveProject
-  })
-  fileEntries.push({ kind: 'separator' })
-  fileEntries.push({ kind: 'item', label: 'Settings…', onSelect: handlers.onSettings })
-
-  const viewEntries: MenuEntry[] = [
+  entries.push(
+    { kind: 'separator' },
+    { kind: 'item', label: 'Close Tab', disabled: !hasActive, onSelect: () => void closeActiveTab() },
+    { kind: 'item', label: 'Reopen Closed Tab', disabled: !hasClosedTabs(), onSelect: reopenTab },
+    { kind: 'separator' },
+    {
+      kind: 'item',
+      label: 'Reveal Folder in File Manager',
+      disabled: !hasActive,
+      onSelect: revealActiveFolderInFileManager
+    },
+    {
+      kind: 'item',
+      label: 'Open Folder in External Terminal',
+      disabled: !hasActive,
+      onSelect: openActiveFolderInExternalTerminal
+    },
+    { kind: 'item', label: 'Folder Settings…', disabled: !hasActive, onSelect: () => void openFolderSettingsFile() },
+    { kind: 'separator' },
     {
       kind: 'item',
       label: isSidebarCollapsed() ? 'Show Sidebar' : 'Hide Sidebar',
       disabled: !hasActive,
       onSelect: toggleSidebar
     },
-    { kind: 'separator' },
     { kind: 'item', label: 'Zoom In', onSelect: zoomIn },
     { kind: 'item', label: 'Zoom Out', onSelect: zoomOut },
-    { kind: 'item', label: 'Reset Zoom', onSelect: zoomReset }
-  ]
-
-  return [
-    { label: 'File', entries: fileEntries },
-    { label: 'View', entries: viewEntries }
-  ]
+    { kind: 'item', label: 'Reset Zoom', onSelect: zoomReset },
+    { kind: 'separator' },
+    { kind: 'item', label: 'Settings…', onSelect: handlers.onSettings }
+  )
+  return entries
 }

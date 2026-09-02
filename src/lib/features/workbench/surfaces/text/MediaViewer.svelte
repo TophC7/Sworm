@@ -6,16 +6,16 @@
   import { mediaAssetUrl } from '$lib/utils/mediaAssets'
 
   let {
-    projectPath,
+    folderPath,
     filePath,
     kind
   }: {
-    projectPath: string
+    folderPath: string
     filePath: string
     kind: MediaKind
   } = $props()
 
-  let assetUrl = $derived(mediaAssetUrl(projectPath, filePath))
+  let assetUrl = $derived(mediaAssetUrl(folderPath, filePath))
 </script>
 
 <div class="flex h-full w-full items-center justify-center overflow-auto bg-ground p-4">

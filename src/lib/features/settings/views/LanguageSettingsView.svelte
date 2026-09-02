@@ -14,7 +14,7 @@
   } from '$lib/features/settings/state/lspSettings.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getSettings, saveFormattingSettings } from '$lib/features/settings/state/settings.svelte'
-  import { getActiveProjectId } from '$lib/features/workbench/state.svelte'
+  import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import type { BuiltinSettingsPage, FormatterSelection, LspServerSettingsEntry } from '$lib/types/backend'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { onDestroy } from 'svelte'
@@ -33,7 +33,7 @@
   } = $props()
 
   let settings = $derived(getSettings())
-  let activeProjectId = $derived(getActiveProjectId())
+  let activeFolderPath = $derived(getActiveFolderPath() ?? undefined)
   let lspLoading = $derived(getLspServersLoading())
   let allServers = $derived(getLspServers())
   let servers = $derived(
@@ -74,12 +74,11 @@
     onBusyChange: (busy) => (busy ? onSaving() : onSaved())
   })
 
-  let lastLoadedProjectId = $state<string | undefined>(undefined)
+  let lastLoadedFolderPath = $state<string | undefined>(undefined)
   $effect(() => {
-    const projectId = activeProjectId ?? undefined
-    if (lastLoadedProjectId === projectId) return
-    lastLoadedProjectId = projectId
-    void loadLspServers(projectId)
+    if (lastLoadedFolderPath === activeFolderPath) return
+    lastLoadedFolderPath = activeFolderPath
+    void loadLspServers(activeFolderPath)
   })
 
   onDestroy(() => saver.dispose())
@@ -121,7 +120,7 @@
         trace: draft.trace,
         settings: draft.settings
       },
-      activeProjectId ?? undefined
+      activeFolderPath
     )
   }
 
@@ -146,7 +145,7 @@
 
   async function refresh() {
     try {
-      await refreshLspServers(activeProjectId ?? undefined)
+      await refreshLspServers(activeFolderPath)
     } catch (error) {
       notify.error('Refresh language servers failed', getErrorMessage(error))
     }

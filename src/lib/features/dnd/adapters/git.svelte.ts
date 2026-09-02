@@ -3,47 +3,42 @@ import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
 import { dragObserver } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
+import { notify } from '$lib/features/notifications/state.svelte'
 import type { GitChange } from '$lib/types/backend'
 
 interface GitSourceArgs {
-  projectId: string
+  folderPath: string
   changes: Pick<GitChange, 'path' | 'staged'>[] | (() => Pick<GitChange, 'path' | 'staged'>[])
 }
 
 interface GitDropZoneArgs {
-  projectId: string
+  folderPath: string
   staged: boolean
   onDropFiles: (filePaths: string[], staged: boolean) => void | Promise<void>
 }
 
 const zoneStore = createHoverStore<true>()
 
-function zoneKey(projectId: string, staged: boolean): string {
-  return `${projectId}:${staged ? 'staged' : 'unstaged'}`
+function zoneKey(folderPath: string, staged: boolean): string {
+  return `${folderPath}:${staged ? 'staged' : 'unstaged'}`
 }
 
-function setZoneActive(projectId: string, staged: boolean): void {
-  zoneStore.set(zoneKey(projectId, staged), true)
+function canAccept(payload: DragPayload | null, staged: boolean): boolean {
+  return payload?.items.some((item) => item.kind === 'git-change' && item.staged !== staged) ?? false
 }
 
-function clearZoneActive(projectId: string, staged: boolean): void {
-  zoneStore.clear(zoneKey(projectId, staged))
-}
-
-function canAccept(payload: DragPayload | null, projectId: string, staged: boolean): boolean {
-  if (!payload) return false
-  return payload.items.some(
-    (item) => item.kind === 'git-change' && item.projectId === projectId && item.staged !== staged
-  )
-}
-
-function extractFiles(payload: DragPayload, projectId: string, staged: boolean): string[] {
+function extractFiles(payload: DragPayload, folderPath: string, staged: boolean): string[] {
   const files = new Set<string>()
+  let crossedFolder = false
   for (const item of payload.items) {
-    if (item.kind !== 'git-change') continue
-    if (item.projectId !== projectId || item.staged === staged) continue
+    if (item.kind !== 'git-change' || item.staged === staged) continue
+    if (item.folderPath !== folderPath) {
+      crossedFolder = true
+      continue
+    }
     files.add(item.path)
   }
+  if (crossedFolder) notify.warning('Different folder')
   return Array.from(files)
 }
 
@@ -56,27 +51,23 @@ export function gitChangeDragSource(args: GitSourceArgs) {
         event.preventDefault()
         return
       }
-
       const payload: DragPayload = {
         source: 'internal',
         items: changes.map((change) => ({
           kind: 'git-change',
           path: change.path,
           staged: change.staged,
-          projectId: args.projectId
+          folderPath: args.folderPath
         }))
       }
-
       LocalTransfer.set(payload)
       transfer.effectAllowed = 'move'
       stampDataTransfer(transfer, payload)
     }
-
     const onDragEnd = () => {
       LocalTransfer.clear()
-      zoneStore.clearByPrefix(`${args.projectId}:`)
+      zoneStore.clearByPrefix(`${args.folderPath}:`)
     }
-
     element.addEventListener('dragstart', onDragStart)
     element.addEventListener('dragend', onDragEnd)
     return () => {
@@ -87,53 +78,37 @@ export function gitChangeDragSource(args: GitSourceArgs) {
 }
 
 export function gitDropZone(args: GitDropZoneArgs) {
+  const clear = () => zoneStore.clear(zoneKey(args.folderPath, args.staged))
+  const drop = async (payload: DragPayload) => {
+    clear()
+    const files = extractFiles(payload, args.folderPath, args.staged)
+    if (files.length > 0) await args.onDropFiles(files, args.staged)
+  }
   const observer = dragObserver({
-    accept: (payload) => {
-      if (payload) return canAccept(payload, args.projectId, args.staged)
-      return false
-    },
-    onOver: () => {
-      setZoneActive(args.projectId, args.staged)
-    },
-    onLeave: () => {
-      clearZoneActive(args.projectId, args.staged)
-    },
-    onDrop: async (_event, payload) => {
-      clearZoneActive(args.projectId, args.staged)
-      const files = extractFiles(payload, args.projectId, args.staged)
-      if (files.length === 0) return
-      await args.onDropFiles(files, args.staged)
-    }
+    accept: (payload) => canAccept(payload, args.staged),
+    onOver: () => zoneStore.set(zoneKey(args.folderPath, args.staged), true),
+    onLeave: clear,
+    onDrop: (_event, payload) => drop(payload)
   })
 
   return (element: HTMLElement) => {
     const disposeObserver = observer(element)
     const disposeRegistry = DropRegistry.register({
-      id: `git-zone:${args.projectId}:${args.staged ? 'staged' : 'unstaged'}`,
+      id: `git-zone:${args.folderPath}:${args.staged ? 'staged' : 'unstaged'}`,
       element,
-      accept: (payload) => canAccept(payload, args.projectId, args.staged),
-      hover: () => {
-        setZoneActive(args.projectId, args.staged)
-      },
-      leave: () => {
-        clearZoneActive(args.projectId, args.staged)
-      },
-      dispatch: async (payload) => {
-        clearZoneActive(args.projectId, args.staged)
-        const files = extractFiles(payload, args.projectId, args.staged)
-        if (files.length === 0) return
-        await args.onDropFiles(files, args.staged)
-      }
+      accept: (payload) => canAccept(payload, args.staged),
+      hover: () => zoneStore.set(zoneKey(args.folderPath, args.staged), true),
+      leave: clear,
+      dispatch: drop
     })
-
     return () => {
       disposeRegistry()
-      clearZoneActive(args.projectId, args.staged)
+      clear()
       disposeObserver()
     }
   }
 }
 
-export function isGitDropZoneActive(projectId: string, staged: boolean): boolean {
-  return zoneStore.has(zoneKey(projectId, staged))
+export function isGitDropZoneActive(folderPath: string, staged: boolean): boolean {
+  return zoneStore.has(zoneKey(folderPath, staged))
 }

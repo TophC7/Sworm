@@ -1,4 +1,4 @@
-import type { PaneSlot, TabId } from '$lib/features/workbench/model'
+import type { TabId } from '$lib/features/workbench/model'
 
 export const DND_MIME = {
   SWORM_ITEM: 'application/vnd.sworm.item+json',
@@ -10,22 +10,20 @@ export const DND_MIME = {
 export interface TabDragItem {
   kind: 'tab'
   tabId: TabId
-  projectId: string
-  sourcePaneSlot: PaneSlot
 }
 
 export interface FileDragItem {
   kind: 'file'
   path: string
   isDir: boolean
-  projectId: string
+  folderPath: string
 }
 
 export interface GitChangeDragItem {
   kind: 'git-change'
   path: string
   staged: boolean
-  projectId: string
+  folderPath: string
 }
 
 export interface OsFilesDragItem {
@@ -103,15 +101,13 @@ function isDragItem(value: unknown): value is SwormDragKind {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<SwormDragKind>
   if (item.kind === 'tab') {
-    return (
-      typeof item.tabId === 'string' && typeof item.projectId === 'string' && typeof item.sourcePaneSlot === 'string'
-    )
+    return typeof item.tabId === 'string'
   }
   if (item.kind === 'file') {
-    return typeof item.path === 'string' && typeof item.isDir === 'boolean' && typeof item.projectId === 'string'
+    return typeof item.path === 'string' && typeof item.isDir === 'boolean' && typeof item.folderPath === 'string'
   }
   if (item.kind === 'git-change') {
-    return typeof item.path === 'string' && typeof item.staged === 'boolean' && typeof item.projectId === 'string'
+    return typeof item.path === 'string' && typeof item.staged === 'boolean' && typeof item.folderPath === 'string'
   }
   if (item.kind === 'os-files') {
     return Array.isArray(item.paths) && item.paths.every((path) => typeof path === 'string')

@@ -9,13 +9,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import {
-    DialogContent,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import * as branches from '$lib/features/git/branches.svelte'
   import type { BranchSummary } from '$lib/types/backend'
   import { splitRemoteBranchRef } from '$lib/features/git/gitRefs'
@@ -24,13 +18,11 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     branch
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     branch: BranchSummary
   } = $props()
 
@@ -58,11 +50,11 @@
         if (!remoteRef) {
           throw new Error(`Cannot infer remote for ${branch.name}`)
         }
-        await backend.git.branch.deleteRemote(projectPath, remoteRef.remote, remoteRef.branch)
+        await backend.git.branch.deleteRemote(folderPath, remoteRef.remote, remoteRef.branch)
       } else {
-        await backend.git.branch.delete(projectPath, branch.name, { force: unmergedWarning })
+        await backend.git.branch.delete(folderPath, branch.name, { force: unmergedWarning })
       }
-      await branches.refresh(projectId, projectPath)
+      await branches.refresh(folderPath)
     },
     onDone: () => (open = false),
     onError: (error) => {
@@ -72,7 +64,6 @@
       }
     }
   })
-
 </script>
 
 <DialogRoot bind:open>
@@ -98,8 +89,7 @@
         </p>
         {#if unmergedWarning}
           <p class="text-xs text-danger">
-            This branch has unmerged commits. Forcing delete loses any commits not yet merged
-            elsewhere.
+            This branch has unmerged commits. Forcing delete loses any commits not yet merged elsewhere.
           </p>
         {/if}
         <DialogError message={submitState.error} />
@@ -108,11 +98,7 @@
       <DialogFooter>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="destructive" disabled={submitState.busy} onclick={submitState.submit}>
-          {submitState.busy
-            ? 'Deleting…'
-            : unmergedWarning
-              ? 'Force delete'
-              : 'Delete'}
+          {submitState.busy ? 'Deleting…' : unmergedWarning ? 'Force delete' : 'Delete'}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -16,8 +16,8 @@ pub struct PendingOpen(pub Mutex<Option<String>>);
 /// Skips flag-style args so webview/Tauri internals don't get
 /// misinterpreted as paths. Relative paths are resolved against the
 /// caller's cwd, then normalized lexically so `.`/`..` components
-/// don't create duplicate project rows while symlink path forms are
-/// preserved.
+/// don't leak through while symlink path forms are preserved (the
+/// frontend canonicalizes via `folder_resolve`).
 pub fn first_dir_arg(argv: &[String], cwd: Option<&Path>) -> Option<String> {
     argv.iter().skip(1).find_map(|raw| {
         if raw.starts_with('-') {
@@ -102,6 +102,34 @@ pub async fn db_smoke_test(state: tauri::State<'_, AppState>) -> Result<String, 
         .db
         .smoke_test()
         .map_err(|e| ApiError::Database(e.to_string()))
+}
+
+/// Read a value from the app-state key/value store. Returns `None`
+/// when no entry exists for the key.
+#[tauri::command]
+pub async fn app_state_get(
+    key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, ApiError> {
+    let db = state.db.read();
+    state
+        .app_state_kv
+        .get(db.conn(), &key)
+        .map_err(ApiError::Database)
+}
+
+/// Write a value to the app-state key/value store.
+#[tauri::command]
+pub async fn app_state_put(
+    key: String,
+    value_json: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let db = state.db.write();
+    state
+        .app_state_kv
+        .put(db.conn(), &key, &value_json)
+        .map_err(ApiError::Database)
 }
 
 /// Keyring smoke test: write/read/delete a test secret.

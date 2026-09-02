@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Session } from '$lib/types/backend'
   import type { Tab } from '$lib/features/workbench/model'
   import LauncherSurface from '$lib/features/workbench/surfaces/launcher/LauncherSurface.svelte'
   import SessionSurface from '$lib/features/workbench/surfaces/session/SessionSurface.svelte'
@@ -10,43 +9,23 @@
   import IssueSurface from '$lib/features/workbench/surfaces/issue/IssueSurface.svelte'
   import EpicSurface from '$lib/features/workbench/surfaces/epic/EpicSurface.svelte'
 
-  let {
-    activeTab = null,
-    paneSession = null,
-    projectId,
-    projectPath,
-    onSessionCreated,
-    onSessionStatusChange
-  }: {
-    activeTab: Tab | null
-    paneSession: Session | null
-    projectId: string
-    projectPath: string
-    onSessionCreated?: () => void
-    onSessionStatusChange?: (status: Session['status']) => void
-  } = $props()
+  let { activeTab }: { activeTab: Tab } = $props()
 </script>
 
-{#if !activeTab || activeTab.kind === 'launcher'}
-  <LauncherSurface onCreated={onSessionCreated} />
-{:else if activeTab.kind === 'session' && paneSession}
-  <SessionSurface
-    session={paneSession}
-    {projectId}
-    {projectPath}
-    locked={activeTab.locked}
-    onStatusChange={onSessionStatusChange}
-  />
+{#if activeTab.kind === 'launcher'}
+  <LauncherSurface folderPath={activeTab.folderPath} />
+{:else if activeTab.kind === 'session'}
+  <SessionSurface tab={activeTab} />
 {:else if activeTab.kind === 'text'}
-  <TextSurface tab={activeTab} {projectId} {projectPath} locked={activeTab.locked} />
+  <TextSurface tab={activeTab} folderPath={activeTab.folderPath} locked={activeTab.locked} />
 {:else if activeTab.kind === 'diff'}
-  <DiffSurface tab={activeTab} {projectId} {projectPath} />
+  <DiffSurface tab={activeTab} folderPath={activeTab.folderPath} />
 {:else if activeTab.kind === 'tool'}
   <ToolSurface tab={activeTab} />
 {:else if activeTab.kind === 'task'}
-  <TaskSurface tab={activeTab} {projectId} />
+  <TaskSurface tab={activeTab} folderPath={activeTab.folderPath} />
 {:else if activeTab.kind === 'issue'}
-  <IssueSurface tab={activeTab} {projectId} />
+  <IssueSurface tab={activeTab} folderPath={activeTab.folderPath} />
 {:else if activeTab.kind === 'epic'}
-  <EpicSurface tab={activeTab} {projectId} />
+  <EpicSurface tab={activeTab} folderPath={activeTab.folderPath} />
 {/if}

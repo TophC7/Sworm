@@ -6,13 +6,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import {
-    DialogContent,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
@@ -21,13 +15,11 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     branchName
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     branchName: string
   } = $props()
 
@@ -44,7 +36,7 @@
     loading = true
     error = null
     try {
-      files = await backend.git.branch.diffAgainstHead(projectPath, branchName)
+      files = await backend.git.branch.diffAgainstHead(folderPath, branchName)
     } catch (e) {
       error = getErrorMessage(e)
       files = []
@@ -57,7 +49,7 @@
     // git_show_file only accepts hex commit hashes or `stash@{N}`,
     // so resolve the branch to its tip hash before opening; keep the
     // branch name as the user-visible ref label.
-    const entry = branches.byProject.get(projectId)
+    const entry = branches.byFolder.get(folderPath)
     const summary = entry?.list.find((b) => b.name === branchName)
     const hash = summary?.tip.hash
     if (!hash) {
@@ -65,7 +57,7 @@
       return
     }
     try {
-      await openTextSnapshot(projectId, filePath, hash, branchName)
+      await openTextSnapshot(folderPath, filePath, hash, branchName)
     } catch (e) {
       console.error('Failed to open snapshot:', e)
     }

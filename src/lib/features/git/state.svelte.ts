@@ -1,17 +1,16 @@
-// Per-project git state module using Svelte 5 runes.
+// Folder-keyed git state module using Svelte 5 runes.
 //
-// Extracted from ProjectMainView's inline $effect + setInterval.
-// Provides project-keyed git summaries and managed polling so that
+// Provides folder-keyed git summaries and managed polling so that
 // multiple components (sidebar, status bar) can read git state without
 // duplicating backend calls.
 
 import { backend } from '$lib/api/backend'
-import { createProjectKeyedStore } from '$lib/state/projectKeyedStore.svelte'
+import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import type { GitSummary } from '$lib/types/backend'
 
 const GIT_POLL_INTERVAL_MS = 10_000
 
-const gitStore = createProjectKeyedStore<GitSummary>()
+const gitStore = createFolderKeyedStore<GitSummary>()
 
 function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolean {
   if (!a) return false
@@ -47,52 +46,41 @@ function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolea
 }
 
 // READ //
-export function getGitSummary(projectId: string): GitSummary | null {
-  return gitStore.get(projectId) ?? null
+export function getGitSummary(folderPath: string): GitSummary | null {
+  return gitStore.get(folderPath) ?? null
 }
 
 // WRITE //
-export async function refreshGit(projectId: string, projectPath?: string): Promise<void> {
-  const path = gitStore.resolveProjectPath(projectId, projectPath)
-  if (!path) return
-
+export async function refreshGit(folderPath: string): Promise<void> {
   try {
-    const summary = await backend.git.getSummary(path)
-    if (summariesEqual(gitStore.get(projectId), summary)) {
+    const summary = await backend.git.getSummary(folderPath)
+    if (summariesEqual(gitStore.get(folderPath), summary)) {
       return
     }
-    gitStore.set(projectId, summary)
+    gitStore.set(folderPath, summary)
   } catch (e) {
-    console.error(`Failed to refresh git for ${projectId}:`, e)
+    console.error(`Failed to refresh git for ${folderPath}:`, e)
   }
 }
 
-export function startGitPolling(projectId: string, projectPath: string) {
-  void refreshGit(projectId, projectPath)
-  gitStore.startPolling(projectId, projectPath, {
+export function startGitPolling(folderPath: string) {
+  void refreshGit(folderPath)
+  gitStore.startPolling(folderPath, {
     intervalMs: GIT_POLL_INTERVAL_MS,
     tick: refreshGit
   })
 }
 
-export function stopGitPolling(projectId: string) {
-  gitStore.stopPolling(projectId)
+export function stopGitPolling(folderPath: string) {
+  gitStore.stopPolling(folderPath)
 }
 
 /**
- * Run a git operation against a project, then refresh git state.
+ * Run a git operation against a folder, then refresh git state.
  * Errors propagate to the caller.
  */
-export async function runGitAction<T>(
-  projectId: string,
-  projectPath: string,
-  fn: (path: string) => Promise<T>
-): Promise<T> {
-  const result = await fn(projectPath)
-  await refreshGit(projectId, projectPath)
+export async function runGitAction<T>(folderPath: string, fn: (path: string) => Promise<T>): Promise<T> {
+  const result = await fn(folderPath)
+  await refreshGit(folderPath)
   return result
-}
-
-export function clearGitState(projectId: string) {
-  gitStore.clearFor(projectId)
 }

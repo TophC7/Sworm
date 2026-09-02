@@ -30,8 +30,7 @@ interface GitHunkReviewOptions {
   monaco: Monaco
   editor: CodeEditor
   model: TextModel
-  projectId: string
-  projectPath: string
+  folderPath: string
   filePath: string
   language: string
 }
@@ -160,7 +159,7 @@ function closeOnEscape(root: HTMLElement, onClose: () => void): IDisposable {
 }
 
 export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkReviewHandle {
-  const { monaco, editor, model, projectId, projectPath, filePath, language } = options
+  const { monaco, editor, model, folderPath, filePath, language } = options
   const collection: DecorationsCollection = editor.createDecorationsCollection()
   const disposables: IDisposable[] = []
 
@@ -289,7 +288,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     zoneSpacer.style.overflow = 'hidden'
     let zoneHeight = heightInPx
     const overlayWidget: OverlayWidget = {
-      getId: () => `sworm.dirtyDiffPeek.${projectId}.${filePath}`,
+      getId: () => `sworm.dirtyDiffPeek.${folderPath}.${filePath}`,
       getDomNode: () => root,
       getPosition: () => null
     }
@@ -410,9 +409,9 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     if (base == null) return
 
     const nextIndex = applyChangeHunks(base, model.getValue(), [hunk])
-    await backend.git.stageFileContent(projectPath, filePath, nextIndex)
+    await backend.git.stageFileContent(folderPath, filePath, nextIndex)
     clearPeek(false)
-    await refreshGit(projectId, projectPath)
+    await refreshGit(folderPath)
     await refreshBase()
   }
 
@@ -452,9 +451,9 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     const nextIndex =
       headContent == null && remaining.length === 0 ? null : applyChangeHunks(base, currentIndex, remaining)
 
-    await backend.git.stageFileContent(projectPath, filePath, nextIndex)
+    await backend.git.stageFileContent(folderPath, filePath, nextIndex)
     clearPeek(false)
-    await refreshGit(projectId, projectPath)
+    await refreshGit(folderPath)
     await refreshBase()
   }
 
@@ -491,7 +490,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
 
   async function refreshBase() {
     try {
-      const data = await backend.git.getQuickDiffData(projectPath, filePath)
+      const data = await backend.git.getQuickDiffData(folderPath, filePath)
       if (disposed) return
       indexContent = data.indexContent
       headContent = data.headContent

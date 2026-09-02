@@ -391,7 +391,7 @@ export class DiffEditorPool {
     return this.settings
   }
 
-  /** Dispose every editor. Call on viewer teardown / project switch. */
+  /** Dispose every editor. Call on viewer teardown / folder switch. */
   dispose(): void {
     this.trimHandle?.dispose()
     this.trimHandle = null

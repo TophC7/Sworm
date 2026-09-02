@@ -4,22 +4,17 @@
     ContextMenuTrigger,
     ContextMenuContent,
     ContextMenuItem,
-    ContextMenuSeparator,
-    ContextMenuSub,
-    ContextMenuSubTrigger,
-    ContextMenuSubContent
+    ContextMenuSeparator
   } from '$lib/components/ui/context-menu'
   import {
     FolderOpen,
     FileCodeIcon,
-    TerminalIcon,
     FileDiff,
     ScissorsIcon,
     CopyIcon,
     ClipboardIcon,
     PencilIcon,
     Trash2,
-    ChevronRight,
     Plus,
     SquareArrowOutUpRight,
     ClipboardPasteIcon
@@ -32,7 +27,6 @@
     children,
     onRevealInFolder,
     onOpenInEditor,
-    onOpenInFresh,
     onOpenDiff,
     onCut,
     onCopy,
@@ -44,7 +38,7 @@
     onNewFile,
     onNewFolder,
     onOpenExternal,
-    onCopyProjectPath,
+    onCopyFolderPath,
     onResetTarget
   }: {
     filePath: string | null
@@ -52,7 +46,6 @@
     children: Snippet
     onRevealInFolder: () => void
     onOpenInEditor: () => void
-    onOpenInFresh: () => void
     onOpenDiff: () => void
     onCut: () => void
     onCopy: () => void
@@ -64,7 +57,7 @@
     onNewFile: () => void
     onNewFolder: () => void
     onOpenExternal: () => void
-    onCopyProjectPath: () => void
+    onCopyFolderPath: () => void
     onResetTarget: () => void
   } = $props()
 </script>
@@ -86,23 +79,10 @@
       {#if targetType === 'file'}
         <ContextMenuSeparator />
 
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <FileCodeIcon size={14} class="shrink-0 text-muted" />
-            <span class="flex-1">Open With</span>
-            <ChevronRight size={12} class="shrink-0 text-subtle" />
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem onclick={onOpenInEditor}>
-              <FileCodeIcon size={14} class="shrink-0 text-muted" />
-              <span>Built-in Editor</span>
-            </ContextMenuItem>
-            <ContextMenuItem onclick={onOpenInFresh}>
-              <TerminalIcon size={14} class="shrink-0 text-muted" />
-              <span>Fresh</span>
-            </ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+        <ContextMenuItem onclick={onOpenInEditor}>
+          <FileCodeIcon size={14} class="shrink-0 text-muted" />
+          <span>Open in Editor</span>
+        </ContextMenuItem>
 
         <ContextMenuItem onclick={onOpenDiff}>
           <FileDiff size={14} class="shrink-0 text-muted" />
@@ -172,7 +152,7 @@
         <SquareArrowOutUpRight size={14} class="shrink-0 text-muted" />
         <span>Reveal in File Manager</span>
       </ContextMenuItem>
-      <ContextMenuItem onclick={onCopyProjectPath}>
+      <ContextMenuItem onclick={onCopyFolderPath}>
         <ClipboardIcon size={14} class="shrink-0 text-muted" />
         <span>Copy Path</span>
       </ContextMenuItem>

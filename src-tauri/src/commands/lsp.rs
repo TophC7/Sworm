@@ -3,6 +3,7 @@ use crate::errors::ApiError;
 use crate::models::lsp::{LspEvent, LspServerSettingsEntry};
 use crate::models::settings::{LspServerConfigRecord, LspTraceLevel};
 use crate::services::builtins::BuiltinCatalogService;
+use crate::services::folders::resolve_folder;
 use crate::services::lsp::{resolve_launch, resolve_server_status, ProjectLspEnvironment};
 use crate::services::nix::NixService;
 use crate::services::settings::SettingsService;
@@ -29,25 +30,20 @@ pub struct SaveLspServerConfigInput {
 #[tauri::command]
 pub async fn lsp_list_servers(
     state: tauri::State<'_, AppState>,
-    project_id: Option<String>,
+    folder_path: Option<String>,
 ) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
-    let db = state.db.read();
-    let (project_path, env) = if let Some(project_id) = project_id.as_deref() {
-        let project = state
-            .projects
-            .get(db.conn(), project_id)
-            .map_err(ApiError::Database)?
-            .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
-        let nix_env =
-            NixService::load_env_vars(db.conn(), project_id).map_err(ApiError::Database)?;
+    let (project_path, env) = if let Some(folder_path) = folder_path.as_deref() {
+        let folder = resolve_folder(folder_path)?;
+        let db = state.db.read();
+        let nix_env = NixService::load_env_vars(db.conn(), &folder.to_string_lossy())
+            .map_err(ApiError::Database)?;
         (
-            Some(PathBuf::from(project.path)),
+            Some(folder),
             ProjectLspEnvironment::from_nix(&state.env, nix_env.as_ref()),
         )
     } else {
         (None, ProjectLspEnvironment::from_host(&state.env))
     };
-    drop(db);
 
     let effective = resolve_effective_settings_for_project_path(project_path.as_deref())
         .map_err(ApiError::Internal)?;
@@ -88,7 +84,7 @@ pub async fn lsp_set_server_config(
 #[tauri::command]
 pub async fn lsp_start(
     session_id: String,
-    project_id: String,
+    folder_path: String,
     server_definition_id: String,
     root_path: String,
     events: tauri::ipc::Channel<LspEvent>,
@@ -103,16 +99,12 @@ pub async fn lsp_start(
             ))
         })?;
 
-    let db = state.db.read();
-    let project = state
-        .projects
-        .get(db.conn(), &project_id)
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
+    let folder = resolve_folder(&folder_path)?;
+    let folder_path = folder.to_string_lossy().into_owned();
 
-    let root_path = normalize_root_path(&project.path, &root_path)?;
-    let effective = resolve_effective_settings_for_project_path(Some(Path::new(&project.path)))
-        .map_err(ApiError::Internal)?;
+    let root_path = normalize_root_path(&folder_path, &root_path)?;
+    let effective =
+        resolve_effective_settings_for_project_path(Some(&folder)).map_err(ApiError::Internal)?;
     let config = lsp_config_record(&effective.settings, &server_definition_id);
 
     if !config.enabled {
@@ -122,7 +114,8 @@ pub async fn lsp_start(
         )));
     }
 
-    let nix_env = NixService::load_env_vars(db.conn(), &project_id).map_err(ApiError::Database)?;
+    let db = state.db.read();
+    let nix_env = NixService::load_env_vars(db.conn(), &folder_path).map_err(ApiError::Database)?;
     drop(db);
 
     let env = ProjectLspEnvironment::from_nix(&state.env, nix_env.as_ref());

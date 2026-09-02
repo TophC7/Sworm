@@ -51,27 +51,18 @@ export const allProviders: ProviderMeta[] = [
     gradientTo: '#3b0764'
   },
   {
-    id: 'gemini',
-    label: 'Gemini CLI',
-    icon: '/svg/gemini.svg',
-    textIcon: '/svg/gemini-text.svg',
-    textAspect: 98 / 24,
-    gradientFrom: '#60a5fa',
-    gradientTo: '#1e3a5f'
+    id: 'antigravity',
+    label: 'Antigravity',
+    icon: '/svg/antigravity.svg',
+    textIcon: '/svg/antigravity-text.svg',
+    textAspect: 422 / 88,
+    gradientFrom: '#a78bfa',
+    gradientTo: '#312e81'
   }
 ]
 
 /** Direct options — shown below the "or" divider. */
 export const directOptions: ProviderMeta[] = [
-  {
-    id: 'fresh',
-    label: 'Fresh',
-    icon: '/svg/fresh.svg',
-    textLabel: 'Fresh',
-    textFont: "'SF Mono', monospace",
-    gradientFrom: '#10b981',
-    gradientTo: '#064e3b'
-  },
   {
     id: 'terminal',
     label: 'Terminal',

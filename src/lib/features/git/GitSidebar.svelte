@@ -22,8 +22,7 @@
 
   let {
     summary,
-    projectId,
-    projectPath,
+    folderPath,
     onRefresh,
     onFileClick,
     onPersistTab,
@@ -32,8 +31,7 @@
     onViewAllChanges
   }: {
     summary: GitSummary | null
-    projectId: string
-    projectPath: string
+    folderPath: string
     onRefresh?: () => void
     onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
@@ -68,8 +66,8 @@
     initError = null
     await runNotifiedTask(
       async () => {
-        await backend.git.init(projectPath)
-        await refreshGit(projectId, projectPath)
+        await backend.git.init(folderPath)
+        await refreshGit(folderPath)
       },
       {
         loading: { title: 'Initializing repository' },
@@ -95,8 +93,8 @@
     let cloneSucceeded = false
     await runNotifiedTask(
       async () => {
-        await backend.git.cloneInPlace(projectPath, targetUrl)
-        await refreshGit(projectId, projectPath)
+        await backend.git.cloneInPlace(folderPath, targetUrl)
+        await refreshGit(folderPath)
         cloneSucceeded = true
       },
       {
@@ -117,19 +115,19 @@
   }
 
   async function refresh() {
-    await refreshGit(projectId, projectPath)
+    await refreshGit(folderPath)
   }
 
   async function handleGitAction<T = void>(
     kind: GitActionKind,
     fn: (path: string) => Promise<T>
   ): Promise<T | undefined> {
-    return runNotifiedTask(() => runGitAction(projectId, projectPath, fn), getGitActionNotifications<T>(kind))
+    return runNotifiedTask(() => runGitAction(folderPath, fn), getGitActionNotifications<T>(kind))
   }
 
   async function handleCommit(message: string) {
     await runNotifiedTask(
-      () => runGitAction(projectId, projectPath, (path) => backend.git.commit(path, message)),
+      () => runGitAction(folderPath, (path) => backend.git.commit(path, message)),
       gitCommitNotifications
     )
   }
@@ -152,7 +150,7 @@
   }
 
   async function handleUndoLastCommit() {
-    const message = await undoLastCommit(projectId, projectPath)
+    const message = await undoLastCommit(folderPath)
     if (typeof message === 'string' && message.length > 0) {
       commitMessage = message
     }
@@ -163,7 +161,7 @@
   }
 
   async function handlePushForceWithLease() {
-    await forcePushWithLease(projectId, projectPath)
+    await forcePushWithLease(folderPath)
   }
 
   async function handlePull() {
@@ -259,8 +257,7 @@
         <div class="h-full overflow-y-auto">
           <GitFileTree
             {summary}
-            {projectId}
-            {projectPath}
+            {folderPath}
             {hasCommits}
             {onFileClick}
             {onPersistTab}
@@ -282,14 +279,7 @@
       <ResizableHandle />
       <ResizablePane defaultSize={40} minSize={15}>
         <div class="h-full overflow-y-auto">
-          <GitGraph
-            {projectPath}
-            {projectId}
-            onFileClick={onCommitFileClick}
-            {onStashFileClick}
-            {onPersistTab}
-            onMutate={refresh}
-          />
+          <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} onMutate={refresh} />
         </div>
       </ResizablePane>
     </ResizablePaneGroup>

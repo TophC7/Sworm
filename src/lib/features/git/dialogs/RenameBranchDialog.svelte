@@ -7,13 +7,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import {
-    DialogContent,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { Input } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
   import { validateBranchName } from '$lib/utils/git/branchValidation'
@@ -22,13 +16,11 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     oldName
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     oldName: string
   } = $props()
 
@@ -40,16 +32,14 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.rename(projectPath, oldName, name)
-      await branches.refresh(projectId, projectPath)
+      await backend.git.branch.rename(folderPath, oldName, name)
+      await branches.refresh(folderPath)
     },
     onDone: () => (open = false)
   })
 
   let nameError = $derived(name.length === 0 ? null : validateBranchName(name))
-  let canSubmit = $derived(
-    name.length > 0 && !nameError && name !== oldName && !submitState.busy
-  )
+  let canSubmit = $derived(name.length > 0 && !nameError && name !== oldName && !submitState.busy)
 </script>
 
 <DialogRoot bind:open>

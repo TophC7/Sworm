@@ -16,8 +16,6 @@ export {
   payloadHasKind
 } from '$lib/features/dnd/payload'
 export { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-export { computeZone, zoneGeometry } from '$lib/features/dnd/overlay'
-export type { Zone, ZoneGeom, ComputeZoneOptions } from '$lib/features/dnd/overlay'
 export { dragObserver, frameAt } from '$lib/features/dnd/observer.svelte'
 export type { DragFrame } from '$lib/features/dnd/observer.svelte'
 export { createHoverStore } from '$lib/features/dnd/hover-state.svelte'

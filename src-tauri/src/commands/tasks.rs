@@ -1,7 +1,7 @@
 // Task commands: list, spawn, write, resize, stop.
 //
 // A "task" is a reusable terminal command defined in
-// `<project>/.sworm/tasks.json`. Each spawn gets a fresh `run_id` used
+// `<folder>/.sworm/tasks.json`. Each spawn gets a fresh `run_id` used
 // as the PTY key — distinct from session IDs so task runs never mix
 // with agent sessions in the PTY service's map.
 
@@ -10,27 +10,32 @@ use std::collections::HashMap;
 use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::task::TaskDefinition;
+use crate::services::folders::resolve_folder;
 use crate::services::nix::NixService;
 use crate::services::pty::PtyEvent;
 
-/// Return the parsed task list for a project. Idempotently wires up
+/// Return the parsed task list for a folder. Idempotently wires up
 /// the file watcher so the frontend receives `tasks-changed` events
 /// when `.sworm/tasks.json` is modified externally.
 #[tauri::command]
 pub async fn tasks_list(
-    project_id: String,
+    folder_path: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TaskDefinition>, ApiError> {
-    let project_path = project_path_for(&project_id, &state)?;
+    let folder = resolve_folder(&folder_path)?;
 
     // Watcher setup is best-effort; a failure here shouldn't block the
     // user from seeing their tasks.
-    if let Err(err) = state.tasks.watch(&app, &project_id, &project_path) {
-        tracing::warn!("tasks watcher for {} failed to start: {}", project_id, err);
+    if let Err(err) = state.tasks.watch(&app, &folder) {
+        tracing::warn!(
+            "tasks watcher for {} failed to start: {}",
+            folder.display(),
+            err
+        );
     }
 
-    state.tasks.load(&project_path).map_err(ApiError::Internal)
+    state.tasks.load(&folder).map_err(ApiError::Internal)
 }
 
 /// Spawn a PTY running the given task. The frontend generates `run_id`
@@ -39,7 +44,7 @@ pub async fn tasks_list(
 #[tauri::command]
 pub async fn tasks_start(
     run_id: String,
-    project_id: String,
+    folder_path: String,
     task_id: String,
     active_file_path: Option<String>,
     cols: u16,
@@ -48,23 +53,23 @@ pub async fn tasks_start(
     events: tauri::ipc::Channel<PtyEvent>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let project_path = project_path_for(&project_id, &state)?;
+    let folder = resolve_folder(&folder_path)?;
+    let folder_path = folder.to_string_lossy().into_owned();
 
     let task = state
         .tasks
-        .find(&project_path, &task_id)
+        .find(&folder, &task_id)
         .map_err(ApiError::Internal)?
         .ok_or_else(|| ApiError::NotFound(format!("Task not found: {}", task_id)))?;
 
-    // Build the base child env: merge the project's Nix env over the
+    // Build the base child env: merge the folder's Nix env over the
     // inherited child env so tasks run in the same shell environment
-    // as agent sessions for that project.
-    let base_env = build_task_env(&project_id, &state);
+    // as agent sessions for that folder.
+    let base_env = build_task_env(&folder_path, &state);
 
-    let resolved =
-        state
-            .tasks
-            .resolve(&task, &project_path, active_file_path.as_deref(), &base_env);
+    let resolved = state
+        .tasks
+        .resolve(&task, &folder, active_file_path.as_deref(), &base_env);
 
     // Always shell-wrap so pipes, globs, `&&`, and quoted args work
     // exactly as a user would type them in their own terminal.
@@ -85,7 +90,6 @@ pub async fn tasks_start(
             rows,
             output,
             events,
-            false,
             None,
         )
         .map_err(ApiError::Pty)
@@ -122,23 +126,13 @@ pub async fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Re
     }
 }
 
-fn project_path_for(
-    project_id: &str,
+fn build_task_env(
+    folder_path: &str,
     state: &tauri::State<'_, AppState>,
-) -> Result<std::path::PathBuf, ApiError> {
-    let db = state.db.read();
-    let project = state
-        .projects
-        .get(db.conn(), project_id)
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
-    Ok(std::path::PathBuf::from(project.path))
-}
-
-fn build_task_env(project_id: &str, state: &tauri::State<'_, AppState>) -> HashMap<String, String> {
+) -> HashMap<String, String> {
     let nix_env = {
         let db = state.db.read();
-        NixService::load_env_vars(db.conn(), project_id).unwrap_or_default()
+        NixService::load_env_vars(db.conn(), folder_path).unwrap_or_default()
     };
 
     match nix_env {

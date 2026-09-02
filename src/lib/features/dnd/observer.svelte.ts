@@ -14,8 +14,8 @@ export interface DragFrame {
 /**
  * Build a {@link DragFrame} from a client-space point against an
  * element. Used by registry callbacks (which receive raw coordinates
- * from `DropRegistry.dispatchAt`) so they can reuse the same zone /
- * hit-test math the observer's callbacks use.
+ * from `DropRegistry.dispatchAt`) so they can reuse the same hit-test
+ * math the observer's callbacks use.
  *
  * Returns `null` for degenerate rects (hidden / zero-size element).
  */
@@ -92,7 +92,7 @@ export function dragObserver(options: DragObserverOptions) {
         // skip dragenter on the observed element when the drag starts
         // inside it — the source element gets the initial enter but the
         // ancestor observer never sees it. Lazily begin hover from the
-        // first dragover so same-pane tab drags still register.
+        // first dragover so tab-strip drags still register.
         const payload = LocalTransfer.peek()
         const types = dragTypes(event)
         if (!options.accept(payload, types)) return

@@ -6,8 +6,7 @@ pub enum ProviderId {
     ClaudeCode,
     Codex,
     Omp,
-    Gemini,
-    Fresh,
+    Antigravity,
     Terminal,
 }
 
@@ -17,8 +16,7 @@ impl ProviderId {
             ProviderId::ClaudeCode => "claude_code",
             ProviderId::Codex => "codex",
             ProviderId::Omp => "omp",
-            ProviderId::Gemini => "gemini",
-            ProviderId::Fresh => "fresh",
+            ProviderId::Antigravity => "antigravity",
             ProviderId::Terminal => "terminal",
         }
     }
@@ -71,10 +69,10 @@ pub enum ResumeMode {
     ThreadId {
         resume_command: &'static str,
     },
-    /// Simple flag-based resume (e.g. `--resume latest` for Gemini).
-    /// Flags are appended verbatim on restart; ignored on first start.
-    GenericFlag {
-        flags: &'static [&'static str],
+    /// Resume by conversation id (e.g. `agy --conversation <id>`).
+    /// Appended only when a resume token is supplied.
+    ConversationId {
+        flag: &'static str,
     },
 }
 

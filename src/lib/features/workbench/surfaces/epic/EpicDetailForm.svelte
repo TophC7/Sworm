@@ -27,11 +27,11 @@
 
   let {
     detail,
-    projectId,
+    folderPath,
     tab
   }: {
     detail: IssueEpic
-    projectId: string
+    folderPath: string
     tab: EpicTab
   } = $props()
 
@@ -60,23 +60,23 @@
       d.status !== base.status ||
       Number(d.priority) !== Number(base.priority),
     save: async (drafts) => {
-      const next = await updateEpic(projectId, tab.epicId, {
+      const next = await updateEpic(folderPath, tab.epicId, {
         title: drafts.title.trim(),
         description: drafts.description.trim() || null,
         status: drafts.status,
         priority: Number(drafts.priority)
       })
       if (next.title !== tab.title) {
-        updateEpicTabTitle(projectId, tab.epicId, next.title)
+        updateEpicTabTitle(folderPath, tab.epicId, next.title)
       }
     }
   })
 
-  let allIssues = $derived(getIssues(projectId))
+  let allIssues = $derived(getIssues(folderPath))
   let epicIssues = $derived(allIssues.filter((i) => i.epicId === tab.epicId))
 
   function openIssue(issue: Issue) {
-    void openIssueTab(projectId, issue.id, issue.title)
+    void openIssueTab(folderPath, issue.id, issue.title)
   }
 </script>
 

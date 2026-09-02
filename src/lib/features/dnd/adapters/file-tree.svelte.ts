@@ -4,15 +4,16 @@ import { delayedDragHover } from '$lib/features/dnd/delayed-hover'
 import { dragObserver } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
+import { notify } from '$lib/features/notifications/state.svelte'
 import type { FileTreeNode } from '$lib/utils/fileTree'
 
 interface FileTreeSourceArgs {
-  projectId: string
+  folderPath: string
   node: FileTreeNode<{ path: string }>
 }
 
 interface FileTreeDirectoryTargetArgs {
-  projectId: string
+  folderPath: string
   directoryPath: string
   onDrop: (payload: DragPayload) => void | Promise<void>
   onHoverExpand?: () => void
@@ -20,22 +21,22 @@ interface FileTreeDirectoryTargetArgs {
 
 const directoryStore = createHoverStore<true>()
 
-function directoryKey(projectId: string, path: string): string {
-  return `${projectId}:${path}`
+function directoryKey(folderPath: string, path: string): string {
+  return `${folderPath}:${path}`
 }
 
-function setDirectoryActive(projectId: string, path: string): void {
-  directoryStore.set(directoryKey(projectId, path), true)
+function setDirectoryActive(folderPath: string, path: string): void {
+  directoryStore.set(directoryKey(folderPath, path), true)
 }
 
-function clearDirectoryActive(projectId: string, path: string): void {
-  directoryStore.clear(directoryKey(projectId, path))
+function clearDirectoryActive(folderPath: string, path: string): void {
+  directoryStore.clear(directoryKey(folderPath, path))
 }
 
-function canAcceptDirectoryPayload(payload: DragPayload | null, projectId: string): boolean {
+function canAcceptDirectoryPayload(payload: DragPayload | null): boolean {
   if (!payload) return false
   return payload.items.some((item) => {
-    if (item.kind === 'file') return item.projectId === projectId
+    if (item.kind === 'file') return true
     if (item.kind === 'os-files') return item.paths.length > 0
     return false
   })
@@ -57,7 +58,7 @@ export function fileTreeDragSource(args: FileTreeSourceArgs) {
             kind: 'file',
             path: args.node.path,
             isDir: args.node.type === 'directory',
-            projectId: args.projectId
+            folderPath: args.folderPath
           }
         ]
       }
@@ -69,7 +70,7 @@ export function fileTreeDragSource(args: FileTreeSourceArgs) {
 
     const onDragEnd = () => {
       LocalTransfer.clear()
-      directoryStore.clearByPrefix(`${args.projectId}:`)
+      directoryStore.clearByPrefix(`${args.folderPath}:`)
     }
 
     element.addEventListener('dragstart', onDragStart)
@@ -82,25 +83,31 @@ export function fileTreeDragSource(args: FileTreeSourceArgs) {
 }
 
 export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
+  const drop = async (payload: DragPayload) => {
+    clearDirectoryActive(args.folderPath, args.directoryPath)
+    if (payload.items.some((item) => item.kind === 'file' && item.folderPath !== args.folderPath)) {
+      notify.warning('Different folder')
+      return
+    }
+    await args.onDrop(payload)
+  }
+
   const observer = dragObserver({
     accept: (payload, types) => {
-      if (payload) return canAcceptDirectoryPayload(payload, args.projectId)
+      if (payload) return canAcceptDirectoryPayload(payload)
       return types.includes(DND_MIME.FILES)
     },
     onOver: () => {
-      setDirectoryActive(args.projectId, args.directoryPath)
+      setDirectoryActive(args.folderPath, args.directoryPath)
     },
     onLeave: () => {
-      clearDirectoryActive(args.projectId, args.directoryPath)
+      clearDirectoryActive(args.folderPath, args.directoryPath)
     },
-    onDrop: async (_event, payload) => {
-      clearDirectoryActive(args.projectId, args.directoryPath)
-      await args.onDrop(payload)
-    }
+    onDrop: (_event, payload) => drop(payload)
   })
 
   const hoverExpand = delayedDragHover(800, () => {
-    if (!canAcceptDirectoryPayload(LocalTransfer.peek(), args.projectId)) return
+    if (!canAcceptDirectoryPayload(LocalTransfer.peek())) return
     args.onHoverExpand?.()
   })
 
@@ -108,30 +115,27 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
     const disposeObserver = observer(element)
     const disposeHoverExpand = hoverExpand(element)
     const disposeRegistry = DropRegistry.register({
-      id: `file-tree:${args.projectId}:${args.directoryPath}`,
+      id: `file-tree:${args.folderPath}:${args.directoryPath}`,
       element,
-      accept: (payload) => canAcceptDirectoryPayload(payload, args.projectId),
+      accept: canAcceptDirectoryPayload,
       hover: () => {
-        setDirectoryActive(args.projectId, args.directoryPath)
+        setDirectoryActive(args.folderPath, args.directoryPath)
       },
       leave: () => {
-        clearDirectoryActive(args.projectId, args.directoryPath)
+        clearDirectoryActive(args.folderPath, args.directoryPath)
       },
-      dispatch: async (payload) => {
-        clearDirectoryActive(args.projectId, args.directoryPath)
-        await args.onDrop(payload)
-      }
+      dispatch: drop
     })
 
     return () => {
       disposeRegistry()
       disposeHoverExpand()
-      clearDirectoryActive(args.projectId, args.directoryPath)
+      clearDirectoryActive(args.folderPath, args.directoryPath)
       disposeObserver()
     }
   }
 }
 
-export function isFileTreeDropActive(projectId: string, path: string): boolean {
-  return directoryStore.has(directoryKey(projectId, path))
+export function isFileTreeDropActive(folderPath: string, path: string): boolean {
+  return directoryStore.has(directoryKey(folderPath, path))
 }

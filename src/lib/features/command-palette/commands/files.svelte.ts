@@ -94,10 +94,10 @@ function rankPaths(paths: string[], query: string): ScoredPath[] {
  * opens the file as a non-temporary text tab, jumping to the parsed
  * line if a `:line` suffix was present.
  */
-export function getFilePaletteGroups(projectId: string | null, rawQuery: string): CommandGroup[] {
-  if (!projectId) return []
+export function getFilePaletteGroups(folderPath: string | null, rawQuery: string): CommandGroup[] {
+  if (!folderPath) return []
 
-  const paths = getProjectFilePaths(projectId)
+  const paths = getProjectFilePaths(folderPath)
   if (paths.length === 0) return []
 
   const { path: pathQuery, line } = parseFileQuery(rawQuery)
@@ -113,7 +113,7 @@ export function getFilePaletteGroups(projectId: string | null, rawQuery: string)
       lucideIcon: 'file',
       keywords: [path],
       onSelect: () => {
-        void openTextFile(projectId, path, {
+        void openTextFile(folderPath, path, {
           temporary: false,
           reveal: line !== null ? { kind: 'position', lineNumber: line, column: 1 } : undefined
         })

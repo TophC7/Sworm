@@ -7,8 +7,7 @@ import type { GitStatusKind } from '$lib/types/backend'
 export type DiffGitLineAction = 'stage' | 'unstage' | 'revert'
 
 export interface DiffGitLineActionContext {
-  projectId: string
-  projectPath: string
+  folderPath: string
   filePath: string
   status: GitStatusKind
 }
@@ -43,7 +42,7 @@ export async function runDiffGitLineAction(
   if (action === 'stage') {
     const nextIndex = applyLineChanges(originalContent, modifiedContent, changes)
     await backend.git.stageFileContent(
-      context.projectPath,
+      context.folderPath,
       context.filePath,
       indexContentForStatus(context.status, nextIndex)
     )
@@ -51,18 +50,18 @@ export async function runDiffGitLineAction(
     const inverted = changes.map(invertLineChange).sort(compareLineChanges)
     const nextIndex = applyLineChanges(modifiedContent, originalContent, inverted)
     await backend.git.stageFileContent(
-      context.projectPath,
+      context.folderPath,
       context.filePath,
       indexContentForStatus(context.status, nextIndex)
     )
   } else {
     const nextWorkingTree = applyLineChanges(originalContent, modifiedContent, changes)
     if (context.status === 'untracked' && nextWorkingTree.length === 0) {
-      await backend.files.delete(context.projectPath, context.filePath)
+      await backend.files.delete(context.folderPath, context.filePath)
     } else {
-      await backend.files.write(context.projectPath, context.filePath, nextWorkingTree)
+      await backend.files.write(context.folderPath, context.filePath, nextWorkingTree)
     }
   }
 
-  await refreshGit(context.projectId, context.projectPath)
+  await refreshGit(context.folderPath)
 }

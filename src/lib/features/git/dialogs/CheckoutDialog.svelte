@@ -29,16 +29,14 @@
     branchName,
     remoteBranchName = null,
     summary,
-    projectId,
-    projectPath,
+    folderPath,
     onSwitched
   }: {
     open?: boolean
     branchName: string
     remoteBranchName?: string | null
     summary: GitSummary | null
-    projectId: string
-    projectPath: string
+    folderPath: string
     onSwitched?: () => void
   } = $props()
 
@@ -49,17 +47,14 @@
   const submitState = runDialogSubmit({
     run: async () => {
       if (!branchName) return
-      await backend.git.stashAll(projectPath, `auto-stash before switch to ${branchName}`)
+      await backend.git.stashAll(folderPath, `auto-stash before switch to ${branchName}`)
       if (remoteBranchName) {
-        await backend.git.branch.checkoutRemoteAsLocal(projectPath, remoteBranchName, branchName)
+        await backend.git.branch.checkoutRemoteAsLocal(folderPath, remoteBranchName, branchName)
       } else {
-        await backend.git.branch.checkout(projectPath, branchName)
+        await backend.git.branch.checkout(folderPath, branchName)
       }
-      branches.markRecent(projectId, branchName)
-      await Promise.all([
-        branches.refresh(projectId, projectPath),
-        refreshGit(projectId, projectPath)
-      ])
+      branches.markRecent(folderPath, branchName)
+      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
     },
     onDone: () => {
       open = false
@@ -79,8 +74,8 @@
       <DialogHeader>
         <DialogTitle>Switch to {branchName}?</DialogTitle>
         <DialogDescription>
-          This working tree has uncommitted changes. Stashing them before switching keeps them
-          recoverable from the Stashes tab.
+          This working tree has uncommitted changes. Stashing them before switching keeps them recoverable from the
+          Stashes tab.
         </DialogDescription>
       </DialogHeader>
 
@@ -97,8 +92,7 @@
           {/if}
         </div>
         <p class="text-xs text-subtle">
-          Other sessions in this project share the same working tree, so switching changes the branch
-          for them too.
+          Other sessions in this folder share the same working tree, so switching changes the branch for them too.
         </p>
         <DialogError message={submitState.error} />
       </div>

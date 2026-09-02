@@ -23,8 +23,8 @@ export function isEqualOrParent(parentPath: string, childPath: string): boolean 
   return child.startsWith(`${parent}/`)
 }
 
-export function toProjectRelativePath(projectPath: string, absolutePath: string): string | null {
-  const root = normalizeAbsolutePath(projectPath)
+export function toProjectRelativePath(folderPath: string, absolutePath: string): string | null {
+  const root = normalizeAbsolutePath(folderPath)
   const absolute = normalizeAbsolutePath(absolutePath)
   if (absolute === root) return ''
   if (!absolute.startsWith(`${root}/`)) return null
@@ -56,4 +56,9 @@ export function parentPath(path: string): string {
     home = '/root'
   }
   return home && parent.startsWith(home) ? '~' + parent.slice(home.length) : parent
+}
+
+/** Last three path components joined with › for the status-bar breadcrumb. */
+export function folderCrumbs(path: string): string {
+  return normalizeSlashes(path).split('/').filter(Boolean).slice(-3).join(' › ')
 }

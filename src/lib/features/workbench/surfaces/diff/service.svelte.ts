@@ -1,11 +1,5 @@
 import type { DiffTab, TabId } from '$lib/features/workbench/model'
-import {
-  addChangesTab,
-  addCommitTab,
-  addStashTab,
-  openProject,
-  restoreWorkspaceFromDisk
-} from '$lib/features/workbench/state.svelte'
+import { addChangesTab, addCommitTab, addStashTab } from '$lib/features/workbench/state.svelte'
 import {
   openTextFile,
   openTextSnapshot,
@@ -16,65 +10,57 @@ export interface OpenDiffOptions {
   temporary?: boolean
 }
 
-async function ensureProjectWorkspaceReady(projectId: string): Promise<void> {
-  openProject(projectId)
-  await restoreWorkspaceFromDisk(projectId)
-}
-
 export async function openWorkingTreeDiff(
-  projectId: string,
+  folderPath: string,
   staged: boolean,
   scopePath: string | null = null,
   initialFile: string | null = null,
   options: OpenDiffOptions = {}
 ): Promise<TabId> {
-  await ensureProjectWorkspaceReady(projectId)
-  return addChangesTab(projectId, staged, scopePath, initialFile, options.temporary ?? true)
+  return addChangesTab(folderPath, staged, scopePath, initialFile, options.temporary ?? true)
 }
 
 export async function openCommitDiff(
-  projectId: string,
+  folderPath: string,
   commitHash: string,
   shortHash: string,
   message: string,
   initialFile: string | null = null,
   options: OpenDiffOptions = {}
 ): Promise<TabId> {
-  await ensureProjectWorkspaceReady(projectId)
-  return addCommitTab(projectId, commitHash, shortHash, message, initialFile, options.temporary ?? true)
+  return addCommitTab(folderPath, commitHash, shortHash, message, initialFile, options.temporary ?? true)
 }
 
 export async function openStashDiff(
-  projectId: string,
+  folderPath: string,
   stashIndex: number,
   message: string,
   initialFile: string | null = null,
   options: OpenDiffOptions = {}
 ): Promise<TabId> {
-  await ensureProjectWorkspaceReady(projectId)
-  return addStashTab(projectId, stashIndex, message, initialFile, options.temporary ?? true)
+  return addStashTab(folderPath, stashIndex, message, initialFile, options.temporary ?? true)
 }
 
 export function openCurrentFileFromDiff(
-  projectId: string,
+  folderPath: string,
   filePath: string,
   options: OpenTextOptions = {}
 ): Promise<TabId> {
-  return openTextFile(projectId, filePath, options)
+  return openTextFile(folderPath, filePath, options)
 }
 
-export function openCommitSnapshot(projectId: string, filePath: string, commitHash: string): Promise<TabId> {
+export function openCommitSnapshot(folderPath: string, filePath: string, commitHash: string): Promise<TabId> {
   const short = commitHash.slice(0, 7)
-  return openTextSnapshot(projectId, filePath, commitHash, short)
+  return openTextSnapshot(folderPath, filePath, commitHash, short)
 }
 
-export function openStashSnapshot(projectId: string, filePath: string, stashIndex: number): Promise<TabId> {
+export function openStashSnapshot(folderPath: string, filePath: string, stashIndex: number): Promise<TabId> {
   const stashRef = `stash@{${stashIndex}}`
-  return openTextSnapshot(projectId, filePath, stashRef, `stash-${stashIndex}`)
+  return openTextSnapshot(folderPath, filePath, stashRef, `stash-${stashIndex}`)
 }
 
-export function openHeadSnapshot(projectId: string, filePath: string): Promise<TabId> {
-  return openTextSnapshot(projectId, filePath, 'HEAD', 'HEAD')
+export function openHeadSnapshot(folderPath: string, filePath: string): Promise<TabId> {
+  return openTextSnapshot(folderPath, filePath, 'HEAD', 'HEAD')
 }
 
 export function getDiffTabTitle(tab: DiffTab): string {

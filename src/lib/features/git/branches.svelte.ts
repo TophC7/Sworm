@@ -1,17 +1,13 @@
-// Per-project branches state using Svelte 5 runes.
+// Folder-keyed branches state using Svelte 5 runes.
 //
 // Owns the Branches view list, paused-op status, preferences, recents,
 // and dirty checkout handling. Preferences persist under the app_state
-// key `branchesView:<projectId>`.
+// key `branchesView:<folderPath>`.
 
 import { backend } from '$lib/api/backend'
 import { getGitSummary, refreshGit } from '$lib/features/git/state.svelte'
-import { createProjectKeyedStore } from '$lib/state/projectKeyedStore.svelte'
-import type {
-  BranchOpState,
-  BranchSummary,
-  GitSummary
-} from '$lib/types/backend'
+import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
+import type { BranchOpState, BranchSummary, GitSummary } from '$lib/types/backend'
 
 // TYPES //
 
@@ -35,11 +31,7 @@ const DEFAULT_PREFS: BranchesViewPrefs = {
 
 const RECENT_CAP = 10
 
-function prefsKey(projectId: string): string {
-  return `branchesView:${projectId}`
-}
-
-interface ProjectEntry {
+interface FolderEntry {
   list: BranchSummary[]
   opState: BranchOpState
   prefs: BranchesViewPrefs
@@ -48,24 +40,13 @@ interface ProjectEntry {
   lastFetchedAt: number | null
 }
 
-function freshEntry(): ProjectEntry {
-  return {
-    list: [],
-    opState: 'idle',
-    prefs: { ...DEFAULT_PREFS, recent: [] },
-    fetching: false,
-    fetchedThisSession: false,
-    lastFetchedAt: null,
-  }
-}
-
 // MODULE STATE //
 
-const branchStore = createProjectKeyedStore<ProjectEntry>()
+const branchStore = createFolderKeyedStore<FolderEntry>()
 
 // Concurrent loadFor() calls coalesce into the same in-flight
 // promise. Cleared on success or failure; re-entrancy from a
-// different project id starts a fresh fetch.
+// different folder starts a fresh fetch.
 const inFlightLoads = new Map<string, Promise<void>>()
 const inFlightFetches = new Map<string, Promise<void>>()
 const OP_STATE_POLL_MS = 1500
@@ -76,30 +57,21 @@ interface LoadOptions {
 
 // READ ACCESSORS //
 
-/** Read-only accessor; returns undefined for projects that haven't
+/** Read-only accessor; returns undefined for folders that haven't
  * been loaded yet. Callers should treat undefined as "loading" and
  * render a skeleton. */
-export const byProject = {
-  get(projectId: string): ProjectEntry | undefined {
-    return branchStore.get(projectId)
+export const byFolder = {
+  get(folderPath: string): FolderEntry | undefined {
+    return branchStore.get(folderPath)
   }
 }
 
 // PERSISTENCE //
 
-function clonePrefs(prefs: BranchesViewPrefs): BranchesViewPrefs {
-  return {
-    layout: prefs.layout,
-    sort: prefs.sort,
-    showRemote: prefs.showRemote,
-    recent: [...prefs.recent]
-  }
-}
-
-async function loadPrefs(projectId: string): Promise<BranchesViewPrefs> {
+async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
   let raw: string | null
   try {
-    raw = await backend.workspace.appStateGet(prefsKey(projectId))
+    raw = await backend.app.stateGet(`branchesView:${folderPath}`)
   } catch {
     return { ...DEFAULT_PREFS, recent: [] }
   }
@@ -113,9 +85,9 @@ async function loadPrefs(projectId: string): Promise<BranchesViewPrefs> {
   return extractPrefs(parsed)
 }
 
-async function persistPrefs(projectId: string, prefs: BranchesViewPrefs): Promise<void> {
+async function persistPrefs(folderPath: string, prefs: BranchesViewPrefs): Promise<void> {
   try {
-    await backend.workspace.appStatePut(prefsKey(projectId), JSON.stringify(prefs))
+    await backend.app.statePut(`branchesView:${folderPath}`, JSON.stringify(prefs))
   } catch (e) {
     console.error('Failed to persist branchesView prefs:', e)
   }
@@ -130,28 +102,18 @@ function extractPrefs(blob: unknown): BranchesViewPrefs {
   const sort: BranchSort = v.sort === 'alpha' ? 'alpha' : 'date'
   const showRemote = typeof v.showRemote === 'boolean' ? v.showRemote : false
   const recentRaw = Array.isArray(v.recent) ? v.recent : []
-  const recent = recentRaw
-    .filter((s): s is string => typeof s === 'string' && s.length > 0)
-    .slice(0, RECENT_CAP)
+  const recent = recentRaw.filter((s): s is string => typeof s === 'string' && s.length > 0).slice(0, RECENT_CAP)
   return { layout, sort, showRemote, recent }
 }
 
 // ENTRY BOOKKEEPING //
 
-function setEntry(projectId: string, entry: ProjectEntry) {
-  branchStore.set(projectId, entry)
-}
-
-function patchEntry(projectId: string, patch: Partial<ProjectEntry>) {
-  branchStore.patch(projectId, patch)
-}
-
-function patchPrefs(projectId: string, patch: Partial<BranchesViewPrefs>) {
-  const current = branchStore.get(projectId)
+function patchPrefs(folderPath: string, patch: Partial<BranchesViewPrefs>) {
+  const current = branchStore.get(folderPath)
   if (!current) return
   const nextPrefs = { ...current.prefs, ...patch }
-  setEntry(projectId, { ...current, prefs: nextPrefs })
-  void persistPrefs(projectId, clonePrefs(nextPrefs))
+  branchStore.set(folderPath, { ...current, prefs: nextPrefs })
+  void persistPrefs(folderPath, { ...nextPrefs, recent: [...nextPrefs.recent] })
 }
 
 // LIFECYCLE //
@@ -159,137 +121,113 @@ function patchPrefs(projectId: string, patch: Partial<BranchesViewPrefs>) {
 /** Idempotent load. Concurrent callers join the same in-flight
  * promise. Subsequent calls after the first successful load return
  * immediately; use `refresh` to force a re-fetch. */
-export function loadFor(
-  projectId: string,
-  projectPath: string,
-  options: LoadOptions = {}
-): Promise<void> {
+export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<void> {
   const autoFetch = options.autoFetch ?? true
-  const existing = inFlightLoads.get(projectId)
+  const existing = inFlightLoads.get(folderPath)
   if (existing) {
     if (!autoFetch) return existing
-    return existing.then(() => autoFetchOnce(projectId, projectPath))
+    return existing.then(() => autoFetchOnce(folderPath))
   }
-  if (branchStore.has(projectId)) {
-    branchStore.setProjectPath(projectId, projectPath)
-    if (autoFetch) void autoFetchOnce(projectId, projectPath)
+  if (branchStore.has(folderPath)) {
+    if (autoFetch) void autoFetchOnce(folderPath)
     return Promise.resolve()
   }
 
-  branchStore.setProjectPath(projectId, projectPath)
   const promise = (async () => {
-    const prefs = await loadPrefs(projectId)
+    const prefs = await loadPrefs(folderPath)
     let list: BranchSummary[] = []
     let opState: BranchOpState = 'idle'
     try {
-      ;[list, opState] = await Promise.all([
-        backend.git.branch.list(projectPath),
-        backend.git.branch.status(projectPath)
-      ])
+      ;[list, opState] = await Promise.all([backend.git.branch.list(folderPath), backend.git.branch.status(folderPath)])
     } catch (e) {
-      console.error(`Failed to load branches for ${projectId}:`, e)
+      console.error(`Failed to load branches for ${folderPath}:`, e)
     }
-    setEntry(projectId, {
+    branchStore.set(folderPath, {
       list,
       opState,
       prefs,
       fetching: false,
       fetchedThisSession: false,
-      lastFetchedAt: null,
+      lastFetchedAt: null
     })
-    if (autoFetch) void autoFetchOnce(projectId, projectPath)
-  })()
-    .finally(() => {
-      inFlightLoads.delete(projectId)
-    })
-  inFlightLoads.set(projectId, promise)
+    if (autoFetch) void autoFetchOnce(folderPath)
+  })().finally(() => {
+    inFlightLoads.delete(folderPath)
+  })
+  inFlightLoads.set(folderPath, promise)
   return promise
 }
 
 /** Re-pull `branch.list` + `branch.status` and merge into the entry.
  * Prefs and transient flags survive. */
-export async function refresh(projectId: string, projectPath?: string): Promise<void> {
-  const path = branchStore.resolveProjectPath(projectId, projectPath)
-  if (!path) return
+export async function refresh(folderPath: string): Promise<void> {
   try {
     const [list, opState] = await Promise.all([
-      backend.git.branch.list(path),
-      backend.git.branch.status(path)
+      backend.git.branch.list(folderPath),
+      backend.git.branch.status(folderPath)
     ])
-    patchEntry(projectId, { list, opState })
+    branchStore.patch(folderPath, { list, opState })
   } catch (e) {
-    console.error(`Failed to refresh branches for ${projectId}:`, e)
+    console.error(`Failed to refresh branches for ${folderPath}:`, e)
   }
-}
-
-/** Drop an entry and stop any active op-state polling for it. */
-export function clearFor(projectId: string) {
-  inFlightLoads.delete(projectId)
-  branchStore.clearFor(projectId)
 }
 
 // PREFS //
 
-export function setLayout(projectId: string, layout: BranchLayout) {
-  patchPrefs(projectId, { layout })
+export function setLayout(folderPath: string, layout: BranchLayout) {
+  patchPrefs(folderPath, { layout })
 }
 
-export function setSort(projectId: string, sort: BranchSort) {
-  patchPrefs(projectId, { sort })
+export function setSort(folderPath: string, sort: BranchSort) {
+  patchPrefs(folderPath, { sort })
 }
 
-export function setShowRemote(projectId: string, showRemote: boolean) {
-  patchPrefs(projectId, { showRemote })
+export function setShowRemote(folderPath: string, showRemote: boolean) {
+  patchPrefs(folderPath, { showRemote })
 }
 
 /** Promote `name` to the front of the recents list, dedupe, cap at 10. */
-export function markRecent(projectId: string, name: string) {
-  const current = branchStore.get(projectId)
+export function markRecent(folderPath: string, name: string) {
+  const current = branchStore.get(folderPath)
   if (!current || !name) return
   const filtered = current.prefs.recent.filter((r) => r !== name)
   const recent = [name, ...filtered].slice(0, RECENT_CAP)
-  patchPrefs(projectId, { recent })
+  patchPrefs(folderPath, { recent })
 }
 
 // FETCH STATE //
 
-/** Mark that the Branches tab has completed its once-per-session fetch. */
-export function markFetched(projectId: string) {
-  patchEntry(projectId, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
-}
-
-export function fetchBranches(projectId: string, projectPath: string): Promise<void> {
-  const existing = inFlightFetches.get(projectId)
+export function fetchBranches(folderPath: string): Promise<void> {
+  const existing = inFlightFetches.get(folderPath)
   if (existing) return existing
 
-  const current = branchStore.get(projectId)
+  const current = branchStore.get(folderPath)
   if (!current) return Promise.resolve()
 
-  patchEntry(projectId, { fetching: true, fetchedThisSession: true })
+  branchStore.patch(folderPath, { fetching: true, fetchedThisSession: true })
   const promise = (async () => {
     try {
-      await backend.git.fetch(projectPath)
-      await refresh(projectId, projectPath)
-      markFetched(projectId)
+      await backend.git.fetch(folderPath)
+      await refresh(folderPath)
+      branchStore.patch(folderPath, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
     } catch (e) {
-      patchEntry(projectId, { fetching: false })
+      branchStore.patch(folderPath, { fetching: false })
       throw e
     }
-  })()
-    .finally(() => {
-      inFlightFetches.delete(projectId)
-    })
-  inFlightFetches.set(projectId, promise)
+  })().finally(() => {
+    inFlightFetches.delete(folderPath)
+  })
+  inFlightFetches.set(folderPath, promise)
   return promise
 }
 
-async function autoFetchOnce(projectId: string, projectPath: string) {
-  const current = branchStore.get(projectId)
+async function autoFetchOnce(folderPath: string) {
+  const current = branchStore.get(folderPath)
   if (!current || current.fetchedThisSession) return
   try {
-    await fetchBranches(projectId, projectPath)
+    await fetchBranches(folderPath)
   } catch (e) {
-    console.error(`Failed to auto-fetch branches for ${projectId}:`, e)
+    console.error(`Failed to auto-fetch branches for ${folderPath}:`, e)
   }
 }
 
@@ -301,17 +239,11 @@ async function autoFetchOnce(projectId: string, projectPath: string) {
  * Callers should treat `true` as "must route through CheckoutDialog
  * before invoking checkout."
  */
-export async function dirtyCheck(
-  projectId: string,
-  projectPath: string
-): Promise<{ dirty: boolean; summary: GitSummary | null }> {
-  await refreshGit(projectId, projectPath)
-  const summary = getGitSummary(projectId)
+async function dirtyCheck(folderPath: string): Promise<{ dirty: boolean; summary: GitSummary | null }> {
+  await refreshGit(folderPath)
+  const summary = getGitSummary(folderPath)
   if (!summary || !summary.is_repo) return { dirty: false, summary }
-  const dirty =
-    summary.staged_count > 0 ||
-    summary.unstaged_count > 0 ||
-    summary.untracked_count > 0
+  const dirty = summary.staged_count > 0 || summary.unstaged_count > 0 || summary.untracked_count > 0
   return { dirty, summary }
 }
 
@@ -336,64 +268,43 @@ interface BackendDirtyWorktreeError {
 }
 
 function isBackendDirtyWorktreeError(err: unknown): err is BackendDirtyWorktreeError {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'kind' in err &&
-    (err as { kind?: unknown }).kind === 'dirtyWorktree'
-  )
+  return typeof err === 'object' && err !== null && 'kind' in err && err.kind === 'dirtyWorktree'
 }
 
 /**
- * Switch to `name` only when the working tree is clean. On dirty
- * trees, throws `DirtyCheckoutError` so the caller can open
- * `CheckoutDialog` and decide between stash-and-switch and cancel.
- * This is the only non-dialog checkout path; successful checkouts
+ * Run `checkout` only when the working tree is clean. On dirty trees,
+ * throws `DirtyCheckoutError` so the caller can open `CheckoutDialog`
+ * and decide between stash-and-switch and cancel. Successful checkouts
  * refresh branch state and persist recents immediately.
  */
-export async function safeCheckout(
-  projectId: string,
-  projectPath: string,
-  name: string
-): Promise<void> {
-  const { dirty, summary } = await dirtyCheck(projectId, projectPath)
+async function guardedCheckout(folderPath: string, recentName: string, checkout: () => Promise<void>): Promise<void> {
+  const { dirty, summary } = await dirtyCheck(folderPath)
   if (dirty) {
     throw new DirtyCheckoutError(summary)
   }
   try {
-    await backend.git.branch.checkout(projectPath, name)
+    await checkout()
   } catch (e) {
     if (isBackendDirtyWorktreeError(e)) {
-      await refreshGit(projectId, projectPath)
-      throw new DirtyCheckoutError(getGitSummary(projectId))
+      await refreshGit(folderPath)
+      throw new DirtyCheckoutError(getGitSummary(folderPath))
     }
     throw e
   }
-  markRecent(projectId, name)
-  await Promise.all([refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+  markRecent(folderPath, recentName)
+  await Promise.all([refresh(folderPath), refreshGit(folderPath)])
 }
 
-export async function safeCheckoutRemoteAsLocal(
-  projectId: string,
-  projectPath: string,
-  remoteName: string,
-  localName: string
-): Promise<void> {
-  const { dirty, summary } = await dirtyCheck(projectId, projectPath)
-  if (dirty) {
-    throw new DirtyCheckoutError(summary)
-  }
-  try {
-    await backend.git.branch.checkoutRemoteAsLocal(projectPath, remoteName, localName)
-  } catch (e) {
-    if (isBackendDirtyWorktreeError(e)) {
-      await refreshGit(projectId, projectPath)
-      throw new DirtyCheckoutError(getGitSummary(projectId))
-    }
-    throw e
-  }
-  markRecent(projectId, localName)
-  await Promise.all([refresh(projectId, projectPath), refreshGit(projectId, projectPath)])
+/** Switch to local branch `name`; see `guardedCheckout` for dirty-tree handling. */
+export function safeCheckout(folderPath: string, name: string): Promise<void> {
+  return guardedCheckout(folderPath, name, () => backend.git.branch.checkout(folderPath, name))
+}
+
+/** Create `localName` tracking `remoteName` and switch to it; see `guardedCheckout`. */
+export function safeCheckoutRemoteAsLocal(folderPath: string, remoteName: string, localName: string): Promise<void> {
+  return guardedCheckout(folderPath, localName, () =>
+    backend.git.branch.checkoutRemoteAsLocal(folderPath, remoteName, localName)
+  )
 }
 
 // PAUSED OP POLLING //
@@ -403,23 +314,23 @@ export async function safeCheckoutRemoteAsLocal(
  * non-idle op state. Multiple consumers share one interval and each
  * releases through `stopOpStatePolling`.
  */
-export function pollOpState(projectId: string, projectPath: string) {
-  branchStore.startPolling(projectId, projectPath, {
+export function pollOpState(folderPath: string) {
+  branchStore.startPolling(folderPath, {
     intervalMs: OP_STATE_POLL_MS,
-    tick: async (id, path) => {
+    tick: async (path) => {
       try {
         const next = await backend.git.branch.status(path)
-        if (branchStore.get(id)?.opState !== next) {
-          patchEntry(id, { opState: next })
+        if (branchStore.get(path)?.opState !== next) {
+          branchStore.patch(path, { opState: next })
         }
       } catch (e) {
         console.error('opState poll failed:', e)
-        branchStore.stopAllPolling(id)
+        branchStore.stopAllPolling(path)
       }
     }
   })
 }
 
-export function stopOpStatePolling(projectId: string) {
-  branchStore.stopPolling(projectId)
+export function stopOpStatePolling(folderPath: string) {
+  branchStore.stopPolling(folderPath)
 }

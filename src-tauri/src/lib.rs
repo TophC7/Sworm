@@ -87,6 +87,8 @@ pub fn run() {
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
             commands::app::app_take_pending_open_path,
+            commands::app::app_state_get,
+            commands::app::app_state_put,
             // Builtins commands
             commands::builtins::builtins_get_catalog,
             // Config schema commands (drives Monaco autocomplete for .sworm/*.json)
@@ -117,14 +119,10 @@ pub fn run() {
             commands::issues::issue_config_list,
             commands::issues::issue_config_get,
             commands::issues::issue_config_set,
-            // Project commands
-            commands::projects::project_select_directory,
-            commands::projects::project_add,
-            commands::projects::project_refresh_git,
-            commands::projects::project_list,
-            commands::projects::project_get,
-            commands::projects::project_remove,
-            commands::projects::project_open_in_terminal,
+            // Folder commands
+            commands::folders::folder_select_directory,
+            commands::folders::folder_resolve,
+            commands::folders::folder_open_in_terminal,
             // Provider commands
             commands::providers::provider_list,
             commands::providers::provider_refresh,
@@ -148,34 +146,12 @@ pub fn run() {
             // Formatter commands
             commands::formatting::formatting_format_biome,
             commands::formatting::formatting_format_nixfmt,
-            // Session commands
-            commands::sessions::session_create,
-            commands::sessions::session_list,
-            commands::sessions::session_get,
-            commands::sessions::session_start,
-            commands::sessions::session_write,
-            commands::sessions::session_resize,
-            commands::sessions::session_stop,
-            commands::sessions::session_reset,
-            commands::sessions::session_remove,
-            commands::sessions::session_archive,
-            commands::sessions::session_unarchive,
-            commands::sessions::session_list_archived,
-            commands::sessions::session_list_project_groups,
-            // Task commands (project-scoped .sworm/tasks.json)
+            // Task commands (folder-scoped .sworm/tasks.json)
             commands::tasks::tasks_list,
             commands::tasks::tasks_start,
             commands::tasks::tasks_write,
             commands::tasks::tasks_resize,
             commands::tasks::tasks_stop,
-            // Transcript / liveness commands (recovery)
-            commands::transcript::session_transcript_get,
-            commands::transcript::session_is_alive,
-            // Workspace persistence commands
-            commands::workspace::workspace_state_get,
-            commands::workspace::workspace_state_put,
-            commands::workspace::app_state_get,
-            commands::workspace::app_state_put,
             // Nix environment commands
             commands::nix::nix_detect,
             commands::nix::nix_select,
@@ -184,11 +160,7 @@ pub fn run() {
             commands::nix::nix_status,
             commands::nix::nix_format,
             commands::nix::nix_lint,
-            commands::nix::provider_list_for_project,
-            // Fresh editor commands
-            commands::fresh::editor_open_file,
-            commands::fresh::editor_open_at_commit,
-            commands::fresh::editor_open_at_stash,
+            commands::nix::provider_list_for_folder,
             // File commands
             commands::files::file_read,
             commands::files::file_write,
@@ -257,11 +229,14 @@ pub fn run() {
             commands::lsp::lsp_start,
             commands::lsp::lsp_send,
             commands::lsp::lsp_stop,
-            // PTY demo commands (kept for backwards compat)
-            commands::pty::pty_demo_start,
-            commands::pty::pty_demo_write,
-            commands::pty::pty_demo_resize,
-            commands::pty::pty_demo_kill,
+            // Session commands (process-only; resume identity lives in the tab)
+            commands::sessions::session_start,
+            commands::sessions::session_write,
+            commands::sessions::session_resize,
+            commands::sessions::session_stop,
+            commands::sessions::session_is_alive,
+            commands::sessions::session_discard,
+            commands::sessions::session_prune_orphans,
         ])
         .build(tauri::generate_context!())
         .expect("error building Sworm");
@@ -269,15 +244,8 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             let state = app_handle.state::<AppState>();
-            // Drain batched PTY bytes into the writer queue, then kill
-            // PTYs, then wait for the writer thread to finish persisting
-            // everything before we let the process exit. Doing this in
-            // order guarantees "a crash can lose at most the most recent
-            // unflushed tail" holds on clean shutdown as well.
-            state.transcript_batcher.flush_all();
             let cleaned = state.pty.kill_all();
             let lsp_cleaned = state.lsp.kill_all();
-            state.transcript.shutdown_and_join();
             tracing::info!(
                 "App exit cleanup finished, killed {} PTY sessions and {} LSP sessions",
                 cleaned,

@@ -149,7 +149,6 @@ pub async fn settings_patch_global_section(
         &app,
         &state,
         SettingsLayerKind::Global,
-        None,
         payload.diagnostics.clone(),
     )?;
     Ok(payload)
@@ -215,7 +214,7 @@ pub async fn settings_set_general(
         serde_json::to_value(&settings).map_err(|error| ApiError::Internal(error.to_string()))?,
     )?;
     let diagnostics = global_layer_payload()?.diagnostics;
-    emit_settings_changed(&app, &state, SettingsLayerKind::Global, None, diagnostics)?;
+    emit_settings_changed(&app, &state, SettingsLayerKind::Global, diagnostics)?;
     Ok(settings)
 }
 
@@ -230,7 +229,7 @@ pub async fn settings_set_formatting(
         serde_json::to_value(&formatting).map_err(|error| ApiError::Internal(error.to_string()))?,
     )?;
     let diagnostics = global_layer_payload()?.diagnostics;
-    emit_settings_changed(&app, &state, SettingsLayerKind::Global, None, diagnostics)?;
+    emit_settings_changed(&app, &state, SettingsLayerKind::Global, diagnostics)?;
     Ok(formatting)
 }
 
@@ -249,7 +248,7 @@ pub async fn settings_set_provider_config(
 
     patch_global_provider(&record)?;
     let diagnostics = global_layer_payload()?.diagnostics;
-    emit_settings_changed(&app, &state, SettingsLayerKind::Global, None, diagnostics)?;
+    emit_settings_changed(&app, &state, SettingsLayerKind::Global, diagnostics)?;
     Ok(record)
 }
 
@@ -448,7 +447,6 @@ fn emit_settings_changed(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, AppState>,
     layer: SettingsLayerKind,
-    project_id: Option<String>,
     diagnostics: Vec<SettingsDiagnostic>,
 ) -> Result<(), ApiError> {
     let generation = {
@@ -460,7 +458,7 @@ fn emit_settings_changed(
         SETTINGS_CHANGED_EVENT,
         SettingsChangedEvent {
             layer,
-            project_id,
+            folder_path: None,
             generation,
             diagnostics,
         },

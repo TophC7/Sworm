@@ -12,7 +12,6 @@ use tokio::sync::oneshot;
 pub(super) async fn run_bridge(
     listener: UnixListener,
     issues: Arc<IssueService>,
-    project_id: String,
     project_path: PathBuf,
     token: String,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -25,11 +24,10 @@ pub(super) async fn run_bridge(
                 match accepted {
                     Ok((stream, _)) => {
                         let issues = Arc::clone(&issues);
-                        let project_id = project_id.clone();
                         let project_path = project_path.clone();
                         let token = token.clone();
                         tauri::async_runtime::spawn(async move {
-                            handle_client(stream, issues, project_id, project_path, token).await;
+                            handle_client(stream, issues, project_path, token).await;
                         });
                     }
                     Err(error) => {
@@ -46,7 +44,6 @@ pub(super) async fn run_bridge(
 async fn handle_client(
     stream: UnixStream,
     issues: Arc<IssueService>,
-    project_id: String,
     project_path: PathBuf,
     token: String,
 ) {
@@ -54,7 +51,7 @@ async fn handle_client(
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let response = match serde_json::from_str::<BridgeRequest>(&line) {
-            Ok(request) => handle_request(request, &issues, &project_id, &project_path, &token),
+            Ok(request) => handle_request(request, &issues, &project_path, &token),
             Err(error) => BridgeResponse::error(None, "bad_request", &error.to_string()),
         };
         let Ok(payload) = serde_json::to_vec(&response) else {

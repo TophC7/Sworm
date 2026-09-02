@@ -3,42 +3,35 @@
   import { listen } from '@tauri-apps/api/event'
   import { backend } from '$lib/api/backend'
   import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
-  import EmptyState from '$lib/features/app-shell/project-picker/EmptyState.svelte'
-  import ProjectView from '$lib/features/app-shell/ProjectView.svelte'
-  import { addProject, getActiveProject, getProjects, loadProjects } from '$lib/features/projects/state.svelte'
+  import WorkbenchView from '$lib/features/app-shell/WorkbenchView.svelte'
+  import { loadRecentFolders } from '$lib/features/folders/state.svelte'
   import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
-  import { openProject, restoreAppShellState } from '$lib/features/workbench/state.svelte'
-  import { isProjectPickerOverride } from '$lib/features/app-shell/project-picker/state.svelte'
+  import { openFolder, restoreWorkbench } from '$lib/features/workbench/state.svelte'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
 
-  let activeProject = $derived(getActiveProject())
   let bootstrapping = $state(true)
-  let showEmpty = $derived(!bootstrapping && (isProjectPickerOverride() || !activeProject))
   let bootstrapError = $state<string | null>(null)
 
   // Drain the argv-supplied path (from Nautilus "Open With" or a CLI
-  // invocation), add it as a project if needed, and activate it.
-  // Safe to call any time: returns null when nothing is queued.
+  // invocation) and open it. Safe to call any time: returns null when
+  // nothing is queued.
   async function consumePendingOpenPath() {
     try {
       const path = await backend.app.takePendingOpenPath()
-      if (!path) return
-      const project = await addProject(path)
-      openProject(project.id)
+      if (path) await openFolder(path)
     } catch (error) {
       logClientError('pending open-path failed', { error })
     }
   }
 
-  // Order matters: projects must be loaded before app-shell restore so
-  // we can validate persisted ids against the live project list and
-  // skip projects the user has since deleted. The pending-open path
-  // runs last so an explicit "Open in Sworm" always wins over the
-  // persisted active project.
+  // Recent folders and the workbench restore are independent and load in
+  // parallel. The pending-open path runs last so an explicit "Open in
+  // Sworm" always wins over the restored active tab and pushes into a
+  // hydrated MRU.
   //
   // Provider and builtin-catalog preloads are independent of the
-  // active-project boot and run in parallel from the very start so
-  // they're already warm by the time the user opens a session.
+  // workbench boot and run in parallel from the very start so they're
+  // already warm by the time the user opens a session.
   onMount(() => {
     let unlisten: (() => void) | undefined
 
@@ -49,9 +42,7 @@
 
     void (async () => {
       try {
-        await loadProjects()
-        const validIds = new Set(getProjects().map((project) => project.id))
-        await restoreAppShellState(validIds)
+        await Promise.all([loadRecentFolders(), restoreWorkbench()])
         await consumePendingOpenPath()
         bootstrapping = false
       } catch (error) {
@@ -88,12 +79,10 @@
       <pre class="overflow-auto text-sm whitespace-pre-wrap text-fg">{bootstrapError}</pre>
     </div>
   </div>
-{:else if bootstrapping && !activeProject}
+{:else if bootstrapping}
   <div class="flex min-h-0 flex-1 items-center justify-center bg-ground text-base text-muted">
     Restoring workspace...
   </div>
-{:else if showEmpty}
-  <EmptyState />
-{:else if activeProject}
-  <ProjectView project={activeProject} />
+{:else}
+  <WorkbenchView />
 {/if}

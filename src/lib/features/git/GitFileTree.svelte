@@ -46,8 +46,7 @@
 
   let {
     summary,
-    projectId,
-    projectPath,
+    folderPath,
     hasCommits = false,
     commitMessage = $bindable(''),
     onFileClick,
@@ -65,8 +64,7 @@
     onFetch
   }: {
     summary: GitSummary
-    projectId: string
-    projectPath: string
+    folderPath: string
     hasCommits?: boolean
     commitMessage?: string
     onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
@@ -111,7 +109,7 @@
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
 
   $effect(() => {
-    projectPath
+    folderPath
     collapsedDirs.clear()
     gitSourceAttachmentCache.clear()
     gitZoneAttachmentCache.clear()
@@ -250,7 +248,7 @@
 
   async function openActualFile(filePath: string) {
     try {
-      await openTextFile(projectId, filePath, { temporary: false })
+      await openTextFile(folderPath, filePath, { temporary: false })
     } catch (e) {
       notify.error('Open file failed', errMessage(e))
     }
@@ -265,18 +263,18 @@
     if (!contextFilePath) return
 
     if (contextTargetType === 'file') {
-      openWorkingTreeDiff(projectId, contextIsStaged, contextFilePath, contextFilePath, { temporary: false })
+      openWorkingTreeDiff(folderPath, contextIsStaged, contextFilePath, contextFilePath, { temporary: false })
       return
     }
 
     if (contextTargetType === 'directory') {
-      openWorkingTreeDiff(projectId, contextIsStaged, contextFilePath, null, { temporary: false })
+      openWorkingTreeDiff(folderPath, contextIsStaged, contextFilePath, null, { temporary: false })
     }
   }
 
   function handleCtxOpenFileHead() {
     if (!contextFilePath) return
-    openHeadSnapshot(projectId, contextFilePath)
+    openHeadSnapshot(folderPath, contextFilePath)
   }
 
   function handleCtxStage() {
@@ -306,7 +304,7 @@
         : `${describeFileCount(files.length)} under ${confirm.target.path}`
 
     try {
-      await runGitAction(projectId, projectPath, (path) => {
+      await runGitAction(folderPath, (path) => {
         switch (confirm.action) {
           case 'stage':
             return backend.git.stageFiles(path, files)
@@ -334,13 +332,13 @@
 
   async function handleCtxReveal() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     await revealItemInDir(absPath)
   }
 
   async function handleCtxCopyPath() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     await copyToClipboard(absPath)
   }
 
@@ -352,7 +350,7 @@
   async function handleCtxCopyPatch() {
     if (!contextFilePath) return
     try {
-      const patch = await backend.git.getPathPatch(projectPath, [contextFilePath], contextIsStaged)
+      const patch = await backend.git.getPathPatch(folderPath, [contextFilePath], contextIsStaged)
       if (patch) await copyToClipboard(patch)
       else
         notify.info('No diff to copy', `${contextFilePath} has no ${contextIsStaged ? 'staged' : 'unstaged'} changes.`)
@@ -366,7 +364,7 @@
     const files = getFilesUnderPath(contextFilePath, contextIsStaged)
     if (files.length === 0) return
     try {
-      const patch = await backend.git.getPathPatch(projectPath, files, contextIsStaged)
+      const patch = await backend.git.getPathPatch(folderPath, files, contextIsStaged)
       if (patch) await copyToClipboard(patch)
     } catch (e) {
       notify.error('Copy folder patch failed', errMessage(e))
@@ -375,7 +373,7 @@
 
   async function handleCtxCopyFullPatch() {
     try {
-      const patch = await backend.git.getFullPatch(projectPath)
+      const patch = await backend.git.getFullPatch(folderPath)
       if (patch) await copyToClipboard(patch)
       else notify.info('No diff to copy', 'No changes in the working tree.')
     } catch (e) {
@@ -387,11 +385,11 @@
     const hasChanges =
       node.type === 'file' ? node.change !== undefined : getFilesUnderPath(node.path, staged).length > 0
     if (!hasChanges) return null
-    const key = `${projectId}:${staged ? 'staged' : 'unstaged'}:${node.type}:${node.path}`
+    const key = `${folderPath}:${staged ? 'staged' : 'unstaged'}:${node.type}:${node.path}`
     const cached = gitSourceAttachmentCache.get(key)
     if (cached) return cached
     const attachment = gitChangeDragSource({
-      projectId,
+      folderPath,
       changes: () =>
         node.type === 'file'
           ? node.change
@@ -404,15 +402,15 @@
   }
 
   function gitZoneAttachment(staged: boolean) {
-    const key = `${projectId}:${staged ? 'staged' : 'unstaged'}`
+    const key = `${folderPath}:${staged ? 'staged' : 'unstaged'}`
     const cached = gitZoneAttachmentCache.get(key)
     if (cached) return cached
     const attachment = gitDropZone({
-      projectId,
+      folderPath,
       staged,
       onDropFiles: async (files, targetStaged) => {
         try {
-          await runGitAction(projectId, projectPath, (path) =>
+          await runGitAction(folderPath, (path) =>
             targetStaged ? backend.git.stageFiles(path, files) : backend.git.unstageFiles(path, files)
           )
           notify.success(
@@ -563,11 +561,7 @@
               {/if}
             </div>
           {/if}
-          <DropOverlay
-            visible={isGitDropZoneActive(projectId, isStaged)}
-            zone="merge"
-            label={isStaged ? 'Stage' : 'Unstage'}
-          />
+          <DropOverlay visible={isGitDropZoneActive(folderPath, isStaged)} label={isStaged ? 'Stage' : 'Unstage'} />
         </div>
         {#if tree.length > 0}
           {@const filter = isStaged ? stagedFilter : unstagedFilter}
@@ -594,7 +588,7 @@
           <div class="px-2.5 pt-2">
             <div
               class="rounded-xl border-2 border-dashed px-3 py-3 text-sm transition-colors {isGitDropZoneActive(
-                projectId,
+                folderPath,
                 isStaged
               )
                 ? 'border-accent bg-accent/10 text-bright'

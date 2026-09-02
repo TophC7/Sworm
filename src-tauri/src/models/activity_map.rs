@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Activity from a single provider in a discovered project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredProviderActivity {
-    /// Provider slug: "claude_code", "codex", "omp", "gemini"
+    /// Provider slug: "claude_code", "codex", "omp"
     pub provider_id: String,
     /// ISO 8601 timestamp of most recent activity from this provider.
     pub last_active: String,
@@ -21,10 +21,8 @@ pub struct DiscoveredProject {
     pub name: String,
     /// Whether the path exists on disk (deleted projects get greyed out).
     pub path_exists: bool,
-    /// Whether this path is already a Sworm project.
-    pub is_sworm_project: bool,
-    /// The Sworm project ID if already registered.
-    pub sworm_project_id: Option<String>,
+    /// Whether this path is in Sworm's recent-folders list.
+    pub is_recent: bool,
     /// ISO 8601 timestamp of most recent activity across all providers.
     pub last_active: String,
     /// Per-provider activity data.

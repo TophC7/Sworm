@@ -13,17 +13,17 @@
   import EpicDetailForm from './EpicDetailForm.svelte'
   import type { EpicTab } from '$lib/features/workbench/model'
 
-  let { tab, projectId }: { tab: EpicTab; projectId: string } = $props()
+  let { tab, folderPath }: { tab: EpicTab; folderPath: string } = $props()
 
-  let detail = $derived(getEpicDetail(projectId, tab.epicId))
+  let detail = $derived(getEpicDetail(folderPath, tab.epicId))
 
   $effect(() => {
     const id = tab.epicId
-    untrack(() => void openEpicDetail(projectId, id))
+    untrack(() => void openEpicDetail(folderPath, id))
   })
 
   async function refresh() {
-    await openEpicDetail(projectId, tab.epicId)
+    await openEpicDetail(folderPath, tab.epicId)
   }
 </script>
 
@@ -45,7 +45,7 @@
     <div class="flex flex-1 items-center justify-center text-sm text-subtle">Loading epic…</div>
   {:else}
     {#key detail.id}
-      <EpicDetailForm {detail} {projectId} {tab} />
+      <EpicDetailForm {detail} {folderPath} {tab} />
     {/key}
   {/if}
 </section>

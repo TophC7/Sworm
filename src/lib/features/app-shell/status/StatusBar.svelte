@@ -1,8 +1,6 @@
 <script lang="ts">
-  import { getSessions } from '$lib/features/sessions/state/sessions.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
-  import { getActiveProjectId } from '$lib/features/workbench/state.svelte'
-  import { getProjectById } from '$lib/features/projects/state.svelte'
+  import { getActiveFolderPath, getTabs } from '$lib/features/workbench/state.svelte'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
@@ -18,13 +16,12 @@
     refreshSettingsDiagnostics
   } from '$lib/features/settings/state/diagnostics.svelte'
   import { Circle, AlertTriangle, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
+  import { folderCrumbs } from '$lib/utils/paths'
 
-  let activeProjectId = $derived(getActiveProjectId())
-  let activeProject = $derived(activeProjectId ? getProjectById(activeProjectId) : null)
-  let sessions = $derived(activeProjectId ? getSessions(activeProjectId) : [])
-  let liveSessions = $derived(sessions.filter((s) => s.status === 'running'))
+  let folderPath = $derived(getActiveFolderPath())
+  let liveSessionCount = $derived(getTabs().filter((t) => t.kind === 'session' && t.status === 'running').length)
   let zoom = $derived(getZoomLevel())
-  let gitSummary = $derived(activeProjectId ? getGitSummary(activeProjectId) : null)
+  let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
   let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
   let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))
   let zoomInShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-in', ['Ctrl+=', 'Ctrl++'])[0]))
@@ -32,7 +29,7 @@
 
   $effect(() => {
     ensureSettingsDiagnosticsListener()
-    void refreshSettingsDiagnostics(activeProject?.path)
+    void refreshSettingsDiagnostics(folderPath ?? undefined)
   })
 </script>
 
@@ -40,8 +37,11 @@
   class="flex min-h-6 shrink-0 items-center justify-between gap-3 border-t border-edge bg-surface px-3 py-0.5 text-xs"
 >
   <div class="flex items-center gap-2.5">
-    {#if gitSummary?.branch && activeProjectId && activeProject}
-      <StatusBarBranchPopover projectId={activeProjectId} projectPath={activeProject.path}>
+    {#if folderPath}
+      <span class="truncate text-muted" title={folderPath}>{folderCrumbs(folderPath)}</span>
+    {/if}
+    {#if gitSummary?.branch && folderPath}
+      <StatusBarBranchPopover {folderPath}>
         {#snippet children()}
           <span class="flex items-center gap-1 font-mono text-muted">
             <GitBranchIcon size={10} />
@@ -51,7 +51,9 @@
         {/snippet}
       </StatusBarBranchPopover>
     {/if}
-    <NixEnvIndicator />
+    {#if folderPath}
+      <NixEnvIndicator {folderPath} />
+    {/if}
   </div>
 
   <div class="flex items-center gap-2.5">
@@ -78,14 +80,14 @@
       </TooltipRoot>
     {/if}
 
-    {#if liveSessions.length > 0}
+    {#if liveSessionCount > 0}
       <span class="flex items-center gap-1 text-success">
         <Circle size={6} fill="currentColor" />
-        {liveSessions.length} live
+        {liveSessionCount} live
       </span>
     {/if}
-    {#if liveSessions.length > 1}
-      <span class="flex items-center gap-1 text-warning" title="Sessions share the same working tree">
+    {#if liveSessionCount > 1}
+      <span class="flex items-center gap-1 text-warning" title="Sessions may share the same working tree">
         <AlertTriangle size={10} /> shared
       </span>
     {/if}

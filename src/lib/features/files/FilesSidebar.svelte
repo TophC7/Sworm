@@ -22,15 +22,9 @@
   } from '$lib/features/files/projectFiles.svelte'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
-  import {
-    deleteTextPath,
-    openTextFile,
-    openTextInFresh,
-    renameTextPath
-  } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
+  import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import { getActiveTab, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
-  import { getFocusedTab } from '$lib/features/workbench/state.svelte'
   import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/features/notifications/state.svelte'
   import type { DragPayload } from '$lib/features/dnd/payload'
@@ -47,13 +41,7 @@
     return e instanceof Error ? e.message : String(e)
   }
 
-  let {
-    projectId,
-    projectPath
-  }: {
-    projectId: string
-    projectPath: string
-  } = $props()
+  let { folderPath }: { folderPath: string } = $props()
 
   let expandedDirs = new SvelteSet<string>()
   let filterQuery = $state('')
@@ -61,8 +49,8 @@
   // Source-of-truth file paths come from the shared projectFiles
   // store so the command palette's `/` mode and this sidebar see the
   // same data and any mutation here invalidates both surfaces.
-  let paths = $derived(getProjectFilePaths(projectId))
-  let loading = $derived(isProjectFilesLoading(projectId) && paths.length === 0)
+  let paths = $derived(getProjectFilePaths(folderPath))
+  let loading = $derived(isProjectFilesLoading(folderPath) && paths.length === 0)
   let error = $state<string | null>(null)
   let fileTree = $derived<FileTreeNode<{ path: string }>[]>(buildFileTree(paths.map((p) => ({ path: p }))))
   let treeFilter = $derived(buildTreeFilter(fileTree, filterQuery))
@@ -97,7 +85,7 @@
   async function loadFiles() {
     error = null
     try {
-      await refreshProjectFiles(projectId, projectPath)
+      await refreshProjectFiles(folderPath)
     } catch (e) {
       console.error('Failed to load files:', e)
       error = e instanceof Error ? e.message : String(e)
@@ -110,18 +98,18 @@
   }
 
   function sourceAttachmentKey(path: string, type: 'file' | 'directory'): string {
-    return `${projectId}:src:${type}:${path}`
+    return `${folderPath}:src:${type}:${path}`
   }
 
   function directoryAttachmentKey(path: string): string {
-    return `${projectId}:dir:${path}`
+    return `${folderPath}:dir:${path}`
   }
 
   function dndSourceAttachment(node: FileTreeNode<{ path: string }>) {
     const key = sourceAttachmentKey(node.path, node.type)
     const cached = sourceAttachmentCache.get(key)
     if (cached) return cached
-    const attachment = fileTreeDragSource({ projectId, node })
+    const attachment = fileTreeDragSource({ folderPath, node })
     sourceAttachmentCache.set(key, attachment)
     return attachment
   }
@@ -132,7 +120,7 @@
     const cached = directoryAttachmentCache.get(key)
     if (cached) return cached
     const attachment = fileTreeDirectoryDropTarget({
-      projectId,
+      folderPath,
       directoryPath: node.path,
       onHoverExpand: () => {
         expandedDirs.add(node.path)
@@ -148,7 +136,7 @@
     const cached = directoryAttachmentCache.get(key)
     if (cached) return cached
     const attachment = fileTreeDirectoryDropTarget({
-      projectId,
+      folderPath,
       directoryPath: '.',
       onDrop: (payload) => handleDirectoryDrop('.', payload)
     })
@@ -163,7 +151,7 @@
 
       for (const item of payload.items) {
         if (item.kind === 'file') {
-          if (item.projectId !== projectId) continue
+          if (item.folderPath !== folderPath) continue
           const moved = await moveTreeItemToDirectory(item.path, targetDir)
           movedCount += moved ? 1 : 0
           if (pendingTransfer) return
@@ -200,15 +188,15 @@
       return false
     }
 
-    const sourceAbs = await join(projectPath, sourcePath)
-    const collisions = await backend.files.pasteCollisions(projectPath, targetDir, [sourceAbs])
+    const sourceAbs = await join(folderPath, sourcePath)
+    const collisions = await backend.files.pasteCollisions(folderPath, targetDir, [sourceAbs])
     if (collisions.length > 0) {
       await runTransferWithCollisionHandling('cut', targetDir, [sourceAbs])
       return false
     }
 
     const nextPath = targetDir === '.' ? basename(sourcePath) : `${targetDir}/${basename(sourcePath)}`
-    await backend.files.rename(projectPath, sourcePath, nextPath)
+    await backend.files.rename(folderPath, sourcePath, nextPath)
     return true
   }
 
@@ -224,7 +212,7 @@
     const uniqueSources = Array.from(new Set(sources))
     if (uniqueSources.length === 0) return
 
-    const collisions = await backend.files.pasteCollisions(projectPath, targetDir, uniqueSources)
+    const collisions = await backend.files.pasteCollisions(folderPath, targetDir, uniqueSources)
     const collisionDestinations: Record<string, string> = {}
     for (const collision of collisions) {
       collisionDestinations[collision.source] = collision.destination
@@ -266,7 +254,7 @@
     if (!pendingTransfer) return
     const renameMap = policy === 'rename' && renameTo ? { [source]: renameTo } : undefined
     const created = await backend.files.paste(
-      projectPath,
+      folderPath,
       pendingTransfer.targetDir,
       pendingTransfer.op,
       [source],
@@ -331,16 +319,16 @@
   }
 
   function handleFileClick(filePath: string) {
-    pendingFileOpen = openTextFile(projectId, filePath)
+    pendingFileOpen = openTextFile(folderPath, filePath)
   }
 
-  // Active file from the focused editor tab
-  let focusedTab = $derived(getFocusedTab(projectId))
-  let activeFilePath = $derived(focusedTab?.kind === 'text' ? focusedTab.filePath : null)
+  // Active file from the global active editor tab.
+  let activeTab = $derived(getActiveTab())
+  let activeFilePath = $derived(activeTab?.kind === 'text' ? activeTab.filePath : null)
 
   // Reveal the active file in the tree by expanding every ancestor
   // directory. The effect deliberately depends on `loading` so that on
-  // mount we re-expand AFTER the project effect has cleared the set
+  // mount we re-expand AFTER the folder effect has cleared the set
   // and loadFiles() finished — otherwise the user opens a tab from
   // (say) the git diff sidebar, switches back to Files, and finds the
   // tree collapsed despite a file being focused. Adding to a set is
@@ -358,7 +346,7 @@
   })
 
   // Path -> status letter lookup from git state (prefer unstaged over staged)
-  let gitSummary = $derived(getGitSummary(projectId))
+  let gitSummary = $derived(getGitSummary(folderPath))
   let gitStatusMap = $derived.by(() => {
     const map = new Map<string, string>()
     if (!gitSummary?.changes) return map
@@ -382,16 +370,16 @@
     return dirs
   })
 
-  // Reload file list when project changes
-  let prevProjectPath = ''
+  // Reload file list when the folder changes
+  let prevFolderPath = ''
   $effect(() => {
-    if (projectPath !== prevProjectPath) {
-      prevProjectPath = projectPath
+    if (folderPath !== prevFolderPath) {
+      prevFolderPath = folderPath
       expandedDirs.clear()
       filterQuery = ''
       clearAttachmentCaches()
       abortPendingTransfer()
-      void ensureProjectFiles(projectId, projectPath)
+      void ensureProjectFiles(folderPath)
     }
   })
 
@@ -409,28 +397,23 @@
 
   async function handleRevealInFolder() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     await revealItemInDir(absPath)
   }
 
   function handleOpenInEditor() {
     if (!contextFilePath) return
-    openTextFile(projectId, contextFilePath)
-  }
-
-  async function handleOpenInFresh() {
-    if (!contextFilePath) return
-    await openTextInFresh(projectId, projectPath, contextFilePath)
+    openTextFile(folderPath, contextFilePath)
   }
 
   function handleOpenDiff() {
     if (!contextFilePath) return
-    openWorkingTreeDiff(projectId, false, contextFilePath, contextFilePath, { temporary: false })
+    openWorkingTreeDiff(folderPath, false, contextFilePath, contextFilePath, { temporary: false })
   }
 
   async function handleCut() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     try {
       await backend.app.clipboardCopyFiles([absPath], 'cut')
     } catch (e) {
@@ -440,7 +423,7 @@
 
   async function handleCopy() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     try {
       await backend.app.clipboardCopyFiles([absPath], 'copy')
     } catch (e) {
@@ -464,7 +447,7 @@
 
   async function handleCopyPath() {
     if (!contextFilePath) return
-    const absPath = await join(projectPath, contextFilePath)
+    const absPath = await join(folderPath, contextFilePath)
     await copyToClipboard(absPath)
   }
 
@@ -485,8 +468,8 @@
       return
     }
     try {
-      await backend.files.rename(projectPath, renameFilePath, renameValue)
-      await renameTextPath(projectId, projectPath, renameFilePath, renameValue)
+      await backend.files.rename(folderPath, renameFilePath, renameValue)
+      await renameTextPath(folderPath, renameFilePath, renameValue)
       await loadFiles()
     } catch (e) {
       notify.error('Rename failed', errMessage(e))
@@ -504,8 +487,8 @@
   async function confirmDelete() {
     if (!deleteFilePath) return
     try {
-      await backend.files.delete(projectPath, deleteFilePath)
-      await deleteTextPath(projectId, deleteFilePath)
+      await backend.files.delete(folderPath, deleteFilePath)
+      await deleteTextPath(folderPath, deleteFilePath)
       await loadFiles()
     } catch (e) {
       notify.error('Delete failed', errMessage(e))
@@ -533,11 +516,11 @@
     const kind = newItemKind
     try {
       if (kind === 'file') {
-        await backend.files.write(projectPath, newItemName.trim(), '')
+        await backend.files.write(folderPath, newItemName.trim(), '')
         await loadFiles()
-        openTextFile(projectId, newItemName.trim())
+        openTextFile(folderPath, newItemName.trim())
       } else if (kind === 'folder') {
-        await backend.files.createDir(projectPath, newItemName.trim())
+        await backend.files.createDir(folderPath, newItemName.trim())
         await loadFiles()
       }
     } catch (e) {
@@ -549,11 +532,11 @@
   }
 
   function handleOpenExternal() {
-    revealItemInDir(projectPath)
+    revealItemInDir(folderPath)
   }
 
-  async function handleCopyProjectPath() {
-    await copyToClipboard(projectPath)
+  async function handleCopyFolderPath() {
+    await copyToClipboard(folderPath)
   }
 </script>
 
@@ -567,7 +550,7 @@
   <div class="flex h-full min-h-0 flex-col">
     <TreeFilterInput bind:value={filterQuery} placeholder="Filter files..." ariaLabel="Filter files" />
     <div
-      class="min-h-0 flex-1 overflow-y-auto text-base {isFileTreeDropActive(projectId, '.') ? 'bg-accent/6' : ''}"
+      class="min-h-0 flex-1 overflow-y-auto text-base {isFileTreeDropActive(folderPath, '.') ? 'bg-accent/6' : ''}"
       {@attach rootDndAttachment()}
     >
       <FileContextMenu
@@ -575,7 +558,6 @@
         targetType={contextTargetType}
         onRevealInFolder={handleRevealInFolder}
         onOpenInEditor={handleOpenInEditor}
-        onOpenInFresh={handleOpenInFresh}
         onOpenDiff={handleOpenDiff}
         onCut={handleCut}
         onCopy={handleCopy}
@@ -587,7 +569,7 @@
         onNewFile={handleNewFile}
         onNewFolder={handleNewFolder}
         onOpenExternal={handleOpenExternal}
-        onCopyProjectPath={handleCopyProjectPath}
+        onCopyFolderPath={handleCopyFolderPath}
         onResetTarget={resetContextTarget}
       >
         {#if loading}
@@ -610,12 +592,12 @@
             onFileClick={(node) => {
               if (node.change?.path) handleFileClick(node.change.path)
             }}
-            onFileDblClick={() => promoteTabWhenReady(projectId, pendingFileOpen)}
+            onFileDblClick={() => promoteTabWhenReady(pendingFileOpen)}
             onFileContextMenu={handleFileContextMenu}
             dndEnabled={true}
             {dndSourceAttachment}
             {dndDirectoryAttachment}
-            dndIsDropActive={(path) => isFileTreeDropActive(projectId, path)}
+            dndIsDropActive={(path) => isFileTreeDropActive(folderPath, path)}
           >
             {#snippet fileTrailing(node)}
               {@const status = gitStatusMap.get(node.path)}

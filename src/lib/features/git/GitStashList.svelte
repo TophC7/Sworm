@@ -17,13 +17,13 @@
   import { SvelteSet } from 'svelte/reactivity'
 
   let {
-    projectPath,
+    folderPath,
     branchColorMap = new Map(),
     onMutate,
     onFileClick,
     onPersistTab
   }: {
-    projectPath: string
+    folderPath: string
     branchColorMap?: Map<string, string>
     onMutate?: () => void
     onFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
@@ -46,7 +46,7 @@
   let showDropConfirm = $derived(dropIndex !== null)
 
   $effect(() => {
-    const path = projectPath
+    const path = folderPath
     currentPath = path
     expandedIndex = null
     void loadStashes(path)
@@ -63,7 +63,7 @@
   }
 
   export function reload() {
-    void loadStashes(projectPath)
+    void loadStashes(folderPath)
   }
 
   /** Look up a branch's color from the graph lane assignments. */
@@ -94,9 +94,9 @@
   async function handlePop(index: number) {
     await runNotifiedTask(
       async () => {
-        await backend.git.stashPop(projectPath, index)
+        await backend.git.stashPop(folderPath, index)
         expandedIndex = null
-        await loadStashes(projectPath)
+        await loadStashes(folderPath)
         onMutate?.()
       },
       {
@@ -113,9 +113,9 @@
     dropIndex = null
     await runNotifiedTask(
       async () => {
-        await backend.git.stashDrop(projectPath, idx)
+        await backend.git.stashDrop(folderPath, idx)
         if (expandedIndex === idx) expandedIndex = null
-        await loadStashes(projectPath)
+        await loadStashes(folderPath)
         onMutate?.()
       },
       {

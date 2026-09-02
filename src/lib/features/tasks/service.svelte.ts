@@ -10,34 +10,34 @@ import type { TabId } from '$lib/features/workbench/model'
 import {
   addTaskTab,
   findTaskTabByTaskId,
-  focusTab,
-  getFocusedTab,
-  resetTaskTabForRestart,
-  setTaskTabStatus
+  getActiveTab,
+  resetTaskTabForRestart
 } from '$lib/features/workbench/state.svelte'
 import { findTask } from '$lib/features/tasks/state.svelte'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 
-// Tracks the most recently launched task per project so "Re-run Last
+// Tracks the most recently launched task per folder so "Re-run Last
 // Task" in the palette can fire without re-prompting the user to pick.
-const lastTaskByProject = new Map<string, string>()
+const lastTaskByFolder = new Map<string, string>()
 
-export function rememberLastTask(projectId: string, taskId: string): void {
-  lastTaskByProject.set(projectId, taskId)
+export function rememberLastTask(folderPath: string, taskId: string): void {
+  lastTaskByFolder.set(folderPath, taskId)
 }
 
-export function getLastTaskId(projectId: string): string | null {
-  return lastTaskByProject.get(projectId) ?? null
+export function getLastTaskId(folderPath: string): string | null {
+  return lastTaskByFolder.get(folderPath) ?? null
 }
 
 function newRunId(): string {
   return crypto.randomUUID()
 }
 
-function activeFilePathFor(projectId: string): string | null {
-  const focused = getFocusedTab(projectId)
-  if (focused?.kind !== 'text') return null
-  return focused.filePath
+/** Path of the active text tab, only when it belongs to `folderPath`
+ *  so a task never receives a file from another folder. */
+function activeFilePathFor(folderPath: string): string | null {
+  const active = getActiveTab()
+  if (active?.kind !== 'text' || active.folderPath !== folderPath) return null
+  return active.filePath
 }
 
 function normalizeIcon(task: TaskDefinition): string | null {
@@ -59,16 +59,16 @@ async function confirmIfRequired(task: TaskDefinition): Promise<boolean> {
 }
 
 /**
- * Open (or focus) a task tab for the given definition.
+ * Open (or activate) a task tab for the given definition.
  *
  * Behavior:
  * - `confirm: true` → prompt before running. Cancel leaves state unchanged.
  * - `singleton: true` + existing live tab → rebind that tab to a
- *   fresh runId, reset its status, and focus it. Honors `clearOnRerun`.
+ *   fresh runId, reset its status, and activate it. Honors `clearOnRerun`.
  * - Otherwise → spawn a new task tab.
  */
 export async function openTaskTab(
-  projectId: string,
+  folderPath: string,
   task: TaskDefinition,
   options: { activeFilePath?: string | null } = {}
 ): Promise<TabId | null> {
@@ -78,26 +78,25 @@ export async function openTaskTab(
   const group = normalizeGroup(task)
 
   if (task.singleton) {
-    const existing = findTaskTabByTaskId(projectId, task.id)
+    const existing = findTaskTabByTaskId(folderPath, task.id)
     if (existing) {
-      const activeFilePath = activeFilePathFor(projectId) ?? options.activeFilePath ?? existing.activeFilePath
+      const activeFilePath = activeFilePathFor(folderPath) ?? options.activeFilePath ?? existing.activeFilePath
       const nextRunId = newRunId()
       taskRegistry.dispose(existing.runId)
-      resetTaskTabForRestart(projectId, existing.id, nextRunId, {
+      resetTaskTabForRestart(existing.id, nextRunId, {
         activeFilePath,
         label: task.label,
         icon,
         group
       })
-      focusTab(projectId, existing.id)
-      rememberLastTask(projectId, task.id)
+      rememberLastTask(folderPath, task.id)
       return existing.id
     }
   }
 
-  const activeFilePath = activeFilePathFor(projectId) ?? options.activeFilePath ?? null
+  const activeFilePath = activeFilePathFor(folderPath) ?? options.activeFilePath ?? null
   const runId = newRunId()
-  const tabId = addTaskTab(projectId, {
+  const tabId = addTaskTab(folderPath, {
     runId,
     taskId: task.id,
     activeFilePath,
@@ -105,19 +104,19 @@ export async function openTaskTab(
     icon,
     group
   })
-  rememberLastTask(projectId, task.id)
+  rememberLastTask(folderPath, task.id)
   return tabId
 }
 
 /**
- * Launch the most recently run task in this project. Returns null
+ * Launch the most recently run task in this folder. Returns null
  * when no prior task has been launched or the stored task id is no
  * longer present in `.sworm/tasks.json`.
  */
-export async function rerunLastTask(projectId: string): Promise<TabId | null> {
-  const taskId = getLastTaskId(projectId)
+export async function rerunLastTask(folderPath: string): Promise<TabId | null> {
+  const taskId = getLastTaskId(folderPath)
   if (!taskId) return null
-  return openTaskTabById(projectId, taskId)
+  return openTaskTabById(folderPath, taskId)
 }
 
 /**
@@ -125,18 +124,8 @@ export async function rerunLastTask(projectId: string): Promise<TabId | null> {
  * the task is no longer defined — callers should refresh the task
  * list first if they want a stable read.
  */
-export async function openTaskTabById(projectId: string, taskId: string): Promise<TabId | null> {
-  const task = findTask(projectId, taskId)
+export async function openTaskTabById(folderPath: string, taskId: string): Promise<TabId | null> {
+  const task = findTask(folderPath, taskId)
   if (!task) return null
-  return openTaskTab(projectId, task)
-}
-
-/** Propagate a live PTY status change back into the tab model. */
-export function reportTaskStatus(
-  projectId: string,
-  tabId: TabId,
-  status: Parameters<typeof setTaskTabStatus>[2],
-  exitCode: number | null = null
-): void {
-  setTaskTabStatus(projectId, tabId, status, exitCode)
+  return openTaskTab(folderPath, task)
 }

@@ -2,117 +2,105 @@ use crate::app_state::AppState;
 use crate::errors::ApiError;
 use crate::models::nix_env::{NixDetection, NixEnvRecord, NixEnvStatus};
 use crate::models::provider::ProviderStatus;
+use crate::services::folders::resolve_folder;
 use crate::services::nix::{NixDiagnostic, NixService};
 use crate::services::settings_resolution::{
     provider_binary_overrides, resolve_effective_settings_for_project_path,
 };
 
-/// Detect Nix files in a project directory and return current selection.
+/// Detect Nix files in a folder and return current selection.
 #[tauri::command]
 pub async fn nix_detect(
-    project_id: String,
+    folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixDetection, ApiError> {
+    let folder = resolve_folder(&folder_path)?;
+    let folder_path = folder.to_string_lossy().into_owned();
     let db = state.db.read();
-    let project = state
-        .projects
-        .get(db.conn(), &project_id)
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
 
-    let detected_files = NixService::detect(&project.path);
-    let selected = NixService::get(db.conn(), &project_id).map_err(ApiError::Database)?;
+    let detected_files = NixService::detect(&folder_path);
+    let selected = NixService::get(db.conn(), &folder_path).map_err(ApiError::Database)?;
 
     Ok(NixDetection {
-        project_id,
-        project_path: project.path,
+        folder_path,
         detected_files,
         selected,
     })
 }
 
-/// Select a Nix file for a project. Validates against detected files.
+/// Select a Nix file for a folder. Validates against detected files.
 #[tauri::command]
 pub async fn nix_select(
-    project_id: String,
+    folder_path: String,
     nix_file: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixEnvRecord, ApiError> {
-    let db = state.db.write();
+    let folder = resolve_folder(&folder_path)?;
+    let folder_path = folder.to_string_lossy().into_owned();
 
-    let project = state
-        .projects
-        .get(db.conn(), &project_id)
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
-
-    // Validate nix_file exists in the project directory
-    let detected = NixService::detect(&project.path);
+    let detected = NixService::detect(&folder_path);
     if !detected.iter().any(|f| f == &nix_file) {
         return Err(ApiError::InvalidArgument(format!(
-            "Nix file '{}' not found in project. Detected: {:?}",
+            "Nix file '{}' not found in folder. Detected: {:?}",
             nix_file, detected
         )));
     }
 
-    NixService::select(db.conn(), &project_id, &nix_file).map_err(ApiError::Database)
+    let db = state.db.write();
+    NixService::select(db.conn(), &folder_path, &nix_file).map_err(ApiError::Database)
 }
 
-/// RAII guard that removes a project_id from the eval lock set on drop.
+/// RAII guard that removes a folder path from the eval lock set on drop.
 struct NixEvalGuard<'a> {
     locks: &'a parking_lot::Mutex<std::collections::HashSet<String>>,
-    project_id: String,
+    folder_path: String,
 }
 
 impl<'a> Drop for NixEvalGuard<'a> {
     fn drop(&mut self) {
-        self.locks.lock().remove(&self.project_id);
+        self.locks.lock().remove(&self.folder_path);
     }
 }
 
 /// Evaluate the selected Nix expression (async, potentially slow).
 #[tauri::command]
 pub async fn nix_evaluate(
-    project_id: String,
+    folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixEnvRecord, ApiError> {
+    let folder = resolve_folder(&folder_path)?;
+    let folder_path = folder.to_string_lossy().into_owned();
+
     // Check and acquire evaluation lock
     {
         let mut locks = state.nix_eval_locks.lock();
-        if locks.contains(&project_id) {
+        if locks.contains(&folder_path) {
             return Err(ApiError::InvalidArgument(
-                "Nix evaluation already in progress for this project".to_string(),
+                "Nix evaluation already in progress for this folder".to_string(),
             ));
         }
-        locks.insert(project_id.clone());
+        locks.insert(folder_path.clone());
     }
 
     // RAII guard ensures the lock is always released, even on early ? returns or panics
     let _guard = NixEvalGuard {
         locks: &state.nix_eval_locks,
-        project_id: project_id.clone(),
+        folder_path: folder_path.clone(),
     };
 
-    // Load project path, nix_file, and user-configured timeout from DB
-    let (project_path, nix_file, timeout_secs) = {
+    // Load nix_file and user-configured timeout
+    let (nix_file, timeout_secs) = {
         let db = state.db.write();
-        let project = state
-            .projects
-            .get(db.conn(), &project_id)
-            .map_err(ApiError::Database)?
-            .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
-
-        let record = NixService::get(db.conn(), &project_id)
+        let record = NixService::get(db.conn(), &folder_path)
             .map_err(ApiError::Database)?
             .ok_or_else(|| {
                 ApiError::InvalidArgument(
-                    "No Nix file selected for this project. Call nix_select first.".to_string(),
+                    "No Nix file selected for this folder. Call nix_select first.".to_string(),
                 )
             })?;
 
-        let effective_settings =
-            resolve_effective_settings_for_project_path(Some(std::path::Path::new(&project.path)))
-                .map_err(ApiError::Internal)?;
+        let effective_settings = resolve_effective_settings_for_project_path(Some(&folder))
+            .map_err(ApiError::Internal)?;
         // Clamp to a sane range so a bad config value can't hang the app forever or
         // fire a timeout before nix has even finished spawning.
         let timeout_secs = effective_settings
@@ -121,18 +109,17 @@ pub async fn nix_evaluate(
             .nix_eval_timeout_secs
             .clamp(30, 3600);
 
-        NixService::set_status(db.conn(), &project_id, NixEnvStatus::Evaluating)
+        NixService::set_status(db.conn(), &folder_path, NixEnvStatus::Evaluating)
             .map_err(ApiError::Database)?;
 
-        (project.path.clone(), record.nix_file.clone(), timeout_secs)
+        (record.nix_file, timeout_secs)
     };
 
     // Run evaluation on a blocking thread (can take 30+ seconds on a warm store,
     // many minutes on a cold one).
-    let eval_project_path = project_path.clone();
-    let eval_nix_file = nix_file.clone();
+    let eval_folder_path = folder_path.clone();
     let eval_result = tokio::task::spawn_blocking(move || {
-        NixService::evaluate(&eval_project_path, &eval_nix_file, timeout_secs)
+        NixService::evaluate(&eval_folder_path, &nix_file, timeout_secs)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Evaluation task panicked: {}", e)))?;
@@ -141,11 +128,11 @@ pub async fn nix_evaluate(
     let db = state.db.write();
     match eval_result {
         Ok(env_vars) => {
-            NixService::save_success(db.conn(), &project_id, &env_vars)
+            NixService::save_success(db.conn(), &folder_path, &env_vars)
                 .map_err(ApiError::Database)?;
         }
         Err(eval_error) => {
-            NixService::save_error(db.conn(), &project_id, &eval_error)
+            NixService::save_error(db.conn(), &folder_path, &eval_error)
                 .map_err(ApiError::Database)?;
             return Err(ApiError::Internal(eval_error.to_string()));
         }
@@ -153,29 +140,31 @@ pub async fn nix_evaluate(
 
     // _guard drops here, releasing the eval lock
 
-    NixService::get(db.conn(), &project_id)
+    NixService::get(db.conn(), &folder_path)
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::Internal("Nix env record disappeared after save".to_string()))
 }
 
-/// Clear the Nix environment for a project.
+/// Clear the Nix environment for a folder.
 #[tauri::command]
 pub async fn nix_clear(
-    project_id: String,
+    folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    let folder = resolve_folder(&folder_path)?;
     let db = state.db.write();
-    NixService::remove(db.conn(), &project_id).map_err(ApiError::Database)
+    NixService::remove(db.conn(), &folder.to_string_lossy()).map_err(ApiError::Database)
 }
 
-/// Get the current Nix environment status for a project.
+/// Get the current Nix environment status for a folder.
 #[tauri::command]
 pub async fn nix_status(
-    project_id: String,
+    folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<NixEnvRecord>, ApiError> {
+    let folder = resolve_folder(&folder_path)?;
     let db = state.db.read();
-    NixService::get(db.conn(), &project_id).map_err(ApiError::Database)
+    NixService::get(db.conn(), &folder.to_string_lossy()).map_err(ApiError::Database)
 }
 
 /// Format Nix source code via nixfmt.
@@ -188,13 +177,13 @@ pub async fn nix_format(content: String) -> Result<String, ApiError> {
 }
 
 /// Parse-check a Nix file and return diagnostics.
-/// Joins project_path + file_path server-side to avoid frontend path construction.
+/// Joins folder_path + file_path server-side to avoid frontend path construction.
 #[tauri::command]
 pub async fn nix_lint(
-    project_path: String,
+    folder_path: String,
     file_path: String,
 ) -> Result<Vec<NixDiagnostic>, ApiError> {
-    let abs_path = std::path::Path::new(&project_path)
+    let abs_path = std::path::Path::new(&folder_path)
         .join(&file_path)
         .to_string_lossy()
         .to_string();
@@ -204,29 +193,23 @@ pub async fn nix_lint(
         .map_err(ApiError::Internal)
 }
 
-/// Detect providers using the project's Nix-augmented PATH.
+/// Detect providers using the folder's Nix-augmented PATH.
 #[tauri::command]
-pub async fn provider_list_for_project(
-    project_id: String,
+pub async fn provider_list_for_folder(
+    folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {
+    let folder = resolve_folder(&folder_path)?;
     let db = state.db.read();
 
-    let project = state
-        .projects
-        .get(db.conn(), &project_id)
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound(format!("Project not found: {}", project_id)))?;
-
-    let merged_path = match NixService::load_env_vars(db.conn(), &project_id) {
+    let merged_path = match NixService::load_env_vars(db.conn(), &folder.to_string_lossy()) {
         Ok(Some(nix_env)) => NixService::merged_path(&state.env.merged_path, &nix_env),
         _ => state.env.merged_path.clone(),
     };
     drop(db);
 
     let effective =
-        resolve_effective_settings_for_project_path(Some(std::path::Path::new(&project.path)))
-            .map_err(ApiError::Internal)?;
+        resolve_effective_settings_for_project_path(Some(&folder)).map_err(ApiError::Internal)?;
     let overrides = provider_binary_overrides(&effective.settings);
 
     let mut providers = state.providers.lock();

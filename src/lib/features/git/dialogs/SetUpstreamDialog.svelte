@@ -7,13 +7,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import {
-    DialogContent,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { Input, Select } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
@@ -21,19 +15,17 @@
 
   let {
     open = $bindable(false),
-    projectId,
-    projectPath,
+    folderPath,
     branchName,
     initialUpstream = ''
   }: {
     open?: boolean
-    projectId: string
-    projectPath: string
+    folderPath: string
     branchName: string
     initialUpstream?: string
   } = $props()
 
-  let entry = $derived(branches.byProject.get(projectId))
+  let entry = $derived(branches.byFolder.get(folderPath))
   let suggestions = $derived.by(() => {
     if (!entry) return [] as string[]
     return entry.list.filter((b) => b.kind === 'remote').map((b) => b.name)
@@ -47,8 +39,8 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.setUpstream(projectPath, branchName, upstream)
-      await branches.refresh(projectId, projectPath)
+      await backend.git.branch.setUpstream(folderPath, branchName, upstream)
+      await branches.refresh(folderPath)
     },
     onDone: () => (open = false)
   })
@@ -76,12 +68,7 @@
           </Select>
         {/if}
 
-        <Input
-          bind:value={upstream}
-          placeholder="origin/main"
-          class="text-sm"
-          spellcheck={false}
-        />
+        <Input bind:value={upstream} placeholder="origin/main" class="text-sm" spellcheck={false} />
 
         <DialogError message={submitState.error} />
       </div>

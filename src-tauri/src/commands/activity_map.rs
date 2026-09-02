@@ -3,14 +3,19 @@ use crate::errors::ApiError;
 use crate::models::activity_map::DiscoveredProject;
 use crate::services::activity_map::ActivityMapService;
 
-/// Read sworm projects under the db lock (consistent lock ordering).
-fn load_sworm_projects(state: &AppState) -> Result<Vec<(String, String)>, ApiError> {
+/// Key in `app_state` holding the frontend's MRU folder list (JSON `string[]`).
+const RECENT_FOLDERS_KEY: &str = "recent_folders";
+
+/// Read recent folders under the db lock (consistent lock ordering).
+fn load_recent_folders(state: &AppState) -> Result<Vec<String>, ApiError> {
     let db = state.db.read();
-    state
-        .projects
-        .list(db.conn())
-        .map_err(ApiError::Database)
-        .map(|ps| ps.into_iter().map(|p| (p.path, p.id)).collect())
+    let raw = state
+        .app_state_kv
+        .get(db.conn(), RECENT_FOLDERS_KEY)
+        .map_err(ApiError::Database)?;
+    Ok(raw
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
 }
 
 /// Return the cached activity map, scanning on first call.
@@ -22,17 +27,14 @@ fn load_sworm_projects(state: &AppState) -> Result<Vec<(String, String)>, ApiErr
 pub async fn activity_map_get(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, ApiError> {
-    {
-        let cache = state.activity_map_cache.lock();
-        if let Some(ref cached) = *cache {
-            return Ok(cached.clone());
-        }
+    if let Some(cached) = &*state.activity_map_cache.lock() {
+        return Ok(cached.clone());
     }
 
-    let sworm_projects = load_sworm_projects(&state)?;
+    let recent = load_recent_folders(&state)?;
 
     // Scan outside any lock
-    let results = ActivityMapService::scan(&sworm_projects);
+    let results = ActivityMapService::scan(&recent);
 
     let mut cache = state.activity_map_cache.lock();
     *cache = Some(results.clone());
@@ -47,10 +49,10 @@ pub async fn activity_map_get(
 pub async fn activity_map_refresh(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, ApiError> {
-    let sworm_projects = load_sworm_projects(&state)?;
+    let recent = load_recent_folders(&state)?;
 
     // Scan outside the lock
-    let results = ActivityMapService::scan(&sworm_projects);
+    let results = ActivityMapService::scan(&recent);
 
     let mut cache = state.activity_map_cache.lock();
     *cache = Some(results.clone());

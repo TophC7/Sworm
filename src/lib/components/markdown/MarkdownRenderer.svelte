@@ -6,11 +6,11 @@
 
   let {
     source,
-    projectPath,
+    folderPath,
     filePath
   }: {
     source: string
-    projectPath?: string
+    folderPath?: string
     filePath?: string | null
   } = $props()
 </script>
@@ -113,7 +113,7 @@
     {/snippet}
 
     {#snippet image({ href, text })}
-      <img src={markdownImageSrc(href, projectPath, filePath)} alt={text} class="my-3 max-w-full rounded" />
+      <img src={markdownImageSrc(href, folderPath, filePath)} alt={text} class="my-3 max-w-full rounded" />
     {/snippet}
   </SvelteMarkdown>
 </div>

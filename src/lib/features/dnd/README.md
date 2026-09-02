@@ -12,9 +12,9 @@ Unified drag-and-drop runtime for Sworm.
 type DragPayload = {
   source: 'internal' | 'external'
   items: Array<
-    | { kind: 'tab'; tabId: string; projectId: string; sourcePaneSlot: PaneSlot }
-    | { kind: 'file'; path: string; isDir: boolean; projectId: string }
-    | { kind: 'git-change'; path: string; staged: boolean; projectId: string }
+    | { kind: 'tab'; tabId: string }
+    | { kind: 'file'; path: string; isDir: boolean; folderPath: string }
+    | { kind: 'git-change'; path: string; staged: boolean; folderPath: string }
     | { kind: 'os-files'; paths: string[] }
   >
 }
@@ -30,8 +30,7 @@ type DragPayload = {
 
 ## Active Adapters
 
-- `adapters/pane.ts`: tab/file/os-file drops into panes with merge/split overlays.
-- `adapters/tab-strip.ts`: tab drag source wiring.
+- `adapters/tab-strip.ts`: tab drag source wiring (title-bar tab reorder).
 - `adapters/file-tree.ts`: file explorer source + folder/root targets with delayed expand.
 - `adapters/git.ts`: git change drag sources + staged/unstaged drop zones.
 - `adapters/terminal.ts`: terminal drops (file paths + image temp-save path insert).

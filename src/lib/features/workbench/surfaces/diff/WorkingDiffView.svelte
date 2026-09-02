@@ -13,15 +13,13 @@
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
 
   let {
-    projectId,
-    projectPath,
+    folderPath,
     staged,
     scopePath = null,
     revealNonce = 0,
     initialFile = null
   }: {
-    projectId: string
-    projectPath: string
+    folderPath: string
     staged: boolean
     scopePath?: string | null
     revealNonce?: number
@@ -30,7 +28,7 @@
 
   // Summary drives the reload trigger; the index comes from the
   // working-tree endpoint that returns metadata only.
-  let summary = $derived(getGitSummary(projectId))
+  let summary = $derived(getGitSummary(folderPath))
   let changeSignature = $derived(
     (summary?.changes ?? [])
       .filter((c) => c.staged === staged)
@@ -45,11 +43,11 @@
 
   $effect(() => {
     // Fold every input that affects the result into the key so
-    // a prop flip (project switch, staged toggle, scope change) always
+    // a prop flip (folder switch, staged toggle, scope change) always
     // re-runs even when changeSignature happens to collide.
-    const key = `${projectPath}|${staged}|${scopePath ?? ''}|${changeSignature}`
+    const key = `${folderPath}|${staged}|${scopePath ?? ''}|${changeSignature}`
     indexLoad.run(key, async (isCurrent) => {
-      const indexFiles = await backend.git.getWorkingDiffIndex(projectPath, staged)
+      const indexFiles = await backend.git.getWorkingDiffIndex(folderPath, staged)
       if (!isCurrent()) return
       files = scopePath
         ? indexFiles.filter((file) => file.path === scopePath || file.path.startsWith(scopePath + '/'))
@@ -62,7 +60,7 @@
   // a handful of rows scrolled into view at a time, so the total bytes
   // pulled stays a tiny fraction of the eager-payload version.
   const contentFetcher: DiffContentFetcher = async (entry) => {
-    return await backend.git.getWorkingDiffFile(projectPath, entry.path, entry.status, staged)
+    return await backend.git.getWorkingDiffFile(folderPath, entry.path, entry.status, staged)
   }
 </script>
 
@@ -73,8 +71,7 @@
   scrollNonce={revealNonce}
   label={scopePath ? scopePath : staged ? 'Staged' : 'Changes'}
   idPrefix="changes-file"
-  {projectId}
-  {projectPath}
+  {folderPath}
   workingStaged={staged}
   {contentFetcher}
 />

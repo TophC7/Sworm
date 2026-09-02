@@ -11,8 +11,8 @@
 //   idle      - no activity / not running (no dot)
 //
 // Reactivity uses [`ReactiveMap`] so each session has its own version.
-// A session dot in the projects sidebar subscribes to its session's
-// signal only and never wakes for a sibling session's chunk.
+// A session dot in the tab strip subscribes to its session's signal
+// only and never wakes for a sibling session's chunk.
 
 import { classifyActivity, type ActivitySignal } from '$lib/features/sessions/terminal/activityClassifier'
 import { ReactiveMap } from '$lib/utils/reactiveMap.svelte'

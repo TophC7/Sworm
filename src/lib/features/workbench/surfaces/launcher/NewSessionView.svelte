@@ -3,46 +3,24 @@
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { MagicCard } from '$lib/components/ui/magic-card'
   import { Separator } from '$lib/components/ui/separator'
-  import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { allProviders, directOptions, type ProviderMeta } from '$lib/features/sessions/providers/catalog'
-  import { getActiveProjectId } from '$lib/features/projects/state.svelte'
   import { getConnectedProviders, getProvidersLoading } from '$lib/features/sessions/providers/state.svelte'
-  import { ensureFreshSession } from '$lib/features/workbench/surfaces/session/service.svelte'
+  import { startSession } from '$lib/features/sessions/service.svelte'
   import { createSessionWithSharedWorkspaceWarning } from '$lib/features/app-actions/actions.svelte'
-  import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 
-  let { onCreated }: { onCreated?: () => void } = $props()
+  let { folderPath }: { folderPath: string } = $props()
 
-  let connectedProviders = $derived(getConnectedProviders())
   let providersLoading = $derived(getProvidersLoading())
-  let activeProjectId = $derived(getActiveProjectId())
   // Pre-compute Map for O(1) provider status lookups
-  let providerMap = $derived(new Map(connectedProviders.map((p) => [p.id, p])))
+  let providerMap = $derived(new Map(getConnectedProviders().map((p) => [p.id, p])))
 
-  async function handleSelect(provider: (typeof allProviders)[number]) {
-    if (!activeProjectId) return
-    const status = providerMap.get(provider.id)
-    if (!status) return
-
-    if (provider.id === 'fresh') {
-      await doOpenFresh()
+  async function handleSelect(provider: ProviderMeta) {
+    if (!providerMap.has(provider.id)) return
+    if (provider.id === 'terminal') {
+      startSession(folderPath, 'terminal', 'Terminal')
       return
     }
-
-    const created = await createSessionWithSharedWorkspaceWarning(status.id, provider.label)
-    if (created) onCreated?.()
-  }
-
-  async function doOpenFresh() {
-    if (!activeProjectId) return
-    const tabId = await runNotifiedTask(() => ensureFreshSession(activeProjectId), {
-      loading: { title: 'Opening Fresh' },
-      error: {
-        title: 'Failed to open Fresh',
-        description: (error) => getErrorMessage(error)
-      }
-    })
-    if (tabId) onCreated?.()
+    await createSessionWithSharedWorkspaceWarning(provider.id, provider.label)
   }
 </script>
 
@@ -83,22 +61,6 @@
             <span class="text-2xs text-success">{status.version}</span>
           {/if}
         </div>
-        {#if provider.id === 'fresh'}
-          <!-- Stop click from bubbling through to MagicCard -->
-          <div
-            class="absolute top-1 right-1"
-            role="presentation"
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => e.stopPropagation()}
-          >
-            <InfoTooltip ariaLabel="What is Fresh?" contentClass="w-64">
-              <p>
-                A zero-config terminal text editor with VS Code-like UX. Has multi-cursor, LSP, fuzzy finder, and full
-                mouse support. Not an AI agent. Give it a try!
-              </p>
-            </InfoTooltip>
-          </div>
-        {/if}
       </div>
     </MagicCard>
   </BlurFade>

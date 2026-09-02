@@ -1,8 +1,8 @@
-// Per-project task loading, variable substitution, and file watching.
+// Per-folder task loading, variable substitution, and file watching.
 //
-// Tasks live in `<project>/.sworm/tasks.json`. This service reads them,
+// Tasks live in `<folder>/.sworm/tasks.json`. This service reads them,
 // resolves `${workspaceFolder}`, `${file}`, and `${env:NAME}` variables
-// against the current project context, and watches the file so the
+// against the current folder context, and watches the file so the
 // frontend can refresh its palette/menu listings when it changes.
 //
 // The PTY spawn itself is driven by commands (see commands/tasks.rs);
@@ -29,16 +29,16 @@ pub struct ResolvedTask {
     pub env: HashMap<String, String>,
 }
 
-struct ProjectWatcher {
+struct FolderWatcher {
     watcher: RecommendedWatcher,
     watching_sworm_dir: bool,
 }
 
 pub struct TaskService {
-    /// One filesystem watcher per project. Repeated `watch` calls are
-    /// idempotent and may upgrade an existing project-root watcher to
+    /// One filesystem watcher per folder. Repeated `watch` calls are
+    /// idempotent and may upgrade an existing folder-root watcher to
     /// also watch `.sworm/` once that directory exists.
-    watchers: Mutex<HashMap<String, ProjectWatcher>>,
+    watchers: Mutex<HashMap<String, FolderWatcher>>,
 }
 
 impl TaskService {
@@ -116,29 +116,26 @@ impl TaskService {
         ResolvedTask { command, cwd, env }
     }
 
-    /// Start watching task config paths for this project. Always
-    /// watches the project root for `.sworm/` creation and upgrades to
+    /// Start watching task config paths for this folder. Always
+    /// watches the folder root for `.sworm/` creation and upgrades to
     /// also watch `.sworm/` directly once it exists. Safe to call on
-    /// every `tasks_list`.
-    pub fn watch(
-        &self,
-        app: &tauri::AppHandle,
-        project_id: &str,
-        project_path: &Path,
-    ) -> Result<(), String> {
+    /// every `tasks_list`. The emitted `tasks-changed` payload is the
+    /// canonical folder path.
+    pub fn watch(&self, app: &tauri::AppHandle, folder: &Path) -> Result<(), String> {
+        let folder_path = folder.to_string_lossy();
         let mut watchers = self.watchers.lock();
-        let sworm_dir = project_path.join(".sworm");
-        if let Some(project_watcher) = watchers.get_mut(project_id) {
+        let sworm_dir = folder.join(".sworm");
+        if let Some(folder_watcher) = watchers.get_mut(folder_path.as_ref()) {
             if !sworm_dir.exists() {
-                project_watcher.watching_sworm_dir = false;
+                folder_watcher.watching_sworm_dir = false;
             }
-            ensure_sworm_watch(project_watcher, &sworm_dir)?;
+            ensure_sworm_watch(folder_watcher, &sworm_dir)?;
             return Ok(());
         }
 
-        let tasks_file = project_path.join(TASKS_FILE_REL);
+        let tasks_file = folder.join(TASKS_FILE_REL);
         let handle = app.clone();
-        let pid = project_id.to_string();
+        let payload = folder_path.to_string();
         let sworm_dir_for_events = sworm_dir.clone();
         let tasks_file_for_events = tasks_file.clone();
 
@@ -147,33 +144,27 @@ impl TaskService {
             if event.paths.iter().any(|path| {
                 is_tasks_event_path(path, &sworm_dir_for_events, &tasks_file_for_events)
             }) {
-                let _ = handle.emit(TASKS_CHANGED_EVENT, &pid);
+                let _ = handle.emit(TASKS_CHANGED_EVENT, &payload);
             }
         })
         .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
         watcher
-            .watch(project_path, RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch project root: {}", e))?;
+            .watch(folder, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch folder root: {}", e))?;
 
-        let mut project_watcher = ProjectWatcher {
+        let mut folder_watcher = FolderWatcher {
             watcher,
             watching_sworm_dir: false,
         };
-        ensure_sworm_watch(&mut project_watcher, &sworm_dir)?;
+        ensure_sworm_watch(&mut folder_watcher, &sworm_dir)?;
 
-        watchers.insert(project_id.to_string(), project_watcher);
+        watchers.insert(folder_path.into_owned(), folder_watcher);
         Ok(())
-    }
-
-    /// Drop the watcher for a project. Called when a project is removed.
-    #[allow(dead_code)]
-    pub fn unwatch(&self, project_id: &str) {
-        self.watchers.lock().remove(project_id);
     }
 }
 
-fn ensure_sworm_watch(watcher: &mut ProjectWatcher, sworm_dir: &Path) -> Result<(), String> {
+fn ensure_sworm_watch(watcher: &mut FolderWatcher, sworm_dir: &Path) -> Result<(), String> {
     if watcher.watching_sworm_dir || !sworm_dir.exists() {
         return Ok(());
     }
