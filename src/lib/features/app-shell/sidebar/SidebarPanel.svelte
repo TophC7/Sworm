@@ -6,7 +6,7 @@
   layout to the shared `PanelFrame` primitive.
 
   @param title - panel heading (uppercase label in the header)
-  @param headerActions - snippet rendered left, after title (e.g. refresh button)
+  @param headerActions - snippet rendered right, before headerExtra (e.g. view action buttons)
   @param headerExtra - snippet rendered right, before collapse button (e.g. info tooltip)
   @param children - main content area
   @param class - optional extra classes on the outer container

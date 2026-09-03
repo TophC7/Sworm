@@ -19,7 +19,7 @@
   import { forcePushWithLease, undoLastCommit } from '$lib/features/git/actions.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
-  import { GitBranchIcon, RotateCw } from '$lib/icons/lucideExports'
+  import { GitBranchIcon } from '$lib/icons/lucideExports'
   import {
     getGitActionNotifications,
     gitCommitNotifications,
@@ -30,7 +30,6 @@
   let {
     summary,
     folderPath,
-    onRefresh,
     onFileClick,
     onPersistTab,
     onCommitFileClick,
@@ -39,7 +38,6 @@
   }: {
     summary: GitSummary | null
     folderPath: string
-    onRefresh?: () => void
     onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
     onCommitFileClick?: (
@@ -174,13 +172,6 @@
 </script>
 
 <SidebarPanel title="Git">
-  {#snippet headerActions()}
-    {#if onRefresh}
-      <IconButton tooltip="Refresh git status" onclick={onRefresh}>
-        <RotateCw size={11} />
-      </IconButton>
-    {/if}
-  {/snippet}
   {#snippet headerExtra()}
     <InfoTooltip ariaLabel="Explain git status badges" contentClass="w-72">
       <div class="space-y-2">

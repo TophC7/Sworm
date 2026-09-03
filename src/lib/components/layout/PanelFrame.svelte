@@ -22,9 +22,13 @@
   <PanelHeader>
     {#snippet left()}
       <span class="truncate text-xs font-semibold tracking-wide text-muted uppercase" {title}>{title}</span>
-      {#if headerActions}{@render headerActions()}{/if}
     {/snippet}
     {#snippet right()}
+      {#if headerActions}
+        <div class="flex items-center gap-0.5">
+          {@render headerActions()}
+        </div>
+      {/if}
       {#if headerExtra}{@render headerExtra()}{/if}
     {/snippet}
   </PanelHeader>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Eye, EyeOff, RotateCw } from '$lib/icons/lucideExports'
+  import { Eye, EyeOff } from '$lib/icons/lucideExports'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
@@ -19,8 +19,7 @@
     isProjectFilesLoading,
     isProjectFilesStale,
     isProjectFilesTruncated,
-    markProjectFilesStale,
-    refreshProjectFiles
+    markProjectFilesStale
   } from '$lib/features/files/projectFiles.svelte'
   import {
     dimmedPathsFor,
@@ -31,7 +30,6 @@
     isExpanded,
     loadDir,
     nodesFor,
-    refreshFolderTree,
     revealPath,
     setShowHidden,
     toggleDir
@@ -111,13 +109,6 @@
 
   const sourceAttachmentCache = new Map<string, ReturnType<typeof fileTreeDragSource>>()
   const directoryAttachmentCache = new Map<string, ReturnType<typeof fileTreeDirectoryDropTarget>>()
-
-  async function loadFiles() {
-    // Both refreshes report failures through the store: the tree keeps the
-    // root's message in `tree.error`, and the flat list falls back to its
-    // cached paths.
-    await Promise.all([refreshFolderTree(folderPath), refreshProjectFiles(folderPath)])
-  }
 
   /**
    * Re-read the listings a mutation touched. Own mutations refresh immediately
@@ -578,13 +569,10 @@
       onclick={() => setShowHidden(folderPath, !tree.showHidden)}
     >
       {#if tree.showHidden}
-        <EyeOff size={11} />
+        <EyeOff size={12} />
       {:else}
-        <Eye size={11} />
+        <Eye size={12} />
       {/if}
-    </IconButton>
-    <IconButton tooltip="Refresh files" onclick={loadFiles}>
-      <RotateCw size={11} />
     </IconButton>
   {/snippet}
 
