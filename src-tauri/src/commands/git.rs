@@ -332,6 +332,21 @@ pub async fn git_get_summary(
     Ok(state.git.get_summary(Path::new(&path)))
 }
 
+/// Watch the folder's git dir for external changes. A watcher failure costs
+/// freshness, not function (focus and in-app actions still refresh), so it
+/// is logged rather than surfaced.
+#[tauri::command]
+pub async fn git_watch(
+    app: tauri::AppHandle,
+    project_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    if let Err(error) = state.git_watchers.watch(&app, Path::new(&project_path)) {
+        tracing::debug!(folder = %project_path, %error, "git watcher not started");
+    }
+    Ok(())
+}
+
 /// Get full commit detail (metadata + file list with stats).
 #[tauri::command]
 pub async fn git_get_commit_detail(

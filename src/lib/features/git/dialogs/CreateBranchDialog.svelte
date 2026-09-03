@@ -23,7 +23,7 @@
   } from '$lib/components/ui/dialog'
   import { Input, Select } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
-  import { refreshGit } from '$lib/features/git/state.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import { validateBranchName } from '$lib/utils/git/branchValidation'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
@@ -48,12 +48,8 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.create(folderPath, name, base, { checkout: alsoCheckout })
-      if (alsoCheckout) {
-        branches.markRecent(folderPath, name)
-        await refreshGit(folderPath)
-      }
-      await branches.refresh(folderPath)
+      await runGitAction(folderPath, (path) => backend.git.branch.create(path, name, base, { checkout: alsoCheckout }))
+      if (alsoCheckout) branches.markRecent(folderPath, name)
     },
     onDone: () => (open = false)
   })

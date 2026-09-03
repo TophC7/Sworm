@@ -6,6 +6,7 @@ use crate::services::{
     file_watcher::FileWatcherService,
     files::FileService,
     git::GitService,
+    git_watcher::GitWatcherService,
     issue_bridge::IssueBridgeService,
     issues::IssueService,
     lsp::LspService,
@@ -31,7 +32,8 @@ pub struct AppState {
     pub db: Arc<DatabaseService>,
     pub providers: ProviderService,
     pub pty: PtyService,
-    pub git: GitService,
+    /// Shared with the git-dir watcher so it can invalidate the summary cache.
+    pub git: Arc<GitService>,
     pub issues: Arc<IssueService>,
     pub issue_bridge: IssueBridgeService,
     /// Shared so search walks can run on a `spawn_blocking` worker.
@@ -43,6 +45,8 @@ pub struct AppState {
     pub settings_watchers: SettingsWatcherService,
     /// Watches the directories the file explorer currently renders.
     pub file_watchers: FileWatcherService,
+    /// Watches each open folder's git dir for external repository changes.
+    pub git_watchers: GitWatcherService,
     /// Tracks folder paths with Nix evaluations in progress to prevent concurrent runs.
     pub nix_eval_locks: Mutex<HashSet<String>>,
     /// Post-spawn resume-token discovery for Codex/Antigravity/OMP runs.
@@ -59,12 +63,13 @@ impl AppState {
         let db_path = db::resolve_db_path(app_handle)?;
         let db_service = Arc::new(DatabaseService::new(db_path)?);
         let issues = Arc::new(IssueService::new());
+        let git = Arc::new(GitService::new());
 
         Ok(Self {
             db: db_service,
             providers: ProviderService,
             pty: PtyService::new(),
-            git: GitService::new(),
+            git: Arc::clone(&git),
             issues: Arc::clone(&issues),
             issue_bridge: IssueBridgeService::new(issues),
             files: Arc::new(FileService::new()),
@@ -74,6 +79,7 @@ impl AppState {
             tasks: TaskService::new(),
             settings_watchers: SettingsWatcherService::new(),
             file_watchers: FileWatcherService::new(),
+            git_watchers: GitWatcherService::new(git),
             nix_eval_locks: Mutex::new(HashSet::new()),
             resume_discovery: ResumeDiscoveryService::new(),
             activity_map_cache: Mutex::new(None),

@@ -23,6 +23,7 @@ import type {
   FilesChangedEvent,
   FormattingSettings,
   GeneralSettings,
+  GitChangedEvent,
   GitQuickDiffData,
   GitSummary,
   GraphCommit,
@@ -195,6 +196,13 @@ export const backend = {
   git: {
     getSummary(path: string): Promise<GitSummary> {
       return invoke<GitSummary>('git_get_summary', { path })
+    },
+    /** Watch the folder's git dir; idempotent, silent on non-repos. */
+    watch(projectPath: string): Promise<void> {
+      return invoke<void>('git_watch', { projectPath })
+    },
+    onChanged(handler: (event: GitChangedEvent) => void): Promise<UnlistenFn> {
+      return listen<GitChangedEvent>('git-changed', (event) => handler(event.payload))
     },
     getGraph(path: string, limit = 100): Promise<GraphCommit[]> {
       return invoke<GraphCommit[]>('git_get_graph', { path, limit })

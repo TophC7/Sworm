@@ -1,5 +1,5 @@
 import { backend } from '$lib/api/backend'
-import { refreshGit } from '$lib/features/git/state.svelte'
+import { runGitAction } from '$lib/features/git/state.svelte'
 import {
   lineChangesOutsideRanges,
   selectedLineChanges,
@@ -103,12 +103,12 @@ async function stageToolbarContent(
   entry: DiffModelEntry,
   content: string
 ): Promise<void> {
-  await backend.git.stageFileContent(
+  await runGitAction(
     registration.folderPath,
-    registration.filePath,
-    indexContentForStatus(registration.status, content)
+    (path) =>
+      backend.git.stageFileContent(path, registration.filePath, indexContentForStatus(registration.status, content)),
+    { scope: 'summary' }
   )
-  await refreshGit(registration.folderPath)
 }
 
 async function runToolbarAction(

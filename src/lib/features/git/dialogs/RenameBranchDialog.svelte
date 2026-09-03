@@ -9,7 +9,7 @@
   import { Button } from '$lib/components/ui/button'
   import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { Input } from '$lib/components/ui/input'
-  import * as branches from '$lib/features/git/branches.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import { validateBranchName } from '$lib/utils/git/branchValidation'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
@@ -32,8 +32,7 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.rename(folderPath, oldName, name)
-      await branches.refresh(folderPath)
+      await runGitAction(folderPath, (path) => backend.git.branch.rename(path, oldName, name))
     },
     onDone: () => (open = false)
   })

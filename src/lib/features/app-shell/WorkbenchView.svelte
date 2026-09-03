@@ -8,7 +8,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { disposeTauriOsDrop, initTauriOsDrop } from '$lib/features/dnd'
-  import { startGitPolling, stopGitPolling, getGitSummary, refreshGit } from '$lib/features/git/state.svelte'
+  import { ensureGitListeners, ensureGitWatch, getGitSummary, refreshRepo } from '$lib/features/git/state.svelte'
   import SidebarRail from '$lib/features/app-shell/sidebar/SidebarRail.svelte'
   import EmptyState from '$lib/features/app-shell/EmptyState.svelte'
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
@@ -47,8 +47,8 @@
   $effect(() => {
     const path = folderPath
     if (!path) return
-    startGitPolling(path)
-    return () => stopGitPolling(path)
+    ensureGitListeners()
+    void ensureGitWatch(path)
   })
 
   onMount(() => {
@@ -71,7 +71,7 @@
           <GitSidebar
             summary={gitSummary}
             {folderPath}
-            onRefresh={() => void refreshGit(folderPath)}
+            onRefresh={() => void refreshRepo(folderPath, 'all')}
             onFileClick={(filePath, staged) => openWorkingTreeDiff(folderPath, staged, null, filePath)}
             onPersistTab={promoteTabWhenReady}
             onCommitFileClick={(hash, shortHash, message, filePath) =>

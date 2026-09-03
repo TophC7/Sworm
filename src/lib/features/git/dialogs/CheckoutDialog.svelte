@@ -21,7 +21,7 @@
   import * as branches from '$lib/features/git/branches.svelte'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
-  import { refreshGit } from '$lib/features/git/state.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import type { GitSummary } from '$lib/types/backend'
 
   let {
@@ -47,14 +47,15 @@
   const submitState = runDialogSubmit({
     run: async () => {
       if (!branchName) return
-      await backend.git.stashAll(folderPath, `auto-stash before switch to ${branchName}`)
-      if (remoteBranchName) {
-        await backend.git.branch.checkoutRemoteAsLocal(folderPath, remoteBranchName, branchName)
-      } else {
-        await backend.git.branch.checkout(folderPath, branchName)
-      }
+      await runGitAction(folderPath, async (path) => {
+        await backend.git.stashAll(path, `auto-stash before switch to ${branchName}`)
+        if (remoteBranchName) {
+          await backend.git.branch.checkoutRemoteAsLocal(path, remoteBranchName, branchName)
+        } else {
+          await backend.git.branch.checkout(path, branchName)
+        }
+      })
       branches.markRecent(folderPath, branchName)
-      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
     },
     onDone: () => {
       open = false

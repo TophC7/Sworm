@@ -166,6 +166,7 @@ pub fn run() {
             commands::files::files_watch_dirs,
             // Git commands
             commands::git::git_get_summary,
+            commands::git::git_watch,
             commands::git::git_get_graph,
             commands::git::git_get_branch_commits,
             commands::git::git_get_commit_detail,

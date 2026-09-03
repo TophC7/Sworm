@@ -28,7 +28,7 @@
     Trash2,
     Undo2Icon
   } from '$lib/icons/lucideExports'
-  import { runGitAction } from '$lib/features/git/state.svelte'
+  import { discardFiles, stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
   import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
   import type { GitChange, GitSummary } from '$lib/types/backend'
@@ -90,11 +90,6 @@
     type: GitTreeTargetType
   }
 
-  interface PendingGitConfirm {
-    action: GitTreeActionKind
-    target: GitTreeTarget
-  }
-
   let collapsedDirs = new SvelteSet<string>()
   let committing = $state(false)
 
@@ -104,7 +99,7 @@
   let contextCanOpenFile = $state(false)
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
-  let pendingGitConfirm = $state<PendingGitConfirm | null>(null)
+  let pendingDiscard = $state<GitTreeTarget | null>(null)
   const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
 
@@ -203,39 +198,9 @@
     return `${describeFileCount(count)} under ${target.path}`
   }
 
-  function getConfirmTitle(action: GitTreeActionKind): string {
-    switch (action) {
-      case 'stage':
-        return 'Stage Changes?'
-      case 'unstage':
-        return 'Unstage Changes?'
-      case 'discard':
-        return 'Revert Changes?'
-    }
-  }
-
-  function getConfirmLabel(action: GitTreeActionKind): string {
-    switch (action) {
-      case 'stage':
-        return 'Stage'
-      case 'unstage':
-        return 'Unstage'
-      case 'discard':
-        return 'Revert'
-    }
-  }
-
-  function getConfirmMessage(confirm: PendingGitConfirm): string {
-    const subject = describeActionTarget(confirm.target, confirm.action)
-    if (confirm.action === 'discard') {
-      return `This will permanently revert unstaged changes for ${subject}. This cannot be undone.`
-    }
-    return `${getConfirmLabel(confirm.action)} changes for ${subject}?`
-  }
-
-  function queueGitConfirm(action: GitTreeActionKind, target: GitTreeTarget): void {
-    if (getActionFiles(target, action).length === 0) return
-    pendingGitConfirm = { action, target }
+  function queueDiscard(target: GitTreeTarget): void {
+    if (getActionFiles(target, 'discard').length === 0) return
+    pendingDiscard = target
   }
 
   function trackOpenedTab(openedTab: TabId | Promise<TabId> | void): void {
@@ -279,52 +244,50 @@
 
   function handleCtxStage() {
     if (!contextFilePath || !contextTargetType) return
-    queueGitConfirm('stage', { path: contextFilePath, type: contextTargetType })
+    void runTreeAction('stage', { path: contextFilePath, type: contextTargetType })
   }
 
   function handleCtxUnstage() {
     if (!contextFilePath || !contextTargetType) return
-    queueGitConfirm('unstage', { path: contextFilePath, type: contextTargetType })
+    void runTreeAction('unstage', { path: contextFilePath, type: contextTargetType })
   }
 
   function handleCtxDiscard() {
     if (!contextFilePath || !contextTargetType) return
-    queueGitConfirm('discard', { path: contextFilePath, type: contextTargetType })
+    queueDiscard({ path: contextFilePath, type: contextTargetType })
   }
 
-  async function confirmGitAction() {
-    const confirm = pendingGitConfirm
-    if (!confirm) return
-    pendingGitConfirm = null
-    const files = getActionFiles(confirm.target, confirm.action)
+  function confirmDiscard() {
+    const target = pendingDiscard
+    if (!target) return
+    pendingDiscard = null
+    void runTreeAction('discard', target)
+  }
+
+  async function runTreeAction(action: GitTreeActionKind, target: GitTreeTarget) {
+    const files = getActionFiles(target, action)
     if (files.length === 0) return
-    const description =
-      confirm.target.type === 'file'
-        ? confirm.target.path
-        : `${describeFileCount(files.length)} under ${confirm.target.path}`
+    const description = describeActionTarget(target, action)
 
     try {
-      await runGitAction(folderPath, (path) => {
-        switch (confirm.action) {
-          case 'stage':
-            return backend.git.stageFiles(path, files)
-          case 'unstage':
-            return backend.git.unstageFiles(path, files)
-          case 'discard':
-            return backend.git.discardFiles(path, files)
-        }
-      })
+      switch (action) {
+        case 'stage':
+          await stageFiles(folderPath, files)
+          break
+        case 'unstage':
+          await unstageFiles(folderPath, files)
+          break
+        case 'discard':
+          await discardFiles(folderPath, files)
+          break
+      }
       notify.success(
-        confirm.action === 'discard'
-          ? 'Changes reverted'
-          : confirm.action === 'stage'
-            ? 'Changes staged'
-            : 'Changes unstaged',
+        action === 'discard' ? 'Changes reverted' : action === 'stage' ? 'Changes staged' : 'Changes unstaged',
         description
       )
     } catch (e) {
       notify.error(
-        confirm.action === 'discard' ? 'Revert failed' : confirm.action === 'stage' ? 'Stage failed' : 'Unstage failed',
+        action === 'discard' ? 'Revert failed' : action === 'stage' ? 'Stage failed' : 'Unstage failed',
         errMessage(e)
       )
     }
@@ -410,9 +373,7 @@
       staged,
       onDropFiles: async (files, targetStaged) => {
         try {
-          await runGitAction(folderPath, (path) =>
-            targetStaged ? backend.git.stageFiles(path, files) : backend.git.unstageFiles(path, files)
-          )
+          await (targetStaged ? stageFiles(folderPath, files) : unstageFiles(folderPath, files))
           notify.success(
             targetStaged ? 'Files staged' : 'Files unstaged',
             `${files.length} file${files.length === 1 ? '' : 's'}`
@@ -490,7 +451,7 @@
               tooltip="Revert changes"
               tooltipSide="bottom"
               tone="danger"
-              onclick={() => queueGitConfirm('discard', target)}
+              onclick={() => queueDiscard(target)}
             >
               <Undo2Icon size={13} />
             </IconButton>
@@ -499,12 +460,16 @@
             <IconButton
               tooltip="Unstage changes"
               tooltipSide="bottom"
-              onclick={() => queueGitConfirm('unstage', target)}
+              onclick={() => void runTreeAction('unstage', target)}
             >
               <MinusCircle size={13} />
             </IconButton>
           {:else}
-            <IconButton tooltip="Stage changes" tooltipSide="bottom" onclick={() => queueGitConfirm('stage', target)}>
+            <IconButton
+              tooltip="Stage changes"
+              tooltipSide="bottom"
+              onclick={() => void runTreeAction('stage', target)}
+            >
               <PlusCircle size={13} />
             </IconButton>
           {/if}
@@ -634,12 +599,14 @@
 </div>
 
 <ConfirmDialog
-  open={pendingGitConfirm !== null}
-  title={pendingGitConfirm ? getConfirmTitle(pendingGitConfirm.action) : 'Confirm Git Action'}
-  message={pendingGitConfirm ? getConfirmMessage(pendingGitConfirm) : ''}
-  confirmLabel={pendingGitConfirm ? getConfirmLabel(pendingGitConfirm.action) : 'Confirm'}
-  onConfirm={confirmGitAction}
+  open={pendingDiscard !== null}
+  title="Revert Changes?"
+  message={pendingDiscard
+    ? `This will permanently revert unstaged changes for ${describeActionTarget(pendingDiscard, 'discard')}. This cannot be undone.`
+    : ''}
+  confirmLabel="Revert"
+  onConfirm={confirmDiscard}
   onCancel={() => {
-    pendingGitConfirm = null
+    pendingDiscard = null
   }}
 />

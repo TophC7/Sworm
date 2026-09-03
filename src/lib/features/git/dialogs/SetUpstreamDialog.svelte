@@ -10,6 +10,7 @@
   import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { Input, Select } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
 
@@ -39,8 +40,7 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await backend.git.branch.setUpstream(folderPath, branchName, upstream)
-      await branches.refresh(folderPath)
+      await runGitAction(folderPath, (path) => backend.git.branch.setUpstream(path, branchName, upstream))
     },
     onDone: () => (open = false)
   })

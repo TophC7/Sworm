@@ -88,6 +88,16 @@ struct CachedSummary {
     summary: GitSummary,
 }
 
+/// Per-path cache slot. `generation` advances on every [`GitService::invalidate`]
+/// so a summary computed before a mutation can never land in the cache after it:
+/// `get_summary` reads the generation before running git and `store_summary`
+/// drops the result if it moved meanwhile.
+#[derive(Default)]
+struct SummarySlot {
+    generation: u64,
+    cached: Option<CachedSummary>,
+}
+
 #[derive(Clone)]
 struct CachedAheadBehind {
     head: String,
@@ -182,7 +192,7 @@ fn delete_branch_error(branch: &str, stderr: String) -> DeleteBranchError {
 /// project path. Mutating methods (`stage_*`, `commit`, `pull`, …) call
 /// [`Self::invalidate`] so the next read picks up fresh state.
 pub struct GitService {
-    summary_cache: Mutex<HashMap<PathBuf, CachedSummary>>,
+    summary_cache: Mutex<HashMap<PathBuf, SummarySlot>>,
     ahead_behind_cache: Mutex<HashMap<PathBuf, CachedAheadBehind>>,
 }
 
@@ -194,32 +204,42 @@ impl GitService {
         }
     }
 
-    fn cached_summary(&self, path: &Path) -> Option<GitSummary> {
+    /// A fresh cached summary, or the slot generation a new computation
+    /// must hand back to [`Self::store_summary`].
+    fn cached_summary(&self, path: &Path) -> Result<GitSummary, u64> {
         let cache = self.summary_cache.lock();
-        let entry = cache.get(path)?;
-        if entry.at.elapsed() < SUMMARY_CACHE_TTL {
-            Some(entry.summary.clone())
-        } else {
-            None
+        let Some(slot) = cache.get(path) else {
+            return Err(0);
+        };
+        match &slot.cached {
+            Some(entry) if entry.at.elapsed() < SUMMARY_CACHE_TTL => Ok(entry.summary.clone()),
+            _ => Err(slot.generation),
         }
     }
 
-    fn store_summary(&self, path: &Path, summary: &GitSummary) {
-        self.summary_cache.lock().insert(
-            path.to_path_buf(),
-            CachedSummary {
-                at: Instant::now(),
-                summary: summary.clone(),
-            },
-        );
+    /// Store a summary computed under `generation`; silently dropped when an
+    /// invalidation happened since, because the result predates that mutation.
+    fn store_summary(&self, path: &Path, generation: u64, summary: &GitSummary) {
+        let mut cache = self.summary_cache.lock();
+        let slot = cache.entry(path.to_path_buf()).or_default();
+        if slot.generation != generation {
+            return;
+        }
+        slot.cached = Some(CachedSummary {
+            at: Instant::now(),
+            summary: summary.clone(),
+        });
     }
 
-    /// Drop any cached summary for `path`. Call after any mutation so the
-    /// next [`Self::get_summary`] reflects the new state. Public so
-    /// command-layer mutators that bypass [`Self::run_mutate`] (currently
-    /// hunk staging in `commands/git.rs`) can still invalidate.
+    /// Drop any cached summary for `path` and advance its generation. Call
+    /// after any mutation so the next [`Self::get_summary`] reflects the new
+    /// state. Public so command-layer mutators that bypass [`Self::run_mutate`]
+    /// (hunk staging in `commands/git.rs`) and the git-dir watcher can invalidate.
     pub fn invalidate(&self, path: &Path) {
-        self.summary_cache.lock().remove(path);
+        let mut cache = self.summary_cache.lock();
+        let slot = cache.entry(path.to_path_buf()).or_default();
+        slot.generation += 1;
+        slot.cached = None;
     }
 
     /// Wrapper around [`run_git_mutate`] that invalidates the summary
@@ -307,9 +327,10 @@ impl GitService {
     /// `get_changes`) run in parallel via `std::thread::scope` to cut
     /// wall-clock latency on dirty trees.
     pub fn get_summary(&self, path: &Path) -> GitSummary {
-        if let Some(cached) = self.cached_summary(path) {
-            return cached;
-        }
+        let generation = match self.cached_summary(path) {
+            Ok(cached) => return cached,
+            Err(generation) => generation,
+        };
 
         if !self.is_git_repo(path) {
             let summary = GitSummary {
@@ -323,7 +344,7 @@ impl GitService {
                 unstaged_count: 0,
                 untracked_count: 0,
             };
-            self.store_summary(path, &summary);
+            self.store_summary(path, generation, &summary);
             return summary;
         }
 
@@ -358,7 +379,7 @@ impl GitService {
             unstaged_count,
             untracked_count,
         };
-        self.store_summary(path, &summary);
+        self.store_summary(path, generation, &summary);
         summary
     }
 
@@ -2161,6 +2182,46 @@ mod tests {
             "git {:?} failed: {}",
             args,
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn empty_summary() -> GitSummary {
+        GitSummary {
+            is_repo: false,
+            branch: None,
+            base_ref: None,
+            ahead: None,
+            behind: None,
+            changes: vec![],
+            staged_count: 0,
+            unstaged_count: 0,
+            untracked_count: 0,
+        }
+    }
+
+    /// A summary computed before an invalidation must never re-populate the
+    /// cache after it, otherwise a slow pre-mutation `git status` resurrects
+    /// stale state for a full TTL (the staged → unstaged → staged flicker).
+    #[test]
+    fn stale_summary_never_repopulates_cache() {
+        let svc = GitService::new();
+        let path = Path::new("/nonexistent/sworm-cache-test");
+        let summary = empty_summary();
+
+        svc.invalidate(path);
+        let stale_generation = svc.cached_summary(path).unwrap_err();
+        svc.invalidate(path);
+        svc.store_summary(path, stale_generation, &summary);
+        assert!(
+            svc.cached_summary(path).is_err(),
+            "stale store must be dropped"
+        );
+
+        let generation = svc.cached_summary(path).unwrap_err();
+        svc.store_summary(path, generation, &summary);
+        assert!(
+            svc.cached_summary(path).is_ok(),
+            "current store must be kept"
         );
     }
 

@@ -86,6 +86,12 @@ export interface FilesChangedEvent {
   dirs: string[]
 }
 
+/** Git-dir-relative paths that changed (`index`, `HEAD`, `refs/heads/main`, …). */
+export interface GitChangedEvent {
+  folder_path: string
+  paths: string[]
+}
+
 export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'disabled'
 
 export interface FormattingLanguageSettings {

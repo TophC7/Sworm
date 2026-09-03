@@ -33,7 +33,7 @@
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
-  import { refreshGit } from '$lib/features/git/state.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { groupBySlash, type BranchTreeNode } from '$lib/utils/git/branchHierarchy'
@@ -356,14 +356,11 @@
     if (!proceed) return
 
     try {
-      await backend.git.branch.rebaseOnto(folderPath, target)
-      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
+      await runGitAction(folderPath, (path) => backend.git.branch.rebaseOnto(path, target))
     } catch (e) {
       const msg = getErrorMessage(e)
-      if (msg.toLowerCase().includes('conflict')) {
-        await branches.refresh(folderPath)
-        return
-      }
+      // Conflicts leave the repo paused; the refresh already showed that state.
+      if (msg.toLowerCase().includes('conflict')) return
       notify.error('Rebase failed', msg)
     }
   }
@@ -389,20 +386,19 @@
     const action = smartAction(branch)
     if (action.kind === 'disabled') return
     try {
-      if (action.kind === 'push' && branch.isCurrent) {
-        await backend.git.push(folderPath)
-      } else if (action.kind === 'pull' && branch.isCurrent) {
-        await backend.git.pull(folderPath)
-      } else if (action.kind === 'pull') {
-        // Non-current branch: fast-forward against its upstream.
-        await backend.git.branch.fastForward(folderPath, branch.name)
-      } else if (action.kind === 'fetch') {
-        await backend.git.fetch(folderPath)
-      } else {
+      await runGitAction(folderPath, async (path) => {
+        if (action.kind === 'push' && branch.isCurrent) {
+          await backend.git.push(path)
+        } else if (action.kind === 'pull' && branch.isCurrent) {
+          await backend.git.pull(path)
+        } else if (action.kind === 'pull') {
+          // Non-current branch: fast-forward against its upstream.
+          await backend.git.branch.fastForward(path, branch.name)
+        } else if (action.kind === 'fetch') {
+          await backend.git.fetch(path)
+        }
         // Push for a non-current branch isn't a v1 case; refuse.
-        return
-      }
-      await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
+      })
     } catch (e) {
       console.error('Smart action failed:', e)
     }
@@ -412,31 +408,34 @@
 
   async function continueOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(folderPath)
-      else if (entry?.opState === 'merging') await backend.git.commit(folderPath, 'Merge')
+      await runGitAction(folderPath, async (path) => {
+        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(path)
+        else if (entry?.opState === 'merging') await backend.git.commit(path, 'Merge')
+      })
     } catch (e) {
       console.error('Continue failed:', e)
     }
-    await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
   }
 
   async function skipOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseSkip(folderPath)
+      await runGitAction(folderPath, async (path) => {
+        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseSkip(path)
+      })
     } catch (e) {
       console.error('Skip failed:', e)
     }
-    await branches.refresh(folderPath)
   }
 
   async function abortOp() {
     try {
-      if (entry?.opState === 'rebasing') await backend.git.branch.rebaseAbort(folderPath)
-      else if (entry?.opState === 'merging') await backend.git.branch.mergeAbort(folderPath)
+      await runGitAction(folderPath, async (path) => {
+        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseAbort(path)
+        else if (entry?.opState === 'merging') await backend.git.branch.mergeAbort(path)
+      })
     } catch (e) {
       console.error('Abort failed:', e)
     }
-    await Promise.all([branches.refresh(folderPath), refreshGit(folderPath)])
   }
 
   function handleConflict(message: string) {
@@ -459,8 +458,7 @@
 
   async function fastForwardFromMenu(name: string) {
     try {
-      await backend.git.branch.fastForward(folderPath, name)
-      await branches.refresh(folderPath)
+      await runGitAction(folderPath, (path) => backend.git.branch.fastForward(path, name))
     } catch (e) {
       console.error('Fast-forward failed:', e)
     }

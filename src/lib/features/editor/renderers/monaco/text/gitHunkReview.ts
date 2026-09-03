@@ -1,7 +1,7 @@
 import { mount, unmount } from 'svelte'
 import { backend } from '$lib/api/backend'
 import DirtyDiffPeekHeader from '$lib/features/editor/renderers/monaco/text/DirtyDiffPeekHeader.svelte'
-import { refreshGit } from '$lib/features/git/state.svelte'
+import { runGitAction } from '$lib/features/git/state.svelte'
 import {
   applyChangeHunks,
   compareHunks,
@@ -409,9 +409,10 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     if (base == null) return
 
     const nextIndex = applyChangeHunks(base, model.getValue(), [hunk])
-    await backend.git.stageFileContent(folderPath, filePath, nextIndex)
+    await runGitAction(folderPath, (path) => backend.git.stageFileContent(path, filePath, nextIndex), {
+      scope: 'summary'
+    })
     clearPeek(false)
-    await refreshGit(folderPath)
     await refreshBase()
   }
 
@@ -451,9 +452,10 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     const nextIndex =
       headContent == null && remaining.length === 0 ? null : applyChangeHunks(base, currentIndex, remaining)
 
-    await backend.git.stageFileContent(folderPath, filePath, nextIndex)
+    await runGitAction(folderPath, (path) => backend.git.stageFileContent(path, filePath, nextIndex), {
+      scope: 'summary'
+    })
     clearPeek(false)
-    await refreshGit(folderPath)
     await refreshBase()
   }
 

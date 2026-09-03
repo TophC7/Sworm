@@ -17,26 +17,26 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
   import * as branches from '$lib/features/git/branches.svelte'
   import { getGitSidebarTab, setGitSidebarTab, type GitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
+  import { getGitGraph, getStashCount, loadGraph } from '$lib/features/git/state.svelte'
+  import { untrack } from 'svelte'
 
   let {
     folderPath,
     onFileClick,
     onStashFileClick,
-    onPersistTab,
-    onMutate
+    onPersistTab
   }: {
     folderPath: string
     onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => TabId | Promise<TabId> | void
     onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
-    onMutate?: () => void
   } = $props()
 
   let activeTab = $derived(getGitSidebarTab())
-  let rows = $state<GraphRow[]>([])
+  let commits = $derived(getGitGraph(folderPath))
+  let rows = $derived(commits ? computeGraph(commits) : [])
   let renders = $derived(rows.map(computeRowRender))
-  let currentPath = ''
-  let stashCount = $state(0)
+  let stashCount = $derived(getStashCount(folderPath))
   let branchEntry = $derived(branches.byFolder.get(folderPath))
 
   // Expanded commit state
@@ -50,35 +50,24 @@
   let detailCache = new SvelteMap<string, CommitDetail>()
 
   $effect(() => {
-    const path = folderPath
-    if (path === currentPath) return
-    currentPath = path
-    expandedHash = null
-    expandedDetail = null
-    detailCache.clear()
-    void loadGraph(path)
-    void loadStashCount(path)
+    void loadGraph(folderPath)
   })
 
-  async function loadGraph(path: string) {
-    try {
-      const commits = await backend.git.getGraph(path, 100)
-      if (path !== currentPath) return
-      rows = computeGraph(commits)
-    } catch {
-      if (path === currentPath) rows = []
-    }
-  }
-
-  async function loadStashCount(path: string) {
-    try {
-      const count = await backend.git.stashCount(path)
-      if (path !== currentPath) return
-      stashCount = count
-    } catch {
-      if (path === currentPath) stashCount = 0
-    }
-  }
+  // Graph changed: drop expansion and cached details for commits that no
+  // longer exist (undo, rebase, folder switch).
+  $effect(() => {
+    const hashes = new Set(rows.map((row) => row.commit.hash))
+    untrack(() => {
+      if (expandedHash && !hashes.has(expandedHash)) {
+        expandedHash = null
+        expandedDetail = null
+        expandedTree = []
+      }
+      for (const hash of [...detailCache.keys()]) {
+        if (!hashes.has(hash)) detailCache.delete(hash)
+      }
+    })
+  })
 
   /** Fetch commit detail, returning from cache when available. */
   async function fetchDetail(hash: string): Promise<CommitDetail | null> {
@@ -142,11 +131,6 @@
     return map
   })
 
-  function handleStashMutate() {
-    void loadStashCount(folderPath)
-    onMutate?.()
-  }
-
   function setActiveTab(tab: GitSidebarTab) {
     setGitSidebarTab(tab)
   }
@@ -195,7 +179,9 @@
   </div>
 
   {#if activeTab === 'graph'}
-    {#if rows.length === 0}
+    {#if commits === null}
+      <!-- First load in flight; rows arrive from the store. -->
+    {:else if rows.length === 0}
       <div class="px-2.5 py-2 text-sm text-subtle">No commits found.</div>
     {:else}
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
@@ -243,13 +229,7 @@
       </TooltipProvider>
     {/if}
   {:else if activeTab === 'stashes'}
-    <GitStashList
-      {folderPath}
-      {branchColorMap}
-      onMutate={handleStashMutate}
-      onFileClick={onStashFileClick}
-      {onPersistTab}
-    />
+    <GitStashList {folderPath} {branchColorMap} onFileClick={onStashFileClick} {onPersistTab} />
   {:else}
     <GitBranches {folderPath} {branchColorMap} />
   {/if}

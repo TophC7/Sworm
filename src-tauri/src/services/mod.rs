@@ -11,6 +11,7 @@ pub mod files;
 pub mod folders;
 pub mod formatting;
 pub mod git;
+pub mod git_watcher;
 pub mod issue_bridge;
 pub mod issues;
 pub mod lsp;

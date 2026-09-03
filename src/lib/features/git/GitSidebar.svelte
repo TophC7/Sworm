@@ -8,7 +8,14 @@
   import { Input } from '$lib/components/ui/input'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
-  import { refreshGit, runGitAction } from '$lib/features/git/state.svelte'
+  import {
+    discardAll,
+    ensureGitWatch,
+    refreshRepo,
+    runGitAction,
+    stageAll,
+    unstageAll
+  } from '$lib/features/git/state.svelte'
   import { forcePushWithLease, undoLastCommit } from '$lib/features/git/actions.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
@@ -67,7 +74,7 @@
     await runNotifiedTask(
       async () => {
         await backend.git.init(folderPath)
-        await refreshGit(folderPath)
+        await ensureGitWatch(folderPath, 'all')
       },
       {
         loading: { title: 'Initializing repository' },
@@ -94,7 +101,7 @@
     await runNotifiedTask(
       async () => {
         await backend.git.cloneInPlace(folderPath, targetUrl)
-        await refreshGit(folderPath)
+        await ensureGitWatch(folderPath, 'all')
         cloneSucceeded = true
       },
       {
@@ -114,15 +121,8 @@
     initBusy = false
   }
 
-  async function refresh() {
-    await refreshGit(folderPath)
-  }
-
-  async function handleGitAction<T = void>(
-    kind: GitActionKind,
-    fn: (path: string) => Promise<T>
-  ): Promise<T | undefined> {
-    return runNotifiedTask(() => runGitAction(folderPath, fn), getGitActionNotifications<T>(kind))
+  async function handleGitAction<T = void>(kind: GitActionKind, task: () => Promise<T>): Promise<T | undefined> {
+    return runNotifiedTask(task, getGitActionNotifications<T>(kind))
   }
 
   async function handleCommit(message: string) {
@@ -133,20 +133,20 @@
   }
 
   async function handleStageAll() {
-    await handleGitAction('stageAll', (path) => backend.git.stageAll(path))
+    await handleGitAction('stageAll', () => stageAll(folderPath))
   }
 
   async function handleUnstageAll() {
-    await handleGitAction('unstageAll', (path) => backend.git.unstageAll(path))
+    await handleGitAction('unstageAll', () => unstageAll(folderPath))
   }
 
   async function handleDiscardAll() {
     showDiscardConfirm = false
-    await handleGitAction('discardAll', (path) => backend.git.discardAll(path))
+    await handleGitAction('discardAll', () => discardAll(folderPath))
   }
 
   async function handleStashAll() {
-    await handleGitAction('stashAll', (path) => backend.git.stashAll(path))
+    await handleGitAction('stashAll', () => runGitAction(folderPath, (path) => backend.git.stashAll(path)))
   }
 
   async function handleUndoLastCommit() {
@@ -157,7 +157,7 @@
   }
 
   async function handlePush() {
-    await handleGitAction('push', (path) => backend.git.push(path))
+    await handleGitAction('push', () => runGitAction(folderPath, (path) => backend.git.push(path)))
   }
 
   async function handlePushForceWithLease() {
@@ -165,11 +165,11 @@
   }
 
   async function handlePull() {
-    await handleGitAction('pull', (path) => backend.git.pull(path))
+    await handleGitAction('pull', () => runGitAction(folderPath, (path) => backend.git.pull(path)))
   }
 
   async function handleFetch() {
-    await handleGitAction('fetch', (path) => backend.git.fetch(path))
+    await handleGitAction('fetch', () => runGitAction(folderPath, (path) => backend.git.fetch(path)))
   }
 </script>
 
@@ -279,7 +279,7 @@
       <ResizableHandle />
       <ResizablePane defaultSize={40} minSize={15}>
         <div class="h-full overflow-y-auto">
-          <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} onMutate={refresh} />
+          <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} />
         </div>
       </ResizablePane>
     </ResizablePaneGroup>

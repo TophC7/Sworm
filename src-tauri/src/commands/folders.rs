@@ -78,6 +78,7 @@ pub async fn folder_release(
     state.issues.evict(&folder);
     state.settings_watchers.stop(&folder);
     state.file_watchers.stop(&folder);
+    state.git_watchers.stop(&folder);
     state.files.evict(&folder);
     Ok(())
 }

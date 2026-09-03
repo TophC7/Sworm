@@ -1,5 +1,5 @@
 import { backend } from '$lib/api/backend'
-import { refreshGit } from '$lib/features/git/state.svelte'
+import { runGitAction } from '$lib/features/git/state.svelte'
 import { applyLineChanges, compareLineChanges, invertLineChange, type LineChange } from '$lib/features/git/lineChanges'
 import type { DiffModelEntry } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
 import type { GitStatusKind } from '$lib/types/backend'
@@ -39,29 +39,25 @@ export async function runDiffGitLineAction(
   const originalContent = entry.originalContent
   const modifiedContent = entry.modifiedContent
 
-  if (action === 'stage') {
-    const nextIndex = applyLineChanges(originalContent, modifiedContent, changes)
-    await backend.git.stageFileContent(
-      context.folderPath,
-      context.filePath,
-      indexContentForStatus(context.status, nextIndex)
-    )
-  } else if (action === 'unstage') {
-    const inverted = changes.map(invertLineChange).sort(compareLineChanges)
-    const nextIndex = applyLineChanges(modifiedContent, originalContent, inverted)
-    await backend.git.stageFileContent(
-      context.folderPath,
-      context.filePath,
-      indexContentForStatus(context.status, nextIndex)
-    )
-  } else {
-    const nextWorkingTree = applyLineChanges(originalContent, modifiedContent, changes)
-    if (context.status === 'untracked' && nextWorkingTree.length === 0) {
-      await backend.files.delete(context.folderPath, context.filePath)
-    } else {
-      await backend.files.write(context.folderPath, context.filePath, nextWorkingTree)
-    }
-  }
-
-  await refreshGit(context.folderPath)
+  await runGitAction(
+    context.folderPath,
+    async (path) => {
+      if (action === 'stage') {
+        const nextIndex = applyLineChanges(originalContent, modifiedContent, changes)
+        await backend.git.stageFileContent(path, context.filePath, indexContentForStatus(context.status, nextIndex))
+      } else if (action === 'unstage') {
+        const inverted = changes.map(invertLineChange).sort(compareLineChanges)
+        const nextIndex = applyLineChanges(modifiedContent, originalContent, inverted)
+        await backend.git.stageFileContent(path, context.filePath, indexContentForStatus(context.status, nextIndex))
+      } else {
+        const nextWorkingTree = applyLineChanges(originalContent, modifiedContent, changes)
+        if (context.status === 'untracked' && nextWorkingTree.length === 0) {
+          await backend.files.delete(path, context.filePath)
+        } else {
+          await backend.files.write(path, context.filePath, nextWorkingTree)
+        }
+      }
+    },
+    { scope: 'summary' }
+  )
 }

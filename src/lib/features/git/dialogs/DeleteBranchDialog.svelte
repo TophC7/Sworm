@@ -10,7 +10,7 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
-  import * as branches from '$lib/features/git/branches.svelte'
+  import { runGitAction } from '$lib/features/git/state.svelte'
   import type { BranchSummary } from '$lib/types/backend'
   import { splitRemoteBranchRef } from '$lib/features/git/gitRefs'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
@@ -45,16 +45,17 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      if (branch.kind === 'remote') {
-        const remoteRef = splitRemoteBranchRef(branch.name)
-        if (!remoteRef) {
-          throw new Error(`Cannot infer remote for ${branch.name}`)
+      await runGitAction(folderPath, async (path) => {
+        if (branch.kind === 'remote') {
+          const remoteRef = splitRemoteBranchRef(branch.name)
+          if (!remoteRef) {
+            throw new Error(`Cannot infer remote for ${branch.name}`)
+          }
+          await backend.git.branch.deleteRemote(path, remoteRef.remote, remoteRef.branch)
+        } else {
+          await backend.git.branch.delete(path, branch.name, { force: unmergedWarning })
         }
-        await backend.git.branch.deleteRemote(folderPath, remoteRef.remote, remoteRef.branch)
-      } else {
-        await backend.git.branch.delete(folderPath, branch.name, { force: unmergedWarning })
-      }
-      await branches.refresh(folderPath)
+      })
     },
     onDone: () => (open = false),
     onError: (error) => {

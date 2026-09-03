@@ -1,7 +1,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { TabId } from '$lib/features/workbench/model'
-  import type { CommitFileChange, StashEntry } from '$lib/types/backend'
+  import type { CommitFileChange } from '$lib/types/backend'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { parseStashMessage } from '$lib/features/git/git'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
@@ -14,23 +14,22 @@
   import { ClockIcon, Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/features/git/graph'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
+  import { getStashes, loadStashes, runGitAction } from '$lib/features/git/state.svelte'
   import { SvelteSet } from 'svelte/reactivity'
 
   let {
     folderPath,
     branchColorMap = new Map(),
-    onMutate,
     onFileClick,
     onPersistTab
   }: {
     folderPath: string
     branchColorMap?: Map<string, string>
-    onMutate?: () => void
     onFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
   } = $props()
 
-  let stashes = $state<StashEntry[]>([])
+  let stashes = $derived(getStashes(folderPath) ?? [])
   let expandedIndex = $state<number | null>(null)
   let expandedTree = $derived.by(() => {
     if (expandedIndex === null) return []
@@ -38,7 +37,6 @@
     return entry ? buildFileTree(entry.files) : []
   })
   let collapsedDirs = new SvelteSet<string>()
-  let currentPath = ''
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
   // Drop confirmation
@@ -46,25 +44,9 @@
   let showDropConfirm = $derived(dropIndex !== null)
 
   $effect(() => {
-    const path = folderPath
-    currentPath = path
-    expandedIndex = null
-    void loadStashes(path)
-  })
-
-  async function loadStashes(path: string) {
-    try {
-      const result = await backend.git.stashList(path)
-      if (path !== currentPath) return
-      stashes = result
-    } catch {
-      if (path === currentPath) stashes = []
-    }
-  }
-
-  export function reload() {
     void loadStashes(folderPath)
-  }
+    expandedIndex = null
+  })
 
   /** Look up a branch's color from the graph lane assignments. */
   function branchColor(branch: string): string {
@@ -94,10 +76,8 @@
   async function handlePop(index: number) {
     await runNotifiedTask(
       async () => {
-        await backend.git.stashPop(folderPath, index)
+        await runGitAction(folderPath, (path) => backend.git.stashPop(path, index))
         expandedIndex = null
-        await loadStashes(folderPath)
-        onMutate?.()
       },
       {
         loading: { title: 'Applying stash', description: `stash@{${index}}` },
@@ -113,10 +93,8 @@
     dropIndex = null
     await runNotifiedTask(
       async () => {
-        await backend.git.stashDrop(folderPath, idx)
+        await runGitAction(folderPath, (path) => backend.git.stashDrop(path, idx))
         if (expandedIndex === idx) expandedIndex = null
-        await loadStashes(folderPath)
-        onMutate?.()
       },
       {
         loading: { title: 'Dropping stash', description: `stash@{${idx}}` },
