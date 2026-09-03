@@ -58,6 +58,7 @@ fn settings_file_schema() -> serde_json::Value {
         "additionalProperties": true,
         "properties": {
             "general": general_settings_schema(),
+            "explorer": explorer_settings_schema(),
             "formatting": formatting_settings_schema(),
             "providers": providers_settings_schema(),
             "lsp": lsp_settings_schema()
@@ -130,6 +131,31 @@ fn general_settings_schema() -> serde_json::Value {
                 "type": "integer",
                 "minimum": 1,
                 "default": 600
+            }
+        }
+    })
+}
+
+fn explorer_settings_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+            "exclude": {
+                "type": "object",
+                "additionalProperties": { "type": "boolean" },
+                "default": { "**/.git": true, "**/.svn": true, "**/.hg": true, "**/.DS_Store": true, "**/Thumbs.db": true },
+                "description": "Globs hidden from the file explorer, matched against project-relative paths. Setting this replaces the defaults; map a glob to false to keep it listed."
+            },
+            "exclude_gitignore": {
+                "type": "boolean",
+                "default": false,
+                "description": "Hide files ignored by git instead of dimming them."
+            },
+            "compact_folders": {
+                "type": "boolean",
+                "default": true,
+                "description": "Collapse single-child directory chains into one row, such as src/lib/utils."
             }
         }
     })
@@ -295,7 +321,15 @@ mod tests {
         let schema = settings_file_schema();
         let rendered = schema.to_string();
 
-        for section in ["general", "formatting", "providers", "lsp"] {
+        for section in [
+            "general",
+            "explorer",
+            "exclude_gitignore",
+            "compact_folders",
+            "formatting",
+            "providers",
+            "lsp",
+        ] {
             assert!(rendered.contains(section), "schema includes {section}");
         }
         for provider_id in CANONICAL_PROVIDER_IDS {

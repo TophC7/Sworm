@@ -117,6 +117,40 @@ impl Default for GeneralSettings {
     }
 }
 
+/// VS Code's `files.exclude` defaults (files.contribution.ts). `.git` is never
+/// a useful explorer row; the rest are VCS/OS droppings.
+pub const DEFAULT_EXPLORER_EXCLUDES: &[&str] = &[
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ExplorerSettings {
+    /// Glob -> enabled. Matched against project-relative paths.
+    pub exclude: BTreeMap<String, bool>,
+    /// Hide entries matched by `.gitignore`. VS Code parity: off by default,
+    /// so ignored entries are merely dimmed until the user opts in.
+    pub exclude_gitignore: bool,
+    /// Collapse single-child directory chains into one row ("src/lib").
+    pub compact_folders: bool,
+}
+
+impl Default for ExplorerSettings {
+    fn default() -> Self {
+        Self {
+            exclude: DEFAULT_EXPLORER_EXCLUDES
+                .iter()
+                .map(|glob| ((*glob).to_string(), true))
+                .collect(),
+            exclude_gitignore: false,
+            compact_folders: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ProviderSettings {
     pub enabled: bool,
@@ -167,6 +201,7 @@ pub struct LspSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct EffectiveSettings {
     pub general: GeneralSettings,
+    pub explorer: ExplorerSettings,
     pub formatting: FormattingSettings,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub lsp: LspSettings,
@@ -176,6 +211,7 @@ impl Default for EffectiveSettings {
     fn default() -> Self {
         Self {
             general: GeneralSettings::default(),
+            explorer: ExplorerSettings::default(),
             formatting: FormattingSettings::default(),
             providers: default_provider_settings(),
             lsp: LspSettings::default(),

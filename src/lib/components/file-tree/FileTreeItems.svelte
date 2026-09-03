@@ -33,7 +33,7 @@
     dndIsDropActive
   }: {
     nodes: FileTreeNode<T>[]
-    isCollapsed: (path: string) => boolean
+    isCollapsed: (node: FileTreeNode<T>) => boolean
     isActive?: (path: string) => boolean
     /**
      * Optional predicate driving the tree-filter "dim" effect. Returns
@@ -95,7 +95,7 @@
       onclick={() => onToggleDir(node.path)}
     >
       {@render indentGuides(depth)}
-      <FileIcon filename={node.name} folder expanded={!isCollapsed(node.path)} size={15} />
+      <FileIcon filename={node.name} folder expanded={!isCollapsed(node)} size={15} />
       <span class="truncate">{node.name}</span>
     </button>
     {#if rowActions || hasDirChanges?.(node.path)}

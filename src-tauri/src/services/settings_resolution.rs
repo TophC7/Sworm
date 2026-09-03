@@ -9,7 +9,7 @@ use crate::services::{
 };
 use serde_json::{Map, Value};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -194,7 +194,10 @@ impl ResolutionContext {
         root: &Map<String, Value>,
     ) {
         for key in root.keys() {
-            if !matches!(key.as_str(), "general" | "formatting" | "providers" | "lsp") {
+            if !matches!(
+                key.as_str(),
+                "general" | "explorer" | "formatting" | "providers" | "lsp"
+            ) {
                 self.unknown_key(layer, path, &[key]);
             }
         }
@@ -202,6 +205,12 @@ impl ResolutionContext {
         if let Some(value) = root.get("general") {
             if let Some(object) = self.expect_object(layer, path, &["general"], value, false) {
                 self.apply_general(layer, path, object);
+            }
+        }
+
+        if let Some(value) = root.get("explorer") {
+            if let Some(object) = self.expect_object(layer, path, &["explorer"], value, false) {
+                self.apply_explorer(layer, path, object);
             }
         }
 
@@ -280,6 +289,68 @@ impl ResolutionContext {
                 false,
             ) {
                 self.settings.general.nix_eval_timeout_secs = value;
+            }
+        }
+    }
+
+    fn apply_explorer(
+        &mut self,
+        layer: SettingsLayerKind,
+        path: &str,
+        object: &Map<String, Value>,
+    ) {
+        for key in object.keys() {
+            if !matches!(
+                key.as_str(),
+                "exclude" | "exclude_gitignore" | "compact_folders"
+            ) {
+                self.unknown_key(layer, path, &["explorer", key]);
+            }
+        }
+
+        // A valid `exclude` object replaces the layer below it wholesale, so a
+        // user who lists their own globs is not stuck with the defaults.
+        if let Some(exclude) = object.get("exclude") {
+            if let Some(object) =
+                self.expect_object(layer, path, &["explorer", "exclude"], exclude, false)
+            {
+                let mut globs = BTreeMap::new();
+                for (glob, value) in object {
+                    match value.as_bool() {
+                        Some(enabled) => {
+                            globs.insert(glob.clone(), enabled);
+                        }
+                        None => self.type_error(
+                            layer,
+                            path,
+                            &["explorer", "exclude", glob],
+                            "Expected boolean",
+                        ),
+                    }
+                }
+                self.settings.explorer.exclude = globs;
+            }
+        }
+        if let Some(exclude_gitignore) = object.get("exclude_gitignore") {
+            if let Some(value) = self.expect_bool(
+                layer,
+                path,
+                &["explorer", "exclude_gitignore"],
+                exclude_gitignore,
+                false,
+            ) {
+                self.settings.explorer.exclude_gitignore = value;
+            }
+        }
+        if let Some(compact_folders) = object.get("compact_folders") {
+            if let Some(value) = self.expect_bool(
+                layer,
+                path,
+                &["explorer", "compact_folders"],
+                compact_folders,
+                false,
+            ) {
+                self.settings.explorer.compact_folders = value;
             }
         }
     }
@@ -1141,5 +1212,74 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == SettingsDiagnosticCode::InvalidEnum));
+    }
+
+    #[test]
+    fn explorer_exclude_replaces_defaults_from_folder_layer() {
+        let resolved = resolve(
+            loaded(SettingsLayerKind::Global, "global", json!({})),
+            Some(loaded(
+                SettingsLayerKind::Folder,
+                "folder",
+                json!({
+                    "explorer": {
+                        "exclude": { "**/vendor": true },
+                        "exclude_gitignore": true,
+                        "compact_folders": false
+                    }
+                }),
+            )),
+        );
+
+        assert_eq!(
+            resolved.settings.explorer.exclude,
+            BTreeMap::from([("**/vendor".to_string(), true)])
+        );
+        assert!(resolved.settings.explorer.exclude_gitignore);
+        assert!(!resolved.settings.explorer.compact_folders);
+        assert!(resolved.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn explorer_unknown_key_emits_diagnostic() {
+        let resolved = resolve(
+            loaded(
+                SettingsLayerKind::Global,
+                "global",
+                json!({ "explorer": { "excludeGitIgnore": true } }),
+            ),
+            None,
+        );
+
+        assert!(!resolved.settings.explorer.exclude_gitignore);
+        assert!(resolved.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == SettingsDiagnosticCode::UnknownKey
+            && diagnostic.pointer == "/explorer/excludeGitIgnore"));
+    }
+
+    #[test]
+    fn explorer_non_bool_exclude_value_is_ignored_with_diagnostic() {
+        let resolved = resolve(
+            loaded(
+                SettingsLayerKind::Global,
+                "global",
+                json!({
+                    "explorer": {
+                        "exclude": { "**/vendor": "yes", "**/gen": true },
+                        "compact_folders": false
+                    }
+                }),
+            ),
+            None,
+        );
+
+        assert_eq!(
+            resolved.settings.explorer.exclude,
+            BTreeMap::from([("**/gen".to_string(), true)])
+        );
+        assert!(!resolved.settings.explorer.compact_folders);
+        assert!(resolved.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == SettingsDiagnosticCode::TypeError
+            && diagnostic.pointer == "/explorer/exclude/**~1vendor"));
     }
 }

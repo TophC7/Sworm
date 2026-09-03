@@ -567,11 +567,11 @@
           {@const filter = isStaged ? stagedFilter : unstagedFilter}
           <FileTreeItems
             nodes={tree}
-            isCollapsed={(path) => {
-              if (filterActive && filter.expand.has(path)) return false
-              return collapsedDirs.has(getDirKey(keySuffix, path))
+            isCollapsed={(node) => {
+              if (filterActive && filter.shouldExpand(node)) return false
+              return collapsedDirs.has(getDirKey(keySuffix, node.path))
             }}
-            isDimmed={filterActive ? (node) => !filter.matched.has(node.path) : undefined}
+            isDimmed={filterActive ? (node) => !filter.isMatch(node) : undefined}
             onToggleDir={(path) => toggleDir(keySuffix, path)}
             onFileClick={(node) => {
               if (!node.change) return

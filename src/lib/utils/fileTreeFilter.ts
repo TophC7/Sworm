@@ -1,75 +1,53 @@
-import type { FileTreeNode } from './fileTree'
+import { treeNodeCount, type FileTreeNode } from './fileTree'
+
+/** Row matched the query, or something beneath it did; stays at full opacity. */
+const MATCH = 1
+/** Directory holds a match somewhere below and must be open to reach it. */
+const MATCH_BELOW = 2
 
 export interface TreeFilter {
-  /** Paths that match the query directly or are ancestors of a match. Non-matches get dimmed. */
-  matched: Set<string>
-  /** Directory paths to auto-expand so the user can see matched leaves. */
-  expand: Set<string>
+  isMatch: (node: { index: number }) => boolean
+  shouldExpand: (node: { index: number }) => boolean
 }
 
-const EMPTY: TreeFilter = { matched: new Set(), expand: new Set() }
+const EMPTY: TreeFilter = { isMatch: () => false, shouldExpand: () => false }
 
 /**
- * Compute which tree rows should remain at full opacity for a given
- * filter query, plus which directories must be expanded so matched
- * leaves are reachable.
+ * Decide which tree rows stay at full opacity for a given filter query, and
+ * which directories must be expanded so matched leaves are reachable.
  *
- * Matching is case-insensitive substring on each segment. We test every
- * segment (not just the basename) so typing `lib` highlights the
- * `src/lib` directory — which mirrors VSCode's Explorer "Filter on
- * Type" behavior. Matched paths and every ancestor directory get
- * marked so the visible chain stays bright.
+ * Matching is case-insensitive substring on each path segment, not just the
+ * basename, so typing `lib` highlights `src/lib` and everything inside it —
+ * mirroring VS Code's Explorer "Filter on Type" behavior. A segment match is
+ * inherited downwards, which is what makes a matched directory's contents
+ * count as matches too.
+ *
+ * This runs on every keystroke over every node, so it touches no strings it
+ * doesn't have to: names are lowercased once at build time, and verdicts land
+ * in one flat array keyed by `node.index` rather than in sets of paths.
  */
-export function buildTreeFilter(nodes: FileTreeNode<{ path: string }>[], query: string): TreeFilter {
+export function buildTreeFilter<T extends { path: string }>(nodes: FileTreeNode<T>[], query: string): TreeFilter {
   const q = query.trim().toLowerCase()
   if (q.length === 0) return EMPTY
 
-  const matched = new Set<string>()
-  const expand = new Set<string>()
+  const flags = new Uint8Array(treeNodeCount(nodes))
 
-  function addAncestors(path: string): void {
-    // Compacted directories collapse multiple segments into one node
-    // (e.g. "src/lib"), so we walk every prefix of every internal slash
-    // and let the caller intersect with the actual tree's path set.
-    const parts = path.split('/')
-    for (let i = 1; i < parts.length; i++) {
-      const ancestor = parts.slice(0, i).join('/')
-      matched.add(ancestor)
-      expand.add(ancestor)
+  // A compacted directory's `lowerName` carries its whole run ("src/lib"), so
+  // testing names down the chain covers every segment of every path.
+  const visit = (node: FileTreeNode<T>, ancestorMatched: boolean): boolean => {
+    const matched = ancestorMatched || node.lowerName.includes(q)
+    let below = false
+    for (const child of node.children) {
+      if (visit(child, matched)) below = true
     }
+    if (matched || below) flags[node.index] |= MATCH
+    if (below) flags[node.index] |= MATCH_BELOW
+    return matched || below
   }
+  for (const root of nodes) visit(root, false)
 
-  function visit(node: FileTreeNode<{ path: string }>): boolean {
-    let selfOrChildMatched = false
-
-    if (node.type === 'directory') {
-      let anyChildMatched = false
-      for (const child of node.children) {
-        if (visit(child)) anyChildMatched = true
-      }
-      if (anyChildMatched) {
-        matched.add(node.path)
-        expand.add(node.path)
-        selfOrChildMatched = true
-      }
-    }
-
-    // A node also matches in its own right when any of its path
-    // segments contain the query — useful for compacted dir nodes
-    // ("src/lib") that the user may want to spot directly.
-    const segments = node.path.split('/')
-    for (const seg of segments) {
-      if (seg.toLowerCase().includes(q)) {
-        matched.add(node.path)
-        addAncestors(node.path)
-        selfOrChildMatched = true
-        break
-      }
-    }
-
-    return selfOrChildMatched
+  return {
+    isMatch: (node) => (flags[node.index] & MATCH) !== 0,
+    shouldExpand: (node) => (flags[node.index] & MATCH_BELOW) !== 0
   }
-
-  for (const root of nodes) visit(root)
-  return { matched, expand }
 }

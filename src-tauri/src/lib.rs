@@ -161,7 +161,9 @@ pub fn run() {
             commands::files::file_delete,
             commands::files::file_paste,
             commands::files::file_paste_collisions,
-            commands::files::files_list_all,
+            commands::files::files_read_dir,
+            commands::files::files_list_paths,
+            commands::files::files_watch_dirs,
             // Git commands
             commands::git::git_get_summary,
             commands::git::git_get_graph,

@@ -58,6 +58,34 @@ export interface GeneralSettings {
   nix_eval_timeout_secs: number
 }
 
+export interface ExplorerSettings {
+  exclude: Record<string, boolean>
+  exclude_gitignore: boolean
+  compact_folders: boolean
+}
+
+/** One row of a directory listing. A compacted chain's `name` carries the run. */
+export interface ExplorerDirEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  ignored: boolean
+  excluded: boolean
+  /** Directories a compacted chain swallowed, excluding `path` itself. */
+  hops: string[]
+}
+
+export interface ExplorerPathList {
+  paths: string[]
+  truncated: boolean
+}
+
+/** Project-relative directories whose contents changed; '' is the root. */
+export interface FilesChangedEvent {
+  folder_path: string
+  dirs: string[]
+}
+
 export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'disabled'
 
 export interface FormattingLanguageSettings {
@@ -95,6 +123,7 @@ export interface EffectiveLspServerSettings {
 
 export interface EffectiveSettings {
   general: GeneralSettings
+  explorer: ExplorerSettings
   formatting: FormattingSettings
   providers: Record<string, ProviderSettings>
   lsp: { servers: Record<string, EffectiveLspServerSettings> }

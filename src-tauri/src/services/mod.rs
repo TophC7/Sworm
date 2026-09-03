@@ -5,6 +5,8 @@ pub mod codex_state;
 pub mod config_schemas;
 pub mod db;
 pub mod env;
+pub mod explorer_filter;
+pub mod file_watcher;
 pub mod files;
 pub mod folders;
 pub mod formatting;

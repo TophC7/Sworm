@@ -223,7 +223,7 @@
                 {:else}
                   <FileTreeItems
                     nodes={expandedTree}
-                    isCollapsed={(path) => collapsedDirs.has(path)}
+                    isCollapsed={(node) => collapsedDirs.has(node.path)}
                     onToggleDir={toggleDir}
                     onFileClick={(node) =>
                       expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}

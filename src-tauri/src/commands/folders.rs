@@ -63,11 +63,11 @@ fn list_directories(path: &Path) -> Result<Vec<FolderInfo>, ApiError> {
 }
 
 /// Release backend resources held for a folder once the workbench has
-/// closed its last tab: stop settings watches and the issue-bridge
-/// socket, then drop the cached issue DB handle. Silent no-op when
-/// nothing was held. The workbench only ever hands us paths it got
-/// from `folder_resolve`, so when canonicalization fails (folder
-/// deleted meanwhile), the raw path is already the resource key.
+/// closed its last tab: stop settings and file-explorer watches and the
+/// issue-bridge socket, then drop the cached issue DB handle and explorer
+/// filter. Silent no-op when nothing was held. The workbench only ever
+/// hands us paths it got from `folder_resolve`, so when canonicalization
+/// fails (folder deleted meanwhile), the raw path is already the resource key.
 #[tauri::command]
 pub async fn folder_release(
     folder_path: String,
@@ -77,6 +77,8 @@ pub async fn folder_release(
     state.issue_bridge.stop(&folder);
     state.issues.evict(&folder);
     state.settings_watchers.stop(&folder);
+    state.file_watchers.stop(&folder);
+    state.files.evict(&folder);
     Ok(())
 }
 

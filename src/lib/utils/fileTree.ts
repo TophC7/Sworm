@@ -14,6 +14,15 @@ export interface FileTreeNode<T extends { path: string } = GitChange> {
   children: FileTreeNode<T>[]
   /** Only set on leaf file nodes */
   change?: T
+  /**
+   * Depth-first position in the tree, unique within it. Lets a per-query pass
+   * (see `buildTreeFilter`) record a verdict per node in a flat array instead
+   * of hashing paths. Assigned by `buildFileTree`; nodes built elsewhere must
+   * keep it unique too.
+   */
+  index: number
+  /** `name` lowercased once at build time, so filtering never re-lowercases. */
+  lowerName: string
 }
 
 /**
@@ -25,7 +34,9 @@ export function buildFileTree<T extends { path: string }>(changes: T[]): FileTre
     name: '',
     path: '',
     type: 'directory',
-    children: []
+    children: [],
+    index: 0,
+    lowerName: ''
   }
 
   for (const change of changes) {
@@ -47,7 +58,9 @@ export function buildFileTree<T extends { path: string }>(changes: T[]): FileTre
           path: partialPath,
           type: isFile ? 'file' : 'directory',
           children: [],
-          change: isFile ? change : undefined
+          change: isFile ? change : undefined,
+          index: 0,
+          lowerName: segment.toLowerCase()
         }
         current.children.push(child)
       }
@@ -59,7 +72,27 @@ export function buildFileTree<T extends { path: string }>(changes: T[]): FileTre
   }
 
   sortTree(root)
-  return compactTree(root.children)
+  const nodes = compactTree(root.children)
+  indexTree(nodes, 0)
+  return nodes
+}
+
+/** Number of nodes in a tree built by [`buildFileTree`]. */
+export function treeNodeCount<T extends { path: string }>(nodes: FileTreeNode<T>[]): number {
+  if (nodes.length === 0) return 0
+  // Indexes are assigned depth-first, so the highest one sits at the end of
+  // the last root's deepest trailing chain.
+  let last = nodes[nodes.length - 1]
+  while (last.children.length > 0) last = last.children[last.children.length - 1]
+  return last.index + 1
+}
+
+function indexTree<T extends { path: string }>(nodes: FileTreeNode<T>[], next: number): number {
+  for (const node of nodes) {
+    node.index = next
+    next = indexTree(node.children, next + 1)
+  }
+  return next
 }
 
 function sortTree(node: FileTreeNode<{ path: string }>): void {
@@ -88,7 +121,8 @@ function compactTree<T extends { path: string }>(nodes: FileTreeNode<T>[]): File
       const child = compactedChildren[0]
       return {
         ...child,
-        name: `${node.name}/${child.name}`
+        name: `${node.name}/${child.name}`,
+        lowerName: `${node.lowerName}/${child.lowerName}`
       }
     }
 
@@ -116,16 +150,20 @@ export interface FlatTreeRow<T extends { path: string }> {
  * Flatten a tree into the ordered sequence of rows that are currently
  * visible; i.e. the root nodes plus the children of any expanded
  * directory. Used to feed a virtualized renderer.
+ *
+ * `isCollapsed` receives the node rather than its path so callers can answer
+ * from the node itself — the tree filter keeps its verdicts in an array keyed
+ * by `index`, and this runs once per node.
  */
 export function flattenVisibleTree<T extends { path: string }>(
   nodes: FileTreeNode<T>[],
-  isCollapsed: (path: string) => boolean
+  isCollapsed: (node: FileTreeNode<T>) => boolean
 ): FlatTreeRow<T>[] {
   const out: FlatTreeRow<T>[] = []
   const walk = (level: FileTreeNode<T>[], depth: number): void => {
     for (const node of level) {
       out.push({ node, depth })
-      if (node.type === 'directory' && !isCollapsed(node.path)) {
+      if (node.type === 'directory' && !isCollapsed(node)) {
         walk(node.children, depth + 1)
       }
     }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { SvelteSet } from 'svelte/reactivity'
+  import { Eye, EyeOff, RotateCw } from '$lib/icons/lucideExports'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
@@ -13,13 +13,29 @@
   import { backend } from '$lib/api/backend'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
-  import { RotateCw } from '$lib/icons/lucideExports'
   import {
     ensureProjectFiles,
     getProjectFilePaths,
     isProjectFilesLoading,
+    isProjectFilesStale,
+    isProjectFilesTruncated,
+    markProjectFilesStale,
     refreshProjectFiles
   } from '$lib/features/files/projectFiles.svelte'
+  import {
+    dimmedPathsFor,
+    ensureFileTreeListeners,
+    expandDir,
+    getFolderTree,
+    invalidateDirs,
+    isExpanded,
+    loadDir,
+    nodesFor,
+    refreshFolderTree,
+    revealPath,
+    setShowHidden,
+    toggleDir
+  } from '$lib/features/files/fileTree.svelte'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
   import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
@@ -44,18 +60,31 @@
   let { folderPath }: { folderPath: string } = $props()
   let folderName = $derived(basename(normalizeAbsolutePath(folderPath)) || folderPath || 'Files')
 
-  let expandedDirs = new SvelteSet<string>()
   let filterQuery = $state('')
-
-  // Source-of-truth file paths come from the shared projectFiles
-  // store so the command palette's `/` mode and this sidebar see the
-  // same data and any mutation here invalidates both surfaces.
-  let paths = $derived(getProjectFilePaths(folderPath))
-  let loading = $derived(isProjectFilesLoading(folderPath) && paths.length === 0)
-  let error = $state<string | null>(null)
-  let fileTree = $derived<FileTreeNode<{ path: string }>[]>(buildFileTree(paths.map((p) => ({ path: p }))))
-  let treeFilter = $derived(buildTreeFilter(fileTree, filterQuery))
   let filterActive = $derived(filterQuery.trim().length > 0)
+
+  // The tree itself loads one directory per expand. The filter box instead
+  // needs whole-project reach, so a non-empty query switches to the flat,
+  // ignore-aware path list shared with the Quick Open palette.
+  let tree = $derived(getFolderTree(folderPath))
+  let lazyNodes = $derived(nodesFor(folderPath))
+  let flatPaths = $derived(getProjectFilePaths(folderPath, tree.showHidden))
+  let flatNodes = $derived<FileTreeNode<{ path: string }>[]>(buildFileTree(flatPaths.map((path) => ({ path }))))
+  let fileTree = $derived(filterActive ? flatNodes : lazyNodes)
+  let dimmedPaths = $derived(dimmedPathsFor(folderPath))
+  let loading = $derived(
+    filterActive ? isProjectFilesLoading(folderPath, tree.showHidden) && flatPaths.length === 0 : !tree.children.has('')
+  )
+  let treeFilter = $derived(buildTreeFilter(fileTree, filterQuery))
+
+  // Only pay for the flat list once the filter is actually in use. Reading the
+  // stale flag keeps an open filter box current after a mutation without
+  // making every mutation re-walk the project.
+  $effect(() => {
+    if (!filterActive) return
+    isProjectFilesStale(folderPath, tree.showHidden)
+    void ensureProjectFiles(folderPath, tree.showHidden)
+  })
 
   let contextFilePath = $state<string | null>(null)
   let contextTargetType = $state<'file' | 'directory' | null>(null)
@@ -84,13 +113,24 @@
   const directoryAttachmentCache = new Map<string, ReturnType<typeof fileTreeDirectoryDropTarget>>()
 
   async function loadFiles() {
-    error = null
-    try {
-      await refreshProjectFiles(folderPath)
-    } catch (e) {
-      console.error('Failed to load files:', e)
-      error = e instanceof Error ? e.message : String(e)
-    }
+    // Both refreshes report failures through the store: the tree keeps the
+    // root's message in `tree.error`, and the flat list falls back to its
+    // cached paths.
+    await Promise.all([refreshFolderTree(folderPath), refreshProjectFiles(folderPath)])
+  }
+
+  /**
+   * Re-read the listings a mutation touched. Own mutations refresh immediately
+   * instead of waiting on the watcher's debounce. The flat search list is only
+   * marked stale: re-walking the whole project for one file is work nobody
+   * asked for, so the next reader pays for it.
+   */
+  async function invalidate(...dirs: string[]) {
+    await invalidateDirs(
+      folderPath,
+      dirs.map((dir) => (dir === '.' ? '' : dir))
+    )
+    markProjectFilesStale(folderPath)
   }
 
   function clearAttachmentCaches() {
@@ -123,9 +163,7 @@
     const attachment = fileTreeDirectoryDropTarget({
       folderPath,
       directoryPath: node.path,
-      onHoverExpand: () => {
-        expandedDirs.add(node.path)
-      },
+      onHoverExpand: () => expandDir(folderPath, node.path),
       onDrop: (payload) => handleDirectoryDrop(node.path, payload)
     })
     directoryAttachmentCache.set(key, attachment)
@@ -148,13 +186,12 @@
   async function handleDirectoryDrop(targetDir: string, payload: DragPayload): Promise<void> {
     try {
       const externalSources: string[] = []
-      let movedCount = 0
+      const movedPaths: string[] = []
 
       for (const item of payload.items) {
         if (item.kind === 'file') {
           if (item.folderPath !== folderPath) continue
-          const moved = await moveTreeItemToDirectory(item.path, targetDir)
-          movedCount += moved ? 1 : 0
+          if (await moveTreeItemToDirectory(item.path, targetDir)) movedPaths.push(item.path)
           if (pendingTransfer) return
         } else if (item.kind === 'os-files') {
           externalSources.push(...item.paths)
@@ -166,9 +203,9 @@
         return
       }
 
-      if (movedCount > 0) {
-        await loadFiles()
-        notify.success(`Moved ${movedCount} item${movedCount === 1 ? '' : 's'}`)
+      if (movedPaths.length > 0) {
+        await invalidate(targetDir, ...movedPaths.map((path) => dirname(path) || ''))
+        notify.success(`Moved ${movedPaths.length} item${movedPaths.length === 1 ? '' : 's'}`)
       }
     } catch (error) {
       notify.error('Drop failed', errMessage(error))
@@ -300,10 +337,13 @@
 
   async function finalizePendingTransfer(): Promise<void> {
     if (!pendingTransfer) return
-    const { op, created } = pendingTransfer
+    const { op, created, targetDir, sources } = pendingTransfer
     const createdCount = created.length
     abortPendingTransfer()
-    await loadFiles()
+    // A cut empties its source directories too; those listings are only
+    // project-relative for in-tree sources, which is all `cut` ever carries.
+    const emptied = op === 'cut' ? sources.map((path) => dirname(path) || '') : []
+    await invalidate(targetDir, ...emptied)
 
     if (createdCount === 0) {
       notify.info('Nothing transferred', 'All colliding items were skipped.')
@@ -314,11 +354,6 @@
     notify.success(`${verb} ${createdCount} file${createdCount === 1 ? '' : 's'}`)
   }
 
-  function toggleDir(path: string) {
-    if (expandedDirs.has(path)) expandedDirs.delete(path)
-    else expandedDirs.add(path)
-  }
-
   function handleFileClick(filePath: string) {
     pendingFileOpen = openTextFile(folderPath, filePath)
   }
@@ -327,23 +362,17 @@
   let activeTab = $derived(getActiveTab())
   let activeFilePath = $derived(activeTab?.kind === 'text' ? activeTab.filePath : null)
 
-  // Reveal the active file in the tree by expanding every ancestor
-  // directory. The effect deliberately depends on `loading` so that on
-  // mount we re-expand AFTER the folder effect has cleared the set
-  // and loadFiles() finished — otherwise the user opens a tab from
-  // (say) the git diff sidebar, switches back to Files, and finds the
-  // tree collapsed despite a file being focused. Adding to a set is
-  // idempotent; user-collapsed dirs only re-expand when the active
-  // path itself changes, which mirrors VS Code's "reveal in explorer"
-  // behaviour.
+  // Reveal the active file by loading and expanding its ancestors. Depends on
+  // the root listing so that on mount we reveal AFTER the folder effect's
+  // first load — otherwise the user opens a tab from (say) the git diff
+  // sidebar, switches back to Files, and finds the tree collapsed despite a
+  // file being focused. Expanding is idempotent; user-collapsed dirs only
+  // re-expand when the active path itself changes, mirroring VS Code's
+  // "reveal in explorer".
   $effect(() => {
-    loading
+    tree.children.has('')
     const path = activeFilePath
-    if (!path) return
-    const parts = path.split('/')
-    for (let i = 1; i < parts.length; i++) {
-      expandedDirs.add(parts.slice(0, i).join('/'))
-    }
+    if (path) void revealPath(folderPath, path)
   })
 
   // Path -> status letter lookup from git state (prefer unstaged over staged)
@@ -371,16 +400,16 @@
     return dirs
   })
 
-  // Reload file list when the folder changes
+  // Load the folder's root listing when the folder changes.
   let prevFolderPath = ''
   $effect(() => {
     if (folderPath !== prevFolderPath) {
       prevFolderPath = folderPath
-      expandedDirs.clear()
       filterQuery = ''
       clearAttachmentCaches()
       abortPendingTransfer()
-      void ensureProjectFiles(folderPath)
+      ensureFileTreeListeners()
+      void loadDir(folderPath, '')
     }
   })
 
@@ -471,7 +500,7 @@
     try {
       await backend.files.rename(folderPath, renameFilePath, renameValue)
       await renameTextPath(folderPath, renameFilePath, renameValue)
-      await loadFiles()
+      await invalidate(dirname(renameFilePath) || '', dirname(renameValue) || '')
     } catch (e) {
       notify.error('Rename failed', errMessage(e))
     } finally {
@@ -490,7 +519,7 @@
     try {
       await backend.files.delete(folderPath, deleteFilePath)
       await deleteTextPath(folderPath, deleteFilePath)
-      await loadFiles()
+      await invalidate(dirname(deleteFilePath) || '')
     } catch (e) {
       notify.error('Delete failed', errMessage(e))
     } finally {
@@ -516,13 +545,14 @@
     }
     const kind = newItemKind
     try {
+      const name = newItemName.trim()
       if (kind === 'file') {
-        await backend.files.write(folderPath, newItemName.trim(), '')
-        await loadFiles()
-        openTextFile(folderPath, newItemName.trim())
+        await backend.files.write(folderPath, name, '')
+        await invalidate(dirname(name) || '')
+        openTextFile(folderPath, name)
       } else if (kind === 'folder') {
-        await backend.files.createDir(folderPath, newItemName.trim())
-        await loadFiles()
+        await backend.files.createDir(folderPath, name)
+        await invalidate(dirname(name) || '')
       }
     } catch (e) {
       notify.error(`Failed to create ${kind ?? 'item'}`, errMessage(e))
@@ -543,6 +573,16 @@
 
 <SidebarPanel title={folderName}>
   {#snippet headerActions()}
+    <IconButton
+      tooltip={tree.showHidden ? 'Hide hidden & ignored files' : 'Show hidden & ignored files'}
+      onclick={() => setShowHidden(folderPath, !tree.showHidden)}
+    >
+      {#if tree.showHidden}
+        <EyeOff size={11} />
+      {:else}
+        <Eye size={11} />
+      {/if}
+    </IconButton>
     <IconButton tooltip="Refresh files" onclick={loadFiles}>
       <RotateCw size={11} />
     </IconButton>
@@ -550,6 +590,9 @@
 
   <div class="flex h-full min-h-0 flex-col">
     <TreeFilterInput bind:value={filterQuery} placeholder="Filter files..." ariaLabel="Filter files" />
+    {#if filterActive && isProjectFilesTruncated(folderPath, tree.showHidden)}
+      <div class="px-2.5 pb-1 text-xs text-subtle">Showing the first 200,000 files &mdash; narrow the filter.</div>
+    {/if}
     <div
       class="min-h-0 flex-1 overflow-y-auto text-base {isFileTreeDropActive(folderPath, '.') ? 'bg-accent/6' : ''}"
       {@attach rootDndAttachment()}
@@ -575,21 +618,21 @@
       >
         {#if loading}
           <div class="px-2.5 py-3 text-sm text-subtle">Loading files&hellip;</div>
-        {:else if error}
-          <div class="px-2.5 py-3 text-sm text-danger">{error}</div>
+        {:else if tree.error}
+          <div class="px-2.5 py-3 text-sm text-danger">{tree.error}</div>
         {:else if fileTree.length === 0}
           <div class="px-2.5 py-3 text-sm text-subtle">No files found.</div>
         {:else}
           <FileTreeItems
             nodes={fileTree}
-            isCollapsed={(path) => {
-              if (filterActive && treeFilter.expand.has(path)) return false
-              return !expandedDirs.has(path)
+            isCollapsed={(node) => {
+              if (filterActive) return !treeFilter.shouldExpand(node)
+              return !isExpanded(folderPath, node.path)
             }}
             isActive={(path) => path === activeFilePath}
-            isDimmed={filterActive ? (node) => !treeFilter.matched.has(node.path) : undefined}
+            isDimmed={filterActive ? (node) => !treeFilter.isMatch(node) : (node) => dimmedPaths.has(node.path)}
             hasDirChanges={(path) => dirsWithChanges.has(path)}
-            onToggleDir={toggleDir}
+            onToggleDir={(path) => toggleDir(folderPath, path)}
             onFileClick={(node) => {
               if (node.change?.path) handleFileClick(node.change.path)
             }}

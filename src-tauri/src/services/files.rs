@@ -1,30 +1,22 @@
 use crate::errors::ApiError;
+#[cfg(test)]
+use crate::models::settings::ExplorerSettings;
+use crate::services::explorer_filter::{ExplorerFilter, IgnoreChain};
+use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
+use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
-const MAX_FILES: usize = 25_000;
 const MAX_DEPTH: usize = 50;
-/// Traversed after ordinary directories so generated trees do not exhaust the
-/// explorer cap before user-authored files are discovered.
-///
-/// TODO: replace this heuristic with configurable hidden-file defaults in the
-/// file explorer.
-const LOW_PRIORITY_DIRS: &[&str] = &[
-    ".bun",
-    ".git",
-    "node_modules",
-    ".next",
-    ".nuxt",
-    ".svelte-kit",
-    "target",
-    "dist",
-    "build",
-    "__pycache__",
-    ".cache",
-    ".venv",
-    "venv",
-];
+/// Bounds the single-child chain a compacted row may represent, so a
+/// pathological deep chain can't turn one listing into unbounded work.
+const MAX_COMPACT_HOPS: usize = 32;
+/// Ceiling for the flat search list behind Quick Open and the sidebar filter.
+/// Search only — directory listings are unbounded — and hitting it is reported
+/// to the UI rather than silently dropping paths.
+const MAX_SEARCH_PATHS: usize = 200_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePasteCollision {
@@ -32,11 +24,42 @@ pub struct FilePasteCollision {
     pub destination: String,
 }
 
-pub struct FileService;
+/// One row in a directory listing.
+#[derive(Debug, Clone, Serialize)]
+pub struct DirEntry {
+    /// Display label. A compacted chain carries the whole run, e.g. "lib/utils".
+    pub name: String,
+    /// Project-relative path with forward slashes. For a compacted chain this
+    /// is the deepest directory, which is also the key its children load under.
+    pub path: String,
+    pub is_dir: bool,
+    /// Matched git's ignore rules — rendered dimmed.
+    pub ignored: bool,
+    /// Matched an `explorer.exclude` glob; only ever true when `show_hidden`.
+    pub excluded: bool,
+    /// Directories a compacted chain swallowed, excluding `path` itself. The
+    /// explorer watches these too: a write inside one changes what the row
+    /// should collapse to, and no other listing would report it.
+    pub hops: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PathList {
+    pub paths: Vec<String>,
+    pub truncated: bool,
+}
+
+pub struct FileService {
+    /// Compiled explorer filter per project, rebuilt when the settings
+    /// generation moves so an edited `settings.jsonc` takes effect at once.
+    filters: Mutex<HashMap<PathBuf, (u64, Arc<ExplorerFilter>)>>,
+}
 
 impl FileService {
     pub fn new() -> Self {
-        Self
+        Self {
+            filters: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Reject paths that could escape the project root:
@@ -284,110 +307,313 @@ impl FileService {
         }
     }
 
-    /// List all files in the project.
+    /// List one directory, the way the explorer renders it.
     ///
-    /// Filesystem-first: walks the real directory tree so the explorer reflects
-    /// disk state (deleted files don't linger, newly created files appear
-    /// immediately). No filtering — the explorer shows everything on disk —
-    /// but the traversal prioritizes visible project paths first, then hidden
-    /// paths, then bulky generated trees so the 25k file cap is spent on
-    /// likely-user-authored files first. `.gitignore` is a git-tree concern
-    /// and should only prune git views.
-    pub fn list_all(&self, project_path: &Path) -> Result<Vec<String>, ApiError> {
-        let mut out = Vec::new();
-        let mut visited = HashSet::new();
-        self.walk_dir(project_path, "", &mut out, &mut visited, 0)?;
-        out.sort();
-        Ok(out)
-    }
-
-    /// Walk `dir` and push project-relative paths (prefixed with `rel_prefix`)
-    /// into `out`. `rel_prefix` is the path of `dir` relative to the project
-    /// root — "" when `dir` is the root itself. An explicit prefix (rather
-    /// than `strip_prefix(root)`) lets us descend through a symlink whose
-    /// target lives outside the project.
+    /// Filesystem-first and lazy: a folder open reads only the root, and each
+    /// expand reads exactly one more directory. There is no file cap, so no
+    /// sibling can be silently dropped. Empty directories are listed like any
+    /// other entry.
     ///
-    /// Symlinks to directories are followed; `visited` tracks canonical
-    /// targets so symlink cycles can't cause infinite recursion.
-    fn walk_dir(
+    /// `dir_path` is project-relative; "" is the project root.
+    pub fn read_dir(
         &self,
-        dir: &Path,
-        rel_prefix: &str,
-        out: &mut Vec<String>,
-        visited: &mut HashSet<PathBuf>,
-        depth: usize,
-    ) -> Result<(), ApiError> {
-        if depth > MAX_DEPTH || out.len() >= MAX_FILES {
-            return Ok(());
-        }
+        project_path: &Path,
+        dir_path: &str,
+        show_hidden: bool,
+        generation: u64,
+    ) -> Result<Vec<DirEntry>, ApiError> {
+        self.validate_path(dir_path)?;
+        let filter = self.filter(project_path, generation)?;
+        read_dir_with_filter(project_path, dir_path, show_hidden, &filter)
+    }
 
-        let mut entries = std::fs::read_dir(dir)
-            .map_err(|e| ApiError::Io(format!("Cannot read {}: {}", dir.display(), e)))?
-            .map(|entry| {
-                let entry = entry.map_err(|e| ApiError::Io(e.to_string()))?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let path = entry.path();
-                let ft = entry.file_type().map_err(|e| ApiError::Io(e.to_string()))?;
-                Ok((is_low_priority_dir_name(&name), name, path, ft))
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
-        entries.sort_by(|a, b| entry_priority(a.0, &a.1).cmp(&entry_priority(b.0, &b.1)));
+    /// Flat list of every searchable file path, for Quick Open and the sidebar
+    /// filter. Prunes git-ignored paths (VS Code's `search.useIgnoreFiles`
+    /// default) independently of the explorer's dim-vs-hide setting.
+    pub fn list_paths(
+        &self,
+        project_path: &Path,
+        show_hidden: bool,
+        generation: u64,
+    ) -> Result<PathList, ApiError> {
+        let filter = self.filter(project_path, generation)?;
+        Ok(list_paths_with_filter(
+            project_path,
+            show_hidden,
+            &filter,
+            MAX_SEARCH_PATHS,
+        ))
+    }
 
-        for (_, name_str, path, ft) in entries {
-            if out.len() >= MAX_FILES {
-                return Ok(());
-            }
+    /// Drop a closed project's compiled filter, whose per-directory gitignore
+    /// cache would otherwise live for the rest of the process.
+    pub fn evict(&self, project_path: &Path) {
+        self.filters.lock().remove(project_path);
+    }
 
-            let rel_child = if rel_prefix.is_empty() {
-                name_str
-            } else {
-                format!("{}/{}", rel_prefix, name_str)
-            };
-
-            // `file_type()` is lstat-based — for symlinks we need stat
-            // (`metadata`) to see what the link actually points to.
-            let target_is_dir = if ft.is_symlink() {
-                std::fs::metadata(&path)
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
-            } else {
-                ft.is_dir()
-            };
-
-            if target_is_dir {
-                if ft.is_symlink() {
-                    if let Ok(canonical) = std::fs::canonicalize(&path) {
-                        if !visited.insert(canonical) {
-                            continue;
-                        }
-                    }
-                }
-                self.walk_dir(&path, &rel_child, out, visited, depth + 1)?;
-            } else if ft.is_file() || ft.is_symlink() {
-                out.push(rel_child);
+    fn filter(
+        &self,
+        project_path: &Path,
+        generation: u64,
+    ) -> Result<Arc<ExplorerFilter>, ApiError> {
+        let mut filters = self.filters.lock();
+        if let Some((cached_generation, filter)) = filters.get(project_path) {
+            if *cached_generation == generation {
+                return Ok(Arc::clone(filter));
             }
         }
-        Ok(())
+
+        let resolved = resolve_effective_settings_for_folder_path(Some(project_path))
+            .map_err(|error| ApiError::Io(format!("Failed to resolve settings: {error}")))?;
+        let filter = Arc::new(ExplorerFilter::build(
+            project_path,
+            &resolved.settings.explorer,
+        )?);
+        filters.insert(
+            project_path.to_path_buf(),
+            (generation, Arc::clone(&filter)),
+        );
+        Ok(filter)
     }
 }
 
-fn is_low_priority_dir_name(name: &str) -> bool {
-    LOW_PRIORITY_DIRS.contains(&name)
+/// Entry survivors of one directory, before compaction.
+struct RawEntry {
+    name: String,
+    /// Lowercased `name`, kept so sorting a large listing allocates once per
+    /// entry instead of twice per comparison.
+    sort_name: String,
+    path: String,
+    is_dir: bool,
+    ignored: bool,
+    excluded: bool,
 }
 
-fn is_hidden_name(name: &str) -> bool {
-    name.starts_with('.')
+fn read_dir_with_filter(
+    project_path: &Path,
+    dir_path: &str,
+    show_hidden: bool,
+    filter: &ExplorerFilter,
+) -> Result<Vec<DirEntry>, ApiError> {
+    // Children of an ignored directory are ignored too, and git never descends
+    // to say so a second time.
+    let parent_ignored = filter.is_ignored(dir_path, true);
+    let mut entries = read_entries(
+        project_path,
+        dir_path,
+        show_hidden,
+        parent_ignored,
+        filter,
+        usize::MAX,
+    )?;
+    // Directories first, then case-insensitive alphabetical.
+    entries.sort_by(|a, b| {
+        (!a.is_dir, &a.sort_name, &a.name).cmp(&(!b.is_dir, &b.sort_name, &b.name))
+    });
+
+    Ok(entries
+        .into_iter()
+        .map(|entry| {
+            if entry.is_dir && filter.compact_folders {
+                compact(project_path, entry, show_hidden, filter)
+            } else {
+                DirEntry {
+                    name: entry.name,
+                    path: entry.path,
+                    is_dir: entry.is_dir,
+                    ignored: entry.ignored,
+                    excluded: entry.excluded,
+                    hops: Vec::new(),
+                }
+            }
+        })
+        .collect())
 }
 
-fn entry_priority(is_low_priority: bool, name: &str) -> (u8, &str) {
-    let bucket = if is_low_priority {
-        2
-    } else if is_hidden_name(name) {
-        1
+/// The entries of `dir_path` the explorer would render, at most `limit` of
+/// them. Compaction only ever asks "exactly one child?", so it stops at two
+/// rather than enumerating a `node_modules`-sized directory to find out.
+fn read_entries(
+    project_path: &Path,
+    dir_path: &str,
+    show_hidden: bool,
+    parent_ignored: bool,
+    filter: &ExplorerFilter,
+    limit: usize,
+) -> Result<Vec<RawEntry>, ApiError> {
+    let abs = project_path.join(dir_path);
+    // Every entry of this directory answers to the same ancestor `.gitignore`
+    // chain, so it is resolved once rather than per entry.
+    let chain = filter.ignore_chain(dir_path);
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&abs)
+        .map_err(|e| ApiError::Io(format!("Cannot read {}: {}", abs.display(), e)))?
+    {
+        let entry = entry.map_err(|e| ApiError::Io(e.to_string()))?;
+        if let Some(survivor) = survivor(
+            &entry,
+            dir_path,
+            show_hidden,
+            parent_ignored,
+            filter,
+            &chain,
+        )? {
+            out.push(survivor);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One directory entry as the explorer sees it, or `None` when the exclude
+/// globs or git's ignore rules hide it.
+fn survivor(
+    entry: &std::fs::DirEntry,
+    dir_path: &str,
+    show_hidden: bool,
+    parent_ignored: bool,
+    filter: &ExplorerFilter,
+    chain: &IgnoreChain<'_>,
+) -> Result<Option<RawEntry>, ApiError> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let file_type = entry.file_type().map_err(|e| ApiError::Io(e.to_string()))?;
+    // `file_type()` is lstat-based — for symlinks we need stat (`metadata`) to
+    // see whether the link points at a directory.
+    let is_dir = if file_type.is_symlink() {
+        std::fs::metadata(entry.path())
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
     } else {
-        0
+        file_type.is_dir()
     };
-    (bucket, name)
+
+    let path = if dir_path.is_empty() {
+        name.clone()
+    } else {
+        format!("{dir_path}/{name}")
+    };
+
+    let excluded = filter.is_excluded(&path);
+    if excluded && !show_hidden {
+        return Ok(None);
+    }
+    let ignored = parent_ignored || chain.is_ignored(&path, is_dir);
+    if ignored && filter.exclude_gitignore && !show_hidden {
+        return Ok(None);
+    }
+
+    Ok(Some(RawEntry {
+        sort_name: name.to_lowercase(),
+        name,
+        path,
+        is_dir,
+        ignored,
+        excluded,
+    }))
+}
+
+/// Collapse a chain of single-child directories into one row, matching VS
+/// Code's `explorer.compactFolders`. A directory that can't be listed stops the
+/// descent and is reported uncompacted.
+fn compact(
+    project_path: &Path,
+    entry: RawEntry,
+    show_hidden: bool,
+    filter: &ExplorerFilter,
+) -> DirEntry {
+    let mut row = DirEntry {
+        name: entry.name,
+        path: entry.path,
+        is_dir: true,
+        ignored: entry.ignored,
+        excluded: entry.excluded,
+        hops: Vec::new(),
+    };
+
+    for _ in 0..MAX_COMPACT_HOPS {
+        let Ok(mut children) =
+            read_entries(project_path, &row.path, show_hidden, row.ignored, filter, 2)
+        else {
+            break;
+        };
+        if children.len() != 1 || !children[0].is_dir {
+            break;
+        }
+        let only = children.remove(0);
+        row.name = format!("{}/{}", row.name, only.name);
+        row.hops.push(std::mem::replace(&mut row.path, only.path));
+        row.ignored = only.ignored;
+        row.excluded = only.excluded;
+    }
+
+    row
+}
+
+fn list_paths_with_filter(
+    project_path: &Path,
+    show_hidden: bool,
+    filter: &Arc<ExplorerFilter>,
+    limit: usize,
+) -> PathList {
+    let root = project_path.to_path_buf();
+    let prune_root = root.clone();
+    let prune_filter = Arc::clone(filter);
+    let mut walker = ignore::WalkBuilder::new(project_path);
+    walker
+        // Dotfiles are legitimate project files; `.git` is pruned below.
+        .hidden(false)
+        .parents(true)
+        .follow_links(true)
+        .max_depth(Some(MAX_DEPTH))
+        .git_ignore(!show_hidden)
+        .git_global(!show_hidden)
+        .git_exclude(!show_hidden)
+        .require_git(true)
+        // Pruning here (rather than filtering results) is what keeps excluded
+        // trees from being walked at all.
+        .filter_entry(move |entry| {
+            let Ok(rel) = entry.path().strip_prefix(&prune_root) else {
+                return true;
+            };
+            // Pruning `.git` at its own level means no descendant is ever
+            // visited, so only this entry's own name needs checking.
+            if rel.file_name().is_some_and(|name| name == ".git") {
+                return false;
+            }
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            show_hidden || rel.is_empty() || !prune_filter.is_excluded(&rel)
+        });
+
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    for entry in walker.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!(%error, "skipping unreadable path during search walk");
+                continue;
+            }
+        };
+        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            continue;
+        }
+        if paths.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let Ok(rel) = entry.path().strip_prefix(&root) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        paths.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+
+    paths.sort();
+    PathList { paths, truncated }
 }
 
 // ── Paste helpers ─────────────────────────────────────────────────
@@ -546,5 +772,188 @@ fn remove_recursive(path: &Path) -> Result<(), ApiError> {
     } else {
         std::fs::remove_file(path)
             .map_err(|e| ApiError::Io(format!("Cannot remove {}: {}", path.display(), e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sworm-files-{label}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn touch(path: PathBuf) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, "").expect("write file");
+    }
+
+    /// Filters are built directly so tests never depend on an on-disk
+    /// `settings.jsonc`.
+    fn filter(root: &Path, exclude_gitignore: bool, compact_folders: bool) -> Arc<ExplorerFilter> {
+        let settings = ExplorerSettings {
+            exclude: BTreeMap::from([("**/.git".to_string(), true)]),
+            exclude_gitignore,
+            compact_folders,
+        };
+        Arc::new(ExplorerFilter::build(root, &settings).expect("build filter"))
+    }
+
+    fn names(entries: &[DirEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn read_dir_lists_empty_directories() {
+        let dir = unique_test_dir("empty-dirs");
+        std::fs::create_dir_all(dir.join("empty")).expect("empty dir");
+        touch(dir.join("a.txt"));
+
+        let entries =
+            read_dir_with_filter(&dir, "", false, &filter(&dir, false, false)).expect("read dir");
+
+        assert_eq!(names(&entries), vec!["empty", "a.txt"]);
+        assert!(entries[0].is_dir);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_dir_hides_git_by_default_and_reveals_it_with_show_hidden() {
+        let dir = unique_test_dir("git-row");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        touch(dir.join("src/main.rs"));
+
+        let filter = filter(&dir, false, false);
+        let hidden = read_dir_with_filter(&dir, "", false, &filter).expect("read dir");
+        assert_eq!(names(&hidden), vec!["src"]);
+
+        let shown = read_dir_with_filter(&dir, "", true, &filter).expect("read dir");
+        assert_eq!(names(&shown), vec![".git", "src"]);
+        assert!(shown[0].excluded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_dir_compacts_single_child_chains() {
+        let dir = unique_test_dir("compact");
+        touch(dir.join("src/lib/utils/a.ts"));
+
+        let compacted =
+            read_dir_with_filter(&dir, "", false, &filter(&dir, false, true)).expect("read dir");
+        assert_eq!(names(&compacted), vec!["src/lib/utils"]);
+        assert_eq!(compacted[0].path, "src/lib/utils");
+        // The swallowed directories: watching these is the only way a write
+        // inside them can split the row back apart.
+        assert_eq!(compacted[0].hops, vec!["src", "src/lib"]);
+
+        touch(dir.join("src/other.ts"));
+        let split =
+            read_dir_with_filter(&dir, "", false, &filter(&dir, false, true)).expect("read dir");
+        assert_eq!(names(&split), vec!["src"]);
+        assert_eq!(split[0].path, "src");
+        assert!(split[0].hops.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_dir_marks_gitignored_entries_without_hiding_them() {
+        let dir = unique_test_dir("ignored-dim");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        std::fs::write(dir.join(".gitignore"), "gen/\n").expect("ignore file");
+        touch(dir.join("gen/out.js"));
+        touch(dir.join("src/main.rs"));
+
+        let filter = filter(&dir, false, false);
+        let root = read_dir_with_filter(&dir, "", false, &filter).expect("read dir");
+        assert_eq!(names(&root), vec!["gen", "src", ".gitignore"]);
+        let gen = root
+            .iter()
+            .find(|entry| entry.name == "gen")
+            .expect("gen row");
+        assert!(gen.ignored);
+        assert!(
+            !root
+                .iter()
+                .find(|entry| entry.name == "src")
+                .expect("src row")
+                .ignored
+        );
+
+        // Children inherit the parent's ignored state; git does not repeat itself.
+        let children = read_dir_with_filter(&dir, "gen", false, &filter).expect("read dir");
+        assert!(children[0].ignored);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_dir_hides_gitignored_entries_when_configured() {
+        let dir = unique_test_dir("ignored-hide");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        std::fs::write(dir.join(".gitignore"), "gen/\n").expect("ignore file");
+        touch(dir.join("gen/out.js"));
+        touch(dir.join("src/main.rs"));
+
+        let filter = filter(&dir, true, false);
+        let hidden = read_dir_with_filter(&dir, "", false, &filter).expect("read dir");
+        assert_eq!(names(&hidden), vec!["src", ".gitignore"]);
+
+        let shown = read_dir_with_filter(&dir, "", true, &filter).expect("read dir");
+        assert_eq!(names(&shown), vec![".git", "gen", "src", ".gitignore"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_paths_prunes_git_and_gitignored_paths() {
+        let dir = unique_test_dir("list-paths");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        touch(dir.join(".git/objects/deadbeef"));
+        std::fs::write(dir.join(".gitignore"), "gen/\n").expect("ignore file");
+        touch(dir.join("gen/out.js"));
+        touch(dir.join("src/main.rs"));
+
+        let filter = filter(&dir, false, false);
+        let listed = list_paths_with_filter(&dir, false, &filter, MAX_SEARCH_PATHS);
+        assert_eq!(listed.paths, vec![".gitignore", "src/main.rs"]);
+        assert!(!listed.truncated);
+
+        // show_hidden keeps ignored paths searchable but never walks `.git`.
+        let all = list_paths_with_filter(&dir, true, &filter, MAX_SEARCH_PATHS);
+        assert_eq!(all.paths, vec![".gitignore", "gen/out.js", "src/main.rs"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_paths_flags_truncation() {
+        let dir = unique_test_dir("truncation");
+        for index in 0..3 {
+            touch(dir.join(format!("file-{index}.txt")));
+        }
+
+        let filter = filter(&dir, false, false);
+        let mut listed = list_paths_with_filter(&dir, false, &filter, MAX_SEARCH_PATHS);
+        assert!(!listed.truncated);
+
+        listed = list_paths_with_filter(&dir, false, &filter, 2);
+        assert!(listed.truncated);
+        assert_eq!(listed.paths.len(), 2);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

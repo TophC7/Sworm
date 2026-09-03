@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::services::files::FilePasteCollision;
+use crate::services::files::{DirEntry, FilePasteCollision, PathList};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -96,11 +96,54 @@ pub async fn file_delete(
     state.files.delete(Path::new(&project_path), &file_path)
 }
 
-/// List all files in the project.
+/// List one directory as the explorer renders it. `dir_path` is
+/// project-relative; "" is the project root.
 #[tauri::command]
-pub async fn files_list_all(
+pub async fn files_read_dir(
     project_path: String,
+    dir_path: String,
+    show_hidden: bool,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, ApiError> {
-    state.files.list_all(Path::new(&project_path))
+) -> Result<Vec<DirEntry>, ApiError> {
+    let generation = *state.settings_generation.lock();
+    state
+        .files
+        .read_dir(Path::new(&project_path), &dir_path, show_hidden, generation)
+}
+
+/// Flat list of searchable file paths, for Quick Open and the sidebar filter.
+/// The walk visits the whole project, so it runs on a blocking worker rather
+/// than on a Tauri runtime thread.
+#[tauri::command]
+pub async fn files_list_paths(
+    project_path: String,
+    show_hidden: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<PathList, ApiError> {
+    let generation = *state.settings_generation.lock();
+    let files = std::sync::Arc::clone(&state.files);
+    tokio::task::spawn_blocking(move || {
+        files.list_paths(Path::new(&project_path), show_hidden, generation)
+    })
+    .await
+    .map_err(|error| ApiError::Internal(error.to_string()))?
+}
+
+/// Watch exactly the directories the explorer currently renders. A watcher
+/// failure costs freshness, never the listing itself, so it is logged rather
+/// than surfaced.
+#[tauri::command]
+pub async fn files_watch_dirs(
+    app: tauri::AppHandle,
+    project_path: String,
+    dirs: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    if let Err(error) = state
+        .file_watchers
+        .sync(&app, Path::new(&project_path), &dirs)
+    {
+        tracing::warn!(folder = %project_path, %error, "explorer watcher unavailable");
+    }
+    Ok(())
 }

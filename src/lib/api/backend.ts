@@ -16,8 +16,11 @@ import type {
   DiffSource,
   DiscoveredProject,
   EffectiveSettingsPayload,
+  ExplorerDirEntry,
+  ExplorerPathList,
   FileDiff,
   FilePasteCollision,
+  FilesChangedEvent,
   FormattingSettings,
   GeneralSettings,
   GitQuickDiffData,
@@ -412,8 +415,20 @@ export const backend = {
   },
 
   files: {
-    listAll(projectPath: string): Promise<string[]> {
-      return invoke<string[]>('files_list_all', { projectPath })
+    /** One directory as the explorer renders it. `dirPath` '' is the project root. */
+    readDir(projectPath: string, dirPath: string, showHidden: boolean): Promise<ExplorerDirEntry[]> {
+      return invoke<ExplorerDirEntry[]>('files_read_dir', { projectPath, dirPath, showHidden })
+    },
+    /** Flat searchable path list for Quick Open and the sidebar filter. */
+    listPaths(projectPath: string, showHidden: boolean): Promise<ExplorerPathList> {
+      return invoke<ExplorerPathList>('files_list_paths', { projectPath, showHidden })
+    },
+    /** Watch exactly the directories currently rendered. */
+    watchDirs(projectPath: string, dirs: string[]): Promise<void> {
+      return invoke<void>('files_watch_dirs', { projectPath, dirs })
+    },
+    onChanged(handler: (event: FilesChangedEvent) => void): Promise<UnlistenFn> {
+      return listen<FilesChangedEvent>('files-changed', (event) => handler(event.payload))
     },
     read(projectPath: string, filePath: string): Promise<string> {
       return invoke<string>('file_read', { projectPath, filePath })
