@@ -190,6 +190,9 @@ export const backend = {
     },
     stop(runId: string): Promise<void> {
       return invoke<void>('session_stop', { runId })
+    },
+    ompResolveUri(uri: string, cwd?: string | null): Promise<{ path: string; is_dir: boolean }> {
+      return invoke<{ path: string; is_dir: boolean }>('omp_resolve_uri', { uri, cwd: cwd ?? null })
     }
   },
 

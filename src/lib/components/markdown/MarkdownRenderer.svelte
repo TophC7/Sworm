@@ -2,7 +2,8 @@
   import SvelteMarkdown from '@humanspeak/svelte-markdown'
   import CodeBlock from './CodeBlock.svelte'
   import { Checkbox } from '$lib/components/ui/checkbox'
-  import { markdownImageSrc } from '$lib/utils/mediaAssets'
+  import { markdownImageSrc, resolveMarkdownLocalPath } from '$lib/utils/mediaAssets'
+  import { openLink } from '$lib/features/workbench/links/openLink'
 
   let {
     source,
@@ -38,7 +39,25 @@
     {/snippet}
 
     {#snippet link({ href, children })}
-      <a {href} class="text-accent underline decoration-accent/40 hover:decoration-accent">{@render children?.()}</a>
+      <a
+        {href}
+        class="text-accent underline decoration-accent/40 hover:decoration-accent"
+        onclick={(e) => {
+          if (!href || href.startsWith('#')) return
+          e.preventDefault()
+          let target = href
+          if (filePath && !href.includes('://')) {
+            const hashIndex = href.indexOf('#')
+            const pathPart = hashIndex !== -1 ? href.slice(0, hashIndex) : href
+            const hashPart = hashIndex !== -1 ? href.slice(hashIndex) : ''
+            const resolved = resolveMarkdownLocalPath(filePath, pathPart)
+            if (resolved) target = `${resolved}${hashPart}`
+          }
+          void openLink(target, folderPath)
+        }}
+      >
+        {@render children?.()}
+      </a>
     {/snippet}
 
     {#snippet strong({ children })}

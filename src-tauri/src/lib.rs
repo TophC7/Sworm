@@ -227,6 +227,7 @@ pub fn run() {
             commands::sessions::session_write,
             commands::sessions::session_resize,
             commands::sessions::session_stop,
+            commands::sessions::omp_resolve_uri,
         ])
         .build(tauri::generate_context!())
         .expect("error building Sworm");

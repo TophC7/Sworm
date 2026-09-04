@@ -256,3 +256,14 @@ pub async fn session_stop(
     let _ = state.pty.kill(&run_id);
     Ok(())
 }
+
+/// Resolve an OMP harness URI (e.g. omp://, skill://, history://, agent://, artifact://, local://, rule://) to an on-disk target.
+#[tauri::command]
+pub async fn omp_resolve_uri(
+    uri: String,
+    cwd: Option<String>,
+) -> Result<omp::OmpResolvedTarget, ApiError> {
+    tokio::task::spawn_blocking(move || omp::resolve_omp_target(&uri, cwd.as_deref()))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+}

@@ -22,7 +22,7 @@ export function markdownImageSrc(
   return localPath ? mediaAssetUrl(folderPath, localPath) : trimmed
 }
 
-function resolveMarkdownLocalPath(markdownPath: string, href: string): string | null {
+export function resolveMarkdownLocalPath(markdownPath: string, href: string): string | null {
   const [pathPart] = href.split(/[?#]/, 1)
   if (!pathPart) return null
 

@@ -4,13 +4,20 @@ import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeym
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
 import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
 import type { TabId } from '$lib/features/workbench/model'
-import { setSessionTabResumeToken, setSessionTabStatus, setSessionTabTitle } from '$lib/features/workbench/state.svelte'
+import {
+  getActiveFolderPath,
+  getTabs,
+  setSessionTabResumeToken,
+  setSessionTabStatus,
+  setSessionTabTitle
+} from '$lib/features/workbench/state.svelte'
 import type { PtyEvent, SessionSpec, SessionStartInfo } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
-import { WebLinksAddon } from '@xterm/addon-web-links'
+import { openLink } from '$lib/features/workbench/links/openLink'
+import { TerminalLinkProvider } from '$lib/features/sessions/terminal/TerminalLinkProvider'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 
@@ -61,7 +68,7 @@ export class TerminalSessionManager {
   private writeQueue: XtermWriteQueue | null = null
   private fitAddon: FitAddon | null = null
   private imageAddon: ImageAddon | null = null
-  private webLinksAddon: WebLinksAddon | null = null
+  private linkProviderDisposable: IDisposable | null = null
   private webglAddon: WebglAddon | null = null
   private webglContextLossDisposable: IDisposable | null = null
   private hostEl: HTMLDivElement | null = null
@@ -122,6 +129,10 @@ export class TerminalSessionManager {
 
   getLastError(): string | null {
     return this.lastError
+  }
+
+  private getFolderPath(): string | null {
+    return getTabs().find((t) => t.id === this.tabId)?.folderPath ?? getActiveFolderPath() ?? null
   }
 
   setInputEnabled(enabled: boolean): void {
@@ -377,7 +388,8 @@ export class TerminalSessionManager {
     this.terminal = null
     this.fitAddon = null
     this.imageAddon = null
-    this.webLinksAddon = null
+    this.linkProviderDisposable?.dispose()
+    this.linkProviderDisposable = null
     this.webglAddon = null
     this.hostEl = null
     this.eventListeners.clear()
@@ -483,14 +495,39 @@ export class TerminalSessionManager {
       height: '100%'
     })
 
-    this.terminal = new Terminal(TERMINAL_OPTIONS)
+    this.terminal = new Terminal({
+      ...TERMINAL_OPTIONS,
+      linkHandler: {
+        activate: (event: MouseEvent, text: string) => {
+          if (event.ctrlKey || event.metaKey) {
+            void openLink(text, this.getFolderPath())
+          }
+        },
+        hover: (_event: MouseEvent, text: string) => {
+          if (this.hostEl) {
+            this.hostEl.title = `Ctrl+click to follow: ${text}`
+          }
+        },
+        leave: () => {
+          if (this.hostEl) {
+            this.hostEl.title = ''
+          }
+        },
+        allowNonHttpProtocols: true
+      }
+    })
     this.fitAddon = new FitAddon()
     // xterm core does not render SIXEL / iTerm / Kitty image payloads; it needs the parser addon.
     this.imageAddon = new ImageAddon()
-    this.webLinksAddon = new WebLinksAddon()
     this.terminal.loadAddon(this.fitAddon)
     this.terminal.loadAddon(this.imageAddon)
-    this.terminal.loadAddon(this.webLinksAddon)
+    this.linkProviderDisposable = this.terminal.registerLinkProvider(
+      new TerminalLinkProvider(
+        this.terminal,
+        () => this.getFolderPath(),
+        () => this.hostEl
+      )
+    )
     this.terminal.open(this.hostEl)
     this.enableWebglRenderer()
     this.writeQueue = new XtermWriteQueue(this.terminal)
