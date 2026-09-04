@@ -138,13 +138,13 @@
 
 ### Performance & Reliability (post-freeze investigation)
 
-- [ ] Switch xterm.js to canvas or WebGL renderer
+- [x] Switch xterm.js to canvas or WebGL renderer
   The DOM renderer produces 20-30k DOM mutations/sec under multi-session TUI load. Not a freeze cause anymore (the sync-Tauri-command bug was), but high-frequency mutation pressure makes paints heavier and contributes to GC churn. The `@xterm/addon-canvas` or `@xterm/addon-webgl` swap is a one-import change in `TerminalSessionManager.ts`. Smoothness polish.
 - [ ] Switch PTY `Channel<Vec<u8>>` to `tauri::ipc::InvokeResponseBody::Raw`
   Tauri's default `Vec<u8>` channel encoding is JSON-array-of-numbers (`[27,91,72,...]`) which is ~3.5× the binary size. Switching to the `Raw` body sends bytes through Tauri's binary fetch path for payloads ≥1 KiB, dropping the JS-side decode cost. Combined with the existing 16 ms flusher tick and per-session deferred-write skip, the PTY pipeline would be effectively zero-overhead.
 - [ ] Cache git summaries harder; drop polling cadence
   `services::git::get_summary` is still 5+ seconds occasionally on `/repo/Minecraft/...` (filesystem latency or cross-process `.git/index` lock contention). The freeze fix made it non-blocking, but the work is still wasted. Options: extend the existing 300 ms TTL summary cache, drop poll frequency from 10 s to 30 s, or add a debounce so concurrent project polls don't all queue at once.
-- [ ] Reduce xterm scrollback default
+- [x] Reduce xterm scrollback default
   Currently 10 000 lines × N sessions. With many resident sessions this is a lot of buffered text. 2 000-3 000 is enough for typical TUI use.
 - [ ] Convert the remaining sync `pub fn app_take_pending_open_path` to an async-friendly form
   It refused the `pub fn` → `pub async fn` sweep because it doesn't return `Result` (Tauri requires it for async commands with state references). It is trivial / fast so left sync. If it ever grows real work, change the return type to `Result<T, ApiError>` and convert.

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 // PTY reader buffer. PTYs deliver up to whatever the buffer holds in a
@@ -179,66 +179,32 @@ impl PtyService {
 
                 let flusher_handle = std::thread::Builder::new()
                     .name(format!("pty-flusher-{}", &sid_for_thread))
-                    .spawn(move || {
-                        // Periodic stats so we can verify batching is
-                        // working when running an agent. Logged at info
-                        // level (visible by default) once per second
-                        // when there has been activity.
-                        let mut window_flushes: u64 = 0;
-                        let mut window_bytes: u64 = 0;
-                        let mut window_max_batch: usize = 0;
-                        let mut last_report = Instant::now();
+                    .spawn(move || loop {
+                        std::thread::sleep(OUTPUT_FLUSH_INTERVAL);
 
-                        loop {
-                            std::thread::sleep(OUTPUT_FLUSH_INTERVAL);
-
-                            let bytes_opt: Option<Vec<u8>> = {
-                                let mut p = pending_for_flusher.lock();
-                                if p.is_empty() {
-                                    None
-                                } else {
-                                    Some(std::mem::take(&mut *p))
-                                }
-                            };
-
-                            if let Some(bytes) = bytes_opt {
-                                let n = bytes.len();
-                                if !detached_for_flusher.load(Ordering::Relaxed) {
-                                    if output_channel_for_flusher.send(bytes).is_err() {
-                                        detached_for_flusher.store(true, Ordering::Relaxed);
-                                        info!(
-                                            "Output channel closed for {}, continuing to drain",
-                                            sid_for_flusher
-                                        );
-                                    } else {
-                                        window_flushes += 1;
-                                        window_bytes += n as u64;
-                                        if n > window_max_batch {
-                                            window_max_batch = n;
-                                        }
-                                    }
-                                }
+                        let bytes_opt: Option<Vec<u8>> = {
+                            let mut p = pending_for_flusher.lock();
+                            if p.is_empty() {
+                                None
+                            } else {
+                                Some(std::mem::take(&mut *p))
                             }
+                        };
 
-                            if last_report.elapsed() >= Duration::from_secs(1) && window_flushes > 0
+                        if let Some(bytes) = bytes_opt {
+                            if !detached_for_flusher.load(Ordering::Relaxed)
+                                && output_channel_for_flusher.send(bytes).is_err()
                             {
-                                let secs = last_report.elapsed().as_secs_f64();
+                                detached_for_flusher.store(true, Ordering::Relaxed);
                                 info!(
-                                    "[pty-batcher {}] {:.0} flushes/s, {:.0} KiB/s, max batch {} B",
-                                    sid_for_flusher,
-                                    window_flushes as f64 / secs,
-                                    window_bytes as f64 / secs / 1024.0,
-                                    window_max_batch
+                                    "Output channel closed for {}, continuing to drain",
+                                    sid_for_flusher
                                 );
-                                window_flushes = 0;
-                                window_bytes = 0;
-                                window_max_batch = 0;
-                                last_report = Instant::now();
                             }
+                        }
 
-                            if flusher_stop_inner.load(Ordering::Relaxed) {
-                                break;
-                            }
+                        if flusher_stop_inner.load(Ordering::Relaxed) {
+                            break;
                         }
                     })
                     .map(Some)

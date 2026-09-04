@@ -7,7 +7,6 @@ import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import type { PtyEvent } from '$lib/types/backend'
 import type { TaskRunStatus } from '$lib/features/workbench/model'
-import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
@@ -16,7 +15,7 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
   fontSize: 13,
   fontFamily: MONO_FONT_FAMILY,
-  scrollback: 10000,
+  scrollback: 3000,
   convertEol: true,
   vtExtensions: { kittyKeyboard: true },
   theme: {
@@ -58,7 +57,6 @@ export interface TaskTerminalInit {
 
 export class TaskTerminal {
   private readonly term: Terminal
-  private readonly writeQueue: XtermWriteQueue
   private readonly fit: FitAddon
   private readonly disposers: IDisposable[] = []
   private readonly hostEl: HTMLDivElement
@@ -89,7 +87,6 @@ export class TaskTerminal {
     this.term.loadAddon(this.fit)
     this.term.loadAddon(new WebLinksAddon())
     this.term.open(this.hostEl)
-    this.writeQueue = new XtermWriteQueue(this.term)
 
     if (init.clearBeforeStart) this.term.clear()
 
@@ -162,7 +159,7 @@ export class TaskTerminal {
         cols,
         rows,
         (data) => {
-          void this.writeQueue.write(new Uint8Array(data)).catch(() => {})
+          this.term.write(new Uint8Array(data))
         },
         (event) => this.handlePtyEvent(event)
       )
@@ -182,7 +179,7 @@ export class TaskTerminal {
       this.status = 'exited'
       this.onStatusChange?.('exited', code)
     } else if (event.type === 'error') {
-      void this.writeQueue.write(textEncoder.encode(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`)).catch(() => {})
+      this.term.write(textEncoder.encode(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`))
       this.status = 'failed'
       this.onStatusChange?.('failed', null)
     }
@@ -211,7 +208,6 @@ export class TaskTerminal {
     if (this.status === 'starting' || this.status === 'running') {
       backend.tasks.stop(this.runId).catch(() => {})
     }
-    this.writeQueue.dispose()
     this.term.dispose()
   }
 

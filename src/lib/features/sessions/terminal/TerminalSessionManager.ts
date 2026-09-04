@@ -2,7 +2,6 @@ import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
-import { XtermWriteQueue } from '$lib/features/terminal/XtermWriteQueue'
 import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
@@ -25,7 +24,7 @@ const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
   fontSize: 13,
   fontFamily: MONO_FONT_FAMILY,
-  scrollback: 10000,
+  scrollback: 3000,
   convertEol: true,
   vtExtensions: { kittyKeyboard: true },
   theme: {
@@ -65,7 +64,6 @@ export class TerminalSessionManager {
   private runId: string | null = null
 
   private terminal: Terminal | null = null
-  private writeQueue: XtermWriteQueue | null = null
   private fitAddon: FitAddon | null = null
   private imageAddon: ImageAddon | null = null
   private linkProviderDisposable: IDisposable | null = null
@@ -280,7 +278,7 @@ export class TerminalSessionManager {
       // Detached managers buffer bytes and replay on next attach. See
       // `deferredBytes`. Only the visible session pays xterm parser cost.
       if (this.container) {
-        this.writeTerminalInBackground(bytes)
+        this.writeTerminal(bytes)
       } else {
         this.deferDetachedBytes(bytes)
       }
@@ -299,7 +297,7 @@ export class TerminalSessionManager {
       if (event.type === 'exit') {
         this.ptyActive = false
         this.runId = null
-        this.writeTerminalInBackground(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'))
+        this.writeTerminal(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'))
         this.releaseChannels()
         setSessionTabStatus(this.tabId, 'exited')
       }
@@ -380,8 +378,6 @@ export class TerminalSessionManager {
     this.inputDisposable = null
     this.oscDisposable?.dispose()
     this.oscDisposable = null
-    this.writeQueue?.dispose()
-    this.writeQueue = null
     this.webglContextLossDisposable?.dispose()
     this.webglContextLossDisposable = null
     this.terminal?.dispose()
@@ -428,13 +424,11 @@ export class TerminalSessionManager {
     }
     this.deferredBytes = []
     this.deferredByteCount = 0
-    this.writeTerminalInBackground(merged)
+    this.writeTerminal(merged)
   }
 
-  private writeTerminalInBackground(data: Uint8Array): void {
-    void this.writeQueue?.write(data).catch((error) => {
-      console.error('Terminal render write failed:', error)
-    })
+  private writeTerminal(data: Uint8Array): void {
+    this.terminal?.write(data)
   }
 
   private enableWebglRenderer(): void {
@@ -530,7 +524,6 @@ export class TerminalSessionManager {
     )
     this.terminal.open(this.hostEl)
     this.enableWebglRenderer()
-    this.writeQueue = new XtermWriteQueue(this.terminal)
 
     // All key-by-key policy lives in terminalKeymap.ts. This handler
     // is a dumb dispatcher over the resolved KeyAction so adding a new
