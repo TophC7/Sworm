@@ -1,87 +1,142 @@
-# Sworm 🐛 
+# Sworm <img src="src-tauri/icons/icon.svg" width="36" height="36" align="top" alt="" />
 
-**The Agent IDE for Linux.**
+**A Linux desktop workspace for coding-agent CLIs.**
 
-Sworm is a code-first, agent-native development environment. It doesn't try to replace your agent CLIs (Claude Code, Codex, etc.) with a chat box; instead, it wraps a real IDE around them.
+Keep using Claude Code, Codex, OMP, or Antigravity in the terminal. Sworm puts a file editor, Git diffs, and local issues alongside them, so you can follow the work and review changes without bouncing between separate apps.
 
-Sworm is a light environment for your swarm of agents and thier buggy code. Built for developers who want to leverage AI agents without losing the power of a proper file tree, editor, and Git integration.
+Tabs can belong to different repositories. Switch tabs, and the file tree and Git sidebar follow.
 
-<!-- TODO: hero screenshot -->
+Sworm is a passion project in active development, built around a simple idea: keep the agent's own interface, and make the work around it easier.
 
-> **Status:** Early development. Linux/Wayland first. Expect breaking changes as the workflow evolves, and it's moving fast.
+![Sworm in action: switching tabs, editing files, reviewing diffs, and launching agents](public/tab-driven-workflow.webp)
 
----
+## Try it
 
-## Why Sworm?
-
-Most "ADEs" want to hide your code. They push you into chat panes and frame everything around "let the AI do it." I like AI in my workflow, but I also like reading code, owning my diffs, and using the tools my editor gives me.
-
-Sworm takes a different approach: **The CLI is the primary agentic interface.** 
-
-Agent CLIs like Claude Code and Codex already have excellent tool ecosystems (MCP, skills, memory). Sworm gives these agents a first-class home with:
-
-1.  **Context-Aware Terminals:** Multi-session PTYs that automatically track agent activity and link it to the IDE state.
-2.  **Review-First Workflow:** Agents touch a lot of code. Sworm is built to help you review, diff, and commit those changes with confidence.
-3.  **Nix-Native Reproducibility:** Your dev environment shouldn't be a mystery. Sworm uses Nix Flakes to ensure every terminal and task runs in the exact environment your project requires.
-
----
-
-## Highlights
-
-### Agent-Native Integration
-- **Thread Tracking:** Deep integration with tools like **Codex** to link terminal sessions with agent conversation history.
-- **Activity Mapping:** Scans your filesystem to discover where agents have been active, providing a "heatmap" of agent-driven development, helping you locate your AI projects.
-- **Multi-Session PTY:** Run `claude`, `codex`, `omp`, `agy`, or standard shells in folder-scoped terminal tabs.
-
-### Nix-Powered Environments
-- **Flake Integration:** Point Sworm at a `flake.nix` and its `devShell` becomes the environment for every shell, session, and task. 
-- **Zero Configuration:** No `direnv` or manual activation required. If it's in the flake, it's in your PATH.
-
-### Serious Git Tooling
-- **Commit Graph:** A VSCode-style visual representation of your repository's history.
-- **Advanced Stashing:** Per-file stashing and a dedicated stash management UI.
-- **Diff Viewer:** High-performance, Monaco-based side-by-side diffs for reviewing agent-generated changes.
-
-### High-Performance Editor
-- **Monaco + Shiki:** The reliability of Monaco with the accuracy of TextMate-based syntax highlighting.
-- **Extension System:** LSP support via a manifest system (built-in support for Rust, Nix, TS/JS, and more).
-
----
-
-## Tech Stack
-
-Sworm is built for performance and a native feel on modern Linux:
-
-- **Tauri v2 + Rust:** Privileged operations (PTY, Git, FS) handled by a fast, safe backend.
-- **Svelte 5:** A modern, reactive frontend that stays out of the way.
-- **Monaco Editor:** The editor you know and the industry standard for web-based code editing.
-- **SQLite:** Reliable local state management.
-- **Nix:** The foundation for reproducible development environments.
-
----
-
-## Getting Started
-
-### Nix (Recommended)
+On Linux, with [Nix](https://nixos.org/) and flakes enabled:
 
 ```sh
 nix run github:tophc7/Sworm
 ```
 
-### From Source
+Install and authenticate whichever agent CLI you want to use separately. Sworm detects supported installed agents; you can also open a regular terminal using your login shell.
+
+Nix is currently the only supported installation method. Other installation options are in progress.
+
+## Why I built Sworm
+
+I've always liked VS Code's straightforward workflow. I was much less happy with it's use of Electron, especially on Wayland, and wanted something that felt familiar without relying on it.
+
+As coding agents became part of my daily work, I found I really only needed a file tree, Git diffs, an editor, and a terminal. I wasn't using any of the rest of the "IDE" or its extensions anymore; but VS Code's workflow was still the only that worked for me.
+
+Sworm grew out of that: a workspace for the parts I actually use when working with agents. It's evolved into a tab-driven workflow of its own, while keeping enough familiarity that VS Code users should feel at home.
+
+## What you can do
+
+### Keep agents and repositories in reach
+
+Run agent sessions and ordinary terminals in tabs, with each tab tied to its folder. The sidebar follows the selected tab, and a folder stays open until its last tab closes. Open multiple windows and drag tabs between them.
+
+The home dashboard reads local Claude Code, Codex, and OMP histories to show projects with a seven-day activity heatmap, so you can find where you left off.
+
+<details>
+<summary>See the dashboard and an agent workspace</summary>
+
+![Project dashboard with seven-day agent activity](public/home.png)
+
+![An OMP session beside Sworm's Git changes and commit graph](public/git-gragh-diff_omp-session.png)
+
+</details>
+
+### Edit and review the work
+
+Browse files, edit code, and review changes before committing:
+
+- Side-by-side or unified Git diffs, with adjustable text size and word wrap.
+- Separate staged and working changes, per-file change counts, and commit composition.
+- A Git graph for browsing commits, branches, and merges.
+- Monaco code editing, plus Shiki highlighting for Nix, Svelte, and Fish.
+- Markdown editing with a live preview, and a file tree with filtering, Git markers, and drag-and-drop.
+
+<details>
+<summary>See Git diffs, the code editor, Markdown preview, and command palette</summary>
+
+![Sworm showing a split commit diff beside the file changes and Git graph](public/commit-diff.png)
+
+![Code editing in Sworm](public/monaco-file.png)
+
+![Markdown source and live preview in Sworm](public/markdown-split.png)
+
+![Workbench command palette](public/pallete.png)
+
+</details>
+
+Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command palette also has modes for editor commands (`>`), runnable tasks (`!`), and files (`/`). Shortcuts are customizable.
+
+### Use your project's Nix environment
+
+Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate an environment from the status bar; once ready, it is used for new terminals, agent sessions, and runnable tasks. Without a ready Nix environment, sessions use the host environment.
+
+The status bar shows the current folder, Git branch, Nix environment status, and live session count.
+
+<details>
+<summary>See a terminal session</summary>
+
+![Terminal session with the project environment status visible](public/terminal.png)
+
+</details>
+
+### Keep local tasks alongside the code
+
+Track issues with priorities, group them into epics, and see progress in the sidebar. Agents can query, create, and update issues through a local socket API rather than editing the database directly.
+
+<details>
+<summary>See the session launcher and issues sidebar</summary>
+
+![Agent session launcher beside the local issues sidebar](public/new-session.png)
+
+</details>
+
+## Worth knowing
+
+- **Active development, Linux-first.** Expect rough edges and changes as the project grows. I do daily-drive it however, so it's stable enough.
+- **Sessions in the same folder share its working tree.** Tabs do not create isolated worktrees.
+- **Your agent is still your agent.** Sworm runs the CLI itself; model information and other output inside its terminal come from that CLI.
+
+## Development
+
+Nix provides the development toolchain and Linux desktop dependencies:
 
 ```sh
-git clone https://github.com/tophc7/Sworm
+git clone https://github.com/tophc7/Sworm.git
 cd Sworm
-nix develop (or install all depencies)
+nix develop
 bun install
 bun run app:dev
 ```
 
+Inside the development shell, build a release package with:
+
+```sh
+bun run app:build
+```
+
+Or build and run the Nix package from the checkout:
+
+```sh
+nix run .
+```
+
+Sworm uses [Tauri v2](https://tauri.app/) and Rust for the desktop runtime, with the system Git CLI and SQLite. The interface is built with Svelte 5, SvelteKit, and Tailwind CSS v4; editing uses Monaco and Shiki, and terminals use xterm.js. Nix defines the development environment and packaging.
+
+## Feedback
+
+If you try Sworm, I'd like to hear what works for you and what gets in the way. [Open an issue](https://github.com/tophc7/Sworm/issues) with bugs, ideas, or how you use coding agents.
+
 ## Credits
 
-- **[Emdash](https://github.com/generalaction/emdash)** — An agent-centric IDE The initial inspiration for sworm.
+- [Emdash](https://github.com/generalaction/emdash) was an early architectural inspiration for Sworm's agent-focused workspace.
+- [VS Code](https://code.visualstudio.com/) shaped the workflow and UI familiarity I wanted to keep. Sworm also uses Microsoft's [Monaco Editor](https://microsoft.github.io/monaco-editor/), the editor behind VS Code.
 
 ## License
 
-[AGPLv3-or-later](./LICENSE).
+[AGPL-3.0-or-later](./LICENSE)
