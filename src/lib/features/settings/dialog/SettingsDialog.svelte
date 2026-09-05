@@ -31,17 +31,17 @@
   import { getVersion } from '@tauri-apps/api/app'
   import { onMount, type Component } from 'svelte'
 
-  // Cache the version once per module load. The value is immutable for
-  // the running binary, so repeat opens of the dialog reuse it instead
-  // of re-hitting the Tauri IPC. A null result means we're running
-  // outside Tauri (e.g. vite preview).
-  const versionPromise: Promise<string | null> = getVersion().catch(() => null)
   import GeneralView from '$lib/features/settings/views/GeneralView.svelte'
   import KeyboardShortcutsView from '$lib/features/settings/views/KeyboardShortcutsView.svelte'
   import LanguageSettingsView from '$lib/features/settings/views/LanguageSettingsView.svelte'
   import NixView from '$lib/features/settings/views/NixView.svelte'
   import ProvidersView from '$lib/features/settings/views/ProvidersView.svelte'
   import WindowView from '$lib/features/settings/views/WindowView.svelte'
+
+  // SemVer metadata carries commit identity; the numeric prefix only orders packages.
+  const versionPromise: Promise<string | null> = getVersion()
+    .then((version) => version.split('+')[1] ?? (version === '0.0.0' ? 'dev' : version))
+    .catch(() => null)
 
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 
@@ -204,7 +204,7 @@
 
         <footer class="flex h-10 shrink-0 items-center justify-between border-t border-edge px-5 text-sm">
           <span class="font-mono text-xs text-subtle">
-            {#if version}Sworm v{version}{/if}
+            {#if version}Sworm {version}{/if}
           </span>
 
           <TooltipRoot>

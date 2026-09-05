@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sworm",
-  "version": "0.1.0",
   "identifier": "dev.sworm",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -24,7 +23,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm"],
+    "targets": ["deb"],
+    "publisher": "Chris Toph <toph@ryot.foo>",
+    "homepage": "https://github.com/TophC7/Sworm",
+    "category": "DeveloperTool",
+    "shortDescription": "Linux-first desktop app for coding-agent CLIs",
+    "longDescription": "Sworm is a Linux-first desktop development environment for working with coding-agent CLIs.",
     "icon": [
       "icons/16x16.png",
       "icons/22x22.png",
@@ -43,6 +47,16 @@
       "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["git", "libwebkit2gtk-4.1-0", "libgtk-3-0"],
+        "files": {
+          "/usr/share/doc/sworm/LICENSE": "../LICENSE"
+        },
+        "section": "devel",
+        "desktopTemplate": "sworm.desktop"
+      }
+    }
   }
 }

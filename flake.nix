@@ -32,7 +32,8 @@
     }:
     let
       lib = nixpkgs.lib;
-      version = "0.1.0";
+      revision = self.shortRev or self.dirtyShortRev or "dev";
+      version = "0.0.0+${revision}";
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -68,10 +69,9 @@
           fs = pkgs.lib.fileset;
           runtimeLibraries = runtimeLibsFor pkgs;
 
-          # Frontend-only build (SvelteKit via bun).
+          # Frontend assets do not depend on the app's commit identity.
           frontend = pkgs.stdenv.mkDerivation {
-            pname = "sworm-frontend";
-            inherit version;
+            name = "sworm-frontend";
 
             src = fs.toSource {
               root = ./.;
@@ -130,6 +130,7 @@
             path: type:
             (craneLib.filterCargoSources path type)
             || (lib.hasSuffix "tauri.conf.json" path)
+            || (lib.hasSuffix "sworm.desktop" path)
             || (lib.hasInfix "/builtins/" path)
             || (lib.hasInfix "/capabilities/" path)
             || (lib.hasInfix "/icons/" path)
@@ -162,11 +163,15 @@
             cargoExtraArgs = "--features tauri/custom-protocol";
 
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            TAURI_CONFIG = builtins.toJSON { inherit version; };
           };
 
           # Phase 1: build only Cargo deps (cached until Cargo.lock changes)
           cargoArtifacts = craneLib.buildDepsOnly (
-            commonArgs
+            (builtins.removeAttrs commonArgs [
+              "version"
+              "TAURI_CONFIG"
+            ])
             // {
               # Dummy frontend so Tauri's build.rs doesn't fail during dep compilation.
               # frontendDist in tauri.conf.json is "../build" relative to src-tauri.
@@ -177,27 +182,7 @@
             }
           );
 
-          # Registering inode/directory makes Sworm show up in Nautilus's
-          # "Open With Other Application" dialog for folders, and the
-          # jumplist Action appears on GNOME dock right-clicks.
-          # %F gets filled with the selected folder path(s) at launch;
-          # main.rs parses argv[1] and opens that path as a project.
-          desktopFile = pkgs.writeText "sworm.desktop" ''
-            [Desktop Entry]
-            Name=Sworm
-            Comment=Agentic Development Environment
-            Exec=sworm %F
-            Icon=sworm
-            Terminal=false
-            Type=Application
-            Categories=Development;IDE;
-            MimeType=inode/directory;
-            Actions=open-folder;
-
-            [Desktop Action open-folder]
-            Name=Open Folder in Sworm
-            Exec=sworm %F
-          '';
+          desktopFile = ./src-tauri/sworm.desktop;
 
           # Phase 2: build the app against pre-built deps (only recompiles sworm crate)
           appPackage = craneLib.buildPackage (
@@ -258,6 +243,7 @@
               pkgs.file
               pkgs.forgejo-mcp
               pkgs.git
+              pkgs.fish
               pkgs.gsettings-desktop-schemas
               pkgs.jq
               pkgs.biome

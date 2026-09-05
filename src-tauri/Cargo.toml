@@ -1,6 +1,6 @@
 [package]
 name = "sworm"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 description = "Sworm - Linux-first desktop app for coding-agent CLIs"
 license = "AGPL-3.0-or-later"

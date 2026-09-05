@@ -8,11 +8,11 @@ Tabs can belong to different repositories. Switch tabs, and the file tree and Gi
 
 Sworm is a passion project in active development, built around a simple idea: keep the agent's own interface, and make the work around it easier.
 
-![Sworm in action: switching tabs, editing files, reviewing diffs, and launching agents](public/tab-driven-workflow.webp)
+![Sworm in action: switching tabs, editing files, reviewing diffs, and launching agents](static/readme/tab-driven-workflow.webp)
 
 ## Try it
 
-On Linux, with [Nix](https://nixos.org/) and flakes enabled:
+With [Nix](https://nixos.org/) and flakes enabled:
 
 ```sh
 nix run github:tophc7/Sworm
@@ -20,7 +20,41 @@ nix run github:tophc7/Sworm
 
 Install and authenticate whichever agent CLI you want to use separately. Sworm detects supported installed agents; you can also open a regular terminal using your login shell.
 
-Nix is currently the only supported installation method. Other installation options are in progress.
+<details>
+<summary>Install on Debian or Arch</summary>
+
+### Debian
+
+Download the `.deb` for your architecture from [GitHub Releases](https://github.com/TophC7/Sworm/releases/latest), then install:
+
+```sh
+sudo apt install ./sworm_*_$(dpkg --print-architecture).deb
+```
+
+Available for Debian 12 on `amd64` and `arm64`. To update, install a newer release with the same command.
+
+### Arch
+
+Download `sworm-bin-<commit>.tar.gz` from [GitHub Releases](https://github.com/TophC7/Sworm/releases/latest) into an empty directory, then unpack and install:
+
+Using `yay`:
+
+```sh
+tar -xf sworm-bin-*.tar.gz
+yay -Bi .
+```
+
+Using `makepkg`:
+
+```sh
+sudo pacman -S --needed base-devel
+tar -xf sworm-bin-*.tar.gz
+makepkg -si
+```
+
+Supports `x86_64` and `aarch64`.
+
+</details>
 
 ## Why I built Sworm
 
@@ -41,9 +75,9 @@ The home dashboard reads local Claude Code, Codex, and OMP histories to show pro
 <details>
 <summary>📷 See the dashboard and an agent workspace</summary>
 
-![Project dashboard with seven-day agent activity](public/home.png)
+![Project dashboard with seven-day agent activity](static/readme/home.png)
 
-![An OMP session beside Sworm's Git changes and commit graph](public/git-gragh-diff_omp-session.png)
+![An OMP session beside Sworm's Git changes and commit graph](static/readme/git-gragh-diff_omp-session.png)
 
 </details>
 
@@ -60,13 +94,13 @@ Browse files, edit code, and review changes before committing:
 <details>
 <summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>
 
-![Sworm showing a split commit diff beside the file changes and Git graph](public/commit-diff.png)
+![Sworm showing a split commit diff beside the file changes and Git graph](static/readme/commit-diff.png)
 
-![Code editing in Sworm](public/monaco-file.png)
+![Code editing in Sworm](static/readme/monaco-file.png)
 
-![Markdown source and live preview in Sworm](public/markdown-split.png)
+![Markdown source and live preview in Sworm](static/readme/markdown-split.png)
 
-![Workbench command palette](public/pallete.png)
+![Workbench command palette](static/readme/pallete.png)
 
 </details>
 
@@ -81,7 +115,7 @@ The status bar shows the current folder, Git branch, Nix environment status, and
 <details>
 <summary>📷 See a terminal session</summary>
 
-![Terminal session with the project environment status visible](public/terminal.png)
+![Terminal session with the project environment status visible](static/readme/terminal.png)
 
 </details>
 
@@ -92,7 +126,7 @@ Track issues with priorities, group them into epics, and see progress in the sid
 <details>
 <summary>📷 See the session launcher and issues sidebar</summary>
 
-![Agent session launcher beside the local issues sidebar](public/new-session.png)
+![Agent session launcher beside the local issues sidebar](static/readme/new-session.png)
 
 </details>
 
@@ -114,15 +148,10 @@ bun install
 bun run app:dev
 ```
 
-Inside the development shell, build a release package with:
+Build and run the Nix package from the checkout:
 
 ```sh
-bun run app:build
-```
-
-Or build and run the Nix package from the checkout:
-
-```sh
+nix build
 nix run .
 ```
 

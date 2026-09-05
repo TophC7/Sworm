@@ -1,0 +1,130 @@
+name: Linux release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      hash: ${{ steps.version.outputs.hash }}
+      package: ${{ steps.version.outputs.package }}
+    steps:
+      - name: Derive version from this push
+        id: version
+        run: |
+          hash="${GITHUB_SHA:0:12}"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          echo "package=0.0.$GITHUB_RUN_NUMBER+$hash" >> "$GITHUB_OUTPUT"
+
+  deb:
+    name: Debian (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      APP_VERSION: ${{ needs.version.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native Debian package
+        run: >-
+          docker build --file packaging/debian/Dockerfile
+          --build-arg APP_VERSION="$APP_VERSION"
+          --target artifacts --output type=local,dest=dist .
+      - name: Check installation and launch
+        run: >-
+          docker build --file packaging/debian/Dockerfile
+          --build-arg APP_VERSION="$APP_VERSION"
+          --target smoke .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Assemble and release
+    needs: [version, deb]
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: github-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      APP_VERSION: ${{ needs.version.outputs.package }}
+      COMMIT_HASH: ${{ needs.version.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+      - name: Install release tools
+        run: sudo apt-get update && sudo apt-get install --yes fish
+      - name: Generate checksum-pinned AUR recipe
+        run: fish packaging/aur/generate.fish "$APP_VERSION" dist dist/aur
+      - name: Build Arch package and generate SRCINFO
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" -v "$PWD/packaging/smoke.fish:/smoke.fish:ro" archlinux:base-devel bash -euc '
+            useradd --create-home builder
+            cp -r /dist/aur /home/builder/package
+            cp /dist/*.deb /home/builder/package/
+            chown -R builder:builder /home/builder/package
+            cd /home/builder/package
+            runuser -u builder -- makepkg --verifysource --noconfirm
+            runuser -u builder -- makepkg --nodeps --noconfirm
+            runuser -u builder -- makepkg --printsrcinfo > /dist/aur/.SRCINFO
+            pacman -Syu --noconfirm --needed fish xorg-server-xvfb xorg-xauth xdotool dbus
+            pacman -U --noconfirm ./*.pkg.tar.zst
+            ldd /usr/bin/sworm > /tmp/sworm-libraries
+            cat /tmp/sworm-libraries
+            if grep -q "not found" /tmp/sworm-libraries; then exit 1; fi
+            # Only the disposable test container bypasses WebKit namespace isolation.
+            WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 dbus-run-session -- xvfb-run -a fish /smoke.fish
+          '
+      - name: Bundle release files
+        run: |
+          tar -czf "dist/sworm-bin-$COMMIT_HASH.tar.gz" -C dist/aur PKGBUILD .SRCINFO
+          cd dist
+          sha256sum *.deb *.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          latest_flag="--latest=false"
+          current_latest="$(gh release view --json targetCommitish,tagName --jq '.targetCommitish // .tagName' 2>/dev/null || true)"
+          git fetch origin main --depth=1
+          tip_sha="$(git rev-parse origin/main)"
+          if test -z "$current_latest" || git merge-base --is-ancestor "$current_latest" "$GITHUB_SHA" || test "$GITHUB_SHA" = "$tip_sha"; then
+            latest_flag="--latest=true"
+          fi
+          gh release create "$COMMIT_HASH" --target "$GITHUB_SHA" \
+            "$latest_flag" \
+            --title "$COMMIT_HASH" --generate-notes \
+            dist/*.deb dist/*.tar.gz dist/SHA256SUMS

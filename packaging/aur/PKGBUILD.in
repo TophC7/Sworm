@@ -1,0 +1,41 @@
+pkgname=sworm-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Linux-first desktop app for coding-agent CLIs'
+arch=('x86_64' 'aarch64')
+url='https://github.com/TophC7/Sworm'
+license=('AGPL-3.0-or-later')
+depends=(
+  'gcc-libs'
+  'git'
+  'glib2'
+  'glibc'
+  'gtk3'
+  'webkit2gtk-4.1'
+)
+makedepends=('libarchive')
+optdepends=('nix: Nix environment integration')
+provides=("sworm=$pkgver")
+conflicts=('sworm')
+options=('!strip')
+source_x86_64=("https://github.com/TophC7/Sworm/releases/download/@COMMIT@/sworm_${pkgver}_amd64.deb")
+sha256sums_x86_64=('@AMD64_SHA256@')
+source_aarch64=("https://github.com/TophC7/Sworm/releases/download/@COMMIT@/sworm_${pkgver}_arm64.deb")
+sha256sums_aarch64=('@ARM64_SHA256@')
+noextract=("sworm_${pkgver}_amd64.deb" "sworm_${pkgver}_arm64.deb")
+
+package() {
+  local deb_arch
+  case "$CARCH" in
+    x86_64) deb_arch=amd64 ;;
+    aarch64) deb_arch=arm64 ;;
+  esac
+
+  bsdtar -xOf "$srcdir/sworm_${pkgver}_${deb_arch}.deb" 'data.tar.*' |
+    bsdtar -xf - -C "$pkgdir"
+
+  install -Dm644 "$pkgdir/usr/share/doc/sworm/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  rm -f "$pkgdir/usr/share/doc/sworm/LICENSE"
+  rmdir --ignore-fail-on-non-empty "$pkgdir/usr/share/doc/sworm" "$pkgdir/usr/share/doc"
+}
