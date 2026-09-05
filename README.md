@@ -39,7 +39,7 @@ Run agent sessions and ordinary terminals in tabs, with each tab tied to its fol
 The home dashboard reads local Claude Code, Codex, and OMP histories to show projects with a seven-day activity heatmap, so you can find where you left off.
 
 <details>
-<summary>See the dashboard and an agent workspace</summary>
+<summary>📷 See the dashboard and an agent workspace</summary>
 
 ![Project dashboard with seven-day agent activity](public/home.png)
 
@@ -58,7 +58,7 @@ Browse files, edit code, and review changes before committing:
 - Markdown editing with a live preview, and a file tree with filtering, Git markers, and drag-and-drop.
 
 <details>
-<summary>See Git diffs, the code editor, Markdown preview, and command palette</summary>
+<summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>
 
 ![Sworm showing a split commit diff beside the file changes and Git graph](public/commit-diff.png)
 
@@ -79,7 +79,7 @@ Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate a
 The status bar shows the current folder, Git branch, Nix environment status, and live session count.
 
 <details>
-<summary>See a terminal session</summary>
+<summary>📷 See a terminal session</summary>
 
 ![Terminal session with the project environment status visible](public/terminal.png)
 
@@ -90,7 +90,7 @@ The status bar shows the current folder, Git branch, Nix environment status, and
 Track issues with priorities, group them into epics, and see progress in the sidebar. Agents can query, create, and update issues through a local socket API rather than editing the database directly.
 
 <details>
-<summary>See the session launcher and issues sidebar</summary>
+<summary>📷 See the session launcher and issues sidebar</summary>
 
 ![Agent session launcher beside the local issues sidebar](public/new-session.png)
 
