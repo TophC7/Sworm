@@ -5,6 +5,7 @@
 // There is no project lifecycle: opening a folder either focuses one of
 // its tabs or seeds a launcher tab for it.
 
+import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
 import { releaseFolder } from '$lib/features/folders/lifecycle'
 import { filterExistingFolders, getRecentFolders, pushRecentFolder } from '$lib/features/folders/state.svelte'
@@ -37,7 +38,13 @@ import {
   serializeWorkbench,
   tabToPersisted
 } from '$lib/features/workbench/persistence'
-import { basename } from '$lib/utils/paths'
+import {
+  ensureTextFileSyncListeners,
+  openTextFile,
+  revealTextTab,
+  type TextRevealTarget
+} from '$lib/features/workbench/surfaces/text/service.svelte'
+import { basename, resolveProjectFile } from '$lib/utils/paths'
 
 export type {
   DiffSource,
@@ -60,6 +67,15 @@ export { canLockTab }
 
 // MODULE STATE //
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
+let windowLabel = 'main'
+
+export function setWindowLabel(label: string): void {
+  windowLabel = label
+}
+
+export function getWindowLabel(): string {
+  return windowLabel
+}
 
 // LIFO stack of recently closed tabs for Ctrl+Shift+T. In-memory only: a
 // fresh launch has nothing to reopen beyond what restore hydrates.
@@ -73,14 +89,42 @@ const lastActiveByFolder = new Map<string, TabId>()
 // Until restore has consulted disk, commits must not persist or the
 // seeded empty state would clobber the saved blob.
 let restored = false
+let pendingFocusTabId: TabId | null = null
+const transferringTabIds = new SvelteSet<TabId>()
+const stagedTabIds = new SvelteSet<TabId>()
+const folderOps = new Map<string, Promise<void>>()
+
+function queueFolderOp(folderPath: string, op: () => Promise<void>): Promise<void> {
+  const prev = folderOps.get(folderPath) ?? Promise.resolve()
+  const next = prev.catch(() => {}).then(op)
+  folderOps.set(folderPath, next)
+  void next
+    .finally(() => {
+      if (folderOps.get(folderPath) === next) folderOps.delete(folderPath)
+    })
+    .catch(() => {})
+  return next
+}
+
+export function awaitFolderOps(): Promise<void> {
+  return Promise.all(folderOps.values()).then(() => {})
+}
+
+export function setTabTransferring(tabId: TabId, on: boolean): void {
+  if (on) transferringTabIds.add(tabId)
+  else transferringTabIds.delete(tabId)
+}
+
+export function isTabTransferring(tabId: TabId): boolean {
+  return transferringTabIds.has(tabId)
+}
 
 // Monotonic counter for "Untitled-N" labels on new untitled text tabs.
 let untitledCounter = 0
 
 // HELPERS //
-let nextTabId = 0
-function generateTabId(): TabId {
-  return `tab-${Date.now()}-${nextTabId++}`
+export function generateTabId(): TabId {
+  return `tab-${crypto.randomUUID()}`
 }
 
 let nextRevealNonce = 0
@@ -114,25 +158,40 @@ function findTab(tabId: TabId): Tab | undefined {
 
 /**
  * Single choke point for layout mutation: reassigns the workbench so
- * `$derived` consumers see a new reference, then schedules a debounced
- * persist. Callers mutate `tabs`/`activeTabId` via the `next` object and
- * identify folders whose tabs they removed. A folder that loses its last
- * tab releases every folder-scoped cache and process (git, nix, LSP,
- * providers, issue bridge). Reopening it later repopulates them lazily.
+ * `$derived` consumers see a new reference, updates backend folder
+ * ownership, then schedules a debounced persist.
  */
-function commit(
-  next: { tabs?: Tab[]; activeTabId?: TabId | null } = {},
-  possiblyReleasedFolderPaths: readonly string[] = []
-): void {
+function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist = true): void {
+  const previousFolders = new Set(workbench.tabs.map((tab) => tab.folderPath))
   const tabs = next.tabs ?? workbench.tabs
+  const nextFolders = new Set(tabs.map((tab) => tab.folderPath))
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
   workbench = { tabs: [...tabs], activeTabId }
   const active = activeTabId ? tabs.find((t) => t.id === activeTabId) : undefined
   if (active) lastActiveByFolder.set(active.folderPath, active.id)
-  for (const folderPath of possiblyReleasedFolderPaths) {
-    if (!tabs.some((tab) => tab.folderPath === folderPath)) releaseFolder(folderPath)
+  for (const folderPath of nextFolders) {
+    if (!previousFolders.has(folderPath)) {
+      void queueFolderOp(folderPath, () =>
+        backend.folders.claim(folderPath).catch((e) => console.warn('Folder claim failed:', e))
+      )
+    }
   }
-  if (restored) schedulePersistWorkbench(() => serializeWorkbench(workbench))
+  for (const folderPath of previousFolders) {
+    if (!nextFolders.has(folderPath)) void queueFolderOp(folderPath, () => releaseFolder(folderPath))
+  }
+  if (persist) persistWorkbench()
+}
+
+export function persistWorkbench(): void {
+  if (restored)
+    schedulePersistWorkbench(windowLabel, () => {
+      const tabs = workbench.tabs.filter((tab) => !stagedTabIds.has(tab.id))
+      const activeTabId = workbench.activeTabId
+      return serializeWorkbench({
+        tabs,
+        activeTabId: activeTabId != null && stagedTabIds.has(activeTabId) ? (tabs[0]?.id ?? null) : activeTabId
+      })
+    })
 }
 
 /**
@@ -217,6 +276,15 @@ export function setActiveTab(tabId: TabId): void {
   commit({ activeTabId: tabId })
 }
 
+export function requestFocusTab(tabId: TabId, reveal?: TextRevealTarget | null): void {
+  if (findTab(tabId)) {
+    setActiveTab(tabId)
+    if (reveal) revealTextTab(tabId, reveal)
+  } else if (!restored) {
+    pendingFocusTabId = tabId
+  }
+}
+
 export function reorderTab(fromIndex: number, toIndex: number): void {
   const tabs = workbench.tabs
   if (fromIndex < 0 || toIndex < 0 || fromIndex >= tabs.length || toIndex >= tabs.length) return
@@ -225,6 +293,35 @@ export function reorderTab(fromIndex: number, toIndex: number): void {
   const [moved] = next.splice(fromIndex, 1)
   next.splice(toIndex, 0, moved)
   commit({ tabs: next })
+}
+/** Stage an imported tab without persisting it before the broker commits. */
+export function stageTransferredTab(tab: Tab, targetIndex: number): void {
+  if (findTab(tab.id)) throw new Error(`Tab ${tab.id} already exists in target window`)
+  transferringTabIds.add(tab.id)
+  stagedTabIds.add(tab.id)
+  const tabs = [...workbench.tabs]
+  tabs.splice(Math.max(0, Math.min(targetIndex, tabs.length)), 0, tab)
+  commit({ tabs, activeTabId: tab.id }, false)
+}
+
+/** Remove a transferred tab without close prompts, process teardown, or file-claim release. */
+export function removeTransferredTab(tabId: TabId, persist = true): void {
+  transferringTabIds.delete(tabId)
+  stagedTabIds.delete(tabId)
+  const index = workbench.tabs.findIndex((tab) => tab.id === tabId)
+  if (index < 0) return
+  const tab = workbench.tabs[index]
+  const tabs = workbench.tabs.filter((candidate) => candidate.id !== tabId)
+  const activeTabId =
+    workbench.activeTabId === tabId ? ((tabs[index] ?? tabs[index - 1])?.id ?? null) : workbench.activeTabId
+  if (lastActiveByFolder.get(tab.folderPath) === tabId) lastActiveByFolder.delete(tab.folderPath)
+  commit({ tabs, activeTabId }, persist)
+}
+
+export function finalizeTransferredTab(tabId: TabId): void {
+  transferringTabIds.delete(tabId)
+  stagedTabIds.delete(tabId)
+  persistWorkbench()
 }
 
 export function toggleTabLocked(tabId: TabId): void {
@@ -265,25 +362,48 @@ export async function openFolder(path: string): Promise<void> {
  * Hydrate the persisted tab list. Tabs whose folder no longer resolves are
  * dropped; session tabs come back dormant and start on first activation.
  */
-export async function restoreWorkbench(): Promise<void> {
+export async function restoreWorkbench(label: string): Promise<void> {
   try {
-    const persisted = await loadPersistedWorkbench()
+    await ensureTextFileSyncListeners()
+    const persisted = await loadPersistedWorkbench(label)
     if (persisted) {
-      const alive = new Set(await filterExistingFolders([...new Set(persisted.tabs.map((t) => t.folderPath))]))
+      const folders = await filterExistingFolders([...new Set(persisted.tabs.map((t) => t.folderPath))])
+      const alive = new Set(folders)
 
-      // Keep each survivor's original index so the saved active slot can
-      // fall back to its nearest neighbour (right, then left) when dropped.
-      const survivors: Array<{ tab: Tab; index: number }> = []
-      persisted.tabs.forEach((entry, index) => {
-        if (alive.has(entry.folderPath)) survivors.push({ tab: persistedToTab(entry, generateTabId()), index })
-      })
-      const tabs = survivors.map((s) => s.tab)
+      // Claims run before commit, so a redirect that lands mid-restore is parked in pendingFocusTabId and applied at commit.
+      // Keep original indices for nearest-neighbour fallback after drops.
+      const candidates: Array<{ tab: Tab; index: number }> = []
+      for (const [index, entry] of persisted.tabs.entries()) {
+        if (alive.has(entry.folderPath)) candidates.push({ tab: persistedToTab(entry, generateTabId()), index })
+      }
+
+      const results = await Promise.all(
+        candidates.map(async (c) => ({
+          c,
+          redirect:
+            c.tab.kind === 'text' &&
+            c.tab.filePath != null &&
+            !c.tab.gitRef &&
+            (await backend.window.claimFile(resolveProjectFile(c.tab.folderPath, c.tab.filePath), c.tab.id)).status ===
+              'redirect'
+        }))
+      )
+      const survivors = results
+        .filter(({ c, redirect }) => {
+          if (redirect && c.tab.kind === 'text') {
+            notify.warning('Duplicate file tab dropped', `File ${c.tab.filePath} is open in another window.`)
+          }
+          return !redirect
+        })
+        .map(({ c }) => c)
+
       const active =
-        survivors.find((s) => s.index >= persisted.activeTabIndex) ??
-        survivors.findLast((s) => s.index < persisted.activeTabIndex)
-      const activeTabId = active?.tab.id ?? null
-
-      commit({ tabs, activeTabId })
+        survivors.find((candidate) => candidate.tab.id === pendingFocusTabId) ??
+        survivors.find((candidate) => candidate.index >= persisted.activeTabIndex) ??
+        survivors.findLast((candidate) => candidate.index < persisted.activeTabIndex)
+      pendingFocusTabId = null
+      commit({ tabs: survivors.map((candidate) => candidate.tab), activeTabId: active?.tab.id ?? null })
+      await awaitFolderOps()
     }
   } catch (error) {
     console.warn('Workbench restore failed, starting empty:', error)
@@ -429,27 +549,38 @@ function addContentTab(
   makeTab: (id: TabId) => Tab,
   temporary: boolean,
   matchPersistent?: (t: Tab) => boolean,
-  onReuse?: (existing: Tab) => Tab
+  onReuse?: (existing: Tab) => Tab,
+  tabId?: TabId
 ): TabId {
   if (temporary) {
-    const existingTemp = workbench.tabs.find(
-      (t) => t.kind === kind && t.kind !== 'session' && t.kind !== 'task' && t.temporary
-    )
+    const existingTemp = tabId
+      ? workbench.tabs.find(
+          (t) => t.id === tabId && t.kind === kind && t.kind !== 'session' && t.kind !== 'task' && t.temporary
+        )
+      : workbench.tabs.find((t) => t.kind === kind && t.kind !== 'session' && t.kind !== 'task' && t.temporary)
     if (existingTemp) {
       const newTab = makeTab(existingTemp.id)
+      if (
+        existingTemp.kind === 'text' &&
+        existingTemp.filePath != null &&
+        !existingTemp.gitRef &&
+        (newTab.kind !== 'text' ||
+          newTab.folderPath !== existingTemp.folderPath ||
+          newTab.filePath !== existingTemp.filePath ||
+          newTab.gitRef)
+      ) {
+        void backend.window.releaseFile(resolveProjectFile(existingTemp.folderPath, existingTemp.filePath))
+      }
       // Skip mutation when tab data hasn't changed (second click of a
       // double-click on the same file).
       if (!tabDataChanged(existingTemp, newTab)) {
         setActiveTab(existingTemp.id)
         return existingTemp.id
       }
-      commit(
-        {
-          tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
-          activeTabId: existingTemp.id
-        },
-        existingTemp.folderPath === newTab.folderPath ? [] : [existingTemp.folderPath]
-      )
+      commit({
+        tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
+        activeTabId: existingTemp.id
+      })
       return existingTemp.id
     }
   }
@@ -466,7 +597,7 @@ function addContentTab(
     }
   }
 
-  return appendTab(makeTab(generateTabId()))
+  return appendTab(makeTab(tabId ?? generateTabId()))
 }
 
 export function addCommitTab(
@@ -565,7 +696,7 @@ export function addStashTab(
   )
 }
 
-export function addTextTab(folderPath: string, filePath: string, temporary = true): TabId {
+export function addTextTab(folderPath: string, filePath: string, temporary = true, tabId?: TabId): TabId {
   return addContentTab(
     'text',
     (id): TextTab => ({
@@ -578,7 +709,9 @@ export function addTextTab(folderPath: string, filePath: string, temporary = tru
       locked: false
     }),
     temporary,
-    (t) => t.kind === 'text' && t.folderPath === folderPath && t.filePath === filePath && !t.gitRef && !t.temporary
+    (t) => t.kind === 'text' && t.folderPath === folderPath && t.filePath === filePath && !t.gitRef && !t.temporary,
+    undefined,
+    tabId
   )
 }
 
@@ -603,8 +736,12 @@ export function addUntitledTextTab(folderPath: string): TabId {
  * Promote an unsaved text tab (filePath=null) to a real path after
  * save-as, or rename an existing text tab's target.
  */
-export function renameTextTab(tabId: TabId, newFilePath: string): void {
-  updateTab(tabId, (t) => (t.kind === 'text' ? { ...t, filePath: newFilePath, fileName: basename(newFilePath) } : t))
+export function renameTextTab(tabId: TabId, nextRelative: string, nextFolder?: string): void {
+  updateTab(tabId, (t) =>
+    t.kind === 'text'
+      ? { ...t, filePath: nextRelative, fileName: basename(nextRelative), folderPath: nextFolder ?? t.folderPath }
+      : t
+  )
 }
 
 /** Open a read-only text tab showing a file at a specific git revision. */
@@ -727,6 +864,9 @@ export function closeTab(tabId: TabId): void {
   } else if (tab.kind === 'task') {
     taskRegistry.dispose(tab.runId)
   }
+  if (tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
+    void backend.window.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
+  }
 
   const tabs = workbench.tabs.filter((t) => t.id !== tabId)
   let activeTabId = workbench.activeTabId
@@ -734,7 +874,7 @@ export function closeTab(tabId: TabId): void {
     activeTabId = (tabs[index] ?? tabs[index - 1])?.id ?? null
   }
   if (lastActiveByFolder.get(tab.folderPath) === tabId) lastActiveByFolder.delete(tab.folderPath)
-  commit({ tabs, activeTabId }, [tab.folderPath])
+  commit({ tabs, activeTabId })
 }
 
 /**
@@ -742,57 +882,62 @@ export function closeTab(tabId: TabId): void {
  * function for that kind. Returns the new tab id, or null when the stack
  * is empty. Mirrors VSCode's Ctrl+Shift+T.
  */
-export function reopenLastClosedTab(): TabId | null {
-  const [head, ...rest] = closedTabs
+export async function reopenLastClosedTab(): Promise<TabId | null> {
+  const head = closedTabs[0]
   if (!head) return null
-  closedTabs = rest
+  closedTabs = closedTabs.slice(1)
 
-  switch (head.kind) {
-    case 'session':
-      return addSessionTab(head.folderPath, {
-        providerId: head.providerId,
-        title: head.title,
-        resumeToken: head.resumeToken
-      })
-    case 'text':
-      return head.gitRef
-        ? addReadonlyTextTab(head.folderPath, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)
-        : addTextTab(head.folderPath, head.filePath, false)
-    case 'diff':
-      switch (head.source.kind) {
-        case 'working':
-          return addChangesTab(
-            head.folderPath,
-            head.source.staged,
-            head.source.scopePath ?? null,
-            head.initialFile,
-            false
-          )
-        case 'commit':
-          return addCommitTab(
-            head.folderPath,
-            head.source.commitHash,
-            head.source.shortHash,
-            head.source.message,
-            head.initialFile,
-            false
-          )
-        case 'stash':
-          return addStashTab(head.folderPath, head.source.stashIndex, head.source.message, head.initialFile, false)
-        default: {
-          const _exhaustive: never = head.source
-          return _exhaustive
+  try {
+    switch (head.kind) {
+      case 'session':
+        return addSessionTab(head.folderPath, {
+          providerId: head.providerId,
+          title: head.title,
+          resumeToken: head.resumeToken
+        })
+      case 'text':
+        return head.gitRef
+          ? addReadonlyTextTab(head.folderPath, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)
+          : await openTextFile(head.folderPath, head.filePath, { temporary: false })
+      case 'diff':
+        switch (head.source.kind) {
+          case 'working':
+            return addChangesTab(
+              head.folderPath,
+              head.source.staged,
+              head.source.scopePath ?? null,
+              head.initialFile,
+              false
+            )
+          case 'commit':
+            return addCommitTab(
+              head.folderPath,
+              head.source.commitHash,
+              head.source.shortHash,
+              head.source.message,
+              head.initialFile,
+              false
+            )
+          case 'stash':
+            return addStashTab(head.folderPath, head.source.stashIndex, head.source.message, head.initialFile, false)
+          default: {
+            const _exhaustive: never = head.source
+            return _exhaustive
+          }
         }
+      case 'launcher':
+        return openLauncherTab(head.folderPath)
+      case 'issue':
+        return addIssueTab(head.folderPath, head.issueId, head.title, false)
+      case 'epic':
+        return addEpicTab(head.folderPath, head.epicId, head.title, false)
+      default: {
+        const _exhaustive: never = head
+        return _exhaustive
       }
-    case 'launcher':
-      return openLauncherTab(head.folderPath)
-    case 'issue':
-      return addIssueTab(head.folderPath, head.issueId, head.title, false)
-    case 'epic':
-      return addEpicTab(head.folderPath, head.epicId, head.title, false)
-    default: {
-      const _exhaustive: never = head
-      return _exhaustive
     }
+  } catch (e) {
+    closedTabs = [head, ...closedTabs]
+    throw e
   }
 }

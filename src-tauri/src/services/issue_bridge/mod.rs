@@ -20,6 +20,7 @@ mod server;
 mod socket;
 
 use crate::services::issues::IssueService;
+use parking_lot::Mutex;
 use protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 use server::run_bridge;
@@ -66,17 +67,28 @@ impl BridgeRuntime {
 /// agent child processes via NDJSON RPC.
 pub struct IssueBridgeService {
     issues: Arc<IssueService>,
-    runtimes: parking_lot::Mutex<HashMap<String, BridgeRuntime>>,
+    app: Option<tauri::AppHandle>,
+    runtimes: Mutex<HashMap<String, Arc<Mutex<Option<BridgeRuntime>>>>>,
 }
 
 impl IssueBridgeService {
     /// Build a fresh bridge service backed by the shared
     /// [`IssueService`] handle. No sockets are created until
     /// [`Self::ensure_running`] is called.
+    #[cfg(test)]
     pub fn new(issues: Arc<IssueService>) -> Self {
         Self {
             issues,
-            runtimes: parking_lot::Mutex::new(HashMap::new()),
+            app: None,
+            runtimes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn new_with_app(issues: Arc<IssueService>, app: tauri::AppHandle) -> Self {
+        Self {
+            issues,
+            app: Some(app),
+            runtimes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -86,26 +98,20 @@ impl IssueBridgeService {
     /// previous socket file disappeared).
     pub fn ensure_running(&self, project_path: &Path) -> Result<IssueBridgeInfo, String> {
         let key = project_path.to_string_lossy();
-        // Fast path: socket file still on disk and runtime still tracked.
-        // NOTE: if the socket file vanished (manual rm, post-crash cleanup,
-        // tmpfs flush) the runtime entry is stale -- the task is likely
-        // still alive but accepting on a vanished path. Drop the entry
-        // here so the bind path below mints a fresh listener.
-        {
-            let runtimes = self.runtimes.lock();
-            if let Some(existing) = runtimes.get(key.as_ref()) {
-                if Path::new(&existing.info.socket_path).exists() {
-                    return Ok(existing.info.clone());
-                }
+        let slot = {
+            let mut runtimes = self.runtimes.lock();
+            Arc::clone(runtimes.entry(key.to_string()).or_default())
+        };
+        // Serialize initialization per project without blocking other projects.
+        let mut guard = slot.lock();
+        if let Some(existing) = guard.as_ref() {
+            if Path::new(&existing.info.socket_path).exists() {
+                return Ok(existing.info.clone());
             }
         }
-        if let Some(stale) = self.runtimes.lock().remove(key.as_ref()) {
+        if let Some(stale) = guard.take() {
             stale.teardown();
         }
-
-        // Bind the socket and prep the runtime *outside* the map mutex.
-        // These are blocking syscalls; serializing them across folders
-        // would needlessly stall concurrent session starts.
         let socket_path = socket_path_for(project_path)?;
         if socket_path.exists() {
             std::fs::remove_file(&socket_path).map_err(|e| {
@@ -147,13 +153,14 @@ impl IssueBridgeService {
         let token = Uuid::new_v4().to_string();
         let key = key.into_owned();
         let info = IssueBridgeInfo {
-            project_path: key.clone(),
+            project_path: key,
             socket_path: socket_path.to_string_lossy().into_owned(),
             token: token.clone(),
             protocol_version: PROTOCOL_VERSION,
         };
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let issues = Arc::clone(&self.issues);
+        let app = self.app.clone();
         let project_path_owned = project_path.to_path_buf();
         let socket_for_task = socket_path.clone();
         let token_for_task = token.clone();
@@ -162,6 +169,7 @@ impl IssueBridgeService {
             run_bridge(
                 listener,
                 issues,
+                app,
                 project_path_owned,
                 token_for_task,
                 shutdown_rx,
@@ -170,23 +178,11 @@ impl IssueBridgeService {
             .await;
         });
 
-        // Re-acquire the map mutex only to publish the runtime. If a
-        // racing caller raced past us with a winning entry, drop ours.
-        let mut runtimes = self.runtimes.lock();
-        if let Some(existing) = runtimes.get(&key) {
-            if Path::new(&existing.info.socket_path).exists() {
-                let _ = shutdown_tx.send(());
-                let _ = std::fs::remove_file(&socket_path);
-                return Ok(existing.info.clone());
-            }
-        }
-        runtimes.insert(
-            key,
-            BridgeRuntime {
-                info: info.clone(),
-                shutdown: Some(shutdown_tx),
-            },
-        );
+        // Publish while still holding the project's initialization lock.
+        *guard = Some(BridgeRuntime {
+            info: info.clone(),
+            shutdown: Some(shutdown_tx),
+        });
 
         Ok(info)
     }
@@ -196,9 +192,12 @@ impl IssueBridgeService {
     /// running for that folder.
     pub fn stop(&self, project_path: &Path) {
         let key = project_path.to_string_lossy();
-        let runtime = self.runtimes.lock().remove(key.as_ref());
-        if let Some(runtime) = runtime {
-            runtime.teardown();
+        let slot = self.runtimes.lock().remove(key.as_ref());
+        if let Some(slot) = slot {
+            let mut guard = slot.lock();
+            if let Some(runtime) = guard.take() {
+                runtime.teardown();
+            }
         }
     }
 }
@@ -206,8 +205,11 @@ impl IssueBridgeService {
 impl Drop for IssueBridgeService {
     fn drop(&mut self) {
         let runtimes = std::mem::take(&mut *self.runtimes.lock());
-        for (_, runtime) in runtimes {
-            runtime.teardown();
+        for (_, slot) in runtimes {
+            let mut guard = slot.lock();
+            if let Some(runtime) = guard.take() {
+                runtime.teardown();
+            }
         }
     }
 }

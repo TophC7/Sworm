@@ -1,7 +1,8 @@
 use crate::models::settings::{
-    self, EffectiveSettings, FormatterSelection, LspServerConfigRecord, LspServerSettings,
-    LspTraceLevel, ProviderConfigRecord, ProviderSettings, SettingsDiagnostic,
-    SettingsDiagnosticCode, SettingsDiagnosticSeverity, SettingsLayerKind,
+    self, EffectiveSettings, ExternalFileOpenMode, ExternalFolderOpenMode, FormatterSelection,
+    LspServerConfigRecord, LspServerSettings, LspTraceLevel, ProviderConfigRecord,
+    ProviderSettings, SettingsDiagnostic, SettingsDiagnosticCode, SettingsDiagnosticSeverity,
+    SettingsLayerKind,
 };
 use crate::services::{
     builtins::BuiltinCatalogService,
@@ -237,7 +238,12 @@ impl ResolutionContext {
         for key in object.keys() {
             if !matches!(
                 key.as_str(),
-                "theme" | "terminal_font_family" | "terminal_font_size" | "nix_eval_timeout_secs"
+                "theme"
+                    | "terminal_font_family"
+                    | "terminal_font_size"
+                    | "nix_eval_timeout_secs"
+                    | "external_folder_open_mode"
+                    | "external_file_open_mode"
             ) {
                 self.unknown_key(layer, path, &["general", key]);
             }
@@ -289,6 +295,62 @@ impl ResolutionContext {
                 false,
             ) {
                 self.settings.general.nix_eval_timeout_secs = value;
+            }
+        }
+        if let Some(mode) = object.get("external_folder_open_mode") {
+            if let Some(value) = self.expect_string(
+                layer,
+                path,
+                &["general", "external_folder_open_mode"],
+                mode,
+                false,
+            ) {
+                match value {
+                    "new_window" => {
+                        self.settings.general.external_folder_open_mode =
+                            ExternalFolderOpenMode::NewWindow;
+                    }
+                    "focused_window" => {
+                        self.settings.general.external_folder_open_mode =
+                            ExternalFolderOpenMode::FocusedWindow;
+                    }
+                    _ => self.invalid_enum(
+                        layer,
+                        path,
+                        &["general", "external_folder_open_mode"],
+                        value,
+                    ),
+                }
+            }
+        }
+        if let Some(mode) = object.get("external_file_open_mode") {
+            if let Some(value) = self.expect_string(
+                layer,
+                path,
+                &["general", "external_file_open_mode"],
+                mode,
+                false,
+            ) {
+                match value {
+                    "prefer_folder" => {
+                        self.settings.general.external_file_open_mode =
+                            ExternalFileOpenMode::PreferFolder;
+                    }
+                    "focused_window" => {
+                        self.settings.general.external_file_open_mode =
+                            ExternalFileOpenMode::FocusedWindow;
+                    }
+                    "new_window" => {
+                        self.settings.general.external_file_open_mode =
+                            ExternalFileOpenMode::NewWindow;
+                    }
+                    _ => self.invalid_enum(
+                        layer,
+                        path,
+                        &["general", "external_file_open_mode"],
+                        value,
+                    ),
+                }
             }
         }
     }
@@ -845,6 +907,23 @@ impl ResolutionContext {
                 None
             }
         }
+    }
+
+    fn invalid_enum(
+        &mut self,
+        layer: SettingsLayerKind,
+        path: &str,
+        pointer: &[&str],
+        value: &str,
+    ) {
+        self.push_diagnostic(
+            layer,
+            path.to_string(),
+            json_pointer(pointer),
+            SettingsDiagnosticCode::InvalidEnum,
+            SettingsDiagnosticSeverity::Warning,
+            format!("Invalid value `{value}` ignored"),
+        );
     }
 
     fn unknown_key(&mut self, layer: SettingsLayerKind, path: &str, pointer: &[&str]) {

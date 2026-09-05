@@ -35,7 +35,7 @@ pub(super) const DEFAULT_LIMIT: i64 = 100;
 /// methods are sync; commands that need to stay off the Tauri runtime
 /// thread should call them inside `tokio::task::spawn_blocking`.
 pub struct IssueService {
-    dbs: Mutex<HashMap<PathBuf, Arc<IssueProjectDb>>>,
+    dbs: Mutex<HashMap<PathBuf, Arc<Mutex<Option<Arc<IssueProjectDb>>>>>>,
 }
 
 impl IssueService {
@@ -65,8 +65,16 @@ impl IssueService {
         project_path: &Path,
     ) -> Result<Arc<IssueProjectDb>, String> {
         let db_path = Self::issue_db_path(project_path);
-        if let Some(existing) = self.dbs.lock().get(&db_path).cloned() {
-            return Ok(existing);
+        let slot = {
+            let mut dbs = self.dbs.lock();
+            Arc::clone(
+                dbs.entry(db_path.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(None))),
+            )
+        };
+        let mut cached = slot.lock();
+        if let Some(existing) = cached.as_ref() {
+            return Ok(Arc::clone(existing));
         }
 
         if let Some(parent) = db_path.parent() {
@@ -94,7 +102,7 @@ impl IssueService {
             readers,
             read_cursor: AtomicUsize::new(0),
         });
-        self.dbs.lock().insert(db_path, db.clone());
+        *cached = Some(Arc::clone(&db));
         Ok(db)
     }
 }

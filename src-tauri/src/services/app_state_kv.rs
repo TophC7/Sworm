@@ -35,4 +35,13 @@ impl AppStateKvService {
         .map_err(|e| format!("app_state put failed: {}", e))?;
         Ok(())
     }
+
+    pub fn delete(&self, conn: &Connection, key: &str) -> Result<(), String> {
+        conn.execute(
+            "DELETE FROM app_state WHERE key = ?1",
+            rusqlite::params![key],
+        )
+        .map_err(|e| format!("app_state delete failed: {}", e))?;
+        Ok(())
+    }
 }

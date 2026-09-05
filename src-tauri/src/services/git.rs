@@ -204,6 +204,23 @@ impl GitService {
         }
     }
 
+    pub fn repo_root(path: &Path) -> Option<PathBuf> {
+        let output = std::process::Command::new("git")
+            .args(["--no-optional-locks", "rev-parse", "--show-toplevel"])
+            .current_dir(path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8(output.stdout).ok()?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        std::fs::canonicalize(trimmed).ok()
+    }
+
     /// A fresh cached summary, or the slot generation a new computation
     /// must hand back to [`Self::store_summary`].
     fn cached_summary(&self, path: &Path) -> Result<GitSummary, u64> {

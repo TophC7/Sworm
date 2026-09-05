@@ -10,17 +10,7 @@
     "devUrl": "http://127.0.0.1:1420"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Sworm",
-        "width": 1200,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null,
       "assetProtocol": {

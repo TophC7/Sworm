@@ -4,6 +4,7 @@
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
 import {
+  newWindow,
   openActiveFolderInExternalTerminal,
   openFolderSettingsFile,
   reopenTab,
@@ -15,6 +16,7 @@ export interface MenuItem {
   kind: 'item'
   label: string
   onSelect: () => void
+  shortcut?: string
   disabled?: boolean
 }
 
@@ -28,6 +30,12 @@ export function buildAppMenu(): MenuEntry[] {
   const hasActive = getActiveTabId() !== null
 
   return [
+    {
+      kind: 'item',
+      label: 'New Window',
+      shortcut: 'Ctrl+Shift+N',
+      onSelect: () => void newWindow()
+    },
     { kind: 'item', label: 'Reopen Closed Tab', disabled: !hasClosedTabs(), onSelect: reopenTab },
     { kind: 'separator' },
     {

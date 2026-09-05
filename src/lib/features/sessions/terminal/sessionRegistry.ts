@@ -1,5 +1,7 @@
 import { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
 import type { TabId } from '$lib/features/workbench/model'
+import { isTabTransferring } from '$lib/features/workbench/state.svelte'
+import type { TerminalTransferState } from '$lib/types/backend'
 
 const sessions = new Map<TabId, TerminalSessionManager>()
 
@@ -22,6 +24,34 @@ export function detach(tabId: TabId): void {
   sessions.get(tabId)?.detach()
 }
 
+export function detachForTransfer(tabId: TabId): void {
+  const manager = sessions.get(tabId)
+  if (!manager) return
+  manager.detachForTransfer()
+  sessions.delete(tabId)
+}
+
+export async function exportTransferState(tabId: TabId): Promise<TerminalTransferState> {
+  const manager = sessions.get(tabId)
+  if (!manager) throw new Error(`Unknown terminal session ${tabId}`)
+  return manager.exportTransferState()
+}
+
+export async function importTransferState(
+  tabId: TabId,
+  state: TerminalTransferState,
+  transferId: string
+): Promise<void> {
+  const manager = getOrCreate(tabId)
+  try {
+    await manager.importTransferState(state, transferId)
+  } catch (error) {
+    manager.detachForTransfer()
+    sessions.delete(tabId)
+    throw error
+  }
+}
+
 export function dispose(tabId: TabId): void {
   const manager = sessions.get(tabId)
   if (!manager) {
@@ -34,7 +64,8 @@ export function dispose(tabId: TabId): void {
 
 export function disposeAll(): void {
   for (const [tabId, manager] of sessions) {
-    manager.dispose()
+    if (isTabTransferring(tabId)) manager.detachForTransfer()
+    else manager.dispose()
     sessions.delete(tabId)
   }
 }

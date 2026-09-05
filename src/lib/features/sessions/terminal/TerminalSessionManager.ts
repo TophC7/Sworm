@@ -2,6 +2,7 @@ import { backend } from '$lib/api/backend'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
+import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
 import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
@@ -10,11 +11,12 @@ import {
   setSessionTabStatus,
   setSessionTabTitle
 } from '$lib/features/workbench/state.svelte'
-import type { PtyEvent, SessionSpec, SessionStartInfo } from '$lib/types/backend'
+import type { PtyEvent, SessionSpec, SessionStartInfo, TerminalTransferState } from '$lib/types/backend'
 import type { Channel } from '@tauri-apps/api/core'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { openLink } from '$lib/features/workbench/links/openLink'
 import { TerminalLinkProvider } from '$lib/features/sessions/terminal/TerminalLinkProvider'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -57,15 +59,18 @@ const textEncoder = new TextEncoder()
 
 type EventListener = (event: PtyEvent) => void
 type ErrorListener = (message: string) => void
+type DeferredOutput = { bytes: Uint8Array; sequence: number }
 
 export class TerminalSessionManager {
   readonly tabId: TabId
   // Ephemeral PTY identity, minted per spawn; null while no run is live.
   private runId: string | null = null
+  private streamRunId: string | null = null
 
   private terminal: Terminal | null = null
   private fitAddon: FitAddon | null = null
   private imageAddon: ImageAddon | null = null
+  private serializeAddon: SerializeAddon | null = null
   private linkProviderDisposable: IDisposable | null = null
   private webglAddon: WebglAddon | null = null
   private webglContextLossDisposable: IDisposable | null = null
@@ -74,7 +79,7 @@ export class TerminalSessionManager {
   private resizeObserver: ResizeObserver | null = null
   private inputDisposable: IDisposable | null = null
   private oscDisposable: IDisposable | null = null
-  private outputChannel: Channel<number[]> | null = null
+  private outputChannel: Channel<Uint8Array> | null = null
   private eventsChannel: Channel<PtyEvent> | null = null
   private ptyActive = false
   private inputEnabled = true
@@ -82,6 +87,8 @@ export class TerminalSessionManager {
   private viewportPosition = 0
   private lastError: string | null = null
   private providerId: string | null = null
+  private readonly barrier = new RenderBarrier()
+  private transferBarrierActive = false
   // Single-flight PTY spawn: concurrent callers (mount debounce, Restart)
   // await the same promise instead of spawning twice.
   private startPromise: Promise<SessionStartInfo> | null = null
@@ -94,24 +101,12 @@ export class TerminalSessionManager {
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
 
-  // Deferred PTY bytes accumulated while this manager has no host
-  // container attached. Each agent session has its own xterm.Terminal,
-  // and even when the terminal isn't visible, `terminal.write` queues
-  // ANSI-parsing work that competes with every other session for the
-  // main thread. With N sessions all running TUI agents, the cumulative
-  // parser load freezes the UI even when payloads are small.
-  //
-  // Strategy: while detached, push bytes into `deferredBytes`. On the
-  // next `attach()`, concatenate and replay them in one xterm.write so
-  // the visible state catches up. The lightweight title scan still runs
-  // on every chunk so hidden tab labels stay current. The cap prevents a
-  // long-running unread session from pinning unbounded memory; over the
-  // cap we drop the oldest chunks
-  // (cursor positioning at the new head will redraw correctly when the
-  // agent emits its next full repaint, which TUIs do constantly).
-  private deferredBytes: Uint8Array[] = []
-  private deferredByteCount = 0
+  // Hidden sessions defer xterm parsing until attach/export. Bounded to
+  // DEFERRED_BYTES_CAP, dropping oldest; dropped bytes fall outside xterm
+  // scrollback in practice.
   private static readonly DEFERRED_BYTES_CAP = 4 * 1024 * 1024
+  private deferredOutput: DeferredOutput[] = []
+  private deferredByteCount = 0
 
   constructor(tabId: TabId) {
     this.tabId = tabId
@@ -261,58 +256,14 @@ export class TerminalSessionManager {
     this.providerId = spec.providerId
     const runId = crypto.randomUUID()
     this.runId = runId
+    this.barrier.reset()
+    this.streamRunId = runId
 
     const output = backend.sessions.createOutputChannel((data) => {
-      if (this.disposed || this.runId !== runId) return
-
-      const bytes = new Uint8Array(data)
-      const text = this.textDecoder.decode(bytes, { stream: true })
-      const parsedTitle = this.titleParser.push(text)
-      let title = parsedTitle
-      if (spec.providerId === 'omp' && title?.startsWith('π')) {
-        title = title.slice(1).trimStart()
-        if (title.startsWith('>')) title = title.slice(1).trimStart()
-      }
-      if (title) setSessionTabTitle(this.tabId, title)
-
-      // Detached managers buffer bytes and replay on next attach. See
-      // `deferredBytes`. Only the visible session pays xterm parser cost.
-      if (this.container) {
-        this.writeTerminal(bytes)
-      } else {
-        this.deferDetachedBytes(bytes)
-      }
+      this.handleOutput(runId, spec.providerId, data)
     })
     const events = backend.sessions.createEventChannel((event) => {
-      // A stale run's late events must not touch the tab that has since
-      // restarted with a fresh runId.
-      if (event.run_id !== runId) return
-
-      if (event.type === 'started') {
-        this.ptyActive = true
-        this.lastError = null
-        setSessionTabStatus(this.tabId, 'running')
-      }
-
-      if (event.type === 'exit') {
-        this.ptyActive = false
-        this.runId = null
-        this.writeTerminal(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'))
-        this.releaseChannels()
-        setSessionTabStatus(this.tabId, 'exited')
-      }
-
-      if (event.type === 'error') {
-        this.lastError = event.message ?? 'Unknown PTY error'
-        this.emitError(this.lastError)
-        setSessionTabStatus(this.tabId, 'failed')
-      }
-
-      if (event.type === 'resumeTokenBound' && event.token) {
-        setSessionTabResumeToken(this.tabId, event.token)
-      }
-
-      this.emitEvent(event)
+      this.handlePtyEvent(runId, event)
     })
 
     this.outputChannel = output
@@ -345,6 +296,167 @@ export class TerminalSessionManager {
     }
   }
 
+  private handleOutput(runId: string, providerId: string | null, bytes: Uint8Array): void {
+    if (this.disposed || this.streamRunId !== runId) return
+
+    const sequence = this.barrier.next()
+    if (this.runId !== runId) {
+      this.barrier.markRendered(sequence)
+      return
+    }
+    const text = this.textDecoder.decode(bytes, { stream: true })
+    let title = this.titleParser.push(text)
+    if (providerId === 'omp' && title?.startsWith('π')) {
+      title = title.slice(1).trimStart()
+      if (title.startsWith('>')) title = title.slice(1).trimStart()
+    }
+    if (title) setSessionTabTitle(this.tabId, title)
+
+    if (this.container || this.transferBarrierActive) {
+      this.writeTerminal(bytes, sequence)
+    } else {
+      this.deferDetachedBytes(bytes, sequence)
+    }
+  }
+
+  private handlePtyEvent(runId: string, event: PtyEvent): void {
+    if (this.disposed || this.streamRunId !== runId) return
+
+    const sequence = this.barrier.next()
+    if (this.runId !== runId || event.run_id !== runId) {
+      this.barrier.markRendered(sequence)
+      return
+    }
+    if (event.type === 'started') {
+      this.ptyActive = true
+      this.lastError = null
+      setSessionTabStatus(this.tabId, 'running')
+      this.barrier.markRendered(sequence)
+    } else if (event.type === 'exit') {
+      this.ptyActive = false
+      this.runId = null
+      this.writeTerminal(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'), sequence)
+      setSessionTabStatus(this.tabId, 'exited')
+    } else {
+      this.barrier.markRendered(sequence)
+      if (event.type === 'error') {
+        this.lastError = event.message ?? 'Unknown PTY error'
+        this.emitError(this.lastError)
+        setSessionTabStatus(this.tabId, 'failed')
+      } else if (event.type === 'resumeTokenBound' && event.token) {
+        setSessionTabResumeToken(this.tabId, event.token)
+      }
+    }
+
+    this.emitEvent(event)
+  }
+
+  async exportTransferState(): Promise<TerminalTransferState> {
+    const runId = this.runId
+
+    await this.ensureTerminal()
+    const terminal = this.terminal
+    const serializeAddon = this.serializeAddon
+    if (!terminal || !serializeAddon) throw new Error(`Terminal session ${this.tabId} is unavailable`)
+    if (!runId) {
+      this.flushDeferredBytes()
+      await this.writeAndWait('')
+      return {
+        runId: null,
+        providerId: this.providerId ?? undefined,
+        serializedBuffer: serializeAddon.serialize(),
+        cols: terminal.cols,
+        rows: terminal.rows,
+        viewportPosition: terminal.buffer.active.viewportY,
+        lastSequence: 0,
+        status: (getTabs().find((tab) => tab.id === this.tabId) as { status?: string } | undefined)?.status
+      }
+    }
+
+    this.transferBarrierActive = true
+    try {
+      this.flushDeferredBytes()
+      const targetSequence = await backend.pty.pause(runId)
+      await this.barrier.waitFor(targetSequence)
+      await this.writeAndWait('')
+
+      const buffer = terminal.buffer.active
+      return {
+        runId,
+        providerId: this.providerId ?? undefined,
+        serializedBuffer: serializeAddon.serialize(),
+        cols: terminal.cols,
+        rows: terminal.rows,
+        viewportPosition: buffer.viewportY,
+        lastSequence: targetSequence,
+        status: (getTabs().find((tab) => tab.id === this.tabId) as { status?: string } | undefined)?.status
+      }
+    } finally {
+      this.transferBarrierActive = false
+    }
+  }
+
+  async importTransferState(state: TerminalTransferState, transferId: string): Promise<void> {
+    if (this.disposed) throw new Error(`Terminal session ${this.tabId} has been disposed`)
+
+    this.releaseChannels()
+    this.runId = state.runId
+    this.providerId = state.providerId ?? null
+    this.barrier.reset()
+    await this.ensureTerminal()
+
+    const terminal = this.terminal
+    if (!terminal) throw new Error(`Terminal session ${this.tabId} is unavailable`)
+    terminal.reset()
+    terminal.resize(state.cols, state.rows)
+    await this.writeAndWait(state.serializedBuffer)
+    terminal.scrollToLine(state.viewportPosition)
+    this.viewportPosition = state.viewportPosition
+    const runId = state.runId
+    if (runId == null) {
+      this.ptyActive = false
+      return
+    }
+    this.streamRunId = runId
+
+    const output = backend.sessions.createOutputChannel((data) => {
+      this.handleOutput(runId, this.providerId, data)
+    })
+    const events = backend.sessions.createEventChannel((event) => {
+      this.handlePtyEvent(runId, event)
+    })
+    this.outputChannel = output
+    this.eventsChannel = events
+
+    this.transferBarrierActive = true
+    try {
+      const seq = await backend.pty.attach(runId, transferId, output, events)
+      this.barrier.seed(seq)
+      this.ptyActive = this.runId === runId
+    } catch (error) {
+      this.releaseChannels()
+      this.ptyActive = false
+      throw error
+    } finally {
+      this.transferBarrierActive = false
+    }
+  }
+
+  detachForTransfer(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.releaseChannels()
+    this.disposeSurface()
+  }
+
+  markPtyLost(): void {
+    this.ptyActive = false
+    this.runId = null
+    this.releaseChannels()
+    this.writeTerminal('\r\n\x1b[31m[Connection to process lost]\x1b[0m\r\n')
+    setSessionTabStatus(this.tabId, 'failed')
+  }
+
   async stopPty(): Promise<void> {
     const runId = this.runId
     if (!runId) return
@@ -359,76 +471,88 @@ export class TerminalSessionManager {
   }
 
   dispose(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.disposed = true
-    this.detach()
 
-    // An in-flight spawn is handled by `spawnPty` itself once the
-    // backend answers (see the `disposed` check there).
+    // An in-flight spawn is handled by `spawnPty` once the backend answers.
     if (this.ptyActive) {
       void this.stopPty().catch(() => {})
     } else {
       this.releaseChannels()
     }
+    this.disposeSurface()
+  }
 
+  private disposeSurface(): void {
+    this.detach()
     this.inputDisposable?.dispose()
     this.inputDisposable = null
     this.oscDisposable?.dispose()
     this.oscDisposable = null
     this.webglContextLossDisposable?.dispose()
     this.webglContextLossDisposable = null
+    this.linkProviderDisposable?.dispose()
+    this.linkProviderDisposable = null
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null
     this.imageAddon = null
-    this.linkProviderDisposable?.dispose()
-    this.linkProviderDisposable = null
+    this.serializeAddon = null
     this.webglAddon = null
     this.hostEl = null
     this.eventListeners.clear()
     this.errorListeners.clear()
-    this.deferredBytes = []
+    this.deferredOutput = []
     this.deferredByteCount = 0
+    this.barrier.reset()
   }
 
   sendText(text: string): void {
     this.writeToPty(text)
   }
 
-  private deferDetachedBytes(bytes: Uint8Array): void {
-    // Drop the head if we'd exceed the cap. Agents that drive TUIs
-    // emit full repaints (`\x1b[2J\x1b[H...`) frequently enough that a
-    // truncated head replays as a brief flash followed by the agent's
-    // next refresh, not a corrupted display.
-    while (
-      this.deferredByteCount + bytes.byteLength > TerminalSessionManager.DEFERRED_BYTES_CAP &&
-      this.deferredBytes.length > 0
-    ) {
-      const dropped = this.deferredBytes.shift()
-      if (dropped) this.deferredByteCount -= dropped.byteLength
-    }
-    this.deferredBytes.push(bytes)
+  private deferDetachedBytes(bytes: Uint8Array, sequence: number): void {
+    this.deferredOutput.push({ bytes, sequence })
     this.deferredByteCount += bytes.byteLength
+    // Keep the newest chunk even when it alone exceeds the cap; dropped
+    // sequences count as rendered so the pause barrier stays consistent.
+    while (this.deferredByteCount > TerminalSessionManager.DEFERRED_BYTES_CAP && this.deferredOutput.length > 1) {
+      const dropped = this.deferredOutput.shift()!
+      this.deferredByteCount -= dropped.bytes.byteLength
+      this.barrier.markRendered(dropped.sequence)
+    }
   }
 
   private flushDeferredBytes(): void {
-    if (this.deferredBytes.length === 0 || !this.terminal) return
+    if (this.deferredOutput.length === 0 || !this.terminal) return
+    const output = this.deferredOutput
     const merged = new Uint8Array(this.deferredByteCount)
     let offset = 0
-    for (const chunk of this.deferredBytes) {
-      merged.set(chunk, offset)
-      offset += chunk.byteLength
+    for (const chunk of output) {
+      merged.set(chunk.bytes, offset)
+      offset += chunk.bytes.byteLength
     }
-    this.deferredBytes = []
+    this.deferredOutput = []
     this.deferredByteCount = 0
-    this.writeTerminal(merged)
+    this.terminal.write(merged, () => {
+      for (const chunk of output) this.barrier.markRendered(chunk.sequence)
+    })
   }
 
-  private writeTerminal(data: Uint8Array): void {
-    this.terminal?.write(data)
+  private writeTerminal(data: string | Uint8Array, sequence?: number): void {
+    if (!this.terminal) {
+      if (sequence !== undefined) this.barrier.markRendered(sequence)
+      return
+    }
+    this.terminal.write(data, sequence === undefined ? undefined : () => this.barrier.markRendered(sequence))
+  }
+
+  private writeAndWait(data: string | Uint8Array): Promise<void> {
+    const terminal = this.terminal
+    if (!terminal) return Promise.resolve()
+    const { promise, resolve } = Promise.withResolvers<void>()
+    terminal.write(data, resolve)
+    return promise
   }
 
   private enableWebglRenderer(): void {
@@ -513,8 +637,10 @@ export class TerminalSessionManager {
     this.fitAddon = new FitAddon()
     // xterm core does not render SIXEL / iTerm / Kitty image payloads; it needs the parser addon.
     this.imageAddon = new ImageAddon()
+    this.serializeAddon = new SerializeAddon()
     this.terminal.loadAddon(this.fitAddon)
     this.terminal.loadAddon(this.imageAddon)
+    this.terminal.loadAddon(this.serializeAddon)
     this.linkProviderDisposable = this.terminal.registerLinkProvider(
       new TerminalLinkProvider(
         this.terminal,
@@ -660,6 +786,7 @@ export class TerminalSessionManager {
   }
 
   private releaseChannels(): void {
+    this.streamRunId = null
     this.outputChannel = null
     this.eventsChannel = null
   }

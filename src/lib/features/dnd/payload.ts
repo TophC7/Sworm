@@ -2,6 +2,9 @@ import type { TabId } from '$lib/features/workbench/model'
 
 export const DND_MIME = {
   SWORM_ITEM: 'application/vnd.sworm.item+json',
+  SWORM_TAB: 'application/vnd.sworm.kind.tab',
+  SWORM_FILE: 'application/vnd.sworm.kind.file',
+  SWORM_GIT_CHANGE: 'application/vnd.sworm.kind.git-change',
   TEXT: 'text/plain',
   URI_LIST: 'text/uri-list',
   FILES: 'Files'
@@ -10,6 +13,7 @@ export const DND_MIME = {
 export interface TabDragItem {
   kind: 'tab'
   tabId: TabId
+  sourceWindowLabel?: string
 }
 
 export interface FileDragItem {
@@ -54,6 +58,15 @@ export function parsePayload(raw: string | null | undefined): DragPayload | null
 
 export function stampDataTransfer(dataTransfer: DataTransfer, payload: DragPayload): void {
   dataTransfer.setData(DND_MIME.SWORM_ITEM, serializePayload(payload))
+  if (payload.items.some((item) => item.kind === 'tab')) {
+    dataTransfer.setData(DND_MIME.SWORM_TAB, '')
+  }
+  if (payload.items.some((item) => item.kind === 'file')) {
+    dataTransfer.setData(DND_MIME.SWORM_FILE, '')
+  }
+  if (payload.items.some((item) => item.kind === 'git-change')) {
+    dataTransfer.setData(DND_MIME.SWORM_GIT_CHANGE, '')
+  }
   const text = payloadText(payload)
   if (text) {
     dataTransfer.setData(DND_MIME.TEXT, text)
@@ -67,8 +80,11 @@ export function dragTypes(event: DragEvent): readonly string[] {
 export function hasKnownDragType(types: readonly string[]): boolean {
   return (
     types.includes(DND_MIME.SWORM_ITEM) ||
-    types.includes(DND_MIME.FILES) ||
+    types.includes(DND_MIME.SWORM_TAB) ||
+    types.includes(DND_MIME.SWORM_FILE) ||
+    types.includes(DND_MIME.SWORM_GIT_CHANGE) ||
     types.includes(DND_MIME.URI_LIST) ||
+    types.includes(DND_MIME.FILES) ||
     types.includes(DND_MIME.TEXT)
   )
 }
@@ -101,7 +117,10 @@ function isDragItem(value: unknown): value is SwormDragKind {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<SwormDragKind>
   if (item.kind === 'tab') {
-    return typeof item.tabId === 'string'
+    return (
+      typeof item.tabId === 'string' &&
+      (item.sourceWindowLabel === undefined || typeof item.sourceWindowLabel === 'string')
+    )
   }
   if (item.kind === 'file') {
     return typeof item.path === 'string' && typeof item.isDir === 'boolean' && typeof item.folderPath === 'string'

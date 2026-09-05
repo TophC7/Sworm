@@ -15,6 +15,7 @@ use crate::services::issues::IssueService;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::path::Path;
+use tauri::Emitter;
 
 const BRIDGE_METHODS: &[&str] = &[
     "bridge.info",
@@ -46,6 +47,7 @@ const BRIDGE_METHODS: &[&str] = &[
 pub(super) fn handle_request(
     request: BridgeRequest,
     issues: &IssueService,
+    app: Option<&tauri::AppHandle>,
     project_path: &Path,
     token: &str,
 ) -> BridgeResponse {
@@ -53,6 +55,7 @@ pub(super) fn handle_request(
     if request.token.as_deref() != Some(token) {
         return BridgeResponse::error(id, "unauthorized", "Invalid Sworm issue bridge token");
     }
+    let mutation = is_mutation(&request.method);
 
     let result: Result<Value, String> = (|| match request.method.as_str() {
         "bridge.info" => Ok(json!({
@@ -210,12 +213,49 @@ pub(super) fn handle_request(
     })();
 
     match result {
-        Ok(value) => BridgeResponse::ok(id, value),
+        Ok(value) => {
+            if mutation {
+                if let Some(app) = app {
+                    if let Err(error) = app.emit(
+                        "issues-changed",
+                        json!({ "folderPath": project_path.to_string_lossy() }),
+                    ) {
+                        tracing::warn!("Failed to emit issues-changed: {}", error);
+                    }
+                }
+            }
+            BridgeResponse::ok(id, value)
+        }
         Err(message) => {
             let code = classify_error(&message);
             BridgeResponse::error(id, code, &message)
         }
     }
+}
+
+fn is_mutation(method: &str) -> bool {
+    matches!(
+        method,
+        "epic.create"
+            | "epic.update"
+            | "epic.delete"
+            | "issue.create"
+            | "issue.update"
+            | "issue.delete"
+            | "issue.claim"
+            | "comment.add"
+            | "issue.comment.add"
+            | "comment.update"
+            | "issue.comment.update"
+            | "comment.delete"
+            | "issue.comment.delete"
+            | "dependency.add"
+            | "issue.dependency.add"
+            | "dependency.remove"
+            | "issue.dependency.remove"
+            | "config.set"
+            | "issue.config.set"
+    )
 }
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, String> {

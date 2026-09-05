@@ -2,70 +2,24 @@ use crate::app_state::AppState;
 use crate::errors::ApiError;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
-/// Slot for a directory path passed on argv (e.g. from Nautilus
-/// "Open With"). Filled at startup or by the single-instance
-/// callback; the frontend drains it via `app_take_pending_open_path`
-/// on mount / when the `sworm://pending-open-changed` event fires.
-#[derive(Default)]
-pub struct PendingOpen(pub Mutex<Option<String>>);
-
-/// Pull the first argv entry that looks like an existing directory.
-/// Skips flag-style args so webview/Tauri internals don't get
-/// misinterpreted as paths. Relative paths are resolved against the
-/// caller's cwd, then normalized lexically so `.`/`..` components
-/// don't leak through while symlink path forms are preserved (the
-/// frontend canonicalizes via `folder_resolve`).
-pub fn first_dir_arg(argv: &[String], cwd: Option<&Path>) -> Option<String> {
-    argv.iter().skip(1).find_map(|raw| {
-        if raw.starts_with('-') {
-            return None;
-        }
-        let raw_path = Path::new(raw);
-        let candidate = absolutize_dir_arg(raw_path, cwd)?;
-        if !candidate.is_dir() {
-            return None;
-        }
-        Some(
-            normalize_absolute_path(&candidate)
-                .to_string_lossy()
-                .into_owned(),
-        )
-    })
-}
-
-fn absolutize_dir_arg(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
-    if path.is_absolute() {
-        return Some(path.to_path_buf());
-    }
-
-    cwd.map(|base| base.join(path))
-}
-
-fn normalize_absolute_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let can_pop = matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                );
-                if can_pop {
-                    normalized.pop();
-                }
-            }
-            Component::Normal(part) => normalized.push(part),
-        }
-    }
-
-    normalized
+/// Resolve existing launch paths lexically, preserving symlink path forms.
+pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
+    argv.iter()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-'))
+        .filter_map(|arg| {
+            let path = PathBuf::from(arg);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd?.join(path)
+            };
+            let path = crate::services::folders::normalize_absolute_path(&path);
+            (path.is_file() || path.is_dir()).then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -233,6 +187,18 @@ pub async fn app_state_put(
         .put(db.conn(), &key, &value_json)
         .map_err(ApiError::Database)
 }
+/// Delete a value from the app-state key/value store.
+#[tauri::command]
+pub async fn app_state_delete(
+    key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    let db = state.db.write();
+    state
+        .app_state_kv
+        .delete(db.conn(), &key)
+        .map_err(ApiError::Database)
+}
 
 /// Copy file paths to the system clipboard in file-manager format.
 ///
@@ -380,24 +346,16 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
     ))
 }
 
-/// Drain the pending-open-path slot (populated by argv at launch or
-/// by the single-instance callback on subsequent launches).
-/// Returns None when there's nothing queued; callers should ignore.
-#[tauri::command]
-pub fn app_take_pending_open_path(pending: tauri::State<'_, PendingOpen>) -> Option<String> {
-    pending.0.lock().ok().and_then(|mut slot| slot.take())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        first_dir_arg, parse_proc_status_value, parse_process_stat, parse_system_cpu_time_ticks,
+        launch_path_args, parse_proc_status_value, parse_process_stat, parse_system_cpu_time_ticks,
         process_tree_cpu_time_ticks, ProcessStat,
     };
     use std::path::Path;
 
     #[test]
-    fn first_dir_arg_ignores_argv0_and_flags_and_uses_cwd_for_relative_paths() {
+    fn launch_path_args_ignores_argv0_and_flags_and_uses_cwd_for_relative_paths() {
         let root = unique_test_dir("relative-path");
         let cwd = root.join("cwd");
         let project = root.join("project");
@@ -406,25 +364,22 @@ mod tests {
 
         // argv[0] is the binary; leading '-' flags must be skipped.
         let argv = vec!["sworm".into(), "--some-flag".into(), "../project".into()];
-        let resolved = first_dir_arg(&argv, Some(cwd.as_path()));
+        let resolved = launch_path_args(&argv, Some(cwd.as_path()));
 
-        assert_eq!(
-            resolved.as_deref(),
-            Some(project.to_string_lossy().as_ref())
-        );
+        assert_eq!(resolved, vec![project.to_string_lossy().into_owned()]);
 
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn first_dir_arg_returns_none_for_missing_path() {
+    fn launch_path_args_returns_empty_for_missing_path() {
         let argv = vec!["sworm".into(), "/nonexistent/path/xyz".into()];
-        assert!(first_dir_arg(&argv, None).is_none());
+        assert!(launch_path_args(&argv, None).is_empty());
     }
 
     #[cfg(unix)]
     #[test]
-    fn first_dir_arg_preserves_symlink_path_form() {
+    fn launch_path_args_preserves_symlink_path_form() {
         let root = unique_test_dir("symlink-path");
         let real = root.join("real-project");
         let link = root.join("project-link");
@@ -432,9 +387,9 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let argv = vec!["sworm".into(), link.to_string_lossy().into_owned()];
-        let resolved = first_dir_arg(&argv, None);
+        let resolved = launch_path_args(&argv, None);
 
-        assert_eq!(resolved.as_deref(), Some(link.to_string_lossy().as_ref()));
+        assert_eq!(resolved, vec![link.to_string_lossy().into_owned()]);
 
         std::fs::remove_dir_all(&root).unwrap();
     }

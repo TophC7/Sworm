@@ -24,9 +24,6 @@
 
   <TitleTabStrip />
 
-  <!-- Draggable spacer: the only window-drag surface on the bar. -->
-  <div data-tauri-drag-region class="min-w-0 flex-1 self-stretch"></div>
-
   <CommandPill onclick={openPalette} class="mr-1 w-60 shrink-0" />
 
   <WindowControls />

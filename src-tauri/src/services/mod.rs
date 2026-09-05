@@ -25,3 +25,4 @@ pub mod settings_patch;
 pub mod settings_resolution;
 pub mod settings_watcher;
 pub mod tasks;
+pub mod windows;

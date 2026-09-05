@@ -64,6 +64,7 @@ struct LiveLspSession {
     runtime_id: String,
     trace: LspTraceLevel,
     events: tauri::ipc::Channel<LspEvent>,
+    owner_window: Option<String>,
 }
 
 impl LspService {
@@ -76,6 +77,7 @@ impl LspService {
     pub fn spawn(
         &self,
         session_id: String,
+        owner_window: Option<String>,
         trace: LspTraceLevel,
         resolved: ResolvedLspCommand,
         events: tauri::ipc::Channel<LspEvent>,
@@ -125,6 +127,7 @@ impl LspService {
                 runtime_id: runtime_id.clone(),
                 trace,
                 events: events.clone(),
+                owner_window,
             },
         );
 
@@ -199,6 +202,31 @@ impl LspService {
         } else {
             Err(format!("No active LSP session: {}", session_id))
         }
+    }
+    pub fn kill_window(&self, window_label: &str) -> usize {
+        let live_sessions: Vec<(String, LiveLspSession)> = {
+            let mut sessions = self.sessions.lock();
+            let session_ids: Vec<String> = sessions
+                .iter()
+                .filter(|(_, live)| live.owner_window.as_deref() == Some(window_label))
+                .map(|(session_id, _)| session_id.clone())
+                .collect();
+            session_ids
+                .into_iter()
+                .filter_map(|session_id| {
+                    sessions.remove(&session_id).map(|live| (session_id, live))
+                })
+                .collect()
+        };
+        let total = live_sessions.len();
+        for (session_id, live) in live_sessions {
+            live.shutdown.store(true, Ordering::Relaxed);
+            live.finalized.store(true, Ordering::Release);
+            if let Err(error) = live.child.lock().kill() {
+                warn!("Failed to kill LSP process {}: {}", session_id, error);
+            }
+        }
+        total
     }
 
     pub fn kill_all(&self) -> usize {

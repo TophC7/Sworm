@@ -5,6 +5,96 @@ use crate::services::folders::{folder_name, resolve_folder};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
+use tauri::Emitter;
+
+const RECENT_FOLDERS_KEY: &str = "recent_folders";
+
+fn read_recent_folders(state: &AppState) -> Result<Vec<String>, ApiError> {
+    let db = state.db.read();
+    let value = state
+        .app_state_kv
+        .get(db.conn(), RECENT_FOLDERS_KEY)
+        .map_err(ApiError::Database)?;
+    value
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+#[tauri::command]
+pub async fn recent_folders_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, ApiError> {
+    read_recent_folders(&state)
+}
+
+#[tauri::command]
+pub async fn recent_folders_touch(
+    path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, ApiError> {
+    let folders = {
+        let db = state.db.write();
+        let value = state
+            .app_state_kv
+            .get(db.conn(), RECENT_FOLDERS_KEY)
+            .map_err(ApiError::Database)?;
+        let mut folders: Vec<String> = value
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        folders.retain(|folder| folder != &path);
+        folders.insert(0, path);
+        folders.truncate(12);
+        let json = serde_json::to_string(&folders)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        state
+            .app_state_kv
+            .put(db.conn(), RECENT_FOLDERS_KEY, &json)
+            .map_err(ApiError::Database)?;
+        folders
+    };
+    app.emit("recent-folders-changed", &folders)
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(folders)
+}
+
+#[tauri::command]
+pub async fn recent_folders_remove(
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, ApiError> {
+    let filtered = {
+        let db = state.db.write();
+        let value = state
+            .app_state_kv
+            .get(db.conn(), RECENT_FOLDERS_KEY)
+            .map_err(ApiError::Database)?;
+        let mut filtered: Vec<String> = value
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        filtered.retain(|folder| !paths.contains(folder));
+        let json = serde_json::to_string(&filtered)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        state
+            .app_state_kv
+            .put(db.conn(), RECENT_FOLDERS_KEY, &json)
+            .map_err(ApiError::Database)?;
+        filtered
+    };
+    app.emit("recent-folders-changed", &filtered)
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(filtered)
+}
 
 /// Open a native directory picker and return the selected canonical path.
 #[tauri::command]
@@ -62,24 +152,39 @@ fn list_directories(path: &Path) -> Result<Vec<FolderInfo>, ApiError> {
     Ok(folders)
 }
 
-/// Release backend resources held for a folder once the workbench has
-/// closed its last tab: stop settings and file-explorer watches and the
-/// issue-bridge socket, then drop the cached issue DB handle and explorer
-/// filter. Silent no-op when nothing was held. The workbench only ever
-/// hands us paths it got from `folder_resolve`, so when canonicalization
-/// fails (folder deleted meanwhile), the raw path is already the resource key.
 #[tauri::command]
-pub async fn folder_release(
+pub async fn folder_claim(
+    window: tauri::WebviewWindow,
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    let folder = resolve_folder(&folder_path)?;
+    state.windows.claim_folder(window.label(), folder);
+    Ok(())
+}
+
+/// Release this window's ownership of a folder. Per-window resources are
+/// always removed; shared folder resources live until the final owner leaves.
+#[tauri::command]
+pub async fn folder_release(
+    window: tauri::WebviewWindow,
+    folder_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
+    // A previously canonical path remains the resource key if the folder was
+    // deleted before its tab closed.
     let folder = resolve_folder(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
-    state.issue_bridge.stop(&folder);
-    state.issues.evict(&folder);
-    state.settings_watchers.stop(&folder);
-    state.file_watchers.stop(&folder);
-    state.git_watchers.stop(&folder);
-    state.files.evict(&folder);
+    let is_last_owner = state.windows.release_folder(window.label(), &folder);
+    state
+        .file_watchers
+        .release_window_folder(window.label(), &folder);
+    if is_last_owner {
+        state.settings_watchers.stop(&folder);
+        state.git_watchers.stop(&folder);
+        state.issues.evict(&folder);
+        state.issue_bridge.stop(&folder);
+        state.files.evict(&folder);
+    }
     Ok(())
 }
 

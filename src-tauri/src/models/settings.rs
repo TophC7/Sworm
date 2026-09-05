@@ -97,6 +97,23 @@ pub struct LspServerConfigRecord {
     pub settings: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalFolderOpenMode {
+    #[default]
+    NewWindow,
+    FocusedWindow,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalFileOpenMode {
+    #[default]
+    PreferFolder,
+    FocusedWindow,
+    NewWindow,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct GeneralSettings {
     pub theme: String,
@@ -104,6 +121,10 @@ pub struct GeneralSettings {
     pub terminal_font_size: u16,
     #[serde(default = "default_nix_eval_timeout_secs")]
     pub nix_eval_timeout_secs: u64,
+    #[serde(default)]
+    pub external_folder_open_mode: ExternalFolderOpenMode,
+    #[serde(default)]
+    pub external_file_open_mode: ExternalFileOpenMode,
 }
 
 impl Default for GeneralSettings {
@@ -113,6 +134,8 @@ impl Default for GeneralSettings {
             terminal_font_family: "JetBrains Mono".to_string(),
             terminal_font_size: 13,
             nix_eval_timeout_secs: DEFAULT_NIX_EVAL_TIMEOUT_SECS,
+            external_folder_open_mode: ExternalFolderOpenMode::default(),
+            external_file_open_mode: ExternalFileOpenMode::default(),
         }
     }
 }

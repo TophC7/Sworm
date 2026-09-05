@@ -19,14 +19,17 @@
   import {
     getActiveTabId,
     getTabs,
+    isTabTransferring,
     promoteTab,
     reorderTab,
     setActiveTab,
     setTaskTabStatus,
     toggleTabLocked
   } from '$lib/features/workbench/state.svelte'
+  import { DND_MIME } from '$lib/features/dnd/payload'
   import { tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
+  import { dropForeignTab } from '$lib/features/workbench/transferService.svelte'
   import { startSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
@@ -37,16 +40,16 @@
   import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot, TerminalIcon } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
-  import { tick } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getTabPresentation } from '$lib/features/workbench/presentation.svelte'
   import { getSurfaceKind } from '$lib/features/workbench/surfaces'
-  import { cn } from '$lib/utils/cn'
   import NewTabMenu from './NewTabMenu.svelte'
 
   let tabs = $derived(getTabs())
   let activeTabId = $derived(getActiveTabId())
   let stripEl = $state<HTMLElement | null>(null)
+  let seamX = $state(2)
 
   // Keep the active tab in view when it changes (new tab appended off-screen,
   // Ctrl+Tab-style activation of a far tab).
@@ -56,6 +59,16 @@
     void tick().then(() => {
       stripEl?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(id)}"]`)?.scrollIntoView({ inline: 'nearest' })
     })
+  })
+  onMount(() => {
+    window.addEventListener('dragend', clearDropTarget)
+    window.addEventListener('drop', clearDropTarget)
+    window.addEventListener('blur', clearDropTarget)
+    return () => {
+      window.removeEventListener('dragend', clearDropTarget)
+      window.removeEventListener('drop', clearDropTarget)
+      window.removeEventListener('blur', clearDropTarget)
+    }
   })
 
   async function handleTabClose(e: Event, tabId: TabId) {
@@ -80,29 +93,69 @@
     return item ? tabs.findIndex((t) => t.id === item.tabId) : -1
   })
 
-  // The source adapter clears LocalTransfer on dragend/drop, so the
-  // marker only renders while a tab drag is in flight. A cancelled drag
-  // additionally resets `dropIndex` via `ondragend` on the dragged tab so
-  // the next drag doesn't briefly show the stale slot before its first hover.
-  let effectiveDropIndex = $derived(dragFrom >= 0 ? dropIndex : null)
+  function isTabDrag(e: DragEvent) {
+    return dragFrom >= 0 || e.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)
+  }
 
-  function handleDragOver(e: DragEvent, index: number) {
-    if (dragFrom < 0) return
+  function acceptTabDrag(e: DragEvent) {
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    dropIndex = e.clientX < rect.left + rect.width / 2 ? index : index + 1
+  }
+
+  function clearDropTarget() {
+    dropIndex = null
+  }
+
+  function clampSeamX(x: number) {
+    const scroller = stripEl?.querySelector<HTMLElement>('[role="tablist"]')
+    if (!scroller) return x
+    const left = scroller.scrollLeft + 2
+    const right = scroller.scrollLeft + scroller.clientWidth - 2
+    return Math.min(Math.max(x, left), right)
+  }
+
+  function handleDragOver(e: DragEvent, index: number) {
+    if (!isTabDrag(e)) return
+    acceptTabDrag(e)
+    const tab = e.currentTarget as HTMLElement
+    const rect = tab.getBoundingClientRect()
+    const before = e.clientX < rect.left + rect.width / 2
+    dropIndex = before ? index : index + 1
+    seamX = clampSeamX(before ? tab.offsetLeft : tab.offsetLeft + tab.offsetWidth)
+  }
+
+  function handleStripDragOver(e: DragEvent) {
+    const target = e.target
+    if ((target instanceof Element && target.closest('[data-tab-id]')) || !isTabDrag(e)) return
+    acceptTabDrag(e)
+    dropIndex = tabs.length
+
+    const tabElements = stripEl?.querySelectorAll<HTMLElement>('[data-tab-id]')
+    const lastTab = tabElements?.[tabElements.length - 1]
+    seamX = clampSeamX(lastTab ? lastTab.offsetLeft + lastTab.offsetWidth : 0)
+  }
+
+  function handleStripDragLeave(e: DragEvent) {
+    const relatedTarget = e.relatedTarget
+    if (relatedTarget instanceof Node && (e.currentTarget as HTMLElement).contains(relatedTarget)) return
+    clearDropTarget()
   }
 
   function handleDrop(e: DragEvent) {
     const from = dragFrom
-    if (from < 0 || dropIndex === null) return
-    e.preventDefault()
-    // Insertion slot → post-removal index.
-    const to = dropIndex > from ? dropIndex - 1 : dropIndex
-    reorderTab(from, to)
-    dropIndex = null
-    LocalTransfer.clear()
+    if (from >= 0) {
+      if (dropIndex === null) return
+      e.preventDefault()
+      // Insertion slot → post-removal index.
+      const to = dropIndex > from ? dropIndex - 1 : dropIndex
+      reorderTab(from, to)
+      clearDropTarget()
+      LocalTransfer.clear()
+      return
+    }
+
+    dropForeignTab(e, dropIndex ?? tabs.length)
+    clearDropTarget()
   }
 
   // SESSION MENU //
@@ -162,109 +215,127 @@
   }
 </script>
 
-<div class="flex min-w-0 shrink self-stretch" bind:this={stripEl}>
-  <TabStrip ariaLabel="Tabs" class="h-full">
-    {#each tabs as tab, i (tab.id)}
-      {@const presentation = getTabPresentation(tab)}
-      {@const surfaceKind = getSurfaceKind(tab)}
-      {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
-      <ContextMenuRoot>
-        <ContextMenuTrigger
-          class={cn(
-            'contents',
-            effectiveDropIndex === i && '[&>button]:shadow-[inset_2px_0_0_var(--color-accent)]',
-            effectiveDropIndex === i + 1 &&
-              i === tabs.length - 1 &&
-              '[&>button]:shadow-[inset_-2px_0_0_var(--color-accent)]'
-          )}
-          draggable={!tab.locked}
-          {@attach tabDragSource({ tab })}
-        >
-          <TabButton
-            active={activeTabId === tab.id}
-            draggable={!tab.locked}
-            data-tab-id={tab.id}
-            title="{tab.folderPath} — {presentation.title}"
-            onclick={() => setActiveTab(tab.id)}
-            ondblclick={() => {
-              if (surfaceKind !== 'session' && surfaceKind !== 'launcher' && presentation.preview) {
-                promoteTab(tab.id)
-              }
-            }}
-            onauxclick={(e) => handleAuxClick(e, tab.id)}
-            ondragover={(e) => handleDragOver(e, i)}
-            ondrop={handleDrop}
-            ondragend={() => (dropIndex = null)}
-            onClose={tab.locked ? undefined : (e) => handleTabClose(e, tab.id)}
+<div
+  class="flex min-w-0 flex-1 self-stretch {dropIndex !== null && dragFrom < 0 ? 'bg-accent/10' : ''}"
+  role="group"
+  aria-label="Tabs and tab drop area"
+  ondragover={handleStripDragOver}
+  ondragleave={handleStripDragLeave}
+  ondrop={handleDrop}
+>
+  <div class="flex min-w-0 shrink self-stretch" bind:this={stripEl}>
+    <TabStrip ariaLabel="Tabs" class="h-full">
+      {#each tabs as tab, i (tab.id)}
+        {@const presentation = getTabPresentation(tab)}
+        {@const surfaceKind = getSurfaceKind(tab)}
+        {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
+        {@const transferring = isTabTransferring(tab.id)}
+        <ContextMenuRoot>
+          <ContextMenuTrigger
+            class="contents"
+            draggable={!tab.locked && !transferring}
+            {@attach transferring ? undefined : tabDragSource({ tab })}
           >
-            {#snippet leading()}
-              {#if surfaceKind === 'diff'}
-                <FileDiff size={14} class="shrink-0 text-accent" />
-              {:else if surfaceKind === 'tool'}
-                <BellIcon size={14} class="shrink-0 text-accent" />
-              {:else if surfaceKind === 'issue'}
-                <CircleDot size={14} class="shrink-0 text-accent" />
-              {:else if surfaceKind === 'epic'}
-                <Layers size={14} class="shrink-0 text-warning" />
-              {:else if tab.kind === 'text' && presentation.fileName}
-                <!-- Pass the full relative path so the resolver can apply
+            <TabButton
+              active={activeTabId === tab.id}
+              class={dragFrom === i ? 'opacity-40' : undefined}
+              draggable={!tab.locked && !transferring}
+              data-tab-id={tab.id}
+              title="{tab.folderPath} — {presentation.title}"
+              onclick={() => setActiveTab(tab.id)}
+              ondblclick={() => {
+                if (surfaceKind !== 'session' && surfaceKind !== 'launcher' && presentation.preview) {
+                  promoteTab(tab.id)
+                }
+              }}
+              onauxclick={tab.locked || transferring ? undefined : (e) => handleAuxClick(e, tab.id)}
+              ondragover={(e) => handleDragOver(e, i)}
+              ondragend={clearDropTarget}
+              onClose={tab.locked || transferring ? undefined : (e) => handleTabClose(e, tab.id)}
+            >
+              {#snippet leading()}
+                {#if surfaceKind === 'diff'}
+                  <FileDiff size={14} class="shrink-0 text-accent" />
+                {:else if surfaceKind === 'tool'}
+                  <BellIcon size={14} class="shrink-0 text-accent" />
+                {:else if surfaceKind === 'issue'}
+                  <CircleDot size={14} class="shrink-0 text-accent" />
+                {:else if surfaceKind === 'epic'}
+                  <Layers size={14} class="shrink-0 text-warning" />
+                {:else if tab.kind === 'text' && presentation.fileName}
+                  <!-- Pass the full relative path so the resolver can apply
                      directory-aware rules (e.g. .sworm/*.json → sworm icon).
                      Falls back to the basename for unsaved "Untitled" tabs. -->
-                <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
-              {:else if surfaceKind === 'launcher'}
-                <Plus size={14} class="shrink-0 text-accent" />
-              {:else if surfaceKind === 'task'}
-                <!-- Task icon comes from .sworm/tasks.json. Any Lucide name
+                  <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
+                {:else if surfaceKind === 'launcher'}
+                  <Plus size={14} class="shrink-0 text-accent" />
+                {:else if surfaceKind === 'task'}
+                  <!-- Task icon comes from .sworm/tasks.json. Any Lucide name
                      is valid; fall back to the terminal glyph when the
                      dynamic loader can't find a match. -->
-                {#if presentation.lucideIcon}
-                  <LucideIcon name={presentation.lucideIcon} size={14} class="shrink-0 text-accent" />
-                {:else}
-                  <TerminalIcon size={14} class="shrink-0 text-accent" />
+                  {#if presentation.lucideIcon}
+                    <LucideIcon name={presentation.lucideIcon} size={14} class="shrink-0 text-accent" />
+                  {:else}
+                    <TerminalIcon size={14} class="shrink-0 text-accent" />
+                  {/if}
+                {:else if presentation.providerIcon}
+                  <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
                 {/if}
-              {:else if presentation.providerIcon}
-                <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
-              {/if}
-              {#if tab.locked}
-                <Lock size={11} class="shrink-0 text-muted" />
-              {/if}
-            {/snippet}
-            <span class="max-w-[120px] truncate {presentation.preview ? 'italic' : ''}">
-              {presentation.title}
-            </span>
-          </TabButton>
-        </ContextMenuTrigger>
+                {#if tab.locked}
+                  <Lock size={11} class="shrink-0 text-muted" />
+                {/if}
+              {/snippet}
+              <span class="max-w-[120px] truncate {presentation.preview ? 'italic' : ''}">
+                {presentation.title}
+              </span>
+            </TabButton>
+          </ContextMenuTrigger>
 
-        <ContextMenuContent>
-          {#if tab.kind === 'session'}
-            <ContextMenuItem onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
-              {sessionLive ? 'Stop' : 'Restart'}
-            </ContextMenuItem>
-          {/if}
-          {#if tab.kind === 'task'}
-            {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
-            <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
-              {taskRunning ? 'Stop' : 'Restart'}
-            </ContextMenuItem>
-          {/if}
-          {#if canLockTab(tab)}
-            <!-- Lock only makes sense on content tabs where accidental input
+          <ContextMenuContent>
+            {#if tab.kind === 'session'}
+              <ContextMenuItem onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
+                {sessionLive ? 'Stop' : 'Restart'}
+              </ContextMenuItem>
+            {/if}
+            {#if tab.kind === 'task'}
+              {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
+              <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
+                {taskRunning ? 'Stop' : 'Restart'}
+              </ContextMenuItem>
+            {/if}
+            {#if canLockTab(tab)}
+              <!-- Lock only makes sense on content tabs where accidental input
                  can cause damage (session terminals, Monaco text tabs). Launcher
                  and diff tabs skip this affordance entirely. -->
-            <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
-              {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
+              <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
+                {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+            {/if}
+            <ContextMenuItem
+              destructive
+              disabled={tab.locked || transferring}
+              onclick={() => void closeTabWithChecks(tab.id)}
+            >
+              Close
             </ContextMenuItem>
-            <ContextMenuSeparator />
-          {/if}
-          <ContextMenuItem destructive disabled={tab.locked} onclick={() => void closeTabWithChecks(tab.id)}>
-            Close
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenuRoot>
-    {/each}
+          </ContextMenuContent>
+        </ContextMenuRoot>
+      {/each}
+      {#if dropIndex !== null}
+        <span
+          aria-hidden="true"
+          style="left: {seamX}px"
+          class="pointer-events-none absolute inset-y-0 z-10 w-[3px] -translate-x-1/2 rounded-full bg-accent before:absolute before:top-0 before:left-1/2 before:h-[3px] before:w-[9px] before:-translate-x-1/2 before:rounded-[1px] before:bg-accent before:content-[''] after:absolute after:bottom-0 after:left-1/2 after:h-[3px] after:w-[9px] after:-translate-x-1/2 after:rounded-[1px] after:bg-accent after:content-['']"
+        ></span>
+      {/if}
 
-    {#snippet trailing()}
-      <NewTabMenu />
-    {/snippet}
-  </TabStrip>
+      {#snippet trailing()}
+        <NewTabMenu />
+      {/snippet}
+    </TabStrip>
+  </div>
+
+  <!-- Keep trailing title-bar space both draggable and a tab drop target. -->
+  <div data-tauri-drag-region class="min-w-0 flex-1 self-stretch"></div>
 </div>

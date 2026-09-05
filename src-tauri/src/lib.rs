@@ -4,9 +4,11 @@ mod errors;
 mod models;
 mod services;
 
+use crate::commands::app::launch_path_args;
 use app_state::AppState;
-use commands::app::{first_dir_arg, PendingOpen};
-use tauri::{Emitter, Manager};
+use std::path::Path;
+use std::sync::Arc;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,30 +24,19 @@ pub fn run() {
     tracing::info!("Sworm starting up");
 
     let app = tauri::Builder::default()
-        // Single-instance lock: second launch focuses the existing window
-        // instead of spinning up a parallel process. The plugin keys its
-        // lock off the bundle identifier, so dev and prod builds (which
-        // use different identifiers) each get their own lock; allowing
-        // dogfooding Sworm-in-Sworm without the two instances fighting
-        // over the same SQLite DB.
+        // Route warm launches through the same coordinator used by IPC and
+        // cold-start restoration.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            // Subsequent-launch path: Nautilus "Open With" on an already-
-            // running Sworm re-invokes the binary, lands here. Stash the
-            // path and wake the frontend so it can drain it via the
-            // app_take_pending_open_path command.
-            if let Some(path) = first_dir_arg(&argv, Some(std::path::Path::new(&cwd))) {
-                if let Some(pending) = app.try_state::<PendingOpen>() {
-                    if let Ok(mut slot) = pending.0.lock() {
-                        *slot = Some(path.clone());
-                    }
+            let state = app.state::<AppState>();
+            let paths = launch_path_args(&argv, Some(Path::new(&cwd)));
+            if paths.is_empty() {
+                if let Err(error) = state.windows.create_workbench_window(app, None) {
+                    tracing::error!("Failed to create window for second launch: {error}");
                 }
-                let _ = app.emit("sworm://pending-open-changed", ());
-                tracing::info!("Second-instance argv opened path: {}", path);
-            }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+            } else {
+                for path in paths {
+                    state.windows.route_open_path(app, &path);
+                }
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -53,22 +44,35 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let state = AppState::new(app.handle())?;
+            let windows = Arc::clone(&state.windows);
+            let manifest = {
+                let db = state.db.write();
+                windows
+                    .load_manifest_or_migrate(app.handle(), &state.app_state_kv, db.conn())
+                    .map_err(std::io::Error::other)?
+            };
             app.manage(state);
 
-            // First-launch argv capture: cold-start from Nautilus
-            // passes the folder as argv[1]. Park it for the frontend
-            // to drain in onMount. The single-instance callback above
-            // handles the warm-start case.
-            let pending = PendingOpen::default();
+            for entry in manifest.windows {
+                windows
+                    .create_workbench_window(app.handle(), Some(entry))
+                    .map_err(std::io::Error::other)?;
+            }
+
             let argv: Vec<String> = std::env::args().collect();
             let cwd = std::env::current_dir().ok();
-            if let Some(path) = first_dir_arg(&argv, cwd.as_deref()) {
-                if let Ok(mut slot) = pending.0.lock() {
-                    *slot = Some(path.clone());
-                }
-                tracing::info!("First-launch argv opened path: {}", path);
+            for path in launch_path_args(&argv, cwd.as_deref()) {
+                windows.route_open_path(app.handle(), &path);
+                tracing::info!("First-launch argv opened path: {path}");
             }
-            app.manage(pending);
+
+            // Routing creates windows for argv targets; only fall back to a
+            // blank window when neither restore nor argv produced one.
+            if windows.window_count() == 0 {
+                windows
+                    .create_workbench_window(app.handle(), None)
+                    .map_err(std::io::Error::other)?;
+            }
 
             tracing::info!("AppState initialized");
 
@@ -81,10 +85,23 @@ pub fn run() {
             // App commands
             commands::app::clipboard_copy_files,
             commands::app::clipboard_read_files,
-            commands::app::app_take_pending_open_path,
             commands::app::app_state_get,
             commands::app::app_state_put,
+            commands::app::app_state_delete,
             commands::app::app_runtime_info,
+            // Window commands
+            commands::window::window_create,
+            commands::window::window_ready,
+            commands::window::window_get_label,
+            commands::window::window_close,
+            commands::window::window_claim_file,
+            commands::window::window_release_file,
+            commands::window::window_transfer_initiate,
+            commands::window::window_transfer_source_exported,
+            commands::window::window_transfer_target_staged,
+            commands::window::window_transfer_abort,
+            commands::window::pty_pause,
+            commands::window::pty_attach,
             // Builtins commands
             commands::builtins::builtins_get_catalog,
             // Config schema commands (drives Monaco autocomplete for .sworm/*.json)
@@ -118,6 +135,10 @@ pub fn run() {
             commands::folders::folder_resolve,
             commands::folders::folder_list_directories,
             commands::folders::folder_open_in_terminal,
+            commands::folders::recent_folders_list,
+            commands::folders::recent_folders_touch,
+            commands::folders::recent_folders_remove,
+            commands::folders::folder_claim,
             commands::folders::folder_release,
             // Provider commands
             commands::providers::provider_list,
@@ -232,8 +253,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building Sworm");
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            let state = app_handle.state::<AppState>();
+            state.windows.set_exit_requested(true);
+            if let Err(error) = state.windows.save_manifest(app_handle) {
+                tracing::error!("Failed to save window manifest on exit: {error}");
+            }
+        }
+        tauri::RunEvent::Exit => {
             let state = app_handle.state::<AppState>();
             let cleaned = state.pty.kill_all();
             let lsp_cleaned = state.lsp.kill_all();
@@ -243,6 +271,7 @@ pub fn run() {
                 lsp_cleaned
             );
         }
+        _ => {}
     });
 }
 

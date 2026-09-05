@@ -19,7 +19,12 @@ import {
   openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { flushWorkbench } from '$lib/features/workbench/persistence'
-import { getActiveFolderPath, openFolder, reopenLastClosedTab } from '$lib/features/workbench/state.svelte'
+import {
+  getActiveFolderPath,
+  getWindowLabel,
+  openFolder,
+  reopenLastClosedTab
+} from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
@@ -37,11 +42,14 @@ export async function reloadView(): Promise<void> {
     if (!proceed) return
   }
   try {
-    await flushWorkbench()
+    await flushWorkbench(getWindowLabel())
   } catch (error) {
     console.warn('Reload flush failed:', error)
   }
   window.location.reload()
+}
+export async function newWindow(): Promise<void> {
+  await backend.window.create()
 }
 
 export function newEmptyFile(): void {
@@ -148,5 +156,5 @@ export async function closeActiveTab(): Promise<void> {
 }
 
 export function reopenTab(): void {
-  reopenLastClosedTab()
+  void reopenLastClosedTab().catch((e) => notify.error('Reopen tab failed', getErrorMessage(e)))
 }

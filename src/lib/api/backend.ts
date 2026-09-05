@@ -5,12 +5,14 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
 import type {
   AppRuntimeInfo,
   BranchOpState,
   BranchSummary,
   BuiltinCatalog,
   CommitDetail,
+  ClaimFileResult,
   ConfigSchemaEntry,
   DiffFileContent,
   DiffSource,
@@ -19,7 +21,10 @@ import type {
   ExplorerDirEntry,
   ExplorerPathList,
   FileDiff,
+  FilePasteMapping,
   FilePasteCollision,
+  FilePathChangedPayload,
+  FocusTabPayload,
   FilesChangedEvent,
   FormattingSettings,
   GeneralSettings,
@@ -62,6 +67,9 @@ import type {
   ShortcutsFilePayload,
   ShortcutsFileResult,
   StashEntry,
+  TabTransferAbortedPayload,
+  TabTransferExportPayload,
+  TabTransferInitiateParams,
   TaskDefinition
 } from '$lib/types/backend'
 
@@ -85,6 +93,9 @@ export const backend = {
     statePut(key: string, valueJson: string): Promise<void> {
       return invoke<void>('app_state_put', { key, valueJson })
     },
+    stateDelete(key: string): Promise<void> {
+      return invoke<void>('app_state_delete', { key })
+    },
     /** Copy file paths to the system clipboard in file-manager format. */
     clipboardCopyFiles(paths: string[], op: 'copy' | 'cut'): Promise<void> {
       return invoke<void>('clipboard_copy_files', { paths, op })
@@ -95,13 +106,50 @@ export const backend = {
       paths: string[]
     } | null> {
       return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
+    }
+  },
+  window: {
+    create(): Promise<string> {
+      return invoke<string>('window_create')
     },
-    /**
-     * Drain the "open this folder" path queued by argv (Nautilus "Open With"
-     * or CLI invocation). Returns null when nothing is queued.
-     */
-    takePendingOpenPath(): Promise<string | null> {
-      return invoke<string | null>('app_take_pending_open_path')
+    ready(): Promise<void> {
+      return invoke<void>('window_ready')
+    },
+    getLabel(): Promise<string> {
+      return invoke<string>('window_get_label')
+    },
+    claimFile(filePath: string, tabId: string, reveal: TextRevealTarget | null = null): Promise<ClaimFileResult> {
+      return invoke<ClaimFileResult>('window_claim_file', { filePath, tabId, reveal })
+    },
+    releaseFile(filePath: string): Promise<void> {
+      return invoke<void>('window_release_file', { filePath })
+    },
+    transferInitiate(params: TabTransferInitiateParams): Promise<string> {
+      return invoke<string>('window_transfer_initiate', { params })
+    },
+    transferSourceExported(payload: TabTransferExportPayload): Promise<void> {
+      return invoke<void>('window_transfer_source_exported', { payload })
+    },
+    transferTargetStaged(transferId: string): Promise<void> {
+      return invoke<void>('window_transfer_target_staged', { transferId })
+    },
+    transferAbort(transferId: string, reason: string): Promise<void> {
+      return invoke<void>('window_transfer_abort', { transferId, reason })
+    },
+    onFilePathChanged(handler: (event: FilePathChangedPayload) => void): Promise<UnlistenFn> {
+      return listen<FilePathChangedPayload>('sworm://file-path-changed', (event) => handler(event.payload))
+    },
+    onFileDeleted(handler: (event: { filePath: string }) => void): Promise<UnlistenFn> {
+      return listen<{ filePath: string }>('sworm://file-deleted', (event) => handler(event.payload))
+    },
+    onFocusTab(handler: (event: FocusTabPayload) => void): Promise<UnlistenFn> {
+      return listen<FocusTabPayload>('sworm://focus-tab', (event) => handler(event.payload))
+    },
+    onTransferAborted(handler: (event: TabTransferAbortedPayload) => void): Promise<UnlistenFn> {
+      return listen<TabTransferAbortedPayload>('sworm://tab-transfer-aborted', (event) => handler(event.payload))
+    },
+    close(): Promise<void> {
+      return invoke<void>('window_close')
     }
   },
 
@@ -115,8 +163,23 @@ export const backend = {
   },
 
   folders: {
+    recentList(): Promise<string[]> {
+      return invoke<string[]>('recent_folders_list')
+    },
+    recentTouch(path: string): Promise<string[]> {
+      return invoke<string[]>('recent_folders_touch', { path })
+    },
+    recentRemove(paths: string[]): Promise<string[]> {
+      return invoke<string[]>('recent_folders_remove', { paths })
+    },
+    onRecentFoldersChanged(handler: (folders: string[]) => void): Promise<UnlistenFn> {
+      return listen<string[]>('recent-folders-changed', (event) => handler(event.payload))
+    },
     selectDirectory(): Promise<string | null> {
       return invoke<string | null>('folder_select_directory')
+    },
+    claim(folderPath: string): Promise<void> {
+      return invoke<void>('folder_claim', { folderPath })
     },
     /** Canonicalize a folder path; rejects missing paths and non-directories. */
     resolve(path: string): Promise<FolderInfo> {
@@ -143,10 +206,19 @@ export const backend = {
     }
   },
 
+  pty: {
+    pause(runId: string): Promise<number> {
+      return invoke<number>('pty_pause', { runId })
+    },
+    attach(runId: string, transferId: string, output: Channel<Uint8Array>, events: Channel<PtyEvent>): Promise<number> {
+      return invoke<number>('pty_attach', { runId, transferId, output, events })
+    }
+  },
+
   sessions: {
-    createOutputChannel(onOutput: (data: number[]) => void): Channel<number[]> {
-      const output = new Channel<number[]>()
-      output.onmessage = onOutput
+    createOutputChannel(onOutput: (data: Uint8Array) => void): Channel<Uint8Array> {
+      const output = new Channel<Uint8Array>()
+      output.onmessage = (data) => onOutput(new Uint8Array(data))
       return output
     },
     createEventChannel(onEvent: (event: PtyEvent) => void): Channel<PtyEvent> {
@@ -165,7 +237,7 @@ export const backend = {
       spec: SessionSpec,
       cols: number,
       rows: number,
-      output: Channel<number[]>,
+      output: Channel<Uint8Array>,
       events: Channel<PtyEvent>
     ): Promise<SessionStartInfo> {
       return invoke<SessionStartInfo>('session_start', {
@@ -463,8 +535,8 @@ export const backend = {
       sources: string[],
       collisionPolicy: 'auto_rename' | 'replace' | 'skip' | 'rename' | 'error' = 'auto_rename',
       renameMap?: Record<string, string>
-    ): Promise<string[]> {
-      return invoke<string[]>('file_paste', {
+    ): Promise<FilePasteMapping[]> {
+      return invoke<FilePasteMapping[]>('file_paste', {
         projectPath,
         targetDir,
         op,
@@ -483,6 +555,9 @@ export const backend = {
   },
 
   nix: {
+    onChanged(handler: (event: { folderPath: string }) => void): Promise<UnlistenFn> {
+      return listen<{ folderPath: string }>('nix-changed', (event) => handler(event.payload))
+    },
     detect(folderPath: string): Promise<NixDetection> {
       return invoke<NixDetection>('nix_detect', { folderPath })
     },
@@ -575,6 +650,9 @@ export const backend = {
   },
 
   issues: {
+    onChanged(handler: (event: { folderPath: string }) => void): Promise<UnlistenFn> {
+      return listen<{ folderPath: string }>('issues-changed', (event) => handler(event.payload))
+    },
     list(folderPath: string, filters: IssueListFilters = {}): Promise<Issue[]> {
       return invoke<Issue[]>('issues_list', { folderPath, filters })
     },
@@ -674,10 +752,8 @@ export const backend = {
     list(folderPath: string): Promise<TaskDefinition[]> {
       return invoke<TaskDefinition[]>('tasks_list', { folderPath })
     },
-    createOutputChannel(onOutput: (data: number[]) => void): Channel<number[]> {
-      const output = new Channel<number[]>()
-      output.onmessage = onOutput
-      return output
+    createOutputChannel(onOutput: (data: Uint8Array) => void): Channel<Uint8Array> {
+      return backend.sessions.createOutputChannel(onOutput)
     },
     createEventChannel(onEvent: (event: PtyEvent) => void): Channel<PtyEvent> {
       const events = new Channel<PtyEvent>()
@@ -695,7 +771,7 @@ export const backend = {
       activeFilePath: string | null,
       cols: number,
       rows: number,
-      onOutput: (data: number[]) => void,
+      onOutput: (data: Uint8Array) => void,
       onEvent: (event: PtyEvent) => void
     ): Promise<void> {
       const output = backend.tasks.createOutputChannel(onOutput)

@@ -12,7 +12,7 @@ import { releaseProviderFolder } from '$lib/features/sessions/providers/state.sv
 import { releaseNixFolder } from '$lib/features/settings/state/nix.svelte'
 
 /** Evict every folder-scoped cache and stop the folder's backend services (issue bridge, issue DB). */
-export function releaseFolder(folderPath: string): void {
+export async function releaseFolder(folderPath: string): Promise<void> {
   releaseGitFolder(folderPath)
   releaseBranchFolder(folderPath)
   releaseNixFolder(folderPath)
@@ -20,5 +20,5 @@ export function releaseFolder(folderPath: string): void {
   releaseFileTree(folderPath)
   releaseProjectFiles(folderPath)
   void releaseLspFolder(folderPath)
-  void backend.folders.release(folderPath).catch((error) => console.warn('Folder release failed:', error))
+  await backend.folders.release(folderPath).catch((error) => console.warn('Folder release failed:', error))
 }

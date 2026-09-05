@@ -113,6 +113,24 @@ export async function loadIssues(folderPath: string, filters: IssueListFilters =
   }
 }
 
+export function refreshIssuesForFolder(folderPath: string): void {
+  if (issuesByFolder.has(folderPath)) {
+    void loadIssues(folderPath)
+  }
+  const issueDetails = issueDetailsByFolder.get(folderPath)
+  if (issueDetails) {
+    for (const id of issueDetails.keys()) {
+      void openIssueDetail(folderPath, id)
+    }
+  }
+  const epicDetails = epicDetailsByFolder.get(folderPath)
+  if (epicDetails) {
+    for (const id of epicDetails.keys()) {
+      void openEpicDetail(folderPath, id)
+    }
+  }
+}
+
 export async function searchIssues(
   folderPath: string,
   query: string,

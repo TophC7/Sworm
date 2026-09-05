@@ -14,6 +14,7 @@
         "@tauri-apps/plugin-opener": "^2.5.4",
         "@xterm/addon-fit": "0.12.0-beta.291",
         "@xterm/addon-image": "0.10.0-beta.291",
+        "@xterm/addon-serialize": "0.15.0-beta.291",
         "@xterm/addon-web-links": "0.13.0-beta.291",
         "@xterm/addon-webgl": "0.20.0-beta.290",
         "@xterm/xterm": "6.1.0-beta.291",
@@ -216,6 +217,8 @@
     "@xterm/addon-fit": ["@xterm/addon-fit@0.12.0-beta.291", "", { "peerDependencies": { "@xterm/xterm": "^6.1.0-beta.291" } }, "sha512-bxJ4g8YKPily7Lc8NpkYBm6QmSyNhzGo1g5uXJl1g1zSHeM0GV1/Q5BQB/Y/C340+jcNb6CsFGj/VDgsXGLzIA=="],
 
     "@xterm/addon-image": ["@xterm/addon-image@0.10.0-beta.291", "", { "peerDependencies": { "@xterm/xterm": "^6.1.0-beta.291" } }, "sha512-yfRk0qFkmQiS6Y6id27hzg99d9WC3f1wRNrCojcqFd0WFt3Yq5+bD2QoimSBZ8Alz2kof8BknUk9pMrPXtm5Dw=="],
+
+    "@xterm/addon-serialize": ["@xterm/addon-serialize@0.15.0-beta.291", "", { "peerDependencies": { "@xterm/xterm": "^6.1.0-beta.291" } }, "sha512-fHnKaduVDgcwewOUh/v9I1Ad39m69QSnKtjGeouJwaB7qxWFdlXBIRJIUe605Hdy/YuPQ5W3d+xmvmbe2rkpFg=="],
 
     "@xterm/addon-web-links": ["@xterm/addon-web-links@0.13.0-beta.291", "", { "peerDependencies": { "@xterm/xterm": "^6.1.0-beta.291" } }, "sha512-sBGTf85ZwBdUIdDFF/lco9LFpeGegGKUJWFIzfre7sO50g5DoCUoSYMLJwn47EH8YlE0umhgzdUfvmnMOPOwgQ=="],
 

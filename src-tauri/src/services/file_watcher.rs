@@ -36,6 +36,7 @@ struct FolderWatch {
     /// Shared with the event handler so it can drop events for directories the
     /// explorer no longer renders.
     watched: Arc<Mutex<HashSet<String>>>,
+    window_requests: HashMap<String, HashSet<String>>,
 }
 
 pub struct FileWatcherService {
@@ -49,13 +50,12 @@ impl FileWatcherService {
         }
     }
 
-    /// Make the watched set for `folder` exactly `dirs` (project-relative, ""
-    /// for the root). Individual watch failures are logged and skipped: a
-    /// directory can vanish between render and watch, and a missing watch only
-    /// costs freshness for that one listing.
+    /// Update one window's requested directories. The underlying watcher sees
+    /// the union, so one window cannot unwatch another window's expanded tree.
     pub fn sync(
         &self,
         app: &tauri::AppHandle,
+        window_label: &str,
         folder: &Path,
         dirs: &[String],
     ) -> Result<(), String> {
@@ -69,32 +69,78 @@ impl FileWatcherService {
                 folders.get_mut(&folder).expect("watch just inserted")
             }
         };
-
-        let desired: HashSet<String> = dirs.iter().cloned().collect();
-        // The notify event loop locks `watched` from its callback, and
-        // `watch`/`unwatch` block until that same thread answers — so publish
-        // the new set and release the lock before touching the watcher.
-        let (stale, added) = {
-            let mut watched = entry.watched.lock();
-            let stale: Vec<String> = watched.difference(&desired).cloned().collect();
-            let added: Vec<String> = desired.difference(&watched).cloned().collect();
-            *watched = desired;
-            (stale, added)
-        };
-        for stale in &stale {
-            let _ = entry.watcher.unwatch(&abs_dir(&folder, stale));
-        }
-        for added in &added {
-            let abs = abs_dir(&folder, added);
-            if let Err(error) = entry.watcher.watch(&abs, RecursiveMode::NonRecursive) {
-                tracing::debug!(path = %abs.display(), %error, "explorer watch skipped");
+        if let Some(existing) = entry.window_requests.get(window_label) {
+            if existing.len() == dirs.len() && dirs.iter().all(|d| existing.contains(d)) {
+                return Ok(());
             }
         }
+        entry
+            .window_requests
+            .insert(window_label.to_string(), dirs.iter().cloned().collect());
+        let desired = requested_union(&entry.window_requests);
+        update_watched(&folder, entry, desired);
         Ok(())
     }
 
-    pub fn stop(&self, folder: &Path) {
-        self.folders.lock().remove(folder);
+    pub fn release_window_folder(&self, window_label: &str, folder: &Path) {
+        let mut folders = self.folders.lock();
+        let should_remove = match folders.get_mut(folder) {
+            Some(entry) => {
+                entry.window_requests.remove(window_label);
+                if entry.window_requests.is_empty() {
+                    true
+                } else {
+                    let desired = requested_union(&entry.window_requests);
+                    update_watched(folder, entry, desired);
+                    false
+                }
+            }
+            None => false,
+        };
+        if should_remove {
+            folders.remove(folder);
+        }
+    }
+
+    pub fn release_window(&self, window_label: &str) {
+        self.folders.lock().retain(|folder, entry| {
+            entry.window_requests.remove(window_label);
+            if entry.window_requests.is_empty() {
+                return false;
+            }
+            let desired = requested_union(&entry.window_requests);
+            update_watched(folder, entry, desired);
+            true
+        });
+    }
+}
+
+fn requested_union(window_requests: &HashMap<String, HashSet<String>>) -> HashSet<String> {
+    window_requests
+        .values()
+        .flat_map(|dirs| dirs.iter().cloned())
+        .collect()
+}
+
+fn update_watched(folder: &Path, entry: &mut FolderWatch, desired: HashSet<String>) {
+    // The notify event loop locks `watched` from its callback, and
+    // `watch`/`unwatch` block until that same thread answers — publish the new
+    // set and release the lock before touching the watcher.
+    let (stale, added) = {
+        let mut watched = entry.watched.lock();
+        let stale: Vec<String> = watched.difference(&desired).cloned().collect();
+        let added: Vec<String> = desired.difference(&watched).cloned().collect();
+        *watched = desired;
+        (stale, added)
+    };
+    for stale in stale {
+        let _ = entry.watcher.unwatch(&abs_dir(folder, &stale));
+    }
+    for added in added {
+        let abs = abs_dir(folder, &added);
+        if let Err(error) = entry.watcher.watch(&abs, RecursiveMode::NonRecursive) {
+            tracing::debug!(path = %abs.display(), %error, "explorer watch skipped");
+        }
     }
 }
 
@@ -149,7 +195,11 @@ fn spawn_watch(app: &tauri::AppHandle, folder: &Path) -> Result<FolderWatch, Str
     })
     .map_err(|error| format!("Failed to create explorer watcher: {error}"))?;
 
-    Ok(FolderWatch { watcher, watched })
+    Ok(FolderWatch {
+        watcher,
+        watched,
+        window_requests: HashMap::new(),
+    })
 }
 
 fn abs_dir(folder: &Path, rel_dir: &str) -> PathBuf {
@@ -185,5 +235,32 @@ mod tests {
             Some("src/lib")
         );
         assert_eq!(changed_dir(folder, Path::new("/elsewhere/a.txt")), None);
+    }
+
+    #[test]
+    fn test_per_window_watcher_union() {
+        let mut requests = HashMap::new();
+        requests.insert(
+            "workbench-a".to_string(),
+            ["src", "public"].into_iter().map(String::from).collect(),
+        );
+        requests.insert(
+            "workbench-b".to_string(),
+            ["src", "tests"].into_iter().map(String::from).collect(),
+        );
+
+        assert_eq!(
+            requested_union(&requests),
+            ["src", "public", "tests"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+
+        requests.remove("workbench-a");
+        assert_eq!(
+            requested_union(&requests),
+            ["src", "tests"].into_iter().map(String::from).collect()
+        );
     }
 }

@@ -108,7 +108,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     accept: (payload, types) => {
       if (!dropEnabled(args)) return false
       if (payload) return canAccept(payload)
-      return types.includes(DND_MIME.FILES)
+      return types.includes(DND_MIME.SWORM_FILE) || types.includes(DND_MIME.FILES) || types.includes(DND_MIME.TEXT)
     },
     onOver: (_event, frame) => {
       if (!dropEnabled(args) || !isCenterDropFrame(frame)) {
@@ -129,6 +129,24 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
 
   return (element: HTMLElement) => {
     const disposeObserver = observer(element)
+    const onTextDrop = (event: DragEvent) => {
+      const transfer = event.dataTransfer
+      if (
+        !transfer ||
+        transfer.getData(DND_MIME.SWORM_ITEM) ||
+        !transfer.types.includes(DND_MIME.TEXT) ||
+        !dropEnabled(args) ||
+        !isCenterDropPoint(element, event.clientX, event.clientY)
+      ) {
+        return
+      }
+      const path = transfer.getData(DND_MIME.TEXT).trim()
+      if (!path) return
+      event.preventDefault()
+      clearHover(args.tabId)
+      args.onInsertText(`${preparePathForShell(path)} `)
+    }
+    element.addEventListener('drop', onTextDrop)
     const disposeRegistry = DropRegistry.register({
       id: `terminal:${args.tabId}`,
       element,
@@ -148,6 +166,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     })
 
     return () => {
+      element.removeEventListener('drop', onTextDrop)
       disposeRegistry()
       clearHover(args.tabId)
       disposeObserver()

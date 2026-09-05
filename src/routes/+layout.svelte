@@ -3,7 +3,10 @@
   import { onMount } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
-  import { disposeAll } from '$lib/features/sessions/terminal/sessionRegistry'
+  import * as taskRegistry from '$lib/features/tasks/taskRegistry'
+  import { backend } from '$lib/api/backend'
+  import { refreshIssuesForFolder } from '$lib/features/issues/state.svelte'
+  import { refreshNixForFolder } from '$lib/features/settings/state/nix.svelte'
   import CommandCenter from '$lib/features/command-palette/CommandCenter.svelte'
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
@@ -24,7 +27,8 @@
     hasAnyDirtyTextSurfaces
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { flushWorkbench } from '$lib/features/workbench/persistence'
-  import { getActiveSessionTabId } from '$lib/features/workbench/state.svelte'
+  import { getActiveSessionTabId, requestFocusTab } from '$lib/features/workbench/state.svelte'
+  import { initTransferService } from '$lib/features/workbench/transferService.svelte'
   import type { Snippet } from 'svelte'
 
   let { children }: { children: Snippet } = $props()
@@ -55,12 +59,25 @@
   $effect(() => {
     const id = activeSessionTabId
     const open = anyModalOpen
-    if (open || !id) return
-    requestAnimationFrame(() => sessionRegistry.focus(id))
+    if (open || !id || !document.hasFocus()) return
+    requestAnimationFrame(() => {
+      if (document.hasFocus()) sessionRegistry.focus(id)
+    })
   })
 
   onMount(() => {
     const appWindow = getCurrentWindow()
+    let cleanupTransfer: (() => void) | undefined
+    let disposed = false
+    const listeners = [
+      backend.issues.onChanged(({ folderPath }) => refreshIssuesForFolder(folderPath)),
+      backend.nix.onChanged(({ folderPath }) => refreshNixForFolder(folderPath)),
+      backend.window.onFocusTab((payload) => requestFocusTab(payload.tabId, payload.reveal))
+    ]
+    void initTransferService().then((cleanup) => {
+      if (disposed) cleanup()
+      else cleanupTransfer = cleanup
+    })
 
     const unlisten = appWindow.onCloseRequested(async (event) => {
       // Guard before any teardown — once we've started flushing the
@@ -85,7 +102,7 @@
       // failed write would silently lose the layout, so let the user
       // choose between quitting anyway and keeping the app open.
       try {
-        await flushWorkbench()
+        await flushWorkbench(appWindow.label)
       } catch (error) {
         const proceed = await confirmAsync({
           title: 'Could not save workbench layout',
@@ -98,7 +115,8 @@
           return
         }
       }
-      disposeAll()
+      sessionRegistry.disposeAll()
+      taskRegistry.disposeAll()
     })
 
     // Restore system decorations if user previously chose that
@@ -118,7 +136,10 @@
     })
 
     return () => {
+      disposed = true
+      cleanupTransfer?.()
       cleanupShortcuts()
+      for (const listener of listeners) listener.then((cleanup) => cleanup()).catch(() => {})
       unlisten.then((cleanup) => cleanup()).catch(() => {})
     }
   })

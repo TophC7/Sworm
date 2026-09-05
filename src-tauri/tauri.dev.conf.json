@@ -3,16 +3,6 @@
   "identifier": "dev.sworm.debug",
   "productName": "Sworm (Dev)",
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Sworm (Dev)",
-        "width": 1200,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": false
-      }
-    ]
+    "windows": []
   }
 }

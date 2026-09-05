@@ -15,6 +15,10 @@ export function normalizeAbsolutePath(path: string): string {
   return cleaned.replace(/\/$/, '')
 }
 
+export function resolveProjectFile(folderPath: string, filePath: string): string {
+  return normalizeAbsolutePath(`${folderPath}/${filePath}`)
+}
+
 export function isEqualOrParent(parentPath: string, childPath: string): boolean {
   const parent = normalizeRelativePath(parentPath)
   const child = normalizeRelativePath(childPath)

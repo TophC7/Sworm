@@ -1,4 +1,4 @@
-import { type DragPayload, stampDataTransfer } from '$lib/features/dnd/payload'
+import { DND_MIME, type DragPayload, stampDataTransfer } from '$lib/features/dnd/payload'
 import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
 import { dragObserver } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
@@ -85,7 +85,7 @@ export function gitDropZone(args: GitDropZoneArgs) {
     if (files.length > 0) await args.onDropFiles(files, args.staged)
   }
   const observer = dragObserver({
-    accept: (payload) => canAccept(payload, args.staged),
+    accept: (payload, types) => (payload ? canAccept(payload, args.staged) : types.includes(DND_MIME.SWORM_GIT_CHANGE)),
     onOver: () => zoneStore.set(zoneKey(args.folderPath, args.staged), true),
     onLeave: clear,
     onDrop: (_event, payload) => drop(payload)

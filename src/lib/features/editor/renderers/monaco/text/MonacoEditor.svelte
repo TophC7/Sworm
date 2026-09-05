@@ -143,6 +143,7 @@
         parameterHints: { enabled: true },
         padding: { top: 12, bottom: 12 }
       })
+      modelHandle?.attachEditor(() => editor?.saveViewState() ?? null)
 
       const retainedViewState = modelHandle?.restoreViewState()
       if (retainedViewState) editor.restoreViewState(retainedViewState)
@@ -227,7 +228,10 @@
         gitHunkReview?.dispose()
         gitHunkReview = null
         indentRainbow?.dispose()
-        if (modelHandle && editor) modelHandle.saveViewState(editor.saveViewState())
+        if (modelHandle) {
+          modelHandle.detachEditor()
+          modelHandle.saveViewState(editor.saveViewState())
+        }
         const shouldDetachLsp = model != null && lspEnabled && (modelHandle ? modelHandle.refCount <= 1 : true)
         if (shouldDetachLsp && model) detachLspModel(model)
         if (mountedController) unregisterMountedTextSurface(tabId, mountedController)

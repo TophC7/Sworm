@@ -51,6 +51,7 @@ pub async fn tasks_start(
     rows: u16,
     output: tauri::ipc::Channel<Vec<u8>>,
     events: tauri::ipc::Channel<PtyEvent>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
@@ -78,21 +79,39 @@ pub async fn tasks_start(
 
     let cwd_string = resolved.cwd.to_string_lossy().into_owned();
 
-    state
-        .pty
-        .spawn(
-            run_id,
-            &shell,
-            &shell_args,
-            Some(&cwd_string),
-            Some(&resolved.env),
-            cols,
-            rows,
-            output,
-            events,
-            None,
-        )
-        .map_err(ApiError::Pty)
+    let on_exit = if task.singleton {
+        state
+            .tasks
+            .register_singleton(folder.clone(), task_id.clone(), run_id.clone())
+            .map_err(ApiError::Internal)?;
+        let tasks = state.tasks.clone();
+        let singleton_folder = folder.clone();
+        let singleton_task_id = task_id.clone();
+        Some(Box::new(move |_: &str, _: Option<i32>| {
+            tasks.release_singleton(&singleton_folder, &singleton_task_id);
+        }) as Box<dyn FnOnce(&str, Option<i32>) + Send>)
+    } else {
+        None
+    };
+
+    let spawn_result = state.pty.spawn(
+        run_id.clone(),
+        &shell,
+        &shell_args,
+        Some(&cwd_string),
+        Some(&resolved.env),
+        cols,
+        rows,
+        output,
+        events,
+        Some(window.label().to_string()),
+        on_exit,
+    );
+    if let Err(error) = spawn_result {
+        state.tasks.release_singleton_by_run_id(&run_id);
+        return Err(ApiError::Pty(error));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -119,11 +138,13 @@ pub async fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Re
     // Kill is a no-op-in-effect if the PTY already exited; swallow
     // the "no active PTY session" case so the frontend can call stop
     // on an already-exited tab without seeing a spurious error.
-    match state.pty.kill(&run_id) {
+    let result = match state.pty.kill(&run_id) {
         Ok(()) => Ok(()),
         Err(err) if err.contains("No active PTY session") => Ok(()),
         Err(err) => Err(ApiError::Pty(err)),
-    }
+    };
+    state.tasks.release_singleton_by_run_id(&run_id);
+    result
 }
 
 fn build_task_env(

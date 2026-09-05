@@ -58,6 +58,7 @@ pub async fn session_start(
     rows: u16,
     output: tauri::ipc::Channel<Vec<u8>>,
     events: tauri::ipc::Channel<PtyEvent>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<SessionStartInfo, ApiError> {
     let provider = ProviderService::definition(&provider_id)
@@ -185,7 +186,7 @@ pub async fn session_start(
 
     // Taken before spawn so nothing the process creates can predate it.
     let spawned_at = SystemTime::now();
-    state
+    let event_sink = state
         .pty
         .spawn(
             run_id.clone(),
@@ -196,7 +197,8 @@ pub async fn session_start(
             cols,
             rows,
             output,
-            events.clone(),
+            events,
+            Some(window.label().to_string()),
             Some(on_exit),
         )
         .map_err(ApiError::Pty)?;
@@ -213,7 +215,7 @@ pub async fn session_start(
                 provider,
                 cwd,
                 spawned_at,
-                events,
+                event_sink,
             });
         }
         None => {}

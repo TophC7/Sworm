@@ -1,5 +1,5 @@
 use crate::errors::ApiError;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Canonicalize a user-supplied folder path and require it to be a directory.
 pub fn resolve_folder(path: &str) -> Result<PathBuf, ApiError> {
@@ -11,6 +11,30 @@ pub fn resolve_folder(path: &str) -> Result<PathBuf, ApiError> {
         )));
     }
     Ok(canonical)
+}
+
+/// Normalize an absolute path lexically without resolving symlinks.
+pub fn normalize_absolute_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    normalized
 }
 
 /// Basename of a folder, falling back to the full path for roots like `/`.

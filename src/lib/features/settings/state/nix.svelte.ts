@@ -24,6 +24,12 @@ export async function detectNix(folderPath: string): Promise<NixDetection> {
   return detection
 }
 
+export function refreshNixForFolder(folderPath: string): void {
+  if (detections.get(folderPath) != null) {
+    void detectNix(folderPath)
+  }
+}
+
 export async function selectNixFile(folderPath: string, nixFile: string): Promise<NixEnvRecord> {
   const generation = folderGenerations.get(folderPath) ?? 0
   const record = await backend.nix.select(folderPath, nixFile)

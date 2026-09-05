@@ -95,7 +95,7 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
   const observer = dragObserver({
     accept: (payload, types) => {
       if (payload) return canAcceptDirectoryPayload(payload)
-      return types.includes(DND_MIME.FILES)
+      return types.includes(DND_MIME.SWORM_FILE) || types.includes(DND_MIME.FILES)
     },
     onOver: () => {
       setDirectoryActive(args.folderPath, args.directoryPath)

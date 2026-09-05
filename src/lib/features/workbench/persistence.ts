@@ -1,14 +1,13 @@
-// Workbench persistence — debounced save/restore of the global tab list.
+// Workbench persistence — debounced save/restore of this window's tab list.
 //
 // Persistence is part of normal operation, not a reload-only hook, so a
 // crash or force-quit can never drop more than one debounce window of
-// state. One blob under the `workbench` app-state key holds every tab.
+// state. Each window stores its own blob under `workbench:<label>`.
 
 import { backend } from '$lib/api/backend'
 import type { PersistedTab, PersistedWorkbenchV4, Tab, Workbench } from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
 
-const APP_STATE_KEY_WORKBENCH = 'workbench'
 const WORKBENCH_DEBOUNCE_MS = 250
 
 // ---------------------------------------------------------------------------
@@ -215,13 +214,13 @@ let pending: (() => PersistedWorkbenchV4) | null = null
 // persisted shape; skip the SQLite write when the blob is byte-identical.
 let lastWrittenJson: string | null = null
 
-export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV4): void {
+export function schedulePersistWorkbench(label: string, produce: () => PersistedWorkbenchV4): void {
   pending = produce
   clearTimeout(timer)
   timer = setTimeout(() => {
     // `flushWorkbench` requeues on failure, so the next scheduled
     // mutation retries the write.
-    void flushWorkbench().catch((error) => console.warn('Workbench persist failed:', error))
+    void flushWorkbench(label).catch((error) => console.warn('Workbench persist failed:', error))
   }, WORKBENCH_DEBOUNCE_MS)
 }
 
@@ -230,7 +229,7 @@ export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV4): v
  * exit). Rethrows on failure so callers can refuse to proceed; the failed
  * producer is requeued unless a newer mutation was scheduled meanwhile.
  */
-export async function flushWorkbench(): Promise<void> {
+export async function flushWorkbench(label: string): Promise<void> {
   const produce = pending
   pending = null
   clearTimeout(timer)
@@ -239,7 +238,7 @@ export async function flushWorkbench(): Promise<void> {
   const json = JSON.stringify(produce())
   if (json === lastWrittenJson) return
   try {
-    await backend.app.statePut(APP_STATE_KEY_WORKBENCH, json)
+    await backend.app.statePut(`workbench:${label}`, json)
     lastWrittenJson = json
   } catch (error) {
     if (pending === null) pending = produce
@@ -258,9 +257,9 @@ function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV
   return obj.version === 4 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
 }
 
-export async function loadPersistedWorkbench(): Promise<PersistedWorkbenchV4 | null> {
+export async function loadPersistedWorkbench(label: string): Promise<PersistedWorkbenchV4 | null> {
   try {
-    const raw = await backend.app.stateGet(APP_STATE_KEY_WORKBENCH)
+    const raw = await backend.app.stateGet(`workbench:${label}`)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
     if (!isPersistedWorkbenchShape(parsed)) {

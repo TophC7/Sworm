@@ -7,7 +7,9 @@
 //! [`ApiError`] variants by [`map_issue_error`] so the frontend can
 //! distinguish not-found from validation from infrastructure failures.
 
+use serde_json::json;
 use std::sync::Arc;
+use tauri::Emitter;
 
 use crate::app_state::AppState;
 use crate::errors::ApiError;
@@ -74,11 +76,12 @@ pub async fn issues_get(
 pub async fn issues_create(
     folder_path: String,
     input: IssueCreateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Issue, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.create(&folder, input)).await
+    run_mutation(&app, &folder, move |folder| issues.create(folder, input)).await
 }
 
 #[tauri::command]
@@ -86,33 +89,45 @@ pub async fn issues_update(
     folder_path: String,
     issue_id: String,
     patch: IssueUpdateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Issue, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.update(&folder, &issue_id, patch)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.update(folder, &issue_id, patch)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issues_delete(
     folder_path: String,
     issue_id: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.delete(&folder, &issue_id)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.delete(folder, &issue_id)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_epics_create(
     folder_path: String,
     input: IssueEpicCreateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueEpic, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.create_epic(&folder, input)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.create_epic(folder, input)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -147,33 +162,45 @@ pub async fn issue_epics_update(
     folder_path: String,
     epic_id: String,
     patch: IssueEpicUpdateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueEpic, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.update_epic(&folder, &epic_id, patch)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.update_epic(folder, &epic_id, patch)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_epics_delete(
     folder_path: String,
     epic_id: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.delete_epic(&folder, &epic_id)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.delete_epic(folder, &epic_id)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_comments_add(
     folder_path: String,
     input: IssueCommentCreateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueComment, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.add_comment(&folder, input)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.add_comment(folder, input)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -192,44 +219,60 @@ pub async fn issue_comments_update(
     folder_path: String,
     comment_id: String,
     input: IssueCommentUpdateInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueComment, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.update_comment(&folder, &comment_id, input)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.update_comment(folder, &comment_id, input)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_comments_delete(
     folder_path: String,
     comment_id: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.delete_comment(&folder, &comment_id)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.delete_comment(folder, &comment_id)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_dependencies_add(
     folder_path: String,
     input: IssueDependencyInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueDependency, ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.add_dependency(&folder, input)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.add_dependency(folder, input)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn issue_dependencies_remove(
     folder_path: String,
     input: IssueDependencyInput,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
-    run_blocking(move || issues.remove_dependency(&folder, input)).await
+    run_mutation(&app, &folder, move |folder| {
+        issues.remove_dependency(folder, input)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -263,6 +306,23 @@ pub async fn issue_config_list(
     let folder = resolve_folder(&folder_path)?;
     let issues = Arc::clone(&state.issues);
     run_blocking(move || issues.list_config(&folder)).await
+}
+
+async fn run_mutation<T, F>(
+    app: &tauri::AppHandle,
+    folder: &std::path::Path,
+    work: F,
+) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&std::path::Path) -> Result<T, String> + Send + 'static,
+{
+    let folder_path = folder.to_string_lossy();
+    let work_folder = folder.to_path_buf();
+    let result = run_blocking(move || work(&work_folder)).await?;
+    app.emit("issues-changed", json!({ "folderPath": folder_path }))
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(result)
 }
 
 /// Run an [`IssueService`] call on a blocking worker and translate

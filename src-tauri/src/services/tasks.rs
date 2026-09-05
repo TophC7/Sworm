@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
@@ -34,18 +35,53 @@ struct FolderWatcher {
     watching_sworm_dir: bool,
 }
 
+#[derive(Clone)]
 pub struct TaskService {
     /// One filesystem watcher per folder. Repeated `watch` calls are
     /// idempotent and may upgrade an existing folder-root watcher to
     /// also watch `.sworm/` once that directory exists.
-    watchers: Mutex<HashMap<String, FolderWatcher>>,
+    watchers: Arc<Mutex<HashMap<String, FolderWatcher>>>,
+    /// Active singleton task runs, keyed by canonical folder and task id.
+    singletons: Arc<Mutex<HashMap<(PathBuf, String), String>>>,
 }
 
 impl TaskService {
     pub fn new() -> Self {
         Self {
-            watchers: Mutex::new(HashMap::new()),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
+            singletons: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn register_singleton(
+        &self,
+        folder: PathBuf,
+        task_id: String,
+        run_id: String,
+    ) -> Result<(), String> {
+        match self.singletons.lock().entry((folder, task_id)) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err("Singleton task already running".to_string())
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(run_id);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn release_singleton(&self, folder: &Path, task_id: &str) {
+        self.singletons
+            .lock()
+            .retain(|(active_folder, active_task_id), _| {
+                active_folder != folder || active_task_id != task_id
+            });
+    }
+
+    pub fn release_singleton_by_run_id(&self, run_id: &str) {
+        self.singletons
+            .lock()
+            .retain(|_, active_run_id| active_run_id != run_id);
     }
 
     /// Parse `.sworm/tasks.json` from the given project path. Returns
@@ -325,5 +361,23 @@ mod tests {
             Path::new("/repo/.sworm"),
             Path::new("/repo/.sworm/tasks.json"),
         ));
+    }
+
+    #[test]
+    fn test_singleton_task_conflict() {
+        let service = TaskService::new();
+        let folder = PathBuf::from("/repo");
+
+        service
+            .register_singleton(folder.clone(), "build".into(), "run-1".into())
+            .expect("first singleton registration succeeds");
+        assert!(service
+            .register_singleton(folder.clone(), "build".into(), "run-2".into())
+            .is_err());
+
+        service.release_singleton(&folder, "build");
+        service
+            .register_singleton(folder, "build".into(), "run-2".into())
+            .expect("released singleton can register again");
     }
 }

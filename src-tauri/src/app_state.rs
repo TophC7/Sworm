@@ -15,6 +15,7 @@ use crate::services::{
     resume_discovery::ResumeDiscoveryService,
     settings_watcher::SettingsWatcherService,
     tasks::TaskService,
+    windows::WindowCoordinatorService,
 };
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -41,6 +42,7 @@ pub struct AppState {
     pub env: EnvironmentService,
     pub lsp: LspService,
     pub app_state_kv: AppStateKvService,
+    pub windows: Arc<WindowCoordinatorService>,
     pub tasks: TaskService,
     pub settings_watchers: SettingsWatcherService,
     /// Watches the directories the file explorer currently renders.
@@ -71,11 +73,12 @@ impl AppState {
             pty: PtyService::new(),
             git: Arc::clone(&git),
             issues: Arc::clone(&issues),
-            issue_bridge: IssueBridgeService::new(issues),
+            issue_bridge: IssueBridgeService::new_with_app(issues, app_handle.clone()),
             files: Arc::new(FileService::new()),
             env: EnvironmentService::new(),
             lsp: LspService::new(),
             app_state_kv: AppStateKvService::new(),
+            windows: Arc::new(WindowCoordinatorService::new()),
             tasks: TaskService::new(),
             settings_watchers: SettingsWatcherService::new(),
             file_watchers: FileWatcherService::new(),

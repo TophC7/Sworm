@@ -53,7 +53,7 @@
     )
 
     attachedRunId = runId
-    if (!terminal.hasStarted()) {
+    if (!terminal.hasStarted() && tab.status !== 'exited' && tab.status !== 'failed') {
       terminal.start().catch((err) => {
         console.error('Task start failed:', err)
       })

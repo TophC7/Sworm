@@ -1,3 +1,4 @@
+import { backend } from '$lib/api/backend'
 import {
   discardTextModelBuffer,
   discardUntitledTextModelBuffer,
@@ -10,10 +11,12 @@ import {
   addTextTab,
   addUntitledTextTab,
   closeTab,
+  generateTabId,
   getTabs,
   renameTextTab,
   setActiveTab
 } from '$lib/features/workbench/state.svelte'
+import { normalizeAbsolutePath, resolveProjectFile, toProjectRelativePath } from '$lib/utils/paths'
 
 export type TextRevealTarget =
   | {
@@ -48,11 +51,61 @@ function isLiveTextTab(tab: Tab, folderPath: string, filePath: string): tab is T
   return tab.kind === 'text' && tab.folderPath === folderPath && tab.filePath === filePath && !tab.gitRef
 }
 
+function isLiveTextTabUnderAbsolutePath(tab: Tab, filePath: string): tab is TextTab & { filePath: string } {
+  if (tab.kind !== 'text' || tab.filePath == null || tab.gitRef) return false
+  const absolutePath = resolveProjectFile(tab.folderPath, tab.filePath)
+  return absolutePath === filePath || absolutePath.startsWith(`${filePath}/`)
+}
+
 function isSnapshotTextTab(tab: Tab, folderPath: string, filePath: string, gitRef: string): tab is TextTab {
   return tab.kind === 'text' && tab.folderPath === folderPath && tab.filePath === filePath && tab.gitRef === gitRef
 }
 
-function revealTextTab(tabId: TabId, target: TextRevealTarget) {
+let fileSyncListeners: Promise<void> | null = null
+
+/** Install window-targeted coordinator listeners once for this webview. */
+export function ensureTextFileSyncListeners(): Promise<void> {
+  if (fileSyncListeners) return fileSyncListeners
+
+  fileSyncListeners = Promise.all([
+    backend.window.onFilePathChanged(({ oldPath, newPath, folderPath }) => {
+      const oldRoot = normalizeAbsolutePath(oldPath)
+      const newRoot = normalizeAbsolutePath(newPath)
+      for (const tab of getTabs()) {
+        if (!isLiveTextTabUnderAbsolutePath(tab, oldRoot)) continue
+
+        const currentPath = resolveProjectFile(tab.folderPath, tab.filePath)
+        const nextPath = `${newRoot}${currentPath.slice(oldRoot.length)}`
+        let nextRelative = toProjectRelativePath(tab.folderPath, nextPath)
+        let nextFolder: string | undefined
+        if (nextRelative == null) {
+          nextFolder = normalizeAbsolutePath(folderPath)
+          nextRelative = toProjectRelativePath(nextFolder, nextPath)!
+        }
+        renameTextModelBuffer(tab.folderPath, tab.filePath, nextRelative, nextPath, nextFolder)
+        renameTextTab(tab.id, nextRelative, nextFolder ?? tab.folderPath)
+      }
+    }),
+    backend.window.onFileDeleted(({ filePath }) => {
+      const deletedRoot = normalizeAbsolutePath(filePath)
+      for (const tab of getTabs()) {
+        if (!isLiveTextTabUnderAbsolutePath(tab, deletedRoot)) continue
+        if (isTextSurfaceDirty(tab.id)) continue
+        discardTextSurfaceBuffer(tab)
+        closeTab(tab.id)
+        forgetTab(tab.id)
+      }
+    })
+  ])
+    .then(() => undefined)
+    .catch((error) => {
+      fileSyncListeners = null
+      throw error
+    })
+  return fileSyncListeners
+}
+
+export function revealTextTab(tabId: TabId, target: TextRevealTarget): void {
   const controller = mountedControllers.get(tabId)
   if (controller) {
     controller.reveal(target)
@@ -89,8 +142,21 @@ export async function openTextFile(
   options: OpenTextOptions = {}
 ): Promise<TabId> {
   const existing = getTabs().find((tab) => isLiveTextTab(tab, folderPath, filePath))
-  if (existing) setActiveTab(existing.id)
-  const tabId = existing?.id ?? addTextTab(folderPath, filePath, options.temporary ?? true)
+  if (existing) {
+    setActiveTab(existing.id)
+    if (options.reveal) revealTextTab(existing.id, options.reveal)
+    return existing.id
+  }
+
+  await ensureTextFileSyncListeners()
+  const temporary = options.temporary ?? true
+  const replaced = temporary ? getTabs().find((tab): tab is TextTab => tab.kind === 'text' && tab.temporary) : undefined
+  const tabId = replaced?.id ?? generateTabId()
+  const absolutePath = resolveProjectFile(folderPath, filePath)
+  const result = await backend.window.claimFile(absolutePath, tabId, options.reveal ?? null)
+  if (result.status === 'redirect') return result.tab_id as TabId
+
+  addTextTab(folderPath, filePath, temporary, tabId)
   if (options.reveal) revealTextTab(tabId, options.reveal)
   return tabId
 }
@@ -160,14 +226,14 @@ export function renameTextPath(folderPath: string, oldPath: string, newPath: str
     if (tab.kind !== 'text' || tab.folderPath !== folderPath || tab.filePath == null) continue
 
     if (tab.filePath === oldPath) {
-      renameTextModelBuffer(folderPath, oldPath, newPath, `${folderPath}/${newPath}`)
+      renameTextModelBuffer(folderPath, oldPath, newPath, resolveProjectFile(folderPath, newPath))
       renameTextTab(tab.id, newPath)
       continue
     }
 
     if (tab.filePath.startsWith(prefix)) {
       const renamedPath = `${newPath}/${tab.filePath.slice(prefix.length)}`
-      renameTextModelBuffer(folderPath, tab.filePath, renamedPath, `${folderPath}/${renamedPath}`)
+      renameTextModelBuffer(folderPath, tab.filePath, renamedPath, resolveProjectFile(folderPath, renamedPath))
       renameTextTab(tab.id, renamedPath)
     }
   }
@@ -179,6 +245,7 @@ export function deleteTextPath(folderPath: string, path: string): void {
   for (const tab of getTabs()) {
     if (tab.kind !== 'text' || tab.folderPath !== folderPath || tab.filePath == null) continue
     if (tab.filePath === path || tab.filePath.startsWith(prefix)) {
+      if (isTextSurfaceDirty(tab.id)) continue
       discardTextSurfaceBuffer(tab)
       closeTab(tab.id)
       forgetTab(tab.id)

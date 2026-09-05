@@ -1,6 +1,8 @@
 // Typed interfaces for the Rust backend IPC responses.
 // Keep in sync with models in src-tauri/src/models/ and commands/.
 
+import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
+
 export interface PtyEvent {
   type: 'started' | 'exit' | 'error' | 'resumeTokenBound'
   run_id: string
@@ -9,6 +11,60 @@ export interface PtyEvent {
   message?: string
   token?: string
 }
+
+export interface TerminalTransferState {
+  runId: string | null
+  providerId?: string
+  serializedBuffer: string
+  cols: number
+  rows: number
+  viewportPosition: number
+  lastSequence: number
+  status?: string
+}
+
+export interface TextModelTransferState {
+  tabId: string
+  folderPath: string | null
+  filePath: string | null
+  value: string
+  savedValue: string
+  language: string
+  viewState: unknown | null
+}
+export interface TabTransferInitiateParams {
+  sourceWindow: string
+  targetWindow: string
+  tabId: string
+  targetIndex: number
+}
+
+export interface TabTransferExportPayload {
+  transferId: string
+  tab: unknown
+  terminalState: TerminalTransferState | null
+  modelState: TextModelTransferState | null
+}
+
+export interface TabTransferAbortedPayload {
+  transferId: string
+  reason: string
+  ptyLost: boolean
+}
+
+export interface FocusTabPayload {
+  tabId: string
+  reveal: TextRevealTarget | null
+}
+
+export interface FilePathChangedPayload {
+  oldPath: string
+  newPath: string
+  folderPath: string
+}
+
+export type OpenTarget =
+  { type: 'folder'; folder_path: string } | { type: 'file'; folder_path: string; file_path: string }
 
 export interface FolderInfo {
   path: string
@@ -51,11 +107,16 @@ export interface ProviderStatus {
   install_hint: string
 }
 
+export type ExternalFolderOpenMode = 'new_window' | 'focused_window'
+export type ExternalFileOpenMode = 'prefer_folder' | 'focused_window' | 'new_window'
+
 export interface GeneralSettings {
   theme: string
   terminal_font_family: string
   terminal_font_size: number
   nix_eval_timeout_secs: number
+  external_folder_open_mode?: ExternalFolderOpenMode
+  external_file_open_mode?: ExternalFileOpenMode
 }
 
 export interface ExplorerSettings {
@@ -405,6 +466,13 @@ export interface DiffFileContent {
   oldContent: string | null
   newContent: string | null
   binary: boolean
+}
+
+export type ClaimFileResult = { status: 'claimed' } | { status: 'redirect'; owner_label: string; tab_id: string }
+
+export interface FilePasteMapping {
+  source: string
+  destination: string
 }
 
 export interface FilePasteCollision {

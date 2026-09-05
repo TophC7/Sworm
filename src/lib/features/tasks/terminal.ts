@@ -4,10 +4,13 @@
 // provider-specific behavior.
 
 import { backend } from '$lib/api/backend'
+import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
-import type { PtyEvent } from '$lib/types/backend'
+import type { PtyEvent, TerminalTransferState } from '$lib/types/backend'
 import type { TaskRunStatus } from '$lib/features/workbench/model'
+import type { Channel } from '@tauri-apps/api/core'
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 
@@ -58,11 +61,12 @@ export interface TaskTerminalInit {
 export class TaskTerminal {
   private readonly term: Terminal
   private readonly fit: FitAddon
+  private readonly serializeAddon: SerializeAddon
   private readonly disposers: IDisposable[] = []
   private readonly hostEl: HTMLDivElement
   private resizeObserver: ResizeObserver | null = null
   private container: HTMLElement | null = null
-  private readonly runId: string
+  private runId: string
   private readonly folderPath: string
   private readonly taskId: string
   private readonly activeFilePath: string | null
@@ -70,6 +74,9 @@ export class TaskTerminal {
   private disposed = false
   private spawned = false
   private status: TaskRunStatus | 'idle' = 'idle'
+  private outputChannel: Channel<Uint8Array> | null = null
+  private eventsChannel: Channel<PtyEvent> | null = null
+  private readonly barrier = new RenderBarrier()
 
   constructor(init: TaskTerminalInit) {
     this.runId = init.runId
@@ -84,7 +91,9 @@ export class TaskTerminal {
 
     this.term = new Terminal(TERMINAL_OPTIONS)
     this.fit = new FitAddon()
+    this.serializeAddon = new SerializeAddon()
     this.term.loadAddon(this.fit)
+    this.term.loadAddon(this.serializeAddon)
     this.term.loadAddon(new WebLinksAddon())
     this.term.open(this.hostEl)
 
@@ -148,6 +157,7 @@ export class TaskTerminal {
     if (this.spawned || this.disposed) return
     this.spawned = true
     this.status = 'starting'
+    this.barrier.reset()
 
     const { cols, rows } = this.term
     try {
@@ -158,9 +168,7 @@ export class TaskTerminal {
         this.activeFilePath,
         cols,
         rows,
-        (data) => {
-          this.term.write(new Uint8Array(data))
-        },
+        (data) => this.handleOutput(data),
         (event) => this.handlePtyEvent(event)
       )
     } catch (error) {
@@ -170,19 +178,97 @@ export class TaskTerminal {
     }
   }
 
+  private handleOutput(data: Uint8Array): void {
+    if (this.disposed) return
+    const sequence = this.barrier.next()
+    this.term.write(data, () => this.barrier.markRendered(sequence))
+  }
+
   private handlePtyEvent(event: PtyEvent): void {
+    if (this.disposed) return
+    if (event.run_id !== this.runId) return
+    const sequence = this.barrier.next()
     if (event.type === 'started') {
       this.status = 'running'
       this.onStatusChange?.('running', null)
+      this.barrier.markRendered(sequence)
     } else if (event.type === 'exit') {
       const code = event.code ?? null
       this.status = 'exited'
       this.onStatusChange?.('exited', code)
+      this.barrier.markRendered(sequence)
     } else if (event.type === 'error') {
-      this.term.write(textEncoder.encode(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`))
+      this.term.write(textEncoder.encode(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`), () =>
+        this.barrier.markRendered(sequence)
+      )
       this.status = 'failed'
       this.onStatusChange?.('failed', null)
+    } else {
+      this.barrier.markRendered(sequence)
     }
+  }
+
+  async exportTransferState(): Promise<TerminalTransferState> {
+    const inert = this.status === 'exited' || this.status === 'failed'
+    const targetSequence = inert ? 0 : await backend.pty.pause(this.runId)
+    if (!inert) await this.barrier.waitFor(targetSequence)
+    await this.writeAndWait('')
+    const buffer = this.term.buffer.active
+    return {
+      runId: inert ? null : this.runId,
+      serializedBuffer: this.serializeAddon.serialize(),
+      cols: this.term.cols,
+      rows: this.term.rows,
+      viewportPosition: buffer.viewportY,
+      lastSequence: targetSequence,
+      status: this.status
+    }
+  }
+
+  async importTransferState(state: TerminalTransferState, transferId: string): Promise<void> {
+    if (this.disposed) throw new Error(`Task terminal ${this.runId} has been disposed`)
+    this.barrier.reset()
+    this.status =
+      state.status === 'starting' ||
+      state.status === 'running' ||
+      state.status === 'exited' ||
+      state.status === 'failed'
+        ? state.status
+        : 'running'
+    this.term.reset()
+    this.term.resize(state.cols, state.rows)
+    await this.writeAndWait(state.serializedBuffer)
+    this.term.scrollToLine(state.viewportPosition)
+    this.spawned = true
+    if (state.runId == null) return
+    this.runId = state.runId
+
+    const output = backend.tasks.createOutputChannel((data) => this.handleOutput(data))
+    const events = backend.tasks.createEventChannel((event) => this.handlePtyEvent(event))
+    this.outputChannel = output
+    this.eventsChannel = events
+
+    try {
+      const seq = await backend.pty.attach(this.runId, transferId, output, events)
+      this.barrier.seed(seq)
+    } catch (error) {
+      this.outputChannel = null
+      this.eventsChannel = null
+      throw error
+    }
+  }
+
+  detachForTransfer(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.outputChannel = null
+    this.eventsChannel = null
+    this.disposeSurface()
+  }
+
+  markPtyLost(): void {
+    this.status = 'failed'
+    this.onStatusChange?.('failed', null)
   }
 
   focus(): void {
@@ -201,14 +287,27 @@ export class TaskTerminal {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.detach()
-    for (const d of this.disposers) d.dispose()
-    this.disposers.length = 0
     // Kill the PTY too; a lingering task shouldn't outlive its tab.
     if (this.status === 'starting' || this.status === 'running') {
       backend.tasks.stop(this.runId).catch(() => {})
     }
+    this.outputChannel = null
+    this.eventsChannel = null
+    this.disposeSurface()
+  }
+
+  private disposeSurface(): void {
+    this.detach()
+    for (const disposer of this.disposers) disposer.dispose()
+    this.disposers.length = 0
+    this.barrier.reset()
     this.term.dispose()
+  }
+
+  private writeAndWait(data: string | Uint8Array): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>()
+    this.term.write(data, resolve)
+    return promise
   }
 
   private fitTerminal(): void {

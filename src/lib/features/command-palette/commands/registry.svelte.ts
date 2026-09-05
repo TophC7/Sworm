@@ -18,6 +18,7 @@ import {
   createSession,
   newEmptyFile,
   newTerminalSession,
+  newWindow,
   openActiveFolderInExternalTerminal,
   openFolderPicker,
   openFolderSettingsFile,
@@ -157,6 +158,15 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       defaultKeybindings: ['Ctrl+N'],
       visible: activeFolderVisible,
       run: newEmptyFile
+    }),
+    appCommand({
+      id: 'new-window',
+      label: 'New Window',
+      group: 'File',
+      keywords: ['new', 'window', 'workbench'],
+      defaultKeybindings: ['Ctrl+Shift+N'],
+      terminalPolicy: 'skip-shell',
+      run: newWindow
     }),
     appCommand({
       id: 'open-folder',

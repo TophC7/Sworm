@@ -83,6 +83,7 @@ pub async fn lsp_set_server_config(
 
 #[tauri::command]
 pub async fn lsp_start(
+    window: tauri::WebviewWindow,
     session_id: String,
     folder_path: String,
     server_definition_id: String,
@@ -124,7 +125,13 @@ pub async fn lsp_start(
 
     state
         .lsp
-        .spawn(session_id, config.trace, resolved, events)
+        .spawn(
+            session_id,
+            Some(window.label().to_string()),
+            config.trace,
+            resolved,
+            events,
+        )
         .map_err(ApiError::Internal)
 }
 

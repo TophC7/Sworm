@@ -4,7 +4,7 @@ use crate::models::settings::ExplorerSettings;
 use crate::services::explorer_filter::{ExplorerFilter, IgnoreChain};
 use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +20,12 @@ const MAX_SEARCH_PATHS: usize = 200_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePasteCollision {
+    pub source: String,
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePasteMapping {
     pub source: String,
     pub destination: String,
 }
@@ -154,7 +160,7 @@ impl FileService {
 
     /// Paste files/directories into a target directory inside the project.
     /// `op` is "copy" or "cut". Sources are absolute paths (from clipboard).
-    /// Returns the list of created relative paths (project-rooted).
+    /// Returns created project-relative paths and their source mappings.
     pub fn paste(
         &self,
         project_path: &Path,
@@ -163,7 +169,7 @@ impl FileService {
         sources: &[String],
         collision_policy: &str,
         rename_map: &HashMap<String, String>,
-    ) -> Result<Vec<String>, ApiError> {
+    ) -> Result<Vec<FilePasteMapping>, ApiError> {
         if op != "copy" && op != "cut" {
             return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op)));
         }
@@ -191,7 +197,7 @@ impl FileService {
             )));
         }
 
-        let mut created: Vec<String> = Vec::new();
+        let mut mappings = Vec::new();
 
         for source in sources {
             let src_path = Path::new(source);
@@ -238,11 +244,15 @@ impl FileService {
 
             // Compute project-relative path for the created item
             if let Ok(rel) = dest_path.strip_prefix(project_path) {
-                created.push(rel.to_string_lossy().into_owned());
+                let destination = rel.to_string_lossy().into_owned();
+                mappings.push(FilePasteMapping {
+                    source: source.clone(),
+                    destination,
+                });
             }
         }
 
-        Ok(created)
+        Ok(mappings)
     }
 
     /// Return collisions for a paste/drop operation before transfer.

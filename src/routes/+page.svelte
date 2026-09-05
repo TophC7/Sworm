@@ -1,38 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { listen } from '@tauri-apps/api/event'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { backend } from '$lib/api/backend'
   import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
   import WorkbenchView from '$lib/features/app-shell/WorkbenchView.svelte'
   import { loadRecentFolders } from '$lib/features/folders/state.svelte'
   import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
-  import { openFolder, restoreWorkbench } from '$lib/features/workbench/state.svelte'
+  import { openFolder, restoreWorkbench, setWindowLabel } from '$lib/features/workbench/state.svelte'
+  import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import type { OpenTarget } from '$lib/types/backend'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
 
   let bootstrapping = $state(true)
   let bootstrapError = $state<string | null>(null)
 
-  // Drain the argv-supplied path (from Nautilus "Open With" or a CLI
-  // invocation) and open it. Safe to call any time: returns null when
-  // nothing is queued.
-  async function consumePendingOpenPath() {
-    try {
-      const path = await backend.app.takePendingOpenPath()
-      if (path) await openFolder(path)
-    } catch (error) {
-      logClientError('pending open-path failed', { error })
-    }
+  async function openTarget(target: OpenTarget): Promise<void> {
+    if (target.type === 'folder') await openFolder(target.folder_path)
+    else await openTextFile(target.folder_path, target.file_path)
   }
 
-  // Recent folders and the workbench restore are independent and load in
-  // parallel. The pending-open path runs last so an explicit "Open in
-  // Sworm" always wins over the restored active tab and pushes into a
-  // hydrated MRU.
-  //
-  // Provider and builtin-catalog preloads are independent of the
-  // workbench boot and run in parallel from the very start so they're
-  // already warm by the time the user opens a session.
   onMount(() => {
+    const currentWindow = getCurrentWindow()
+    const label = currentWindow.label
+    setWindowLabel(label)
+    let disposed = false
     let unlisten: (() => void) | undefined
 
     void loadProviders()
@@ -42,8 +33,14 @@
 
     void (async () => {
       try {
-        await Promise.all([loadRecentFolders(), restoreWorkbench()])
-        await consumePendingOpenPath()
+        const cleanup = await currentWindow.listen<OpenTarget>('sworm://open-target', ({ payload }) => {
+          void openTarget(payload).catch((error) => logClientError('open target failed', { error, payload }))
+        })
+        if (disposed) cleanup()
+        else unlisten = cleanup
+
+        await Promise.all([loadRecentFolders(), restoreWorkbench(label)])
+        await backend.window.ready()
         bootstrapping = false
       } catch (error) {
         bootstrapError = describeClientError(error)
@@ -56,16 +53,10 @@
       }
     })()
 
-    // Second-instance launches fire this from the Rust single-instance
-    // callback. The payload is empty; the backend has already stashed
-    // the path in the pending slot.
-    void listen('sworm://pending-open-changed', () => {
-      void consumePendingOpenPath()
-    }).then((fn) => {
-      unlisten = fn
-    })
-
-    return () => unlisten?.()
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
   })
 </script>
 

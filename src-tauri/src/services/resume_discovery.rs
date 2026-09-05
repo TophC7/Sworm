@@ -13,7 +13,7 @@ use crate::models::provider::ProviderId;
 use crate::services::codex_state::CodexStateReader;
 use crate::services::omp;
 use crate::services::providers::antigravity_visit_conversations_created_since;
-use crate::services::pty::PtyEvent;
+use crate::services::pty::{PtyEvent, PtyEventSink};
 use parking_lot::Mutex;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub struct PendingRun {
     /// Taken immediately before the PTY spawn so nothing the process
     /// creates can predate it.
     pub spawned_at: SystemTime,
-    pub events: tauri::ipc::Channel<PtyEvent>,
+    pub event_sink: PtyEventSink,
 }
 
 #[derive(Clone)]
@@ -212,9 +212,8 @@ fn worker_loop(inner: Arc<Inner>) {
                     continue;
                 };
                 info!("Bound {provider} conversation {token} to run {run_id}");
-                let _ = run
-                    .events
-                    .send(PtyEvent::ResumeTokenBound { run_id, token });
+                run.event_sink
+                    .emit(PtyEvent::ResumeTokenBound { run_id, token });
             }
         }
     }

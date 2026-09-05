@@ -1,12 +1,13 @@
 // Folder-keyed branches state using Svelte 5 runes.
 //
 // Owns the Branches view list, paused-op status, preferences, recents,
-// and dirty checkout handling. Preferences persist under the app_state
-// key `branchesView:<folderPath>`.
+// and dirty checkout handling. Preferences persist per window and folder
+// under the app_state key `branchesView:<windowLabel>:<folderPath>`.
 
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
+import { getWindowLabel } from '$lib/features/workbench/state.svelte'
 import type { BranchOpState, BranchSummary, GitSummary } from '$lib/types/backend'
 
 // TYPES //
@@ -82,11 +83,24 @@ export function releaseBranchFolder(folderPath: string) {
 // PERSISTENCE //
 
 async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
+  const key = `branchesView:${getWindowLabel()}:${folderPath}`
   let raw: string | null
   try {
-    raw = await backend.app.stateGet(`branchesView:${folderPath}`)
+    raw = await backend.app.stateGet(key)
   } catch {
     return { ...DEFAULT_PREFS, recent: [] }
+  }
+  if (!raw) {
+    const legacyKey = `branchesView:${folderPath}`
+    try {
+      raw = await backend.app.stateGet(legacyKey)
+      if (raw) {
+        await backend.app.statePut(key, raw)
+        await backend.app.stateDelete(legacyKey)
+      }
+    } catch (error) {
+      console.warn('Failed to migrate branchesView prefs:', error)
+    }
   }
   if (!raw) return { ...DEFAULT_PREFS, recent: [] }
   let parsed: unknown
@@ -100,7 +114,7 @@ async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
 
 async function persistPrefs(folderPath: string, prefs: BranchesViewPrefs): Promise<void> {
   try {
-    await backend.app.statePut(`branchesView:${folderPath}`, JSON.stringify(prefs))
+    await backend.app.statePut(`branchesView:${getWindowLabel()}:${folderPath}`, JSON.stringify(prefs))
   } catch (e) {
     console.error('Failed to persist branchesView prefs:', e)
   }

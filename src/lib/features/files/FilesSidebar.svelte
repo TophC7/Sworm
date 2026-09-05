@@ -42,13 +42,13 @@
   import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/features/notifications/state.svelte'
   import type { DragPayload } from '$lib/features/dnd/payload'
-  import type { FilePasteCollision } from '$lib/types/backend'
+  import type { FilePasteCollision, FilePasteMapping } from '$lib/types/backend'
   import {
     fileTreeDirectoryDropTarget,
     fileTreeDragSource,
     isFileTreeDropActive
   } from '$lib/features/dnd/adapters/file-tree.svelte'
-  import { basename, dirname, isEqualOrParent, normalizeAbsolutePath } from '$lib/utils/paths'
+  import { basename, dirname, isEqualOrParent, normalizeAbsolutePath, toProjectRelativePath } from '$lib/utils/paths'
   import { join } from '@tauri-apps/api/path'
 
   function errMessage(e: unknown): string {
@@ -100,7 +100,7 @@
     targetDir: string
     sources: string[]
     index: number
-    created: string[]
+    created: FilePasteMapping[]
     collisionDestinations: Record<string, string>
   } | null>(null)
   let activeCollision = $state<FilePasteCollision | null>(null)
@@ -328,13 +328,18 @@
 
   async function finalizePendingTransfer(): Promise<void> {
     if (!pendingTransfer) return
-    const { op, created, targetDir, sources } = pendingTransfer
+    const { op, created, targetDir } = pendingTransfer
     const createdCount = created.length
     abortPendingTransfer()
-    // A cut empties its source directories too; those listings are only
-    // project-relative for in-tree sources, which is all `cut` ever carries.
-    const emptied = op === 'cut' ? sources.map((path) => dirname(path) || '') : []
-    await invalidate(targetDir, ...emptied)
+    const destinations = created.map((mapping) => dirname(mapping.destination) || '')
+    const emptied =
+      op === 'cut'
+        ? created.flatMap((mapping) => {
+            const source = toProjectRelativePath(folderPath, mapping.source)
+            return source == null ? [] : [dirname(source) || '']
+          })
+        : []
+    await invalidate(targetDir, ...destinations, ...emptied)
 
     if (createdCount === 0) {
       notify.info('Nothing transferred', 'All colliding items were skipped.')

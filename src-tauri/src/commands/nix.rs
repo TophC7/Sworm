@@ -7,6 +7,13 @@ use crate::services::nix::{NixDiagnostic, NixService};
 use crate::services::settings_resolution::{
     provider_binary_overrides, resolve_effective_settings_for_folder_path,
 };
+use serde_json::json;
+use tauri::Emitter;
+
+fn emit_nix_changed(app: &tauri::AppHandle, folder_path: &str) -> Result<(), ApiError> {
+    app.emit("nix-changed", json!({ "folderPath": folder_path }))
+        .map_err(|error| ApiError::Internal(error.to_string()))
+}
 
 /// Detect Nix files in a folder and return current selection.
 #[tauri::command]
@@ -33,6 +40,7 @@ pub async fn nix_detect(
 pub async fn nix_select(
     folder_path: String,
     nix_file: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixEnvRecord, ApiError> {
     let folder = resolve_folder(&folder_path)?;
@@ -46,8 +54,12 @@ pub async fn nix_select(
         )));
     }
 
-    let db = state.db.write();
-    NixService::select(db.conn(), &folder_path, &nix_file).map_err(ApiError::Database)
+    let record = {
+        let db = state.db.write();
+        NixService::select(db.conn(), &folder_path, &nix_file).map_err(ApiError::Database)?
+    };
+    emit_nix_changed(&app, &folder_path)?;
+    Ok(record)
 }
 
 /// RAII guard that removes a folder path from the eval lock set on drop.
@@ -66,6 +78,7 @@ impl<'a> Drop for NixEvalGuard<'a> {
 #[tauri::command]
 pub async fn nix_evaluate(
     folder_path: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<NixEnvRecord, ApiError> {
     let folder = resolve_folder(&folder_path)?;
@@ -134,26 +147,36 @@ pub async fn nix_evaluate(
         Err(eval_error) => {
             NixService::save_error(db.conn(), &folder_path, &eval_error)
                 .map_err(ApiError::Database)?;
+            drop(db);
+            emit_nix_changed(&app, &folder_path)?;
             return Err(ApiError::Internal(eval_error.to_string()));
         }
     }
 
     // _guard drops here, releasing the eval lock
 
-    NixService::get(db.conn(), &folder_path)
+    let record = NixService::get(db.conn(), &folder_path)
         .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::Internal("Nix env record disappeared after save".to_string()))
+        .ok_or_else(|| ApiError::Internal("Nix env record disappeared after save".to_string()))?;
+    drop(db);
+    emit_nix_changed(&app, &folder_path)?;
+    Ok(record)
 }
 
 /// Clear the Nix environment for a folder.
 #[tauri::command]
 pub async fn nix_clear(
     folder_path: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let folder = resolve_folder(&folder_path)?;
-    let db = state.db.write();
-    NixService::remove(db.conn(), &folder.to_string_lossy()).map_err(ApiError::Database)
+    let folder_path = folder.to_string_lossy().into_owned();
+    {
+        let db = state.db.write();
+        NixService::remove(db.conn(), &folder_path).map_err(ApiError::Database)?;
+    }
+    emit_nix_changed(&app, &folder_path)
 }
 
 /// Parse-check a Nix file and return diagnostics.

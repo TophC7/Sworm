@@ -1,9 +1,12 @@
+import type { TextModelTransferState } from '$lib/types/backend'
+
 type Monaco = typeof import('monaco-editor')
 type MonacoModel = import('monaco-editor').editor.ITextModel
 type MonacoViewState = import('monaco-editor').editor.ICodeEditorViewState
 
 interface TextModelEntry {
   key: string
+  folderPath: string | null
   filePath: string | null
   tabId: string
   model: MonacoModel
@@ -11,6 +14,8 @@ interface TextModelEntry {
   refs: number
   discardOnRelease: boolean
   viewState: MonacoViewState | null
+  liveViewState: (() => MonacoViewState | null) | null
+  skipNextReconcile: boolean
   lastAccess: number
 }
 
@@ -19,6 +24,8 @@ export interface TextModelHandle {
   readonly refCount: number
   restoreViewState(): MonacoViewState | null
   saveViewState(viewState: MonacoViewState | null): void
+  attachEditor(get: () => MonacoViewState | null): void
+  detachEditor(): void
   release(): number
 }
 
@@ -73,7 +80,7 @@ function isDirty(entry: TextModelEntry): boolean {
 
 function trimRetainedModels(): void {
   const candidates = [...entries.values()]
-    .filter((entry) => entry.refs === 0 && !entry.discardOnRelease && !isDirty(entry))
+    .filter((entry) => entry.refs === 0 && !entry.discardOnRelease && !entry.skipNextReconcile && !isDirty(entry))
     .sort((a, b) => a.lastAccess - b.lastAccess)
 
   let retainedBytes = [...entries.values()].reduce((sum, entry) => sum + modelSizeBytes(entry), 0)
@@ -96,6 +103,12 @@ function makeHandle(entry: TextModelEntry): TextModelHandle {
     },
     saveViewState(viewState) {
       entry.viewState = viewState
+    },
+    attachEditor(get) {
+      entry.liveViewState = get
+    },
+    detachEditor() {
+      entry.liveViewState = null
     },
     release() {
       if (released) return entry.refs
@@ -132,7 +145,11 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
   const existing = entries.get(key)
   if (existing && !isDisposed(existing.model)) {
     existing.discardOnRelease = false
-    reconcileWithDisk(existing, value)
+    if (existing.skipNextReconcile) {
+      existing.skipNextReconcile = false
+    } else {
+      reconcileWithDisk(existing, value)
+    }
     touchEntry(existing)
     existing.refs += 1
     return makeHandle(existing)
@@ -151,12 +168,15 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
   const entry: TextModelEntry = {
     key,
     filePath,
+    folderPath,
     tabId,
     model,
     savedValue: value,
     refs: 1,
     discardOnRelease: false,
     viewState: null,
+    liveViewState: null,
+    skipNextReconcile: false,
     lastAccess: Date.now()
   }
   entries.set(key, entry)
@@ -176,13 +196,15 @@ export function renameTextModelBuffer(
   folderPath: string,
   oldFilePath: string,
   newFilePath: string,
-  newUriPath: string
+  newUriPath: string,
+  newFolderPath?: string | null
 ): void {
   const oldKey = fileKey(folderPath, oldFilePath)
   const entry = entries.get(oldKey)
   if (!entry) return
 
-  const newKey = fileKey(folderPath, newFilePath)
+  const targetFolder = newFolderPath ?? folderPath
+  const newKey = fileKey(targetFolder, newFilePath)
   const existingTarget = entries.get(newKey)
   if (existingTarget && existingTarget !== entry) {
     if (existingTarget.refs > 0) {
@@ -197,6 +219,7 @@ export function renameTextModelBuffer(
   if (!nextModel) {
     entries.delete(oldKey)
     entry.key = newKey
+    entry.folderPath = targetFolder
     entry.filePath = newFilePath
     touchEntry(entry)
     entries.set(newKey, entry)
@@ -208,10 +231,13 @@ export function renameTextModelBuffer(
     entries.set(newKey, {
       ...entry,
       key: newKey,
+      folderPath: targetFolder,
       filePath: newFilePath,
       model: nextModel,
       refs: 0,
       discardOnRelease: false,
+      viewState: entry.liveViewState?.() ?? entry.viewState,
+      liveViewState: null,
       lastAccess: Date.now()
     })
     trimRetainedModels()
@@ -221,6 +247,7 @@ export function renameTextModelBuffer(
   entries.delete(oldKey)
   if (nextModel !== entry.model && !isDisposed(entry.model)) entry.model.dispose()
   entry.key = newKey
+  entry.folderPath = targetFolder
   entry.filePath = newFilePath
   entry.model = nextModel
   touchEntry(entry)
@@ -261,4 +288,77 @@ export function discardUntitledTextModelBuffer(folderPath: string, tabId: string
     return
   }
   disposeEntry(entry)
+}
+
+function findTransferEntry(tabId: string): TextModelEntry | undefined {
+  const exact = entries.get(tabId)
+  if (exact) return exact
+  for (const entry of entries.values()) {
+    if (entry.tabId === tabId || entry.key === tabId) return entry
+  }
+  return undefined
+}
+
+export function exportModelTransfer(tabId: string): TextModelTransferState | null {
+  const entry = findTransferEntry(tabId)
+  if (!entry || isDisposed(entry.model)) return null
+  return {
+    tabId,
+    folderPath: entry.folderPath,
+    filePath: entry.filePath,
+    value: entry.model.getValue(),
+    savedValue: entry.savedValue,
+    language: entry.model.getLanguageId(),
+    viewState: entry.liveViewState?.() ?? entry.viewState
+  }
+}
+
+export function importModelTransfer(state: TextModelTransferState, monaco: Monaco): void {
+  monacoRef = monaco
+  const key =
+    state.filePath != null && state.folderPath != null
+      ? fileKey(state.folderPath, state.filePath)
+      : untitledKey(state.folderPath ?? '', state.tabId)
+  const cached = entries.get(key)
+  if (cached?.refs) throw new Error(`Text model ${state.tabId} is already mounted`)
+  if (cached) disposeEntry(cached)
+
+  const uri =
+    state.filePath != null && state.folderPath != null
+      ? monaco.Uri.file(`${state.folderPath.replace(/\/$/, '')}/${state.filePath}`)
+      : null
+  const model = uri ? monaco.editor.getModel(uri) : null
+  // setValue clears Monaco's local undo/redo stack; cross-realm history is unsupported.
+  const transferredModel = model ?? monaco.editor.createModel(state.value, state.language, uri ?? undefined)
+  if (model) {
+    transferredModel.setValue(state.value)
+  }
+  monaco.editor.setModelLanguage(transferredModel, state.language)
+
+  entries.set(key, {
+    key,
+    folderPath: state.folderPath,
+    filePath: state.filePath,
+    tabId: state.tabId,
+    model: transferredModel,
+    savedValue: state.savedValue,
+    refs: 0,
+    discardOnRelease: false,
+    viewState: state.viewState as MonacoViewState | null,
+    liveViewState: null,
+    skipNextReconcile: true,
+    lastAccess: Date.now()
+  })
+  trimRetainedModels()
+}
+
+export function detachForTransfer(tabId: string): void {
+  const entry = findTransferEntry(tabId)
+  if (!entry) return
+  entry.discardOnRelease = true
+  if (entry.refs > 0) {
+    detachEntry(entry)
+  } else {
+    disposeEntry(entry)
+  }
 }
