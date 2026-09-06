@@ -1,12 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte'
+  import type { editor } from 'monaco-editor'
   import { save as saveDialog } from '@tauri-apps/plugin-dialog'
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
+  import { Separator } from '$lib/components/ui/separator'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
-  import ContentToolbar from '$lib/components/layout/ContentToolbar.svelte'
+  import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
   import { filePathToLanguage, isBinaryFile, isMarkdownFile, mediaKind } from '$lib/features/editor/languageMap'
   import { basename } from '$lib/utils/paths'
@@ -78,6 +80,63 @@
           .join('|')
   )
   let mode = $state<Mode>('split')
+  let syncScroll = $state(false)
+  let splitEditor = $state<editor.IStandaloneCodeEditor | null>(null)
+  let splitPreview = $state<HTMLDivElement | null>(null)
+
+  function onSplitEditorReady(instance: editor.IStandaloneCodeEditor) {
+    splitEditor = instance
+    return () => {
+      splitEditor = null
+    }
+  }
+
+  $effect(() => {
+    if (!syncScroll || mode !== 'split' || !splitEditor || !splitPreview) return
+    const editor = splitEditor
+    const preview = splitPreview
+    let updatingEditor = false
+    let expectedPreviewTop = -1
+
+    function syncFromEditor() {
+      if (updatingEditor) return
+      const range = editor.getScrollHeight() - editor.getLayoutInfo().height
+      if (range <= 0) return
+      const progress = Math.max(0, Math.min(1, editor.getScrollTop() / range))
+      preview.scrollTop = progress * Math.max(0, preview.scrollHeight - preview.clientHeight)
+      // DOM scroll events arrive later; ignore the echo, including pixel rounding.
+      expectedPreviewTop = preview.scrollTop
+    }
+
+    function syncFromPreview() {
+      if (Math.abs(preview.scrollTop - expectedPreviewTop) < 1) return
+      const range = preview.scrollHeight - preview.clientHeight
+      if (range <= 0) return
+      const progress = Math.max(0, Math.min(1, preview.scrollTop / range))
+      updatingEditor = true
+      try {
+        editor.setScrollTop(progress * Math.max(0, editor.getScrollHeight() - editor.getLayoutInfo().height))
+      } finally {
+        updatingEditor = false
+      }
+    }
+
+    const scrollListener = editor.onDidScrollChange((event) => {
+      if (event.scrollTopChanged || event.scrollHeightChanged) syncFromEditor()
+    })
+    preview.addEventListener('scroll', syncFromPreview, { passive: true })
+    // Re-align after pane resizing, async markdown rendering, or image loading.
+    const resizeObserver = new ResizeObserver(syncFromEditor)
+    resizeObserver.observe(preview)
+    const markdownBody = preview.querySelector('.markdown-body')
+    if (markdownBody) resizeObserver.observe(markdownBody)
+    syncFromEditor()
+    return () => {
+      scrollListener.dispose()
+      preview.removeEventListener('scroll', syncFromPreview)
+      resizeObserver.disconnect()
+    }
+  })
 
   // Debounce preview updates in split mode so the markdown parser doesn't
   // re-run on every keystroke.
@@ -182,9 +241,10 @@
 
     error = null
     try {
-      await backend.files.write(folderPath, targetRel, editContent)
-      markTextSurfaceSaved(folderPath, targetRel, editContent)
-      content = editContent
+      const savedContent = editContent
+      await backend.files.write(folderPath, targetRel, savedContent)
+      markTextSurfaceSaved(folderPath, targetRel, savedContent)
+      content = savedContent
       if (filePath == null) {
         discardTextSurfaceBuffer({ id: tabId, folderPath, filePath: null })
         // Promote the tab to the real path. The filePath effect will
@@ -314,7 +374,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flex h-full flex-col overflow-hidden" onkeydown={handleKeydown}>
-  <ContentToolbar>
+  <PanelHeader class="text-sm">
     {#snippet left()}
       <span class="truncate text-muted">
         {filePath ?? 'Untitled'}
@@ -346,13 +406,24 @@
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
         </TabsRoot>
+        <Button
+          variant={syncScroll ? 'accent' : 'ghost'}
+          size="xs"
+          aria-pressed={syncScroll}
+          disabled={mode !== 'split'}
+          title="Sync relative scroll positions in Split view"
+          onclick={() => (syncScroll = !syncScroll)}>Sync</Button
+        >
       {/if}
 
       {#if dirty}
+        {#if isMarkdown && !isReadonly}
+          <Separator orientation="vertical" class="mx-0.5 h-4" />
+        {/if}
         <TooltipRoot>
-          <TooltipTrigger>
+          <TooltipTrigger onclick={save} disabled={saving}>
             {#snippet child({ props })}
-              <Button variant="ghost" size="xs" onclick={save} disabled={saving} {...props}>
+              <Button variant="ghost" size="xs" {...props} disabled={saving}>
                 {saving ? 'Saving...' : 'Save'}
               </Button>
             {/snippet}
@@ -363,7 +434,7 @@
         </TooltipRoot>
       {/if}
     {/snippet}
-  </ContentToolbar>
+  </PanelHeader>
 
   {#if error}
     <div class="px-3 py-2 text-sm text-danger">{error}</div>
@@ -407,12 +478,13 @@
               {folderPath}
               lspEnabled={!isReadonly}
               {gitDiffRevision}
+              onready={onSplitEditorReady}
             />
           {/key}
         </ResizablePane>
         <ResizableHandle />
         <ResizablePane defaultSize={50} minSize={20}>
-          <div class="h-full overflow-y-auto border-l border-edge">
+          <div bind:this={splitPreview} class="h-full overflow-y-auto border-l border-edge">
             <MarkdownRenderer source={previewSource} {folderPath} {filePath} />
           </div>
         </ResizablePane>

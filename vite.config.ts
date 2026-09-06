@@ -31,6 +31,9 @@ export default defineConfig({
     // Dependency discovery cannot resolve those imports from Svelte virtual modules.
     noDiscovery: true,
     include: [
+      // Markdown parsing uses CommonJS dependencies; discovery is disabled above.
+      'unified',
+      'remark-parse',
       'monaco-editor/esm/vs/editor/editor.worker',
       'monaco-editor/esm/vs/language/typescript/ts.worker',
       'monaco-editor/esm/vs/language/json/json.worker',

@@ -38,7 +38,8 @@
     folderPath = null,
     filePath = null,
     lspEnabled = true,
-    gitDiffRevision = ''
+    gitDiffRevision = '',
+    onready
   }: {
     tabId: string
     value?: string
@@ -52,6 +53,7 @@
     filePath?: string | null
     lspEnabled?: boolean
     gitDiffRevision?: string
+    onready?: (editor: import('monaco-editor').editor.IStandaloneCodeEditor) => void | (() => void)
   } = $props()
 
   let containerEl = $state<HTMLDivElement | null>(null)
@@ -71,6 +73,7 @@
     let disposed = false
     let resizeObserver: ResizeObserver | null = null
     let mountedController: MountedTextSurfaceController | null = null
+    let disposeReady: void | (() => void)
     async function init() {
       const { initMonaco } = await import('$lib/features/editor/renderers/monaco/core/monacoEnv')
       const m = await import('monaco-editor')
@@ -198,6 +201,7 @@
       editor.onDidBlurEditorText(() => onTextEditorBlur())
 
       indentRainbow = attachIndentRainbow(editor)
+      disposeReady = onready?.(editor)
 
       // Observe after creation so the first layout() is correct
       resizeObserver = new ResizeObserver(() => editor?.layout())
@@ -223,6 +227,7 @@
 
     return () => {
       disposed = true
+      disposeReady?.()
       if (editor) {
         onTextEditorDestroy(editor)
         gitHunkReview?.dispose()

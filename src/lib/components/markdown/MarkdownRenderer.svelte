@@ -1,9 +1,8 @@
 <script lang="ts">
-  import SvelteMarkdown from '@humanspeak/svelte-markdown'
-  import CodeBlock from './CodeBlock.svelte'
-  import { Checkbox } from '$lib/components/ui/checkbox'
-  import { markdownImageSrc, resolveMarkdownLocalPath } from '$lib/utils/mediaAssets'
+  import { renderMarkdown } from './renderMarkdown'
+  import { resolveMarkdownLocalPath } from '$lib/utils/mediaAssets'
   import { openLink } from '$lib/features/workbench/links/openLink'
+  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
   let {
     source,
@@ -14,125 +13,64 @@
     folderPath?: string
     filePath?: string | null
   } = $props()
+
+  let html = $state('')
+  let error = $state<string | null>(null)
+  let root: HTMLDivElement
+
+  $effect(() => {
+    let current = true
+    // Keep the previous complete preview until highlighting finishes.
+    renderMarkdown(source, folderPath, filePath).then(
+      (result) => {
+        if (!current) return
+        html = result
+        error = null
+      },
+      (cause) => {
+        if (current) error = getErrorMessage(cause)
+      }
+    )
+    return () => {
+      current = false
+    }
+  })
+
+  function handleClick(event: MouseEvent) {
+    const anchor = event.target instanceof Element ? event.target.closest('a') : null
+    const href = anchor?.getAttribute('href')
+    if (!anchor || !root.contains(anchor) || !href) return
+    event.preventDefault()
+
+    if (href.startsWith('#')) {
+      let id = href.slice(1)
+      try {
+        id = decodeURIComponent(id)
+      } catch {
+        // Malformed percent escapes remain literal anchor text.
+      }
+      const target =
+        root.querySelector<HTMLElement>(`[id="${CSS.escape(id)}"]`) ??
+        root.querySelector<HTMLElement>(`[id="${CSS.escape('user-content-' + id)}"]`)
+      target?.scrollIntoView({ block: 'start' })
+      return
+    }
+
+    let target = href
+    if (filePath && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) && !href.startsWith('//')) {
+      const hashIndex = href.indexOf('#')
+      const pathPart = hashIndex !== -1 ? href.slice(0, hashIndex) : href
+      const hashPart = hashIndex !== -1 ? href.slice(hashIndex) : ''
+      const resolved = resolveMarkdownLocalPath(filePath, pathPart)
+      if (resolved) target = `${resolved}${hashPart}`
+    }
+    void openLink(target, folderPath)
+  }
 </script>
 
-<div class="markdown-preview px-6 py-4 text-base leading-relaxed text-fg">
-  <SvelteMarkdown {source}>
-    {#snippet heading({ depth, children })}
-      {#if depth === 1}
-        <h1 class="mt-6 mb-3 border-b border-edge pb-1.5 text-4xl font-bold text-bright first:mt-0">
-          {@render children?.()}
-        </h1>
-      {:else if depth === 2}
-        <h2 class="mt-5 mb-2.5 border-b border-edge pb-1 text-2xl font-semibold text-bright first:mt-0">
-          {@render children?.()}
-        </h2>
-      {:else if depth === 3}
-        <h3 class="mt-4 mb-2 text-xl font-semibold text-bright first:mt-0">{@render children?.()}</h3>
-      {:else}
-        <h4 class="mt-3 mb-1.5 text-lg font-medium text-bright first:mt-0">{@render children?.()}</h4>
-      {/if}
-    {/snippet}
-
-    {#snippet paragraph({ children })}
-      <p class="mb-3">{@render children?.()}</p>
-    {/snippet}
-
-    {#snippet link({ href, children })}
-      <a
-        {href}
-        class="text-accent underline decoration-accent/40 hover:decoration-accent"
-        onclick={(e) => {
-          if (!href || href.startsWith('#')) return
-          e.preventDefault()
-          let target = href
-          if (filePath && !href.includes('://')) {
-            const hashIndex = href.indexOf('#')
-            const pathPart = hashIndex !== -1 ? href.slice(0, hashIndex) : href
-            const hashPart = hashIndex !== -1 ? href.slice(hashIndex) : ''
-            const resolved = resolveMarkdownLocalPath(filePath, pathPart)
-            if (resolved) target = `${resolved}${hashPart}`
-          }
-          void openLink(target, folderPath)
-        }}
-      >
-        {@render children?.()}
-      </a>
-    {/snippet}
-
-    {#snippet strong({ children })}
-      <strong class="font-semibold text-bright">{@render children?.()}</strong>
-    {/snippet}
-
-    {#snippet em({ children })}
-      <em>{@render children?.()}</em>
-    {/snippet}
-
-    {#snippet codespan({ raw })}
-      <code class="rounded bg-raised px-1 py-0.5 font-mono text-[0.78em] text-accent">{raw}</code>
-    {/snippet}
-
-    {#snippet code({ text, lang })}
-      <CodeBlock {text} {lang} />
-    {/snippet}
-
-    {#snippet blockquote({ children })}
-      <blockquote class="my-3 border-l-2 border-accent/40 pl-3 text-muted">{@render children?.()}</blockquote>
-    {/snippet}
-
-    {#snippet list({ ordered, children })}
-      {#if ordered}
-        <ol class="mb-3 list-decimal pl-6">{@render children?.()}</ol>
-      {:else}
-        <ul class="mb-3 list-disc pl-6">{@render children?.()}</ul>
-      {/if}
-    {/snippet}
-
-    {#snippet listitem({ children, task, checked }: { children?: any; task?: boolean; checked?: boolean })}
-      {#if task}
-        <li class="mb-1 flex list-none items-center gap-2">
-          <Checkbox checked={checked ?? false} disabled />
-          {@render children?.()}
-        </li>
-      {:else}
-        <li class="mb-1">{@render children?.()}</li>
-      {/if}
-    {/snippet}
-
-    {#snippet hr()}
-      <hr class="my-6 h-[0.25em] border-0 bg-edge" />
-    {/snippet}
-
-    {#snippet table({ children })}
-      <div class="my-3 overflow-x-auto">
-        <table class="w-full border-collapse">{@render children?.()}</table>
-      </div>
-    {/snippet}
-
-    {#snippet tablehead({ children }: { children?: any })}
-      <thead>{@render children?.()}</thead>
-    {/snippet}
-
-    {#snippet tablebody({ children }: { children?: any })}
-      <tbody>{@render children?.()}</tbody>
-    {/snippet}
-
-    {#snippet tablerow({ children }: { children?: any })}
-      <tr class="even:bg-surface/30">{@render children?.()}</tr>
-    {/snippet}
-
-    {#snippet tablecell({ header, children }: { header: boolean; children?: any })}
-      {#if header}
-        <th class="border border-edge bg-surface px-3 py-1.5 text-left text-base font-semibold text-bright"
-          >{@render children?.()}</th
-        >
-      {:else}
-        <td class="border border-edge px-3 py-1.5">{@render children?.()}</td>
-      {/if}
-    {/snippet}
-
-    {#snippet image({ href, text })}
-      <img src={markdownImageSrc(href, folderPath, filePath)} alt={text} class="my-3 max-w-full rounded" />
-    {/snippet}
-  </SvelteMarkdown>
-</div>
+{#if error}
+  <p role="alert" class="px-6 py-4 text-danger">Markdown preview failed: {error}</p>
+{/if}
+<!-- Delegated clicks also receive native keyboard activation from rendered links. -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+<div bind:this={root} class="markdown-body px-6 py-4" onclick={handleClick}>{@html html}</div>

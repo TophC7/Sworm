@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import 'github-markdown-css/github-markdown.css';
 @source '../src';
 
 /*
@@ -429,39 +430,59 @@
   color: var(--color-danger-bright);
 }
 
-/* ── Markdown preview: Shiki code blocks ──────────────────────────── */
-
-.shiki-block pre.shiki {
-  margin: 0;
-  padding: 1rem;
-  /* !important overrides Shiki's inline background-color style attribute */
-  background: var(--color-surface) !important;
+/* GitHub markdown layout, using Sworm's palette and type scale. */
+.markdown-body {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  --fontStack-monospace: var(--font-mono);
+  --bgColor-default: transparent;
+  --bgColor-muted: var(--color-surface);
+  --bgColor-neutral-muted: var(--color-raised);
+  --bgColor-attention-muted: var(--color-warning-bg);
+  --fgColor-default: var(--color-fg);
+  --fgColor-muted: var(--color-muted);
+  --fgColor-accent: var(--color-accent);
+  --fgColor-attention: var(--color-warning);
+  --fgColor-danger: var(--color-danger);
+  --fgColor-success: var(--color-success);
+  --fgColor-done: var(--color-pink);
+  --borderColor-default: var(--color-edge);
+  --borderColor-muted: var(--color-edge);
+  --borderColor-neutral-muted: var(--color-edge);
+  --borderColor-accent-emphasis: var(--color-accent);
+  --borderColor-attention-emphasis: var(--color-warning);
+  --borderColor-danger-emphasis: var(--color-danger);
+  --borderColor-success-emphasis: var(--color-success);
+  --borderColor-done-emphasis: var(--color-pink);
+  --focus-outlineColor: var(--color-accent);
 }
 
-.shiki-block code {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.45;
+/* The alert plugin emits an icon without GitHub's spacing class. */
+.markdown-body .markdown-alert-title {
+  @apply gap-2;
 }
 
-.shiki-block .line:empty::after {
+/* Restore browser markers removed by Tailwind's preflight. */
+.markdown-body ul {
+  @apply list-disc;
+}
+
+.markdown-body ol {
+  @apply list-decimal;
+}
+
+/* Shiki's inline background must not override the muted code surface. */
+.markdown-body pre.shiki {
+  background-color: var(--color-surface) !important;
+}
+
+.markdown-body pre.shiki .line:empty::after {
   content: ' ';
 }
 
-/* ── Markdown preview: kbd elements ───────────────────────────────── */
-
-.markdown-preview kbd {
-  display: inline-block;
-  padding: 3px 5px;
-  font:
-    11px ui-monospace,
-    SFMono-Regular,
-    monospace;
-  line-height: 10px;
+/* remark-gfm checkboxes lack GitHub's task-list-item-checkbox class. */
+.markdown-body .task-list-item input[type='checkbox'] {
+  margin: 0 0.2em 0.25em -1.4em;
   vertical-align: middle;
-  background-color: var(--color-raised);
-  border: solid 1px var(--color-edge);
-  border-bottom-color: var(--color-subtle);
-  border-radius: 6px;
-  box-shadow: inset 0 -1px 0 var(--color-edge);
 }

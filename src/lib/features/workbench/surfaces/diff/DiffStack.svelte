@@ -5,7 +5,7 @@
 
   import { onMount, untrack } from 'svelte'
   import type { FileDiff } from '$lib/types/backend'
-  import ContentToolbar from '$lib/components/layout/ContentToolbar.svelte'
+  import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import DiffControls from '$lib/features/workbench/surfaces/diff/DiffControls.svelte'
   import DiffStackFile from '$lib/features/workbench/surfaces/diff/DiffStackFile.svelte'
   import {
@@ -227,7 +227,7 @@
 {#if files.length === 0 && !loading}
   <div class="flex h-full items-center justify-center text-base text-subtle">No changes.</div>
 {:else}
-  <ContentToolbar>
+  <PanelHeader class="text-sm">
     {#snippet left()}
       {#if label}
         <span class="font-semibold text-fg">{label}</span>
@@ -251,7 +251,7 @@
     {#snippet right()}
       <DiffControls bind:sideBySide bind:wrap bind:fontSize {anyExpanded} onToggleAll={toggleAll} />
     {/snippet}
-  </ContentToolbar>
+  </PanelHeader>
 
   <div class="min-h-0 flex-1 overflow-y-auto" bind:this={scrollEl}>
     {#each files as file (file.path)}
