@@ -11,7 +11,7 @@
   import { dragObserver } from '$lib/features/dnd/observer.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-  import { ensureGitListeners, ensureGitWatch, getGitSummary } from '$lib/features/git/state.svelte'
+  import { activateGitFolder, getGitFreshness, getGitSummary } from '$lib/features/git/state.svelte'
   import SidebarRail from '$lib/features/app-shell/sidebar/SidebarRail.svelte'
   import EmptyState from '$lib/features/app-shell/EmptyState.svelte'
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
@@ -37,6 +37,7 @@
   let folderPath = $derived(activeTab?.folderPath ?? null)
 
   let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
+  let gitFreshness = $derived(folderPath ? getGitFreshness(folderPath) : null)
   // Unique changed-path count for the sidebar rail badge. `changes` lists a
   // file twice when it has both staged and unstaged edits, so count by path.
   let gitChangeCount = $derived(gitSummary ? new Set(gitSummary.changes.map((c) => c.path)).size : 0)
@@ -63,8 +64,7 @@
   $effect(() => {
     const path = folderPath
     if (!path) return
-    ensureGitListeners()
-    void ensureGitWatch(path)
+    return activateGitFolder(path)
   })
 
   onMount(() => {
@@ -84,6 +84,8 @@
         {#if sidebarView === 'git'}
           <GitSidebar
             summary={gitSummary}
+            readError={gitFreshness?.readError ?? null}
+            watchError={gitFreshness?.watchError ?? null}
             {folderPath}
             onFileClick={(filePath, staged) => openWorkingTreeDiff(folderPath, staged, null, filePath)}
             onPersistTab={promoteTabWhenReady}

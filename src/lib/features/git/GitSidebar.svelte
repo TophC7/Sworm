@@ -5,6 +5,7 @@
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
   import { Button, IconButton } from '$lib/components/ui/button'
+  import { Alert } from '$lib/components/ui/alert'
   import { Input } from '$lib/components/ui/input'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
@@ -19,7 +20,7 @@
   import { forcePushWithLease, undoLastCommit } from '$lib/features/git/actions.svelte'
   import { backend } from '$lib/api/backend'
   import type { GitSummary } from '$lib/types/backend'
-  import { GitBranchIcon } from '$lib/icons/lucideExports'
+  import { AlertTriangle, GitBranchIcon } from '$lib/icons/lucideExports'
   import {
     getGitActionNotifications,
     gitCommitNotifications,
@@ -29,6 +30,8 @@
 
   let {
     summary,
+    readError,
+    watchError,
     folderPath,
     onFileClick,
     onPersistTab,
@@ -37,6 +40,8 @@
     onViewAllChanges
   }: {
     summary: GitSummary | null
+    readError: string | null
+    watchError: string | null
     folderPath: string
     onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
     onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
@@ -52,6 +57,7 @@
 
   let hasCommits = $derived(!!summary?.branch)
   let isRepo = $derived(summary?.is_repo ?? true)
+  let showWatchError = $derived(!!watchError && (summary?.is_repo ?? !!readError))
 
   // Confirmation dialog state
   let showDiscardConfirm = $state(false)
@@ -202,79 +208,103 @@
     </InfoTooltip>
   {/snippet}
 
-  {#if !summary}
-    <div class="px-2.5 py-3 text-sm text-subtle">Loading git info&hellip;</div>
-  {:else if !isRepo}
-    <!-- Not a git repository. Offer init or clone. -->
-    <div class="flex flex-col gap-4 px-3 py-4">
-      <div class="flex flex-col items-center gap-2 py-4 text-center">
-        <GitBranchIcon size={28} class="text-subtle" />
-        <p class="text-sm text-muted">This folder is not a git repository.</p>
-      </div>
+  <div class="flex h-full min-h-0 flex-col">
+    {#if readError}
+      <Alert variant="error" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+        <AlertTriangle size={13} class="mt-0.5 shrink-0" />
+        <div class="min-w-0">
+          <p class="font-medium">{summary ? 'Git status is stale.' : 'Git status unavailable.'}</p>
+          <p class="mt-0.5 text-2xs break-words text-muted">{readError}</p>
+        </div>
+      </Alert>
+    {/if}
+    {#if showWatchError}
+      <Alert variant="warning" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+        <AlertTriangle size={13} class="mt-0.5 shrink-0" />
+        <div class="min-w-0">
+          <p class="font-medium">Git change watcher is degraded. Changes may be delayed.</p>
+          <p class="mt-0.5 text-2xs break-words text-muted">{watchError}</p>
+        </div>
+      </Alert>
+    {/if}
+    <div class="min-h-0 flex-1">
+      {#if !summary}
+        <div class="px-2.5 py-3 text-sm text-subtle">
+          {readError ? 'No git status available.' : 'Loading git info…'}
+        </div>
+      {:else if !isRepo}
+        <!-- Not a git repository. Offer init or clone. -->
+        <div class="flex flex-col gap-4 px-3 py-4">
+          <div class="flex flex-col items-center gap-2 py-4 text-center">
+            <GitBranchIcon size={28} class="text-subtle" />
+            <p class="text-sm text-muted">This folder is not a git repository.</p>
+          </div>
 
-      <Button variant="default" size="sm" class="w-full" onclick={handleInit} disabled={initBusy}>
-        Initialize Repository
-      </Button>
+          <Button variant="default" size="sm" class="w-full" onclick={handleInit} disabled={initBusy}>
+            Initialize Repository
+          </Button>
 
-      <div class="flex flex-col gap-1.5">
-        <span class="text-2xs font-medium tracking-wider text-muted uppercase">Or clone</span>
-        <Input
-          type="text"
-          placeholder="https://github.com/..."
-          bind:value={cloneUrl}
-          onkeydown={(e: KeyboardEvent) => {
-            if (e.key === 'Enter') handleClone()
-          }}
-          disabled={initBusy}
-        />
-        <Button
-          variant="default"
-          size="sm"
-          class="w-full"
-          onclick={handleClone}
-          disabled={!cloneUrl.trim() || initBusy}
-        >
-          Clone Repository
-        </Button>
-      </div>
+          <div class="flex flex-col gap-1.5">
+            <span class="text-2xs font-medium tracking-wider text-muted uppercase">Or clone</span>
+            <Input
+              type="text"
+              placeholder="https://github.com/..."
+              bind:value={cloneUrl}
+              onkeydown={(e: KeyboardEvent) => {
+                if (e.key === 'Enter') handleClone()
+              }}
+              disabled={initBusy}
+            />
+            <Button
+              variant="default"
+              size="sm"
+              class="w-full"
+              onclick={handleClone}
+              disabled={!cloneUrl.trim() || initBusy}
+            >
+              Clone Repository
+            </Button>
+          </div>
 
-      {#if initError}
-        <p class="text-xs text-danger">{initError}</p>
+          {#if initError}
+            <p class="text-xs text-danger">{initError}</p>
+          {/if}
+        </div>
+      {:else}
+        <ResizablePaneGroup direction="vertical">
+          <ResizablePane defaultSize={60} minSize={15}>
+            <div class="h-full overflow-y-auto">
+              <GitFileTree
+                {summary}
+                {folderPath}
+                {hasCommits}
+                {onFileClick}
+                {onPersistTab}
+                {onViewAllChanges}
+                bind:commitMessage
+                onCommit={handleCommit}
+                onStageAll={handleStageAll}
+                onUnstageAll={handleUnstageAll}
+                onDiscardAll={() => (showDiscardConfirm = true)}
+                onStashAll={handleStashAll}
+                onUndoLastCommit={handleUndoLastCommit}
+                onPush={handlePush}
+                onPushForceWithLease={handlePushForceWithLease}
+                onPull={handlePull}
+                onFetch={handleFetch}
+              />
+            </div>
+          </ResizablePane>
+          <ResizableHandle />
+          <ResizablePane defaultSize={40} minSize={15}>
+            <div class="h-full overflow-y-auto">
+              <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} />
+            </div>
+          </ResizablePane>
+        </ResizablePaneGroup>
       {/if}
     </div>
-  {:else}
-    <ResizablePaneGroup direction="vertical">
-      <ResizablePane defaultSize={60} minSize={15}>
-        <div class="h-full overflow-y-auto">
-          <GitFileTree
-            {summary}
-            {folderPath}
-            {hasCommits}
-            {onFileClick}
-            {onPersistTab}
-            {onViewAllChanges}
-            bind:commitMessage
-            onCommit={handleCommit}
-            onStageAll={handleStageAll}
-            onUnstageAll={handleUnstageAll}
-            onDiscardAll={() => (showDiscardConfirm = true)}
-            onStashAll={handleStashAll}
-            onUndoLastCommit={handleUndoLastCommit}
-            onPush={handlePush}
-            onPushForceWithLease={handlePushForceWithLease}
-            onPull={handlePull}
-            onFetch={handleFetch}
-          />
-        </div>
-      </ResizablePane>
-      <ResizableHandle />
-      <ResizablePane defaultSize={40} minSize={15}>
-        <div class="h-full overflow-y-auto">
-          <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} />
-        </div>
-      </ResizablePane>
-    </ResizablePaneGroup>
-  {/if}
+  </div>
 </SidebarPanel>
 
 <ConfirmDialog

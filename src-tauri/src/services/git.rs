@@ -270,14 +270,38 @@ impl GitService {
         result
     }
 
-    /// Check if a path is inside a git work tree.
+    /// Check if a path is inside a git work tree. Callers that need the
+    /// failure reason should use [`Self::repository_state`] instead.
     pub fn is_git_repo(&self, path: &Path) -> bool {
-        std::process::Command::new("git")
+        self.repository_state(path).unwrap_or(false)
+    }
+
+    /// Distinguish an ordinary non-repository folder from operational Git
+    /// failures such as a missing cwd, unsafe ownership, or broken metadata.
+    fn repository_state(&self, path: &Path) -> Result<bool, String> {
+        let output = std::process::Command::new("git")
             .args(["--no-optional-locks", "rev-parse", "--is-inside-work-tree"])
+            .env("LC_ALL", "C")
             .current_dir(path)
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .map_err(|error| format!("Failed to inspect repository: {error}"))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim() == "true");
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a git repository") {
+            Ok(false)
+        } else {
+            let detail = stderr.trim();
+            Err(if detail.is_empty() {
+                format!(
+                    "Failed to inspect repository: git exited with {}",
+                    output.status
+                )
+            } else {
+                format!("Failed to inspect repository: {detail}")
+            })
+        }
     }
 
     /// Get the current branch name.
@@ -337,19 +361,16 @@ impl GitService {
 
     /// Get full git summary for a project path.
     ///
-    /// Cached for [`SUMMARY_CACHE_TTL`] to coalesce concurrent callers
-    /// (status bar, sidebar, diff signature watchers) into a single
-    /// underlying CLI sweep. The four independent probes
-    /// (`current_branch`, `default_base_ref`, `ahead_behind`,
-    /// `get_changes`) run in parallel via `std::thread::scope` to cut
-    /// wall-clock latency on dirty trees.
-    pub fn get_summary(&self, path: &Path) -> GitSummary {
+    /// Cached for [`SUMMARY_CACHE_TTL`] to coalesce concurrent callers.
+    /// Status failures remain errors: only Git's explicit "not a repository"
+    /// result becomes a successful `is_repo: false` summary.
+    pub fn get_summary(&self, path: &Path) -> Result<GitSummary, String> {
         let generation = match self.cached_summary(path) {
-            Ok(cached) => return cached,
+            Ok(cached) => return Ok(cached),
             Err(generation) => generation,
         };
 
-        if !self.is_git_repo(path) {
+        if !self.repository_state(path)? {
             let summary = GitSummary {
                 is_repo: false,
                 branch: None,
@@ -362,21 +383,25 @@ impl GitService {
                 untracked_count: 0,
             };
             self.store_summary(path, generation, &summary);
-            return summary;
+            return Ok(summary);
         }
 
-        let (branch, base_ref, ahead_behind, changes) = std::thread::scope(|s| {
-            let branch = s.spawn(|| self.current_branch(path));
-            let base_ref = s.spawn(|| self.default_base_ref(path));
-            let ahead_behind = s.spawn(|| self.ahead_behind(path));
-            let changes = s.spawn(|| self.get_changes(path));
+        let (branch, base_ref, ahead_behind, changes) = std::thread::scope(|scope| {
+            let branch = scope.spawn(|| self.current_branch(path));
+            let base_ref = scope.spawn(|| self.default_base_ref(path));
+            let ahead_behind = scope.spawn(|| self.ahead_behind(path));
+            let changes = scope.spawn(|| self.get_changes(path));
             (
                 branch.join().unwrap_or(None),
                 base_ref.join().unwrap_or(None),
                 ahead_behind.join().unwrap_or((None, None)),
-                changes.join().unwrap_or_default(),
+                changes
+                    .join()
+                    .map_err(|_| "Git status worker panicked".to_string())
+                    .and_then(|result| result),
             )
         });
+        let changes = changes?;
         let (ahead, behind) = ahead_behind;
         let staged_count = changes.iter().filter(|change| change.staged).count() as i32;
         let unstaged_count = changes
@@ -397,13 +422,12 @@ impl GitService {
             untracked_count,
         };
         self.store_summary(path, generation, &summary);
-        summary
+        Ok(summary)
     }
 
     /// Get changed files using porcelain v2 + numstat.
-    fn get_changes(&self, path: &Path) -> Vec<GitChange> {
+    fn get_changes(&self, path: &Path) -> Result<Vec<GitChange>, String> {
         let mut changes = Vec::new();
-
         let output = std::process::Command::new("git")
             .args([
                 "--no-optional-locks",
@@ -414,54 +438,61 @@ impl GitService {
                 "--untracked-files=all",
             ])
             .current_dir(path)
-            .output();
+            .output()
+            .map_err(|error| format!("Failed to read Git status: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            return Err(if detail.is_empty() {
+                format!(
+                    "Failed to read Git status: git exited with {}",
+                    output.status
+                )
+            } else {
+                format!("Failed to read Git status: {detail}")
+            });
+        }
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let mut records = output.stdout.split(|byte| *byte == 0);
-                while let Some(record_bytes) = records.next() {
-                    if record_bytes.is_empty() {
-                        continue;
-                    }
+        let mut records = output.stdout.split(|byte| *byte == 0);
+        while let Some(record_bytes) = records.next() {
+            if record_bytes.is_empty() {
+                continue;
+            }
 
-                    let record = String::from_utf8_lossy(record_bytes);
-                    let kind = record.chars().next().unwrap_or(' ');
-
-                    match kind {
-                        '1' => {
-                            let parts: Vec<&str> = record.split(' ').collect();
-                            if parts.len() >= 9 {
-                                let xy = parts[1];
-                                push_status_entries(&mut changes, parts[8], xy);
-                            }
-                        }
-                        '2' => {
-                            let parts: Vec<&str> = record.split(' ').collect();
-                            if parts.len() >= 10 {
-                                push_status_entries(&mut changes, parts[9], parts[1]);
-                                let _ = records.next();
-                            }
-                        }
-                        'u' => {
-                            let parts: Vec<&str> = record.split(' ').collect();
-                            if parts.len() >= 11 {
-                                push_status_entries(&mut changes, parts[10], parts[1]);
-                            }
-                        }
-                        '?' => {
-                            if record.len() > 2 {
-                                changes.push(GitChange {
-                                    path: record[2..].to_string(),
-                                    status: "?".to_string(),
-                                    staged: false,
-                                    additions: None,
-                                    deletions: None,
-                                });
-                            }
-                        }
-                        _ => {}
+            let record = String::from_utf8_lossy(record_bytes);
+            let kind = record.chars().next().unwrap_or(' ');
+            match kind {
+                '1' => {
+                    let parts: Vec<&str> = record.splitn(9, ' ').collect();
+                    if parts.len() >= 9 {
+                        push_status_entries(&mut changes, parts[8], parts[1]);
                     }
                 }
+                '2' => {
+                    let parts: Vec<&str> = record.splitn(10, ' ').collect();
+                    if parts.len() >= 10 {
+                        push_status_entries(&mut changes, parts[9], parts[1]);
+                        let _ = records.next();
+                    }
+                }
+                'u' => {
+                    let parts: Vec<&str> = record.splitn(11, ' ').collect();
+                    if parts.len() >= 11 {
+                        push_status_entries(&mut changes, parts[10], parts[1]);
+                    }
+                }
+                '?' => {
+                    if record.len() > 2 {
+                        changes.push(GitChange {
+                            path: record[2..].to_string(),
+                            status: "?".to_string(),
+                            staged: false,
+                            additions: None,
+                            deletions: None,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -478,7 +509,7 @@ impl GitService {
             merge_numstat(&mut changes, path, &["diff", "--cached", "--numstat"], true);
         }
 
-        changes
+        Ok(changes)
     }
 
     /// Get ahead/behind counts relative to the tracking branch.
@@ -1114,7 +1145,10 @@ impl GitService {
 
     /// Return true when the index, worktree, or untracked set has changes.
     pub fn is_worktree_dirty(&self, path: &Path) -> bool {
-        self.is_git_repo(path) && !self.get_changes(path).is_empty()
+        self.is_git_repo(path)
+            && self
+                .get_changes(path)
+                .is_ok_and(|changes| !changes.is_empty())
     }
 
     /// File metadata for `branch...HEAD` compare. Content stays lazy:
@@ -1344,7 +1378,7 @@ impl GitService {
         if !self.is_git_repo(path) {
             return Vec::new();
         }
-        filter_working_changes(self.get_changes(path), Some(staged))
+        filter_working_changes(self.get_changes(path).unwrap_or_default(), Some(staged))
             .into_iter()
             .map(|change| FileDiff {
                 path: change.path.clone(),
@@ -1374,7 +1408,7 @@ impl GitService {
     }
 
     fn working_diff_files(&self, path: &Path, staged_filter: Option<bool>) -> Vec<FileDiff> {
-        filter_working_changes(self.get_changes(path), staged_filter)
+        filter_working_changes(self.get_changes(path).unwrap_or_default(), staged_filter)
             .into_iter()
             .map(|change| {
                 let status = GitStatus::from_code(&change.status);
@@ -2240,6 +2274,55 @@ mod tests {
             svc.cached_summary(path).is_ok(),
             "current store must be kept"
         );
+    }
+
+    #[test]
+    fn summary_distinguishes_non_repo_from_git_failures() {
+        let service = GitService::new();
+        let plain = std::env::temp_dir().join(format!(
+            "sworm-non-repo-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!service.get_summary(&plain).unwrap().is_repo);
+
+        let missing = plain.join("missing");
+        assert!(
+            service.get_summary(&missing).is_err(),
+            "missing working directory must not masquerade as a non-repository"
+        );
+
+        let repo = plain.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join(".git/index"), b"broken index").unwrap();
+        assert!(
+            service.get_summary(&repo).is_err(),
+            "corrupt index must surface the git status failure"
+        );
+
+        std::fs::remove_dir_all(plain).ok();
+    }
+
+    #[test]
+    fn summary_preserves_spaces_in_tracked_paths() {
+        let repo = temp_repo("spaces");
+        std::fs::write(repo.join("file with space.txt"), "before").unwrap();
+        git(&repo, &["add", "file with space.txt"]);
+        git(&repo, &["commit", "-q", "-m", "add spaced path"]);
+        std::fs::write(repo.join("file with space.txt"), "after").unwrap();
+
+        let summary = GitService::new().get_summary(&repo).unwrap();
+        assert!(
+            summary
+                .changes
+                .iter()
+                .any(|change| change.path == "file with space.txt"),
+            "porcelain parser must preserve path spaces"
+        );
+
+        std::fs::remove_dir_all(repo).ok();
     }
 
     /// Regression test: a working-tree deletion must surface the prior

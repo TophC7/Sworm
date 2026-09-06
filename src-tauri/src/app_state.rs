@@ -33,7 +33,7 @@ pub struct AppState {
     pub db: Arc<DatabaseService>,
     pub providers: ProviderService,
     pub pty: PtyService,
-    /// Shared with the git-dir watcher so it can invalidate the summary cache.
+    /// Shared with the Git watcher so it can invalidate the summary cache.
     pub git: Arc<GitService>,
     pub issues: Arc<IssueService>,
     pub issue_bridge: IssueBridgeService,
@@ -47,8 +47,8 @@ pub struct AppState {
     pub settings_watchers: SettingsWatcherService,
     /// Watches the directories the file explorer currently renders.
     pub file_watchers: FileWatcherService,
-    /// Watches each open folder's git dir for external repository changes.
-    pub git_watchers: GitWatcherService,
+    /// Watches each open folder's Git metadata and working tree.
+    pub git_watchers: Arc<GitWatcherService>,
     /// Tracks folder paths with Nix evaluations in progress to prevent concurrent runs.
     pub nix_eval_locks: Mutex<HashSet<String>>,
     /// Post-spawn resume-token discovery for Codex/Antigravity/OMP runs.
@@ -82,7 +82,7 @@ impl AppState {
             tasks: TaskService::new(),
             settings_watchers: SettingsWatcherService::new(),
             file_watchers: FileWatcherService::new(),
-            git_watchers: GitWatcherService::new(git),
+            git_watchers: Arc::new(GitWatcherService::new(git)),
             nix_eval_locks: Mutex::new(HashSet::new()),
             resume_discovery: ResumeDiscoveryService::new(),
             activity_map_cache: Mutex::new(None),

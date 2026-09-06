@@ -147,10 +147,12 @@ export interface FilesChangedEvent {
   dirs: string[]
 }
 
-/** Git-dir-relative paths that changed (`index`, `HEAD`, `refs/heads/main`, …). */
+/** Git freshness notification for one open folder. */
 export interface GitChangedEvent {
   folder_path: string
-  paths: string[]
+  scope: 'summary' | 'all'
+  /** Watcher failure; null for a normal filesystem change. */
+  error: string | null
 }
 
 export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'disabled'

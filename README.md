@@ -89,7 +89,8 @@ Browse files, edit code, and review changes before committing:
 - Separate staged and working changes, per-file change counts, and commit composition.
 - A Git graph for browsing commits, branches, and merges.
 - Monaco code editing, plus Shiki highlighting for Nix, Svelte, and Fish.
-- Markdown editing with a live preview, and a file tree with filtering, Git markers, and drag-and-drop.
+- Markdown editing with a live preview styled to match GitHub as closely as possible.
+- A file tree with filtering, Git markers, and drag-and-drop.
 
 <details>
 <summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>

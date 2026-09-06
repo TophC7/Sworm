@@ -272,7 +272,7 @@ export const backend = {
     getSummary(path: string): Promise<GitSummary> {
       return invoke<GitSummary>('git_get_summary', { path })
     },
-    /** Watch the folder's git dir; idempotent, silent on non-repos. */
+    /** Arm or repair the folder's git watcher; idempotent and silent on non-repos. */
     watch(projectPath: string): Promise<void> {
       return invoke<void>('git_watch', { projectPath })
     },

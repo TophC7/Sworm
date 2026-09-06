@@ -323,28 +323,34 @@ fn git_remove_index_path(repo: &Path, file_path: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Get git summary for a project path.
+/// Get git summary for a project path. Git status can scan the full tree, so
+/// keep it off Tauri's async runtime worker.
 #[tauri::command]
 pub async fn git_get_summary(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<GitSummary, ApiError> {
-    Ok(state.git.get_summary(Path::new(&path)))
+    let git = std::sync::Arc::clone(&state.git);
+    tokio::task::spawn_blocking(move || git.get_summary(Path::new(&path)))
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .map_err(ApiError::Internal)
 }
 
-/// Watch the folder's git dir for external changes. A watcher failure costs
-/// freshness, not function (focus and in-app actions still refresh), so it
-/// is logged rather than surfaced.
+/// Watch Git metadata and the Git-aware working tree. Setup walks directories
+/// and invokes Git, so it also belongs on a blocking worker. Startup failures
+/// are returned; an unhealthy existing worker is replaced on a later call.
 #[tauri::command]
 pub async fn git_watch(
     app: tauri::AppHandle,
     project_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    if let Err(error) = state.git_watchers.watch(&app, Path::new(&project_path)) {
-        tracing::debug!(folder = %project_path, %error, "git watcher not started");
-    }
-    Ok(())
+    let watchers = std::sync::Arc::clone(&state.git_watchers);
+    tokio::task::spawn_blocking(move || watchers.watch(&app, Path::new(&project_path)))
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .map_err(ApiError::Internal)
 }
 
 /// Get full commit detail (metadata + file list with stats).
