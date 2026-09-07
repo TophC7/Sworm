@@ -433,6 +433,13 @@ impl WindowCoordinatorService {
             .any(|record| record.folder_claims.contains(folder))
     }
 
+    pub fn folder_claimed(&self, folder: &Path) -> bool {
+        self.records
+            .lock()
+            .values()
+            .any(|record| record.folder_claims.contains(folder))
+    }
+
     pub fn claim_file(
         &self,
         window: &WebviewWindow,

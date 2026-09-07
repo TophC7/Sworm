@@ -339,7 +339,8 @@ pub async fn git_get_summary(
 
 /// Watch Git metadata and the Git-aware working tree. Setup walks directories
 /// and invokes Git, so it also belongs on a blocking worker. Startup failures
-/// are returned; an unhealthy existing worker is replaced on a later call.
+/// are returned; an unhealthy existing worker is replaced on a later call. A
+/// folder released while setup is in flight never keeps a watcher.
 #[tauri::command]
 pub async fn git_watch(
     app: tauri::AppHandle,
@@ -347,10 +348,14 @@ pub async fn git_watch(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let watchers = std::sync::Arc::clone(&state.git_watchers);
-    tokio::task::spawn_blocking(move || watchers.watch(&app, Path::new(&project_path)))
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-        .map_err(ApiError::Internal)
+    let windows = std::sync::Arc::clone(&state.windows);
+    tokio::task::spawn_blocking(move || {
+        let folder = Path::new(&project_path);
+        watchers.watch(&app, folder, || windows.folder_claimed(folder))
+    })
+    .await
+    .map_err(|error| ApiError::Internal(error.to_string()))?
+    .map_err(ApiError::Internal)
 }
 
 /// Get full commit detail (metadata + file list with stats).

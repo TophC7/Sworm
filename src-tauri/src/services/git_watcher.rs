@@ -76,15 +76,23 @@ impl GitWatcherService {
     }
 
     /// Start watching `folder`; healthy watches are idempotent and failed
-    /// workers are removed so a later call can retry.
-    pub fn watch(&self, app: &tauri::AppHandle, folder: &Path) -> Result<(), String> {
-        // Serialize setup with `stop`: otherwise a folder release could observe
-        // no entry while setup is in flight, then leave the late worker alive.
-        let mut folders = self.folders.lock();
-        if folders.get(folder).is_some_and(FolderWatch::is_healthy) {
-            return Ok(());
+    /// workers are removed so a later call can retry. Setup runs outside the
+    /// map lock so one large repository does not stall other folders; `owned`
+    /// is re-checked under the lock so a folder released mid-setup never keeps
+    /// a live watcher (callers drop claims before calling `stop`).
+    pub fn watch(
+        &self,
+        app: &tauri::AppHandle,
+        folder: &Path,
+        owned: impl FnOnce() -> bool,
+    ) -> Result<(), String> {
+        {
+            let mut folders = self.folders.lock();
+            if folders.get(folder).is_some_and(FolderWatch::is_healthy) {
+                return Ok(());
+            }
+            drop(folders.remove(folder));
         }
-        drop(folders.remove(folder));
 
         let handle = app.clone();
         let sink: EventSink = Arc::new(move |event| {
@@ -104,8 +112,16 @@ impl GitWatcherService {
             }
         };
 
+        let mut folders = self.folders.lock();
+        if !owned() {
+            tracing::debug!(folder = %folder.display(), "git watcher discarded: folder released");
+            return Ok(());
+        }
+        if folders.get(folder).is_some_and(FolderWatch::is_healthy) {
+            return Ok(());
+        }
         tracing::debug!(folder = %folder.display(), "git watcher started");
-        folders.insert(folder.to_path_buf(), watch);
+        drop(folders.insert(folder.to_path_buf(), watch));
         Ok(())
     }
 
@@ -130,7 +146,7 @@ fn start_folder_watch(
     sink: EventSink,
 ) -> Result<FolderWatch, String> {
     let (worktree_root, git_dir, common_dir) = resolve_git_layout(folder)?;
-    let mut worktree_dirs = collect_worktree_dirs(&worktree_root)?;
+    let mut coverage = collect_worktree_coverage(&worktree_root)?;
     let (control, events) = mpsc::channel();
     let callback = control.clone();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -138,13 +154,17 @@ fn start_folder_watch(
     })
     .map_err(|error| format!("Failed to create git watcher: {error}"))?;
 
-    for dir in &worktree_dirs {
+    for dir in &coverage.dirs {
         watcher
             .watch(dir, RecursiveMode::NonRecursive)
             .map_err(|error| format!("Failed to watch {}: {error}", dir.display()))?;
     }
-    let metadata_roots: HashSet<PathBuf> =
-        [git_dir.clone(), common_dir.clone()].into_iter().collect();
+    // `info` holds the repository-local `exclude` rules.
+    let info = common_dir.join("info");
+    let metadata_roots: HashSet<PathBuf> = [git_dir.clone(), common_dir.clone()]
+        .into_iter()
+        .chain(info.is_dir().then_some(info))
+        .collect();
     for dir in &metadata_roots {
         watcher
             .watch(dir, RecursiveMode::NonRecursive)
@@ -172,7 +192,7 @@ fn start_folder_watch(
                 git_dir,
                 common_dir,
                 refs,
-                &mut worktree_dirs,
+                &mut coverage,
                 sink,
                 &worker_health,
             );
@@ -196,7 +216,7 @@ fn run_worker(
     git_dir: PathBuf,
     common_dir: PathBuf,
     refs: PathBuf,
-    worktree_dirs: &mut HashSet<PathBuf>,
+    coverage: &mut WorktreeCoverage,
     sink: EventSink,
     healthy: &AtomicBool,
 ) {
@@ -205,7 +225,8 @@ fn run_worker(
     let mut first_change = None;
     let mut last_change = None;
     let mut structural_change = false;
-    let mut force_coverage_refresh = false;
+    let mut index_changed = false;
+    let mut ignore_changed = false;
     let mut refresh_refs = false;
 
     loop {
@@ -236,6 +257,16 @@ fn run_worker(
                 if matches!(&event.kind, EventKind::Access(_)) {
                     continue;
                 }
+                if loses_metadata_root(&git_dir, &common_dir, &event) {
+                    fail_worker(
+                        &git,
+                        &folder,
+                        &sink,
+                        healthy,
+                        "Git metadata directory was removed or replaced".to_string(),
+                    );
+                    return;
+                }
                 let (scope, paths) =
                     classify_event_paths(&worktree_root, &git_dir, &common_dir, &event);
                 if scope.is_none() && paths.is_empty() {
@@ -245,9 +276,9 @@ fn run_worker(
                     pending_scope = Some(widest_scope(pending_scope, scope));
                 }
                 pending_paths.extend(paths);
-                structural_change |= changes_directory_structure(worktree_dirs, &event);
-                force_coverage_refresh |= changes_index(&git_dir, &event);
-                force_coverage_refresh |= changes_ignore_rules(&worktree_root, &event);
+                structural_change |= changes_directory_structure(&coverage.dirs, &event);
+                index_changed |= changes_index(&git_dir, &event);
+                ignore_changed |= changes_ignore_rules(&worktree_root, &event);
                 refresh_refs |= changes_ref_coverage(&refs, &event);
                 let now = Instant::now();
                 first_change.get_or_insert(now);
@@ -260,16 +291,24 @@ fn run_worker(
         if flush_at.is_some_and(|deadline| now >= deadline) {
             let paths: Vec<PathBuf> = pending_paths.drain().collect();
             let worktree_changed =
-                match has_relevant_worktree_path(&worktree_root, worktree_dirs, &paths) {
+                match has_relevant_worktree_path(&worktree_root, &coverage.dirs, &paths) {
                     Ok(relevant) => relevant,
                     Err(error) => {
                         fail_worker(&git, &folder, &sink, healthy, error);
                         return;
                     }
                 };
-            if force_coverage_refresh || (structural_change && worktree_changed) {
+            let rebuild = structural_change && worktree_changed;
+            if rebuild || index_changed || ignore_changed {
+                let plan = if rebuild {
+                    CoveragePlan::Rebuild
+                } else if ignore_changed {
+                    CoveragePlan::Diff
+                } else {
+                    CoveragePlan::DiffIfTrackedChanged
+                };
                 if let Err(error) =
-                    replace_worktree_watches(&mut watcher, &worktree_root, worktree_dirs)
+                    replace_worktree_watches(&mut watcher, &worktree_root, coverage, plan)
                 {
                     fail_worker(&git, &folder, &sink, healthy, error);
                     return;
@@ -299,7 +338,8 @@ fn run_worker(
             first_change = None;
             last_change = None;
             structural_change = false;
-            force_coverage_refresh = false;
+            index_changed = false;
+            ignore_changed = false;
             refresh_refs = false;
         }
     }
@@ -388,17 +428,60 @@ fn absolute(folder: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// Watched worktree directories plus a fingerprint of the tracked-file list
+/// that produced them, so index churn without tracked-set changes is free.
+struct WorktreeCoverage {
+    dirs: HashSet<PathBuf>,
+    tracked_hash: u64,
+}
+
+enum CoveragePlan {
+    /// Re-register every path: atomic directory replacement keeps the
+    /// pathname but invalidates an inode-backed watch.
+    Rebuild,
+    /// Ignore rules changed; watch only the set difference.
+    Diff,
+    /// Index changed; skip entirely unless the tracked-file list moved.
+    DiffIfTrackedChanged,
+}
+
+fn collect_worktree_coverage(folder: &Path) -> Result<WorktreeCoverage, String> {
+    let tracked = git_output(folder, &["ls-files", "-z"], "list tracked files")?;
+    Ok(WorktreeCoverage {
+        dirs: collect_worktree_dirs(folder, &tracked)?,
+        tracked_hash: hash_bytes(&tracked),
+    })
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn tracked_path(raw: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(raw.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(raw).into_owned())
+    }
+}
+
 /// Non-ignored directories plus existing ancestors of every tracked file.
 /// `git ls-files` is essential: a tracked file remains visible even when a
 /// later ignore rule matches it.
-fn collect_worktree_dirs(folder: &Path) -> Result<HashSet<PathBuf>, String> {
-    let tracked = git_output(folder, &["ls-files", "-z"], "list tracked files")?;
+fn collect_worktree_dirs(folder: &Path, tracked: &[u8]) -> Result<HashSet<PathBuf>, String> {
     let mut dirs = HashSet::from([folder.to_path_buf()]);
     for raw in tracked
         .split(|byte| *byte == 0)
         .filter(|raw| !raw.is_empty())
     {
-        let relative = PathBuf::from(String::from_utf8_lossy(raw).into_owned());
+        let relative = tracked_path(raw);
         let mut parent = relative.parent();
         while let Some(dir) = parent {
             let absolute = folder.join(dir);
@@ -437,20 +520,38 @@ fn collect_worktree_dirs(folder: &Path) -> Result<HashSet<PathBuf>, String> {
 fn replace_worktree_watches(
     watcher: &mut RecommendedWatcher,
     folder: &Path,
-    watched: &mut HashSet<PathBuf>,
+    coverage: &mut WorktreeCoverage,
+    plan: CoveragePlan,
 ) -> Result<(), String> {
-    let desired = collect_worktree_dirs(folder)?;
-    // Re-register every path, not only set differences. Atomic directory
-    // replacement keeps the pathname but invalidates an inode-backed watch.
-    for path in watched.drain() {
-        let _ = watcher.unwatch(&path);
+    let tracked = git_output(folder, &["ls-files", "-z"], "list tracked files")?;
+    let tracked_hash = hash_bytes(&tracked);
+    if matches!(plan, CoveragePlan::DiffIfTrackedChanged) && tracked_hash == coverage.tracked_hash {
+        return Ok(());
     }
-    for path in &desired {
+    let desired = collect_worktree_dirs(folder, &tracked)?;
+    let watched = &mut coverage.dirs;
+    if matches!(plan, CoveragePlan::Rebuild) {
+        for path in watched.drain() {
+            let _ = watcher.unwatch(&path);
+        }
+    } else {
+        watched.retain(|path| {
+            let keep = desired.contains(path);
+            if !keep {
+                let _ = watcher.unwatch(path);
+            }
+            keep
+        });
+    }
+    for path in desired.difference(watched) {
         watcher
             .watch(path, RecursiveMode::NonRecursive)
             .map_err(|error| format!("Failed to watch {}: {error}", path.display()))?;
     }
-    *watched = desired;
+    *coverage = WorktreeCoverage {
+        dirs: desired,
+        tracked_hash,
+    };
     Ok(())
 }
 
@@ -567,6 +668,18 @@ fn changes_index(git_dir: &Path, event: &notify::Event) -> bool {
         .any(|relative| relative == Path::new("index"))
 }
 
+/// The watched metadata directory itself vanished or was renamed; its inode
+/// watch is dead, so the worker must fail and let the frontend re-arm.
+fn loses_metadata_root(git_dir: &Path, common_dir: &Path, event: &notify::Event) -> bool {
+    matches!(
+        &event.kind,
+        EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) && event
+        .paths
+        .iter()
+        .any(|path| path == git_dir || path == common_dir)
+}
+
 fn changes_ref_coverage(refs: &Path, event: &notify::Event) -> bool {
     matches!(
         &event.kind,
@@ -664,7 +777,7 @@ mod tests {
         std::fs::write(repo.join("locked/deep/kept.txt"), "tracked").unwrap();
         git(&repo, &["add", "-f", "locked/deep/kept.txt"]);
 
-        let dirs = collect_worktree_dirs(&repo).unwrap();
+        let dirs = collect_worktree_coverage(&repo).unwrap().dirs;
         assert!(!dirs.contains(&repo.join("build")));
         assert!(!dirs.contains(&repo.join("build/deep")));
         assert!(
@@ -673,6 +786,90 @@ mod tests {
         );
         assert!(dirs.contains(&repo.join("locked")));
         assert!(dirs.contains(&repo.join("locked/deep")));
+
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_non_utf8_paths_keep_their_ignored_parent_watched() {
+        use std::os::unix::ffi::OsStringExt;
+        let repo = temp_repo("non-utf8");
+        std::fs::write(repo.join(".gitignore"), "locked/\n").unwrap();
+        let dir = repo
+            .join("locked")
+            .join(std::ffi::OsString::from_vec(b"caf\xe9".to_vec()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kept.txt"), "tracked").unwrap();
+        git(&repo, &["add", "-f", "locked"]);
+
+        let dirs = collect_worktree_coverage(&repo).unwrap().dirs;
+        assert!(
+            dirs.contains(&dir),
+            "lossy path decoding drops the tracked directory"
+        );
+
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn replacing_git_dir_fails_the_worker_so_it_can_rearm() {
+        let repo = temp_repo("replaced-git");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink: EventSink = Arc::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let watch =
+            start_folder_watch(Arc::new(GitService::new()), &repo, sink).expect("start watcher");
+
+        std::fs::rename(repo.join(".git"), repo.join(".git-old")).unwrap();
+        let event = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("metadata loss event");
+        assert!(
+            event.error.is_some(),
+            "worker must report the dead metadata watch"
+        );
+        assert!(!watch.is_healthy());
+
+        drop(watch);
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn index_churn_without_tracked_changes_keeps_watches() {
+        let repo = temp_repo("index-churn");
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        let mut coverage = collect_worktree_coverage(&repo).unwrap();
+        let before = coverage.tracked_hash;
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+
+        std::fs::create_dir_all(repo.join("later")).unwrap();
+        replace_worktree_watches(
+            &mut watcher,
+            &repo,
+            &mut coverage,
+            CoveragePlan::DiffIfTrackedChanged,
+        )
+        .unwrap();
+        assert_eq!(coverage.tracked_hash, before);
+        assert!(
+            !coverage.dirs.contains(&repo.join("later")),
+            "unchanged index skips rescan"
+        );
+
+        std::fs::write(repo.join("later/b.txt"), "b").unwrap();
+        git(&repo, &["add", "later/b.txt"]);
+        replace_worktree_watches(
+            &mut watcher,
+            &repo,
+            &mut coverage,
+            CoveragePlan::DiffIfTrackedChanged,
+        )
+        .unwrap();
+        assert_ne!(coverage.tracked_hash, before);
+        assert!(coverage.dirs.contains(&repo.join("later")));
 
         std::fs::remove_dir_all(repo).ok();
     }

@@ -448,20 +448,25 @@ function armGitWatch(folderPath: string): Promise<void> {
   })
 }
 
+/**
+ * Poll ticks refresh the summary only; a forced pass (window focus) refreshes
+ * everything loaded, since refs may have moved while events were missed.
+ */
 async function reconcileActiveFolder(folderPath: string, forceFinalPass = false): Promise<void> {
   await activeReady.get(folderPath)
   if (!activeFolderRefs.has(folderPath) || !gitStore.has(folderPath)) return
 
+  const scope: RefreshScope = forceFinalPass ? 'all' : 'summary'
   const existing = reconciliations.get(folderPath)
   if (existing) {
-    if (forceFinalPass) await refreshRepo(folderPath, 'summary')
+    if (forceFinalPass) await refreshRepo(folderPath, scope)
     return
   }
   if (!forceFinalPass && refreshQueues.has(folderPath)) return
 
   const reconciliation = (async () => {
     const wasRepo = gitStore.get(folderPath)?.summary?.is_repo
-    await refreshRepo(folderPath, 'summary')
+    await refreshRepo(folderPath, scope)
     const state = gitStore.get(folderPath)
     if (
       state?.summary?.is_repo !== false &&
