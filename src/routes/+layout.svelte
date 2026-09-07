@@ -127,7 +127,9 @@
     // Restore system decorations if user previously chose that
     const wc = getWindowControls()
     if (wc.useSystemDecorations) {
-      appWindow.setDecorations(true)
+      appWindow.setDecorations(true).catch((error) => {
+        console.warn('Failed to restore system window decorations:', error)
+      })
     }
 
     const cleanupShortcuts = setupGlobalShortcuts()
