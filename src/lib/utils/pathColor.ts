@@ -27,15 +27,6 @@ function hashPath(str: string): number {
   return fmix32(hash)
 }
 
-/**
- * Returns a deterministic hue in [0, 359] for the given folder path.
- * Normalizes absolute path before hashing so trailing slashes yield identical hues.
- */
-function getPathHue(path: string): number {
-  const normalized = normalizeAbsolutePath(path || '/')
-  return hashPath(normalized) % 360
-}
-
 const colorCache = new Map<string, string>()
 const MAX_CACHE_ENTRIES = 256
 
@@ -44,11 +35,13 @@ export function getPathColor(path: string): string {
   const cached = colorCache.get(path)
   if (cached) return cached
 
-  const hue = getPathHue(path)
-  // Blues and violets have slightly lower perceived luminance in sRGB;
-  // bump lightness slightly so visual contrast against dark surfaces stays balanced.
-  const lightness = hue >= 210 && hue <= 290 ? 70 : 65
-  const color = `hsl(${hue}, 75%, ${lightness}%)`
+  const hash = hashPath(normalizeAbsolutePath(path || '/'))
+  // Mix each axis separately so nearby hues need not share lightness or chroma.
+  const hue = (hash / 0xffffffff) * 360
+  const lightness = 0.65 + (fmix32(hash ^ 0x9e3779b9) / 0xffffffff) * 0.15
+  const chroma = 0.1 + (fmix32(hash ^ 0x243f6a88) / 0xffffffff) * 0.08
+  // Keep colors bright and colorful; native CSS handles display gamut mapping.
+  const color = `oklch(${lightness.toFixed(4)} ${chroma.toFixed(4)} ${hue.toFixed(2)})`
 
   if (colorCache.size >= MAX_CACHE_ENTRIES) colorCache.clear()
   colorCache.set(path, color)

@@ -38,6 +38,7 @@ import {
   serializeWorkbench,
   tabToPersisted
 } from '$lib/features/workbench/persistence'
+import { computeTabInsertion } from './tabInsertion'
 import {
   ensureTextFileSyncListeners,
   openTextFile,
@@ -195,15 +196,22 @@ export function persistWorkbench(): void {
 }
 
 /**
- * Append and activate a tab. Launcher tabs are transient: the first real
- * tab opened in a folder replaces that folder's launcher.
+ * Insert and activate a tab.
+ * - Launcher tabs are transient: the first real tab opened replaces that
+ *   folder's launcher in-place.
+ * - Brand-new launcher tabs represent a new folder workspace and append to the end.
+ * - Same-folder tabs open directly next to the active tab to keep folder tabs grouped.
+ * - Other-folder tabs open after that folder's existing tabs.
  */
-function appendTab(tab: Tab): TabId {
-  const tabs =
-    tab.kind === 'launcher'
-      ? workbench.tabs
-      : workbench.tabs.filter((t) => !(t.kind === 'launcher' && t.folderPath === tab.folderPath))
-  commit({ tabs: [...tabs, tab], activeTabId: tab.id })
+function insertTab(tab: Tab): TabId {
+  const placement = computeTabInsertion(workbench.tabs, workbench.activeTabId, tab)
+  const tabs = [...workbench.tabs]
+  if ('replaceIndex' in placement) {
+    tabs[placement.replaceIndex] = tab
+  } else {
+    tabs.splice(placement.insertIndex, 0, tab)
+  }
+  commit({ tabs, activeTabId: tab.id })
   return tab.id
 }
 
@@ -421,7 +429,7 @@ export interface SessionTabInit {
 
 /** Add a dormant session tab; the mounted surface spawns its process. */
 export function addSessionTab(folderPath: string, init: SessionTabInit): TabId {
-  return appendTab({
+  return insertTab({
     kind: 'session',
     id: generateTabId(),
     folderPath,
@@ -466,7 +474,7 @@ export interface TaskTabInit {
  * singleton focus-on-rerun use `findTaskTabByTaskId` first.
  */
 export function addTaskTab(folderPath: string, init: TaskTabInit): TabId {
-  return appendTab({
+  return insertTab({
     kind: 'task',
     id: generateTabId(),
     folderPath,
@@ -577,11 +585,23 @@ function addContentTab(
         setActiveTab(existingTemp.id)
         return existingTemp.id
       }
-      commit({
-        tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
-        activeTabId: existingTemp.id
-      })
-      return existingTemp.id
+      if (existingTemp.folderPath === newTab.folderPath) {
+        commit({
+          tabs: workbench.tabs.map((t) => (t.id === existingTemp.id ? newTab : t)),
+          activeTabId: newTab.id
+        })
+        return newTab.id
+      }
+
+      const remainingTabs = workbench.tabs.filter((t) => t.id !== existingTemp.id)
+      const placement = computeTabInsertion(remainingTabs, workbench.activeTabId, newTab)
+      if ('replaceIndex' in placement) {
+        remainingTabs[placement.replaceIndex] = newTab
+      } else {
+        remainingTabs.splice(placement.insertIndex, 0, newTab)
+      }
+      commit({ tabs: remainingTabs, activeTabId: newTab.id })
+      return newTab.id
     }
   }
 
@@ -597,7 +617,7 @@ function addContentTab(
     }
   }
 
-  return appendTab(makeTab(tabId ?? generateTabId()))
+  return insertTab(makeTab(tabId ?? generateTabId()))
 }
 
 export function addCommitTab(
@@ -721,7 +741,7 @@ export function addTextTab(folderPath: string, filePath: string, temporary = tru
  */
 export function addUntitledTextTab(folderPath: string): TabId {
   untitledCounter += 1
-  return appendTab({
+  return insertTab({
     kind: 'text',
     id: generateTabId(),
     folderPath,
@@ -779,7 +799,7 @@ export function openLauncherTab(folderPath: string): TabId {
     return existing.id
   }
   const tab: LauncherTab = { kind: 'launcher', id: generateTabId(), folderPath, locked: false, temporary: false }
-  return appendTab(tab)
+  return insertTab(tab)
 }
 
 export function addNotificationToolTab(folderPath: string, temporary = false): TabId {
