@@ -4,21 +4,25 @@
 -->
 
 <script lang="ts" module>
-  import type { GeneralSettings } from '$lib/types/backend'
-  let pendingPatch: Partial<GeneralSettings> = {}
+  import type { WindowSettings } from '$lib/types/backend'
+  let pendingPatch: Partial<WindowSettings> = {}
   let saveChain = Promise.resolve()
 </script>
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { backend } from '$lib/api/backend'
+
   import { Select } from '$lib/components/ui/input'
   import { Switch } from '$lib/components/ui/switch'
   import { getWindowControls, setWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-  import { getSettings, loadSettings, saveGeneralSettings } from '$lib/features/settings/state/settings.svelte'
-  import type { ExternalFileOpenMode, ExternalFolderOpenMode } from '$lib/types/backend'
+  import {
+    getSettings,
+    loadSettings,
+    saveWindowSettings as saveWindowSettingsApi
+  } from '$lib/features/settings/state/settings.svelte'
+  import type { ExternalFileOpenMode, ExternalFolderOpenMode, TabBeamPosition } from '$lib/types/backend'
 
   let wc = $derived(getWindowControls())
   let settings = $derived(getSettings())
@@ -31,35 +35,23 @@
     setWindowControls({ [key]: value })
   }
 
-  function saveRouting(patch: Partial<GeneralSettings>): void {
+  function saveWindowSettings(patch: Partial<WindowSettings>): void {
     pendingPatch = { ...pendingPatch, ...patch }
     saveChain = saveChain
       .then(async () => {
-        const current = settings?.general
+        const current = settings?.window
         if (!current) return
         const next = { ...current, ...pendingPatch }
         pendingPatch = {}
-        await saveGeneralSettings(next)
+        await saveWindowSettingsApi(next)
       })
       .catch((e) => {
-        notify.error('Failed to save window routing settings', getErrorMessage(e))
+        notify.error('Failed to save window settings', getErrorMessage(e))
       })
   }
 
   onMount(() => {
-    let disposed = false
-    let unlisten: (() => void) | undefined
     if (!settings) void loadSettings()
-    void backend.settings
-      .onChanged(() => void loadSettings())
-      .then((cleanup) => {
-        if (disposed) cleanup()
-        else unlisten = cleanup
-      })
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
   })
 </script>
 
@@ -73,9 +65,9 @@
     </div>
     <Select
       class="w-44 shrink-0 text-sm"
-      value={settings?.general.external_folder_open_mode ?? 'new_window'}
+      value={settings?.window.external_folder_open_mode ?? 'new_window'}
       onchange={(event) =>
-        void saveRouting({
+        void saveWindowSettings({
           external_folder_open_mode: event.currentTarget.value as ExternalFolderOpenMode
         })}
     >
@@ -93,9 +85,9 @@
     </div>
     <Select
       class="w-56 shrink-0 text-sm"
-      value={settings?.general.external_file_open_mode ?? 'prefer_folder'}
+      value={settings?.window.external_file_open_mode ?? 'prefer_folder'}
       onchange={(event) =>
-        void saveRouting({
+        void saveWindowSettings({
           external_file_open_mode: event.currentTarget.value as ExternalFileOpenMode
         })}
     >
@@ -115,6 +107,24 @@
       <p class="text-xs text-subtle">Revert to the OS-provided title bar and controls.</p>
     </div>
     <Switch checked={wc.useSystemDecorations} onCheckedChange={toggleSystemDecorations} />
+  </label>
+
+  <label class="flex items-center gap-4 py-1">
+    <div class="min-w-0 flex-1">
+      <span class="text-sm text-fg">Active tab bar position</span>
+      <p class="text-xs text-subtle">Position the animated indicator bar above or under the active tab.</p>
+    </div>
+    <Select
+      class="w-48 shrink-0 text-sm"
+      value={settings?.window.tab_beam_position ?? 'top'}
+      onchange={(event) =>
+        void saveWindowSettings({
+          tab_beam_position: event.currentTarget.value as TabBeamPosition
+        })}
+    >
+      <option value="top">Top (above tab)</option>
+      <option value="bottom">Bottom (under tab)</option>
+    </Select>
   </label>
 </section>
 

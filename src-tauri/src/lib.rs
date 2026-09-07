@@ -150,7 +150,9 @@ pub fn run() {
             commands::settings::settings_create_global_file,
             commands::settings::settings_open_global_file,
             commands::settings::settings_open_folder_file,
-            commands::settings::settings_set_general,
+            commands::settings::settings_set_window,
+            commands::settings::settings_set_terminal,
+            commands::settings::settings_set_nix,
             commands::settings::settings_set_formatting,
             commands::settings::settings_set_provider_config,
             // Shortcut commands

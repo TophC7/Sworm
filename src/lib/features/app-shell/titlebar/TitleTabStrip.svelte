@@ -44,10 +44,14 @@
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getTabPresentation } from '$lib/features/workbench/presentation.svelte'
   import { getSurfaceKind } from '$lib/features/workbench/surfaces'
+  import { getSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getPathColor } from '$lib/utils/pathColor'
   import NewTabMenu from './NewTabMenu.svelte'
 
   let tabs = $derived(getTabs())
   let activeTabId = $derived(getActiveTabId())
+  let settings = $derived(getSettings())
+  let beamPosition = $derived(settings?.window.tab_beam_position ?? 'top')
   let stripEl = $state<HTMLElement | null>(null)
   let seamX = $state(2)
 
@@ -230,6 +234,7 @@
         {@const surfaceKind = getSurfaceKind(tab)}
         {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
         {@const transferring = isTabTransferring(tab.id)}
+        {@const tabColor = getPathColor(tab.folderPath)}
         <ContextMenuRoot>
           <ContextMenuTrigger
             class="contents"
@@ -238,6 +243,8 @@
           >
             <TabButton
               active={activeTabId === tab.id}
+              position={beamPosition}
+              color={tabColor}
               class={dragFrom === i ? 'opacity-40' : undefined}
               draggable={!tab.locked && !transferring}
               data-tab-id={tab.id}

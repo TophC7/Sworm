@@ -13,6 +13,7 @@
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
+  import { loadSettings } from '$lib/features/settings/state/settings.svelte'
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
   import { TooltipProvider } from '$lib/components/ui/tooltip'
@@ -70,6 +71,9 @@
     let cleanupTransfer: (() => void) | undefined
     let disposed = false
     const listeners = [
+      backend.settings.onChanged((event) => {
+        if (event.layer === 'global') void loadSettings()
+      }),
       backend.issues.onChanged(({ folderPath }) => refreshIssuesForFolder(folderPath)),
       backend.nix.onChanged(({ folderPath }) => refreshNixForFolder(folderPath)),
       backend.window.onFocusTab((payload) => requestFocusTab(payload.tabId, payload.reveal))
@@ -78,6 +82,7 @@
       if (disposed) cleanup()
       else cleanupTransfer = cleanup
     })
+    void loadSettings()
 
     const unlisten = appWindow.onCloseRequested(async (event) => {
       // Guard before any teardown — once we've started flushing the

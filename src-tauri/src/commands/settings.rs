@@ -3,15 +3,16 @@ use crate::errors::ApiError;
 use crate::models::{
     provider::ProviderStatus,
     settings::{
-        EffectiveSettings, FormattingSettings, GeneralSettings, ProviderConfigRecord,
-        SettingsChangedEvent, SettingsDiagnostic, SettingsLayerKind,
+        EffectiveSettings, FormattingSettings, NixSettings, ProviderConfigRecord,
+        SettingsChangedEvent, SettingsDiagnostic, SettingsLayerKind, TerminalSettings,
+        WindowSettings,
     },
 };
 use crate::services::{
     settings::SettingsService,
     settings_patch::patch_top_level_section,
     settings_resolution::{
-        provider_binary_overrides, provider_config_record, resolve_effective_settings,
+        parse_error_diagnostic, provider_binary_overrides, provider_config_record,
         resolve_effective_settings_for_folder_path, SettingsLayerLoad,
     },
 };
@@ -34,7 +35,9 @@ pub struct ProviderSettingsEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPayload {
-    pub general: GeneralSettings,
+    pub window: WindowSettings,
+    pub terminal: TerminalSettings,
+    pub nix: NixSettings,
     pub formatting: FormattingSettings,
     pub providers: Vec<ProviderSettingsEntry>,
 }
@@ -105,7 +108,9 @@ pub async fn settings_get(
         .collect();
 
     Ok(SettingsPayload {
-        general: resolved.settings.general,
+        window: resolved.settings.window,
+        terminal: resolved.settings.terminal,
+        nix: resolved.settings.nix,
         formatting: resolved.settings.formatting,
         providers: entries,
     })
@@ -192,18 +197,48 @@ pub async fn settings_open_folder_file(
     })
 }
 
-#[tauri::command]
-pub async fn settings_set_general(
-    settings: GeneralSettings,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<GeneralSettings, ApiError> {
+fn patch_and_emit_global_section<T: Serialize>(
+    section: &str,
+    settings: &T,
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+) -> Result<(), ApiError> {
     patch_global_section(
-        "general",
-        serde_json::to_value(&settings).map_err(|error| ApiError::Internal(error.to_string()))?,
+        section,
+        serde_json::to_value(settings).map_err(|error| ApiError::Internal(error.to_string()))?,
     )?;
     let diagnostics = global_layer_payload()?.diagnostics;
-    emit_settings_changed(&app, &state, SettingsLayerKind::Global, diagnostics)?;
+    emit_settings_changed(app, state, SettingsLayerKind::Global, diagnostics)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn settings_set_window(
+    settings: WindowSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<WindowSettings, ApiError> {
+    patch_and_emit_global_section("window", &settings, &app, &state)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn settings_set_terminal(
+    settings: TerminalSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<TerminalSettings, ApiError> {
+    patch_and_emit_global_section("terminal", &settings, &app, &state)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn settings_set_nix(
+    settings: NixSettings,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<NixSettings, ApiError> {
+    patch_and_emit_global_section("nix", &settings, &app, &state)?;
     Ok(settings)
 }
 
@@ -213,12 +248,7 @@ pub async fn settings_set_formatting(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<FormattingSettings, ApiError> {
-    patch_global_section(
-        "formatting",
-        serde_json::to_value(&formatting).map_err(|error| ApiError::Internal(error.to_string()))?,
-    )?;
-    let diagnostics = global_layer_payload()?.diagnostics;
-    emit_settings_changed(&app, &state, SettingsLayerKind::Global, diagnostics)?;
+    patch_and_emit_global_section("formatting", &formatting, &app, &state)?;
     Ok(formatting)
 }
 
@@ -291,23 +321,12 @@ fn layer_payload(layer: SettingsLayerLoad) -> SettingsLayerPayload {
             layer,
             path,
             message,
-        } => {
-            let resolved = resolve_effective_settings(
-                SettingsLayerLoad::Invalid {
-                    layer,
-                    path: path.clone(),
-                    message,
-                },
-                None,
-                Vec::<String>::new(),
-            );
-            SettingsLayerPayload {
-                path: path.to_string_lossy().into_owned(),
-                loaded: false,
-                value: json!({}),
-                diagnostics: resolved.diagnostics,
-            }
-        }
+        } => SettingsLayerPayload {
+            path: path.to_string_lossy().into_owned(),
+            loaded: false,
+            value: json!({}),
+            diagnostics: vec![parse_error_diagnostic(layer, &path, message)],
+        },
     }
 }
 
@@ -397,11 +416,14 @@ fn ensure_object_property<'a>(
 }
 
 fn validate_top_level_section(section: &str) -> Result<(), ApiError> {
-    if matches!(section, "general" | "formatting" | "providers" | "lsp") {
+    if matches!(
+        section,
+        "window" | "terminal" | "nix" | "explorer" | "formatting" | "providers" | "lsp"
+    ) {
         Ok(())
     } else {
         Err(ApiError::InvalidArgument(format!(
-            "Unknown settings section: {section}"
+            "Unsupported settings section `{section}`"
         )))
     }
 }
@@ -468,7 +490,15 @@ mod tests {
 
     #[test]
     fn validates_known_top_level_sections() {
-        for section in ["general", "formatting", "providers", "lsp"] {
+        for section in [
+            "window",
+            "terminal",
+            "nix",
+            "explorer",
+            "formatting",
+            "providers",
+            "lsp",
+        ] {
             validate_top_level_section(section).expect("section valid");
         }
         assert!(validate_top_level_section("nope").is_err());
@@ -544,20 +574,19 @@ mod tests {
             &path,
             r#"{
   "future_top": true,
-  "general": { "terminal_font_size": 13 }
+  "terminal": { "font_size": 13 }
 }
 "#,
         )
         .expect("settings file written");
 
-        patch_section_file(&path, "general", json!({ "terminal_font_size": 16 }))
-            .expect("section patched");
+        patch_section_file(&path, "terminal", json!({ "font_size": 16 })).expect("section patched");
 
         let patched = fs::read_to_string(&path).expect("patched file read");
         let parsed = jsonc_parser::parse_to_serde_value::<Value>(&patched, &Default::default())
             .expect("patched parses");
         assert_eq!(parsed["future_top"], json!(true));
-        assert_eq!(parsed["general"]["terminal_font_size"], json!(16));
+        assert_eq!(parsed["terminal"]["font_size"], json!(16));
         fs::remove_dir_all(root).expect("temp dir removed");
     }
 

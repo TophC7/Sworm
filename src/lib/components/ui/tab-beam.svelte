@@ -11,6 +11,13 @@
 <script lang="ts" module>
   export type BeamVariant = 'accent' | 'warning' | 'success' | 'danger'
   export type BeamPosition = 'top' | 'bottom' | 'left' | 'right'
+
+  export const POSITION_CLASS: Record<BeamPosition, string> = {
+    top: 'inset-x-0 top-0 h-[2px]',
+    bottom: 'inset-x-0 bottom-0 h-[2px]',
+    left: 'inset-y-0 left-0 w-[2px]',
+    right: 'inset-y-0 right-0 w-[2px]'
+  }
 </script>
 
 <script lang="ts">
@@ -19,19 +26,14 @@
   let {
     variant = 'accent' as BeamVariant,
     position = 'top' as BeamPosition,
+    color,
     class: className
   }: {
     variant?: BeamVariant
     position?: BeamPosition
+    color?: string
     class?: string
   } = $props()
-
-  const POSITION_CLASS: Record<BeamPosition, string> = {
-    top: 'inset-x-0 top-0 h-[2px]',
-    bottom: 'inset-x-0 bottom-0 h-[2px]',
-    left: 'inset-y-0 left-0 w-[2px]',
-    right: 'inset-y-0 right-0 w-[2px]'
-  }
 
   let vertical = $derived(position === 'left' || position === 'right')
 </script>
@@ -40,7 +42,12 @@
   class={cn('pointer-events-none absolute overflow-hidden', POSITION_CLASS[position], className)}
   aria-hidden="true"
 >
-  <span class="tab-beam-gradient" data-variant={variant} data-orientation={vertical ? 'vertical' : 'horizontal'}></span>
+  <span
+    class="tab-beam-gradient"
+    data-variant={color ? 'custom' : variant}
+    data-orientation={vertical ? 'vertical' : 'horizontal'}
+    style={color ? `--beam-color: ${color};` : undefined}
+  ></span>
 </span>
 
 <style>
@@ -120,6 +127,14 @@
     --beam-base: var(--color-danger);
     --beam-dim: color-mix(in srgb, var(--color-danger) 60%, transparent);
     --beam-bright: var(--color-danger-bright);
+    --beam-peak: var(--color-max);
+  }
+
+  /* -- Custom color (e.g. project path color) -- */
+  .tab-beam-gradient[data-variant='custom'] {
+    --beam-base: var(--beam-color);
+    --beam-dim: color-mix(in srgb, var(--beam-color) 60%, transparent);
+    --beam-bright: color-mix(in srgb, var(--beam-color) 70%, white);
     --beam-peak: var(--color-max);
   }
 

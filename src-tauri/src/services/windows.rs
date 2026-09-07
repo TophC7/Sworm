@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::models::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, GeneralSettings};
+use crate::models::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, WindowSettings};
 use crate::services::app_state_kv::AppStateKvService;
 use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
@@ -899,11 +899,11 @@ impl WindowCoordinatorService {
                 return;
             }
         };
-        let general = match resolve_effective_settings_for_folder_path(None) {
-            Ok(resolved) => resolved.settings.general,
+        let window = match resolve_effective_settings_for_folder_path(None) {
+            Ok(resolved) => resolved.settings.window,
             Err(error) => {
                 tracing::warn!("Cannot resolve open routing settings: {error}");
-                GeneralSettings::default()
+                WindowSettings::default()
             }
         };
 
@@ -911,7 +911,7 @@ impl WindowCoordinatorService {
             let target = OpenTarget::Folder {
                 folder_path: canonical.to_string_lossy().into_owned(),
             };
-            match general.external_folder_open_mode {
+            match window.external_folder_open_mode {
                 ExternalFolderOpenMode::FocusedWindow => {
                     if let Some(label) = self.get_focused_window_label() {
                         self.queue_open_target(&label, target, app);
@@ -950,7 +950,7 @@ impl WindowCoordinatorService {
             .or_else(|| canonical.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/"));
         let target = file_target(&folder, &canonical);
-        match general.external_file_open_mode {
+        match window.external_file_open_mode {
             ExternalFileOpenMode::PreferFolder => {
                 if let Some((label, _)) = claimed {
                     self.queue_open_target(&label, target, app);

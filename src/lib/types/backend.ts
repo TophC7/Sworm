@@ -109,14 +109,22 @@ export interface ProviderStatus {
 
 export type ExternalFolderOpenMode = 'new_window' | 'focused_window'
 export type ExternalFileOpenMode = 'prefer_folder' | 'focused_window' | 'new_window'
+export type TabBeamPosition = 'top' | 'bottom'
 
-export interface GeneralSettings {
+export interface WindowSettings {
   theme: string
-  terminal_font_family: string
-  terminal_font_size: number
-  nix_eval_timeout_secs: number
   external_folder_open_mode?: ExternalFolderOpenMode
   external_file_open_mode?: ExternalFileOpenMode
+  tab_beam_position?: TabBeamPosition
+}
+
+export interface TerminalSettings {
+  font_family: string
+  font_size: number
+}
+
+export interface NixSettings {
+  eval_timeout_secs: number
 }
 
 export interface ExplorerSettings {
@@ -191,7 +199,9 @@ export interface EffectiveLspServerSettings {
 }
 
 export interface EffectiveSettings {
-  general: GeneralSettings
+  window: WindowSettings
+  terminal: TerminalSettings
+  nix: NixSettings
   explorer: ExplorerSettings
   formatting: FormattingSettings
   providers: Record<string, ProviderSettings>
@@ -199,14 +209,7 @@ export interface EffectiveSettings {
 }
 
 export type SettingsLayerKind = 'global' | 'folder'
-export type SettingsDiagnosticCode =
-  | 'parse_error'
-  | 'type_error'
-  | 'invalid_enum'
-  | 'invalid_null'
-  | 'unknown_key'
-  | 'unknown_provider'
-  | 'unknown_lsp_server'
+export type SettingsDiagnosticCode = 'parse_error' | 'invalid_value' | 'unknown_key'
 export type SettingsDiagnosticSeverity = 'warning' | 'error'
 
 export interface SettingsDiagnostic {
@@ -257,7 +260,9 @@ export interface ProviderSettingsEntry {
 }
 
 export interface SettingsPayload {
-  general: GeneralSettings
+  window: WindowSettings
+  terminal: TerminalSettings
+  nix: NixSettings
   formatting: FormattingSettings
   providers: ProviderSettingsEntry[]
 }

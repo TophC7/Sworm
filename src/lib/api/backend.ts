@@ -27,7 +27,9 @@ import type {
   FocusTabPayload,
   FilesChangedEvent,
   FormattingSettings,
-  GeneralSettings,
+  NixSettings,
+  TerminalSettings,
+  WindowSettings,
   GitChangedEvent,
   GitQuickDiffData,
   GitSummary,
@@ -609,8 +611,14 @@ export const backend = {
     onChanged(handler: (event: SettingsChangedEvent) => void): Promise<UnlistenFn> {
       return listen<SettingsChangedEvent>('settings-changed', (event) => handler(event.payload))
     },
-    setGeneral(settings: GeneralSettings): Promise<GeneralSettings> {
-      return invoke<GeneralSettings>('settings_set_general', { settings })
+    setWindow(settings: WindowSettings): Promise<WindowSettings> {
+      return invoke<WindowSettings>('settings_set_window', { settings })
+    },
+    setTerminal(settings: TerminalSettings): Promise<TerminalSettings> {
+      return invoke<TerminalSettings>('settings_set_terminal', { settings })
+    },
+    setNix(settings: NixSettings): Promise<NixSettings> {
+      return invoke<NixSettings>('settings_set_nix', { settings })
     },
     setFormatting(formatting: FormattingSettings): Promise<FormattingSettings> {
       return invoke<FormattingSettings>('settings_set_formatting', {

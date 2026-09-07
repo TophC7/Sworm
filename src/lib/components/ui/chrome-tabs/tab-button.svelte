@@ -1,6 +1,6 @@
 <!-- Global title-bar tab button with active styling, beam, and close affordance. -->
 <script lang="ts">
-  import TabBeam from '$lib/components/ui/tab-beam.svelte'
+  import TabBeam, { POSITION_CLASS, type BeamPosition } from '$lib/components/ui/tab-beam.svelte'
   import { cn } from '$lib/utils/cn'
   import { X } from '$lib/icons/lucideExports'
   import type { Snippet } from 'svelte'
@@ -10,6 +10,8 @@
 
   let {
     active = false,
+    position = 'top',
+    color,
     leading,
     onClose,
     class: className,
@@ -17,6 +19,8 @@
     ...rest
   }: HTMLButtonAttributes & {
     active?: boolean
+    position?: BeamPosition
+    color?: string
     leading?: Snippet
     onClose?: (event: CloseEvent) => void | Promise<void>
     class?: string
@@ -39,7 +43,19 @@
   aria-selected={active}
   {...rest}
 >
-  {#if active}<TabBeam />{/if}
+  {#if active}
+    <TabBeam {position} {color} />
+  {:else if color}
+    <span
+      class={cn(
+        'pointer-events-none absolute overflow-hidden transition-opacity duration-150',
+        POSITION_CLASS[position],
+        'opacity-40 group-hover:opacity-75'
+      )}
+      style="background-color: {color};"
+      aria-hidden="true"
+    ></span>
+  {/if}
   {#if leading}{@render leading()}{/if}
   {#if children}{@render children()}{/if}
   {#if onClose}

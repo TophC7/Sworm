@@ -43,6 +43,7 @@ sha2 = "0.10"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-single-instance = "2"
 wl-clipboard-rs = "0.9.3"
+jsonschema = { version = "0.55.0", default-features = false }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

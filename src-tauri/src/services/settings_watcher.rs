@@ -1,7 +1,9 @@
 use crate::commands::settings::SETTINGS_CHANGED_EVENT;
 use crate::models::settings::{SettingsChangedEvent, SettingsDiagnostic, SettingsLayerKind};
 use crate::services::settings::SettingsService;
-use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
+use crate::services::settings_resolution::{
+    parse_error_diagnostic, resolve_effective_settings_for_folder_path,
+};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -182,13 +184,10 @@ fn diagnostics_for(folder_path: Option<&Path>) -> Vec<SettingsDiagnostic> {
     resolve_effective_settings_for_folder_path(folder_path)
         .map(|resolved| resolved.diagnostics)
         .unwrap_or_else(|message| {
-            vec![SettingsDiagnostic {
-                layer: SettingsLayerKind::Global,
-                path: String::new(),
-                pointer: String::new(),
-                code: crate::models::settings::SettingsDiagnosticCode::ParseError,
-                severity: crate::models::settings::SettingsDiagnosticSeverity::Error,
+            vec![parse_error_diagnostic(
+                SettingsLayerKind::Global,
+                Path::new(""),
                 message,
-            }]
+            )]
         })
 }

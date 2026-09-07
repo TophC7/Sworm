@@ -15,7 +15,7 @@
   import LanguageSettingsView from './LanguageSettingsView.svelte'
   import type { BuiltinSettingsPage } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getSettings, saveGeneralSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getSettings, saveNixSettings } from '$lib/features/settings/state/settings.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { onDestroy } from 'svelte'
   import { createAutoSaver } from './autoSaver'
@@ -39,7 +39,7 @@
   let seeded = false
   $effect(() => {
     if (seeded || !settings) return
-    timeout = settings.general.nix_eval_timeout_secs
+    timeout = settings.nix.eval_timeout_secs
     seeded = true
   })
 
@@ -50,10 +50,10 @@
   onDestroy(() => saver.dispose())
 
   async function flush() {
-    const current = settings?.general
+    const current = settings?.nix
     if (!current) return
     try {
-      await saveGeneralSettings({ ...current, nix_eval_timeout_secs: Number(timeout) })
+      await saveNixSettings({ ...current, eval_timeout_secs: Number(timeout) })
     } catch (error) {
       notify.error('Save nix settings failed', getErrorMessage(error))
     }

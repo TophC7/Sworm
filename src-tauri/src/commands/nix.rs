@@ -118,8 +118,8 @@ pub async fn nix_evaluate(
         // fire a timeout before nix has even finished spawning.
         let timeout_secs = effective_settings
             .settings
-            .general
-            .nix_eval_timeout_secs
+            .nix
+            .eval_timeout_secs
             .clamp(30, 3600);
 
         NixService::set_status(db.conn(), &folder_path, NixEnvStatus::Evaluating)

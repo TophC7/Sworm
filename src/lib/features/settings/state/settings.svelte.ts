@@ -1,8 +1,16 @@
 import { backend } from '$lib/api/backend'
-import type { FormattingSettings, GeneralSettings, ProviderConfig, SettingsPayload } from '$lib/types/backend'
+import type {
+  FormattingSettings,
+  NixSettings,
+  ProviderConfig,
+  SettingsPayload,
+  TerminalSettings,
+  WindowSettings
+} from '$lib/types/backend'
 
 let settings = $state<SettingsPayload | null>(null)
 let loading = $state(false)
+let inFlightLoad: Promise<SettingsPayload> | null = null
 
 export function getSettings() {
   return settings
@@ -13,20 +21,46 @@ export function getSettingsLoading() {
 }
 
 export async function loadSettings() {
+  if (inFlightLoad) return inFlightLoad
   loading = true
+  inFlightLoad = backend.settings.get()
   try {
-    settings = await backend.settings.get()
+    settings = await inFlightLoad
+    return settings
   } finally {
     loading = false
+    inFlightLoad = null
   }
 }
 
-export async function saveGeneralSettings(nextSettings: GeneralSettings) {
-  const saved = await backend.settings.setGeneral(nextSettings)
+export async function saveWindowSettings(nextSettings: WindowSettings) {
+  const saved = await backend.settings.setWindow(nextSettings)
   if (settings) {
     settings = {
       ...settings,
-      general: saved
+      window: saved
+    }
+  }
+  return saved
+}
+
+export async function saveTerminalSettings(nextSettings: TerminalSettings) {
+  const saved = await backend.settings.setTerminal(nextSettings)
+  if (settings) {
+    settings = {
+      ...settings,
+      terminal: saved
+    }
+  }
+  return saved
+}
+
+export async function saveNixSettings(nextSettings: NixSettings) {
+  const saved = await backend.settings.setNix(nextSettings)
+  if (settings) {
+    settings = {
+      ...settings,
+      nix: saved
     }
   }
   return saved
