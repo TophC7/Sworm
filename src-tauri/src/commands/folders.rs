@@ -98,13 +98,30 @@ pub async fn recent_folders_remove(
 
 /// Open a native directory picker and return the selected canonical path.
 #[tauri::command]
-pub async fn folder_select_directory(app: tauri::AppHandle) -> Result<Option<String>, ApiError> {
+pub async fn folder_select_directory(
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, ApiError> {
     use tauri_plugin_dialog::DialogExt;
 
-    let Some(dir) = app.dialog().file().blocking_pick_folder() else {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .pick_folder(move |dir| {
+            let _ = tx.send(dir);
+        });
+
+    let dir = rx
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let Some(dir) = dir else {
         return Ok(None);
     };
-    let folder = resolve_folder(&dir.to_string())?;
+    let path = dir
+        .into_path()
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let folder = resolve_folder(&path.to_string_lossy())?;
     Ok(Some(folder.to_string_lossy().into_owned()))
 }
 
