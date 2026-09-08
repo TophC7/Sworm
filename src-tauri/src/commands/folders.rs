@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::errors::ApiError;
-use crate::models::folder::FolderInfo;
+use crate::models::folder::{FolderEntry, FolderInfo};
 use crate::services::folders::{folder_name, resolve_folder};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -135,38 +135,53 @@ pub async fn folder_resolve(path: String) -> Result<FolderInfo, ApiError> {
     })
 }
 
-/// List immediate child directories of a canonicalized directory.
+/// Immediate children of a canonicalized directory; directories first, then
+/// case-insensitive by name.
 #[tauri::command]
-pub async fn folder_list_directories(path: String) -> Result<Vec<FolderInfo>, ApiError> {
-    list_directories(Path::new(&path))
+pub async fn folder_list_entries(
+    path: String,
+    show_hidden: bool,
+) -> Result<Vec<FolderEntry>, ApiError> {
+    list_entries(&path, show_hidden)
 }
 
-fn list_directories(path: &Path) -> Result<Vec<FolderInfo>, ApiError> {
-    let directory = resolve_folder(&path.to_string_lossy())?;
-    let mut folders = Vec::new();
+fn list_entries(path: &str, show_hidden: bool) -> Result<Vec<FolderEntry>, ApiError> {
+    let directory = resolve_folder(path)?;
+    let mut entries = Vec::new();
 
-    for entry in std::fs::read_dir(directory)? {
+    for entry in std::fs::read_dir(&directory)? {
         let Ok(entry) = entry else {
             continue;
         };
-        let entry_path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if !file_type.is_dir() && !(file_type.is_symlink() && entry_path.is_dir()) {
-            continue;
-        }
-        let Ok(canonical_path) = entry_path.canonicalize() else {
-            continue;
+        let is_dir = if file_type.is_symlink() {
+            entry.path().is_dir()
+        } else {
+            file_type.is_dir()
         };
-        folders.push(FolderInfo {
-            path: canonical_path.to_string_lossy().into_owned(),
-            name: entry.file_name().to_string_lossy().into_owned(),
-        });
+        let entry_path = entry.path();
+        let sort_name = name.to_lowercase();
+        entries.push((
+            sort_name,
+            FolderEntry {
+                name,
+                path: entry_path.to_string_lossy().into_owned(),
+                is_dir,
+            },
+        ));
     }
 
-    folders.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(folders)
+    entries.sort_by(|(a_sort, a), (b_sort, b)| {
+        (!a.is_dir, a_sort, &a.name).cmp(&(!b.is_dir, b_sort, &b.name))
+    });
+    Ok(entries.into_iter().map(|(_, entry)| entry).collect())
 }
 
 #[tauri::command]
@@ -323,23 +338,43 @@ fn spawn_terminal(_cwd: &Path) -> Result<(), ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::list_directories;
+    use super::list_entries;
     use std::fs;
 
     #[test]
-    fn lists_only_immediate_directories_in_name_order() {
+    fn lists_mixed_entries_dirs_first_and_filters_hidden() {
         let root = std::env::temp_dir().join(format!("sworm-folder-list-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("zeta")).unwrap();
+        fs::create_dir(root.join("Alpha")).unwrap();
         fs::create_dir(root.join("alpha")).unwrap();
-        fs::write(root.join("notes.txt"), "not a folder").unwrap();
+        fs::create_dir(root.join(".hidden")).unwrap();
+        fs::write(root.join("beta.txt"), "file").unwrap();
+        fs::write(root.join("Gamma.txt"), "file").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("Alpha"), root.join("linked-alpha")).unwrap();
 
-        let names = list_directories(&root)
+        let visible = list_entries(root.to_str().unwrap(), false)
             .unwrap()
             .into_iter()
-            .map(|folder| folder.name)
+            .map(|entry| (entry.name, entry.is_dir))
             .collect::<Vec<_>>();
-        fs::remove_dir_all(root).unwrap();
+        let mut expected = vec![
+            ("Alpha".to_owned(), true),
+            ("alpha".to_owned(), true),
+            ("zeta".to_owned(), true),
+            ("beta.txt".to_owned(), false),
+            ("Gamma.txt".to_owned(), false),
+        ];
+        #[cfg(unix)]
+        expected.insert(2, ("linked-alpha".to_owned(), true));
+        assert_eq!(visible, expected);
 
-        assert_eq!(names, ["alpha", "zeta"]);
+        let hidden = list_entries(root.to_str().unwrap(), true).unwrap();
+        assert_eq!(
+            hidden.first().map(|entry| (&*entry.name, entry.is_dir)),
+            Some((".hidden", true))
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

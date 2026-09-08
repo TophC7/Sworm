@@ -3,12 +3,12 @@
   import { getActiveFolderPath, getTabs } from '$lib/features/workbench/state.svelte'
   import { isProcessLive, type SessionTab } from '$lib/features/workbench/model'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-  import { IconButton } from '$lib/components/ui/button'
+  import { Button, IconButton } from '$lib/components/ui/button'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
-  import StatusBarFolderPopover from '$lib/features/app-shell/status/StatusBarFolderPopover.svelte'
+  import { isFolderSwitcherOpen, toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
   import StatusBarAppInfo from '$lib/features/app-shell/status/StatusBarAppInfo.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
@@ -54,17 +54,19 @@
   <div class="flex items-center gap-1">
     <StatusBarAppInfo />
     {#if folderPath}
-      <StatusBarFolderPopover {folderPath}>
-        {#snippet children()}
-          <span
-            class="inline-flex max-w-[min(32rem,40vw)] items-center gap-1 rounded-full border border-edge bg-raised px-2 py-0.5 text-muted transition-colors hover:border-accent/50 hover:text-fg"
-            title={folderPath}
-          >
-            <FolderOpen size={10} class="shrink-0" />
-            <span class="truncate">{folderCrumbs(folderPath)}</span>
-          </span>
-        {/snippet}
-      </StatusBarFolderPopover>
+      <Button
+        size="xs"
+        data-folder-switcher-toggle="true"
+        aria-label="Switch folder"
+        aria-haspopup="dialog"
+        aria-expanded={isFolderSwitcherOpen()}
+        title={folderPath}
+        onclick={toggleFolderSwitcher}
+        class="max-w-[min(32rem,40vw)] gap-1 rounded-full text-muted hover:border-accent/50 hover:text-fg"
+      >
+        <FolderOpen size={10} class="shrink-0" />
+        <span class="truncate">{folderCrumbs(folderPath)}</span>
+      </Button>
     {/if}
     {#if gitSummary?.branch && folderPath}
       <StatusBarBranchPopover {folderPath}>

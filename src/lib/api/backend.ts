@@ -56,6 +56,7 @@ import type {
   NixDetection,
   NixDiagnostic,
   NixEnvRecord,
+  FolderEntry,
   FolderInfo,
   ProviderConfig,
   ProviderStatus,
@@ -187,8 +188,8 @@ export const backend = {
     resolve(path: string): Promise<FolderInfo> {
       return invoke<FolderInfo>('folder_resolve', { path })
     },
-    listDirectories(path: string): Promise<FolderInfo[]> {
-      return invoke<FolderInfo[]>('folder_list_directories', { path })
+    listEntries(path: string, showHidden: boolean): Promise<FolderEntry[]> {
+      return invoke<FolderEntry[]>('folder_list_entries', { path, showHidden })
     },
     openInTerminal(path: string): Promise<void> {
       return invoke<void>('folder_open_in_terminal', { path })

@@ -9,6 +9,7 @@ import { allProviders, directOptions } from '$lib/features/sessions/providers/ca
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
+import { toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
 import {
   isIndentRainbowEnabled,
   toggleIndentRainbow
@@ -176,6 +177,16 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       keywords: ['open', 'folder', 'directory'],
       defaultKeybindings: ['Ctrl+O'],
       run: openFolderPicker
+    }),
+    appCommand({
+      id: 'switch-folder',
+      label: 'Switch Folder',
+      group: 'File',
+      icon: FolderOpenIcon,
+      keywords: ['switch', 'folder', 'directory', 'browse', 'recent'],
+      defaultKeybindings: ['Ctrl+Shift+O'],
+      terminalPolicy: 'skip-shell-keeps-modals',
+      run: toggleFolderSwitcher
     }),
     appCommand({
       id: 'settings',

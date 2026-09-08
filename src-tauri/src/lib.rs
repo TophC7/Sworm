@@ -133,7 +133,7 @@ pub fn run() {
             // Folder commands
             commands::folders::folder_select_directory,
             commands::folders::folder_resolve,
-            commands::folders::folder_list_directories,
+            commands::folders::folder_list_entries,
             commands::folders::folder_open_in_terminal,
             commands::folders::recent_folders_list,
             commands::folders::recent_folders_touch,

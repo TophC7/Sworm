@@ -44,6 +44,7 @@ export interface TrackedAsyncLoad<K> {
 export function createTrackedAsyncLoad<K>(): TrackedAsyncLoad<K> {
   const state = $state({ loading: false })
   let currentKey: K | symbol = UNLOADED
+  let generation = 0
 
   return {
     get loading() {
@@ -52,7 +53,9 @@ export function createTrackedAsyncLoad<K>(): TrackedAsyncLoad<K> {
     run(key, load) {
       if (key === currentKey) return
       currentKey = key
-      const isCurrent = () => currentKey === key
+      // A → B → A must not make the first A request current again.
+      const request = ++generation
+      const isCurrent = () => generation === request
       state.loading = true
       void (async () => {
         try {

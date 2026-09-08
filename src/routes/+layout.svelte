@@ -11,6 +11,7 @@
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
+  import FolderSwitcher from '$lib/features/folders/FolderSwitcher.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
   import { loadSettings } from '$lib/features/settings/state/settings.svelte'
@@ -170,5 +171,6 @@
   <CommandCenter />
   <SettingsDialog open={isSettingsOpen()} onClose={() => setSettingsOpen(false)} />
   <NotificationsSurface />
+  <FolderSwitcher />
   <ConfirmHost />
 </TooltipProvider>

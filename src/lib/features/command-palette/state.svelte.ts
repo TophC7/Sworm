@@ -1,4 +1,4 @@
-import { registerModal } from '$lib/utils/modalRegistry.svelte'
+import { closeTransientModals, registerModal } from '$lib/utils/modalRegistry.svelte'
 
 let commandPaletteOpen = $state(false)
 let pendingInitialSearch: string | null = null
@@ -8,11 +8,12 @@ export function isCommandPaletteOpen(): boolean {
 }
 
 export function setCommandPaletteOpen(open: boolean) {
+  if (open && !commandPaletteOpen) closeTransientModals()
   commandPaletteOpen = open
 }
 
 export function toggleCommandPalette() {
-  commandPaletteOpen = !commandPaletteOpen
+  setCommandPaletteOpen(!commandPaletteOpen)
 }
 
 /**
@@ -22,7 +23,7 @@ export function toggleCommandPalette() {
  */
 export function openCommandPaletteWithSearch(search: string) {
   pendingInitialSearch = search
-  commandPaletteOpen = true
+  setCommandPaletteOpen(true)
 }
 
 /** Consume the pending initial search. Returns `null` when none is queued. */

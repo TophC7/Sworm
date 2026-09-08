@@ -48,18 +48,28 @@ export function dirname(path: string): string {
   return index === -1 ? '' : normalized.slice(0, index)
 }
 
+function homePrefix(path: string): string {
+  return path.match(/^\/(?:home\/[^/]+|root)(?=\/|$)/)?.[0] ?? ''
+}
+
+/** Absolute ancestor paths, collapsing the conventional home prefix to ~. */
+export function pathCrumbs(path: string): Array<{ label: string; path: string }> {
+  const normalized = normalizeAbsolutePath(path)
+  const home = homePrefix(normalized)
+  const crumbs = [{ label: home ? '~' : '/', path: home || '/' }]
+  let ancestor = home
+  for (const part of normalized.slice(home.length).split('/').filter(Boolean)) {
+    ancestor += `/${part}`
+    crumbs.push({ label: part, path: ancestor })
+  }
+  return crumbs
+}
+
 /** Shorten an absolute path's parent directory, replacing the home prefix with ~. */
 export function parentPath(path: string): string {
-  const parts = path.split('/')
-  parts.pop()
-  const parent = parts.join('/')
-  let home = ''
-  if (parts[1] === 'home' && parts[2]) {
-    home = `/home/${parts[2]}`
-  } else if (parts[1] === 'root') {
-    home = '/root'
-  }
-  return home && parent.startsWith(home) ? '~' + parent.slice(home.length) : parent
+  const parent = dirname(path)
+  const home = homePrefix(parent)
+  return home ? '~' + parent.slice(home.length) : parent
 }
 
 /** Last three path components joined with › for the status-bar breadcrumb. */

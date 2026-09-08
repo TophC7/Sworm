@@ -71,6 +71,12 @@ export interface FolderInfo {
   name: string
 }
 
+export interface FolderEntry {
+  name: string
+  path: string
+  is_dir: boolean
+}
+
 export interface AppRuntimeInfo {
   name: string
   version: string
