@@ -94,14 +94,28 @@
     filterQuery = ''
   }
 
+  function focusSelectedFolder(force = false): void {
+    void tick().then(() => {
+      if (!isFolderSwitcherOpen()) return
+      if (!force && document.activeElement === inputRef) return
+      const selectedIndex = leftRows.findIndex((entry) => entry.path === selectedPath)
+      const index = selectedIndex >= 0 ? selectedIndex : 0
+      const row = surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${index}"]`)
+      row?.scrollIntoView({ block: 'nearest' })
+      row?.querySelector<HTMLButtonElement>('button')?.focus()
+    })
+  }
+
   function moveSelection(delta: number): void {
     if (leftRows.length === 0) return
     const currentIndex = leftRows.findIndex((entry) => entry.path === selectedPath)
-    const nextIndex = Math.max(0, Math.min(leftRows.length - 1, currentIndex + delta))
-    if (nextIndex === currentIndex) return
+    const base = currentIndex >= 0 ? currentIndex : 0
+    const nextIndex = Math.max(0, Math.min(leftRows.length - 1, base + delta))
     selectedPath = leftRows[nextIndex].path
     void tick().then(() => {
-      surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${nextIndex}"]`)?.scrollIntoView({ block: 'nearest' })
+      const row = surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${nextIndex}"]`)
+      row?.scrollIntoView({ block: 'nearest' })
+      row?.querySelector<HTMLButtonElement>('button')?.focus()
     })
   }
 
@@ -145,10 +159,10 @@
     if (
       key === 'Enter' &&
       target instanceof Element &&
-      target.closest('button, a[href]') &&
-      !target.closest('[data-left-index]')
-    )
+      (target.closest('a[href]') || target.closest('[data-recent-chip]'))
+    ) {
       return
+    }
 
     if (key === 'ArrowDown' || key === 'ArrowUp') {
       event.preventDefault()
@@ -259,6 +273,7 @@
         if (!selected || !isMatch(selected)) {
           selectedPath = folders.find(isMatch)?.path ?? selected?.path ?? folders[0]?.path ?? null
         }
+        focusSelectedFolder()
       } catch (cause) {
         if (!isCurrent()) return
         containerError = getErrorMessage(cause)
@@ -350,8 +365,10 @@
         class="relative flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1 border-none bg-transparent py-0.5 pl-2.5 text-left text-inherit focus-visible:shadow-focus-ring focus-visible:outline-none"
         onclick={() => selectPreviewFolder(entry.path)}
       >
+        <FileIcon filename={entry.name} folder expanded={false} size={15} />
         <span class="truncate">{entry.name}</span>
       </button>
+      <ChevronRight size={12} class="mr-2 shrink-0 text-subtle" />
     {:else}
       <div
         class="relative flex h-full min-w-0 flex-1 items-center gap-1 bg-transparent py-0.5 pl-2.5 text-left text-inherit"
@@ -394,7 +411,10 @@
         <IconButton
           tooltip={showHidden ? 'Hide hidden folders' : 'Show hidden folders'}
           active={showHidden}
-          onclick={() => (showHidden = !showHidden)}
+          onclick={() => {
+            showHidden = !showHidden
+            focusSelectedFolder(true)
+          }}
         >
           {#if showHidden}<EyeOff size={12} />{:else}<Eye size={12} />{/if}
         </IconButton>
@@ -404,7 +424,7 @@
         <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-edge bg-surface px-3 py-1.5">
           <span class="text-xs font-semibold tracking-wide text-muted uppercase">Recent</span>
           {#each recents as path (path)}
-            <Button variant="outline" size="xs" title={path} onclick={() => void enterFolder(path)}>
+            <Button variant="outline" size="xs" data-recent-chip title={path} onclick={() => void enterFolder(path)}>
               <FolderOpen size={10} />
               {basename(path) || '/'}
             </Button>
