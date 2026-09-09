@@ -18,6 +18,11 @@ pub enum PtyEvent {
         run_id: String,
         message: String,
     },
+    /// Re-seeds the subscriber's render barrier after replay.
+    Synced {
+        run_id: String,
+        sequence: u64,
+    },
     /// A provider-side resume identity was discovered for a run after
     /// spawn (Codex thread id, Antigravity conversation id, OMP session id).
     ResumeTokenBound {

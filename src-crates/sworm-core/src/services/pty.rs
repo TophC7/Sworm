@@ -59,26 +59,56 @@ struct PtyStreamState {
 
 impl PtyStreamState {
     fn retain(&mut self, sequence: u64, payload: Payload, delivered: bool) {
-        if let Payload::Output(bytes) = &payload {
-            self.retained_bytes += bytes.len();
+        match payload {
+            Payload::Output(bytes) => {
+                self.retained_bytes += bytes.len();
+                if let Some(last) = self.retained.last_mut() {
+                    if last.delivered_to_target == delivered {
+                        if let Payload::Output(retained) = &mut last.payload {
+                            retained.extend(bytes);
+                            last.sequence = sequence;
+                        } else {
+                            self.retained.push(Retained {
+                                sequence,
+                                payload: Payload::Output(bytes),
+                                delivered_to_target: delivered,
+                            });
+                        }
+                    } else {
+                        self.retained.push(Retained {
+                            sequence,
+                            payload: Payload::Output(bytes),
+                            delivered_to_target: delivered,
+                        });
+                    }
+                } else {
+                    self.retained.push(Retained {
+                        sequence,
+                        payload: Payload::Output(bytes),
+                        delivered_to_target: delivered,
+                    });
+                }
+            }
+            Payload::Event(event) => self.retained.push(Retained {
+                sequence,
+                payload: Payload::Event(event),
+                delivered_to_target: delivered,
+            }),
         }
-        self.retained.push(Retained {
-            sequence,
-            payload,
-            delivered_to_target: delivered,
-        });
         if self.retained_bytes > RETAINED_OUTPUT_CAP {
             if !self.overflow_warned {
-                warn!("PTY retained output exceeded cap; dropping oldest output bytes");
+                warn!("PTY retained output exceeded cap; trimming oldest output bytes");
                 self.overflow_warned = true;
             }
             for entry in &mut self.retained {
-                if self.retained_bytes <= RETAINED_OUTPUT_CAP {
+                let excess = self.retained_bytes - RETAINED_OUTPUT_CAP;
+                if excess == 0 {
                     break;
                 }
                 if let Payload::Output(bytes) = &mut entry.payload {
-                    self.retained_bytes -= bytes.len();
-                    *bytes = Vec::new();
+                    let trim = excess.min(bytes.len());
+                    bytes.drain(..trim);
+                    self.retained_bytes -= trim;
                 }
             }
         }
@@ -96,12 +126,14 @@ impl PtyStreamState {
 #[derive(Clone)]
 pub struct PtyEventSink {
     sequence: Arc<AtomicU64>,
+    run_id: String,
     state: Arc<Mutex<PtyStreamState>>,
 }
 
 impl PtyEventSink {
-    fn new(output: EventSink<Vec<u8>>, events: EventSink<PtyEvent>) -> Self {
+    fn new(run_id: String, output: EventSink<Vec<u8>>, events: EventSink<PtyEvent>) -> Self {
         Self {
+            run_id,
             sequence: Arc::new(AtomicU64::new(1)),
             state: Arc::new(Mutex::new(PtyStreamState {
                 subscriber: SubscriberState::Active(PtyChannels { output, events }),
@@ -135,21 +167,23 @@ impl PtyEventSink {
             return;
         }
         let transferring = state.original.is_some();
-        if transferring {
-            state.retain(sequence, payload.clone(), true);
-        }
         let SubscriberState::Active(channels) = &state.subscriber else {
             unreachable!("paused subscriber handled above");
         };
-        match payload.send(channels) {
-            Ok(()) => state.last_dispatched = sequence,
-            Err(err) => {
+        let channels = channels.clone();
+        if transferring {
+            let delivered = payload.clone().send(&channels).is_ok();
+            if delivered {
+                state.last_dispatched = sequence;
+            } else {
                 state.subscriber = SubscriberState::Paused;
-                if transferring {
-                    if let Some(entry) = state.retained.last_mut() {
-                        entry.delivered_to_target = false;
-                    }
-                } else {
+            }
+            state.retain(sequence, payload, delivered);
+        } else {
+            match payload.send(&channels) {
+                Ok(()) => state.last_dispatched = sequence,
+                Err(err) => {
+                    state.subscriber = SubscriberState::Paused;
                     warn!("PTY subscriber channel closed: {}", err);
                 }
             }
@@ -178,6 +212,21 @@ impl PtyEventSink {
         state.last_dispatched
     }
 
+    fn emit_synced(
+        &self,
+        state: &mut PtyStreamState,
+        channels: &PtyChannels,
+    ) -> Result<(), String> {
+        (channels.events)(PtyEvent::Synced {
+            run_id: self.run_id.clone(),
+            sequence: self.sequence.load(Ordering::Acquire).saturating_sub(1),
+        })
+        .map_err(|_| {
+            state.subscriber = SubscriberState::Paused;
+            "PTY event channel closed while syncing".to_string()
+        })
+    }
+
     fn attach(&self, channels: PtyChannels) -> Result<u64, String> {
         let mut state = self.state.lock();
         state.subscriber = SubscriberState::Active(channels.clone());
@@ -193,6 +242,7 @@ impl PtyEventSink {
             state.retained[index].delivered_to_target = true;
             state.last_dispatched = state.retained[index].sequence;
         }
+        self.emit_synced(&mut state, &channels)?;
         if state.original.is_none() {
             state.clear_retained();
         }
@@ -219,6 +269,7 @@ impl PtyEventSink {
             state.retained[index].delivered_to_target = true;
             state.last_dispatched = state.retained[index].sequence;
         }
+        self.emit_synced(&mut state, &channels)?;
         state.clear_retained();
         Ok(self.sequence.load(Ordering::Acquire).saturating_sub(1))
     }
@@ -321,7 +372,7 @@ impl PtyService {
         let shutdown = Arc::new(AtomicBool::new(false));
         let finalized = Arc::new(AtomicBool::new(false));
         let runtime_id = uuid::Uuid::new_v4().to_string();
-        let event_sink = PtyEventSink::new(output, events);
+        let event_sink = PtyEventSink::new(run_id.clone(), output, events);
 
         self.sessions.lock().insert(
             run_id.clone(),
@@ -643,6 +694,7 @@ mod tests {
             PtyEvent::Started { .. } => "started",
             PtyEvent::Exit { .. } => "exit",
             PtyEvent::Error { .. } => "error",
+            PtyEvent::Synced { .. } => "synced",
             PtyEvent::ResumeTokenBound { .. } => "resumeTokenBound",
         }
     }
@@ -671,7 +723,7 @@ mod tests {
 
     fn sink(deliveries: Arc<Mutex<Vec<Delivery>>>) -> PtyEventSink {
         let channels = channels(deliveries);
-        PtyEventSink::new(channels.output, channels.events)
+        PtyEventSink::new("run".to_string(), channels.output, channels.events)
     }
 
     fn error_event() -> PtyEvent {
@@ -714,7 +766,10 @@ mod tests {
         assert_eq!(sink.attach(channels(Arc::clone(&attached))).unwrap(), 2);
         assert_eq!(
             *attached.lock(),
-            vec![Delivery::Output(vec![1, 2]), Delivery::Output(vec![3, 4])]
+            vec![
+                Delivery::Output(vec![1, 2, 3, 4]),
+                Delivery::Event("synced"),
+            ]
         );
         sink.commit_transfer();
     }
@@ -750,6 +805,7 @@ mod tests {
             *original.lock(),
             vec![
                 Delivery::Output(b"queued".to_vec()),
+                Delivery::Event("synced"),
                 Delivery::Output(b"live".to_vec()),
             ]
         );
@@ -771,7 +827,11 @@ mod tests {
         assert_eq!(sink.attach(channels(Arc::clone(&attached))).unwrap(), 2);
         assert_eq!(
             *attached.lock(),
-            vec![Delivery::Output(b"tail".to_vec()), Delivery::Event("exit"),]
+            vec![
+                Delivery::Output(b"tail".to_vec()),
+                Delivery::Event("exit"),
+                Delivery::Event("synced"),
+            ]
         );
 
         sink.commit_transfer();
@@ -793,6 +853,7 @@ mod tests {
                 Delivery::Output(vec![1]),
                 Delivery::Event("error"),
                 Delivery::Output(vec![3]),
+                Delivery::Event("synced"),
             ]
         );
     }
@@ -809,13 +870,12 @@ mod tests {
         sink.emit(error_event());
         assert!(original.lock().is_empty());
         assert_eq!(sink.resume_original().unwrap(), 3);
-        assert_eq!(*original.lock(), *attached.lock());
         assert_eq!(
             *original.lock(),
             vec![
-                Delivery::Output(b"queued".to_vec()),
-                Delivery::Output(b"live".to_vec()),
+                Delivery::Output(b"queuedlive".to_vec()),
                 Delivery::Event("error"),
+                Delivery::Event("synced"),
             ]
         );
     }
@@ -843,12 +903,13 @@ mod tests {
                 Delivery::Output(b"A".to_vec()),
                 Delivery::Event("error"),
                 Delivery::Output(b"B".to_vec()),
+                Delivery::Event("synced"),
             ]
         );
     }
 
     #[test]
-    fn test_retained_cap_blanks_output_without_dropping_sequences() {
+    fn test_retained_cap_trims_oldest_output() {
         let sink = sink(Arc::new(Mutex::new(Vec::new())));
         sink.pause();
         sink.emit_output(vec![1; RETAINED_OUTPUT_CAP]);
@@ -860,9 +921,33 @@ mod tests {
         assert_eq!(
             *attached.lock(),
             vec![
-                Delivery::Output(Vec::new()),
+                Delivery::Output(vec![1; RETAINED_OUTPUT_CAP - 1]),
                 Delivery::Event("error"),
                 Delivery::Output(vec![3]),
+                Delivery::Event("synced"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_retained_output_coalesces_while_paused() {
+        let sink = sink(Arc::new(Mutex::new(Vec::new())));
+        sink.pause();
+        sink.emit_output(vec![1]);
+        sink.emit_output(vec![2]);
+        sink.emit(error_event());
+        sink.emit_output(vec![3]);
+        sink.emit_output(vec![4]);
+
+        let attached = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(sink.attach(channels(Arc::clone(&attached))).unwrap(), 5);
+        assert_eq!(
+            *attached.lock(),
+            vec![
+                Delivery::Output(vec![1, 2]),
+                Delivery::Event("error"),
+                Delivery::Output(vec![3, 4]),
+                Delivery::Event("synced"),
             ]
         );
     }
@@ -879,7 +964,9 @@ mod tests {
             code: Some(0),
         }));
         sink.resume_original().unwrap();
-        assert_eq!(*original.lock(), vec![Delivery::Event("exit")]);
-        assert_eq!(*original.lock(), *attached.lock());
+        assert_eq!(
+            *original.lock(),
+            vec![Delivery::Event("exit"), Delivery::Event("synced")]
+        );
     }
 }

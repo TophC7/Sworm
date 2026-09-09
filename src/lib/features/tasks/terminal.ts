@@ -187,6 +187,10 @@ export class TaskTerminal {
   private handlePtyEvent(event: PtyEvent): void {
     if (this.disposed) return
     if (event.run_id !== this.runId) return
+    if (event.type === 'synced') {
+      if (event.sequence !== undefined) this.barrier.seed(event.sequence)
+      return
+    }
     const sequence = this.barrier.next()
     if (event.type === 'started') {
       this.status = 'running'

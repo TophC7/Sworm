@@ -321,6 +321,12 @@ export class TerminalSessionManager {
 
   private handlePtyEvent(runId: string, event: PtyEvent): void {
     if (this.disposed || this.streamRunId !== runId) return
+    if (event.type === 'synced') {
+      if (this.runId === runId && event.run_id === runId && event.sequence !== undefined) {
+        this.barrier.seed(event.sequence)
+      }
+      return
+    }
 
     const sequence = this.barrier.next()
     if (this.runId !== runId || event.run_id !== runId) {

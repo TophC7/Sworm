@@ -1,6 +1,8 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
@@ -444,10 +446,15 @@ impl GitService {
         let has_staged = changes.iter().any(|c| c.staged);
 
         if has_unstaged {
-            merge_numstat(&mut changes, path, &["diff", "--numstat"], false);
+            merge_numstat(&mut changes, path, &["diff", "--numstat", "-z"], false);
         }
         if has_staged {
-            merge_numstat(&mut changes, path, &["diff", "--cached", "--numstat"], true);
+            merge_numstat(
+                &mut changes,
+                path,
+                &["diff", "--cached", "--numstat", "-z"],
+                true,
+            );
         }
 
         Ok(changes)
@@ -1493,30 +1500,22 @@ impl GitService {
     fn stash_diff_files(&self, path: &Path, index: usize) -> Vec<FileDiff> {
         let stash_ref = format!("stash@{{{}}}", index);
         let old_ref = format!("{}^", stash_ref);
+        let untracked_ref = format!("{}^3", stash_ref);
 
-        // `git stash show --name-status --numstat` lists both tracked and
-        // (with -u) untracked changes in the stash. Untracked-only entries
-        // live on the third parent `stash@{N}^3`; we treat those as adds.
-        let status_out = std::process::Command::new("git")
-            .args(["stash", "show", "-u", "-z", "--name-status", &stash_ref])
-            .current_dir(path)
-            .output();
-        let numstat_out = std::process::Command::new("git")
-            .args(["stash", "show", "-u", "-z", "--numstat", &stash_ref])
-            .current_dir(path)
-            .output();
-
-        let status_text = match status_out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => String::new(),
-        };
-        let numstat_text = match numstat_out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => String::new(),
-        };
-
-        let stats = parse_numstat(&numstat_text);
-        let entries = parse_name_status(&status_text);
+        // Raw status and numstat share one NUL-delimited process. Untracked
+        // entries live on the stash's third parent and are treated as adds.
+        let (entries, stats) = parse_raw_numstat(&run_git_capture(
+            path,
+            &[
+                "stash",
+                "show",
+                "--raw",
+                "--numstat",
+                "-z",
+                "--include-untracked",
+                &stash_ref,
+            ],
+        ));
 
         let mut out = Vec::new();
         for entry in entries {
@@ -1538,7 +1537,14 @@ impl GitService {
             let new_content = if matches!(entry.status, GitStatus::Deleted) {
                 BlobResult::Missing
             } else {
-                read_git_show_blob(path, &format!("{}:{}", stash_ref, entry.path))
+                let blob = read_git_show_blob(path, &format!("{}:{}", stash_ref, entry.path));
+                if matches!(blob, BlobResult::Missing)
+                    && matches!(entry.status, GitStatus::Added | GitStatus::Untracked)
+                {
+                    read_git_show_blob(path, &format!("{}:{}", untracked_ref, entry.path))
+                } else {
+                    blob
+                }
             };
             let (old, new, binary) = fold_both_sides(old_content, new_content);
 
@@ -1696,20 +1702,73 @@ fn fold_single_side(blob: BlobResult, on_old: bool) -> (Option<String>, Option<S
     }
 }
 
+pub(crate) enum ShowOutput {
+    Bytes(Vec<u8>),
+    Oversized,
+    Failed,
+}
+
+pub(crate) fn git_show_bounded(repo: &Path, args: &[&str]) -> ShowOutput {
+    let mut child = match Command::new("git")
+        .arg("--no-optional-locks")
+        .args(args)
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return ShowOutput::Failed,
+    };
+    let stderr_thread = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        })
+    });
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Some(thread) = stderr_thread {
+            let _ = thread.join();
+        }
+        return ShowOutput::Failed;
+    };
+
+    let mut bytes = Vec::new();
+    let read_result = stdout
+        .take(MAX_CONTENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes);
+    if read_result.is_err() || bytes.len() > MAX_CONTENT_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Some(thread) = stderr_thread {
+            let _ = thread.join();
+        }
+        return if read_result.is_err() {
+            ShowOutput::Failed
+        } else {
+            ShowOutput::Oversized
+        };
+    }
+
+    let status = child.wait();
+    if let Some(thread) = stderr_thread {
+        let _ = thread.join();
+    }
+    match status {
+        Ok(status) if status.success() => ShowOutput::Bytes(bytes),
+        _ => ShowOutput::Failed,
+    }
+}
+
 /// Read a blob via `git show` (supports `HEAD:path`, `:path`, `<ref>:path`).
 fn read_git_show_blob(path: &Path, spec: &str) -> BlobResult {
-    let output = std::process::Command::new("git")
-        .args(["--no-optional-locks", "show", spec])
-        .current_dir(path)
-        .output();
-    let output = match output {
-        Ok(o) => o,
-        Err(_) => return BlobResult::Missing,
-    };
-    if !output.status.success() {
-        return BlobResult::Missing;
+    match git_show_bounded(path, &["show", "--no-textconv", spec]) {
+        ShowOutput::Bytes(bytes) => classify_bytes(bytes),
+        ShowOutput::Oversized => BlobResult::Oversized,
+        ShowOutput::Failed => BlobResult::Missing,
     }
-    classify_bytes(output.stdout)
 }
 
 /// Read a blob directly from the working tree.
@@ -1753,9 +1812,13 @@ fn classify_bytes(bytes: Vec<u8>) -> BlobResult {
 ///
 /// Keyed by the POST-rename path so callers can look up by `entry.path`.
 /// Binary entries (`-\t-\tpath`) skip and surface as `None` upstream.
-fn parse_numstat(text: &str) -> std::collections::HashMap<String, (i32, i32)> {
-    let mut map = std::collections::HashMap::new();
-    let mut fields = text.split('\0').filter(|s| !s.is_empty()).peekable();
+fn parse_numstat(text: &str) -> HashMap<String, (i32, i32)> {
+    parse_numstat_fields(text.split('\0').filter(|field| !field.is_empty()))
+}
+
+fn parse_numstat_fields<'a>(fields: impl Iterator<Item = &'a str>) -> HashMap<String, (i32, i32)> {
+    let mut map = HashMap::new();
+    let mut fields = fields.peekable();
 
     while let Some(head) = fields.next() {
         // `head` is either "adds\tdels\tpath" or "adds\tdels\t" (rename prefix).
@@ -1770,7 +1833,6 @@ fn parse_numstat(text: &str) -> std::collections::HashMap<String, (i32, i32)> {
             continue;
         };
         let path = if tab_parts[2].is_empty() {
-            // Rename: next two fields are old, new.
             let _old = fields.next();
             let Some(new_path) = fields.next() else {
                 continue;
@@ -1791,35 +1853,55 @@ fn parse_numstat(text: &str) -> std::collections::HashMap<String, (i32, i32)> {
 ///   rename:  `R<score>\0<oldpath>\0<newpath>\0`
 fn parse_name_status(text: &str) -> Vec<RevFileEntry> {
     let mut out = Vec::new();
-    let mut fields = text.split('\0').filter(|s| !s.is_empty());
-
-    while let Some(code_raw) = fields.next() {
-        let code_letter = code_raw.get(0..1).unwrap_or("M");
-        let status = GitStatus::from_code(code_letter);
-
-        let (new_path, old_path) = match status {
-            GitStatus::Renamed | GitStatus::Copied => {
-                let Some(old) = fields.next() else { break };
-                let Some(new) = fields.next() else { break };
-                (new.to_string(), Some(old.to_string()))
-            }
-            _ => {
-                let Some(p) = fields.next() else { break };
-                (p.to_string(), None)
-            }
+    let mut fields = text.split('\0').filter(|field| !field.is_empty());
+    while let Some(code) = fields.next() {
+        let Some(entry) = name_status_entry(code, &mut fields) else {
+            break;
         };
-        let old_path_for_diff = old_path.clone().or_else(|| Some(new_path.clone()));
-
-        out.push(RevFileEntry {
-            path: new_path,
-            old_path,
-            old_path_for_diff,
-            status,
-            additions: None,
-            deletions: None,
-        });
+        out.push(entry);
     }
     out
+}
+
+fn name_status_entry<'a>(
+    code: &str,
+    fields: &mut impl Iterator<Item = &'a str>,
+) -> Option<RevFileEntry> {
+    let status = GitStatus::from_code(code.get(0..1).unwrap_or("M"));
+    let (path, old_path) = match status {
+        GitStatus::Renamed | GitStatus::Copied => {
+            let old = fields.next()?;
+            let new = fields.next()?;
+            (new.to_string(), Some(old.to_string()))
+        }
+        _ => (fields.next()?.to_string(), None),
+    };
+    let old_path_for_diff = old_path.clone().or_else(|| Some(path.clone()));
+    Some(RevFileEntry {
+        path,
+        old_path,
+        old_path_for_diff,
+        status,
+        additions: None,
+        deletions: None,
+    })
+}
+
+fn parse_raw_numstat(text: &str) -> (Vec<RevFileEntry>, HashMap<String, (i32, i32)>) {
+    let mut entries = Vec::new();
+    let mut fields = text
+        .split('\0')
+        .filter(|field| !field.is_empty())
+        .peekable();
+    while fields.peek().is_some_and(|field| field.starts_with(':')) {
+        let header = fields.next().expect("peeked raw record");
+        let code = header.rsplit(' ').next().unwrap_or("M");
+        let Some(entry) = name_status_entry(code, &mut fields) else {
+            break;
+        };
+        entries.push(entry);
+    }
+    (entries, parse_numstat_fields(fields))
 }
 
 /// Filter and dedupe `git status --porcelain` entries for a working-tree
@@ -2127,32 +2209,11 @@ fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) 
 /// Run a git numstat command and merge the resulting additions/deletions
 /// into the matching entries in `changes`.
 fn merge_numstat(changes: &mut [GitChange], path: &Path, args: &[&str], staged: bool) {
-    let output = std::process::Command::new("git")
-        .args(
-            std::iter::once("--no-optional-locks")
-                .chain(args.iter().copied())
-                .collect::<Vec<_>>(),
-        )
-        .current_dir(path)
-        .output();
-
-    if let Ok(output) = output {
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                let parts: Vec<&str> = line.split('\t').collect();
-                if parts.len() >= 3 {
-                    let adds = parts[0].parse::<i32>().ok();
-                    let dels = parts[1].parse::<i32>().ok();
-                    let fpath = parts[2];
-                    for change in changes.iter_mut() {
-                        if change.path == fpath && change.staged == staged {
-                            change.additions = adds;
-                            change.deletions = dels;
-                        }
-                    }
-                }
-            }
+    let stats = parse_numstat(&run_git_capture(path, args));
+    for change in changes.iter_mut().filter(|change| change.staged == staged) {
+        if let Some(&(additions, deletions)) = stats.get(&change.path) {
+            change.additions = Some(additions);
+            change.deletions = Some(deletions);
         }
     }
 }
@@ -2312,6 +2373,93 @@ mod tests {
         git(&dir, &["add", "a.txt"]);
         git(&dir, &["commit", "-q", "-m", "init"]);
         dir
+    }
+
+    #[test]
+    fn oversized_blob_is_reported_without_buffering() {
+        let repo = temp_repo("bounded-blob");
+        std::fs::write(repo.join("big.bin"), vec![b'x'; MAX_CONTENT_BYTES + 1]).unwrap();
+        git(&repo, &["add", "big.bin"]);
+        git(&repo, &["commit", "-q", "-m", "big"]);
+
+        assert!(matches!(
+            read_git_show_blob(&repo, "HEAD:big.bin"),
+            BlobResult::Oversized
+        ));
+        let text = read_git_show_blob(&repo, "HEAD:a.txt");
+        assert!(matches!(&text, BlobResult::Text(text) if text == "one\n"));
+        assert!(matches!(
+            read_git_show_blob(&repo, "HEAD:nope.txt"),
+            BlobResult::Missing
+        ));
+
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn staged_rename_with_spaces_keeps_numstat() {
+        let repo = temp_repo("rename-stats");
+        git(&repo, &["mv", "a.txt", "b c.txt"]);
+        std::fs::write(repo.join("b c.txt"), "one\ntwo\n").unwrap();
+        git(&repo, &["add", "-A"]);
+
+        let summary = GitService::new().get_summary(&repo).unwrap();
+        let change = summary
+            .changes
+            .iter()
+            .find(|change| change.path == "b c.txt" && change.staged)
+            .expect("staged rename");
+        assert_eq!(change.additions, Some(1));
+        assert_eq!(change.deletions, Some(0));
+
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn parse_raw_numstat_splits_raw_and_stat_records() {
+        let text = ":100644 100644 aaaa bbbb M\0a.txt\0:100644 100644 aaaa bbbb R099\0old.txt\0new.txt\0:000000 100644 0000 cccc A\0new file.txt\01\t1\ta.txt\01\t0\t\0old.txt\0new.txt\05\t0\tnew file.txt\0";
+        let (entries, stats) = parse_raw_numstat(text);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].path, "a.txt");
+        assert_eq!(entries[0].old_path, None);
+        assert_eq!(entries[0].status, GitStatus::Modified);
+        assert_eq!(entries[1].path, "new.txt");
+        assert_eq!(entries[1].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(entries[1].status, GitStatus::Renamed);
+        assert_eq!(entries[2].path, "new file.txt");
+        assert_eq!(entries[2].status, GitStatus::Added);
+        assert_eq!(stats.get("a.txt"), Some(&(1, 1)));
+        assert_eq!(stats.get("new.txt"), Some(&(1, 0)));
+        assert_eq!(stats.get("new file.txt"), Some(&(5, 0)));
+    }
+
+    #[test]
+    fn stash_diff_includes_untracked_with_stats() {
+        let repo = temp_repo("stash");
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("new file.txt"), "x\ny\n").unwrap();
+        git(&repo, &["stash", "push", "-u", "-q"]);
+
+        let files = GitService::new().get_diff_files(&repo, &DiffSource::Stash { index: 0 });
+        let tracked = files
+            .iter()
+            .find(|file| file.path == "a.txt")
+            .expect("tracked stash entry");
+        assert_eq!(tracked.additions, Some(1));
+        assert_eq!(tracked.old_content.as_deref(), Some("one\n"));
+        assert_eq!(tracked.new_content.as_deref(), Some("one\ntwo\n"));
+
+        let untracked = files
+            .iter()
+            .find(|file| file.path == "new file.txt")
+            .expect("untracked stash entry");
+        assert_eq!(untracked.status, GitStatus::Added);
+        assert_eq!(untracked.additions, Some(2));
+        assert_eq!(untracked.old_content, None);
+        assert_eq!(untracked.new_content.as_deref(), Some("x\ny\n"));
+
+        std::fs::remove_dir_all(repo).ok();
     }
 
     /// `list_branches` covers locals, remotes, the diverged remote

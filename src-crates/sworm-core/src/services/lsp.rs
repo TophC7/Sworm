@@ -18,6 +18,9 @@ use std::thread;
 use std::time::Duration;
 use tracing::{info, warn};
 
+const LSP_MAX_HEADER_BYTES: usize = 64 * 1024;
+const LSP_MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct ProjectLspEnvironment {
     pub merged_path: String,
@@ -143,6 +146,7 @@ impl LspService {
             session_id.clone(),
             runtime_id.clone(),
             stdout,
+            Arc::clone(&child),
             trace,
             Arc::clone(&events),
             Arc::clone(&shutdown),
@@ -252,6 +256,7 @@ impl LspService {
         session_id: String,
         runtime_id: String,
         stdout: ChildStdout,
+        child: Arc<Mutex<Child>>,
         trace: LspTraceLevel,
         events: EventSink<LspEvent>,
         shutdown: Arc<AtomicBool>,
@@ -285,6 +290,12 @@ impl LspService {
                                     session_id: session_id.clone(),
                                     message: error,
                                 });
+                                if let Err(kill_error) = child.lock().kill() {
+                                    warn!(
+                                        "Failed to kill LSP process {} after framing error: {}",
+                                        session_id, kill_error
+                                    );
+                                }
                             }
                             break;
                         }
@@ -539,27 +550,59 @@ fn validate_direct_command_path(candidate: &str) -> Result<String, String> {
 }
 
 fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> Result<Option<String>, String> {
-    let mut content_length: Option<usize> = None;
+    let mut content_length = None;
+    let mut header_bytes = 0;
+    let mut line = String::new();
 
     loop {
-        let mut line = String::new();
+        line.clear();
         let bytes = reader
+            .by_ref()
+            .take((LSP_MAX_HEADER_BYTES - header_bytes + 1) as u64)
             .read_line(&mut line)
             .map_err(|error| format!("Failed to read LSP headers: {}", error))?;
+        header_bytes += bytes;
+        if header_bytes > LSP_MAX_HEADER_BYTES {
+            return Err(format!(
+                "LSP header block exceeds {} bytes",
+                LSP_MAX_HEADER_BYTES
+            ));
+        }
         if bytes == 0 {
-            return Ok(None);
+            return if header_bytes == 0 {
+                Ok(None)
+            } else {
+                Err("Unexpected EOF inside LSP headers".to_string())
+            };
         }
         if line == "\r\n" || line == "\n" {
             break;
         }
-        let lower = line.to_ascii_lowercase();
-        if let Some((_, value)) = lower.split_once("content-length:") {
-            content_length = value.trim().parse::<usize>().ok();
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("content-length") {
+            continue;
         }
+        if content_length.is_some() {
+            return Err("Duplicate Content-Length header in LSP message".to_string());
+        }
+        content_length = Some(
+            value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid Content-Length header: {}", value.trim()))?,
+        );
     }
 
     let content_length =
         content_length.ok_or_else(|| "Missing Content-Length header in LSP message".to_string())?;
+    if content_length > LSP_MAX_PAYLOAD_BYTES {
+        return Err(format!(
+            "LSP payload of {} bytes exceeds limit of {} bytes",
+            content_length, LSP_MAX_PAYLOAD_BYTES
+        ));
+    }
     let mut body = vec![0_u8; content_length];
     reader
         .read_exact(&mut body)
@@ -583,6 +626,34 @@ mod tests {
 
         let message = read_lsp_message(&mut reader).unwrap();
         assert_eq!(message.as_deref(), Some(payload));
+    }
+
+    #[test]
+    fn rejects_oversized_payload() {
+        let framed = format!("Content-Length: {}\r\n\r\n", LSP_MAX_PAYLOAD_BYTES + 1);
+        let error = read_lsp_message(&mut BufReader::new(framed.as_bytes())).unwrap_err();
+        assert!(error.contains("exceeds limit"));
+    }
+
+    #[test]
+    fn rejects_oversized_header_block() {
+        let framed = "x".repeat(LSP_MAX_HEADER_BYTES + 16);
+        let error = read_lsp_message(&mut BufReader::new(framed.as_bytes())).unwrap_err();
+        assert!(error.contains("header block exceeds"));
+    }
+
+    #[test]
+    fn rejects_duplicate_content_length() {
+        let framed = b"Content-Length: 2\r\nContent-Length: 3\r\n\r\n{}";
+        let error = read_lsp_message(&mut BufReader::new(framed.as_slice())).unwrap_err();
+        assert!(error.contains("Duplicate"));
+    }
+
+    #[test]
+    fn accepts_case_insensitive_content_length() {
+        let framed = b"content-length: 2\r\ncontent-type: application/vscode-jsonrpc\r\n\r\n{}";
+        let message = read_lsp_message(&mut BufReader::new(framed.as_slice())).unwrap();
+        assert_eq!(message.as_deref(), Some("{}"));
     }
 
     #[test]

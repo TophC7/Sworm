@@ -1,6 +1,6 @@
 use crate::errors::ApiError;
 use crate::host::Host;
-use crate::services::git::{DeleteBranchError, MAX_CONTENT_BYTES};
+use crate::services::git::{git_show_bounded, DeleteBranchError, ShowOutput};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -130,22 +130,12 @@ fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), Api
 }
 
 fn git_show_raw_text(repo: &Path, spec: &str) -> Option<String> {
-    let output = Command::new("git")
-        // Quick-diff bases feed hunk staging/reverting, so they must be the
-        // actual blob text, not display-only textconv output.
-        .args(["--no-optional-locks", "show", "--no-textconv", spec])
-        .current_dir(repo)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    // Quick-diff bases feed hunk staging/reverting, so they must be the
+    // actual blob text, not display-only textconv output.
+    match git_show_bounded(repo, &["show", "--no-textconv", spec]) {
+        ShowOutput::Bytes(bytes) => String::from_utf8(bytes).ok(),
+        ShowOutput::Oversized | ShowOutput::Failed => None,
     }
-    if output.stdout.len() > MAX_CONTENT_BYTES {
-        return None;
-    }
-
-    String::from_utf8(output.stdout).ok()
 }
 
 fn git_file_mode(repo: &Path, file_path: &str) -> Result<String, ApiError> {

@@ -4,12 +4,13 @@
 import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
 
 export interface PtyEvent {
-  type: 'started' | 'exit' | 'error' | 'resumeTokenBound'
+  type: 'started' | 'exit' | 'error' | 'resumeTokenBound' | 'synced'
   run_id: string
   pid?: number | null
   code?: number | null
   message?: string
   token?: string
+  sequence?: number
 }
 
 export interface TerminalTransferState {
