@@ -96,7 +96,7 @@ State what you verified for each. "Only tested the happy path" is a valid answer
 1. Remove every temporary log, `$inspect`, `dbg!`, and debug-only branch you added.
    - Grep for your prefix (`[debug-<topic>]`) to confirm zero hits.
 2. If the project has a test surface for this area, add a regression test that fails before the fix and passes after.
-3. If a test is not practical (pure UI / timing), leave a single `// CLAUDE:` or short comment near the fix explaining the invariant, following `.claude/comment-style/SKILL.md`.
+3. If a test is not practical (pure UI / timing), leave a single invariant comment near the fix explaining the non-obvious requirement.
 4. Run the narrowest validation commands that apply:
    - Frontend: `bun run check`
    - Rust: `cargo check`

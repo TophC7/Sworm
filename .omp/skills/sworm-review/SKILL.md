@@ -28,7 +28,7 @@ An issue is valid if it plausibly harms:
 Before writing findings, read:
 
 - `AGENTS.md`
-- `.claude/comment-style/SKILL.md`
+- repo comment conventions
 - the full changed files or diff under review
 - `package.json` and/or `src-tauri/Cargo.toml` when the review touches frontend scripts, dependencies, Rust code, plugins, or build behavior
 
@@ -151,11 +151,11 @@ wrappers in `src/lib/components/ui/`.
 *Do comments follow project conventions?*
 
 - Sparse, useful, and non-obvious.
-- Follow `.claude/comment-style/SKILL.md`.
+- Follow repo comment conventions: sparse, non-obvious, why not what.
 - Flag misleading, stale, noisy, or AI-slop comments.
 - Comments that explain obvious code are a real quality issue, not a nit.
 
-Must read: `.claude/comment-style/SKILL.md` and the comment sites in the diff.
+Must read: the comment sites in the diff.
 
 ### Dispatch Template
 
@@ -196,7 +196,7 @@ Flag these quickly when present:
 - raw colors or one-off surfaces that ignore `src/app.css`
 - duplicated components/helpers with only cosmetic differences
 - creating a new component when a small extension of an existing primitive would be cleaner
-- comments that ignore `.claude/comment-style/SKILL.md`
+- comments that state the obvious, repeat code, or add noise
 
 ## Findings Bar
 

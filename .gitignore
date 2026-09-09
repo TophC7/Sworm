@@ -53,7 +53,7 @@ vite.config.ts.timestamp-*
 src/lib/paraglide
 
 # AI Agent
-.claude/settings.local.json
+.omp/settings.local.json
 .sworm/issues.db-wal
 .sworm/issues.db-shm
 
