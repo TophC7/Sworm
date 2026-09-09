@@ -1,10 +1,11 @@
 use crate::app_state::AppState;
-use crate::errors::ApiError;
-use crate::services::pty::PtyEvent;
+use crate::host_events::channel_sink;
 use crate::services::windows::{
     ClaimFileResult, TabTransferExportPayload, TabTransferInitiateParams,
 };
 use std::path::{Path, PathBuf};
+use sworm_core::errors::ApiError;
+use sworm_protocol::pty::PtyEvent;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 #[tauri::command]
@@ -32,7 +33,7 @@ pub fn window_get_label(window: WebviewWindow) -> Result<String, ApiError> {
 
 #[tauri::command]
 pub fn pty_pause(run_id: String, state: State<'_, AppState>) -> Result<u64, ApiError> {
-    state.pty.pause(&run_id).map_err(ApiError::Pty)
+    state.host.pty.pause(&run_id).map_err(ApiError::Pty)
 }
 
 #[tauri::command]
@@ -49,8 +50,9 @@ pub fn pty_attach(
         .authorize_attach(&transfer_id, window.label(), &run_id)
         .map_err(ApiError::Pty)?;
     state
+        .host
         .pty
-        .attach(&run_id, output, events)
+        .attach(&run_id, channel_sink(output), channel_sink(events))
         .map_err(ApiError::Pty)
 }
 
@@ -137,5 +139,7 @@ pub fn window_close(window: WebviewWindow) -> Result<(), ApiError> {
 
 fn resolve_file_path(file_path: &str) -> Result<PathBuf, ApiError> {
     let path = std::path::absolute(Path::new(file_path))?;
-    Ok(crate::services::folders::normalize_absolute_path(&path))
+    Ok(sworm_core::services::folders::normalize_absolute_path(
+        &path,
+    ))
 }

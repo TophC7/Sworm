@@ -1,8 +1,10 @@
-use crate::errors::ApiError;
-use crate::models::builtins::BuiltinCatalog;
-use crate::services::builtins::BuiltinCatalogService;
+use crate::app_state::AppState;
+use sworm_core::errors::ApiError;
+use sworm_protocol::builtins::BuiltinCatalog;
 
 #[tauri::command]
-pub async fn builtins_get_catalog() -> Result<BuiltinCatalog, ApiError> {
-    BuiltinCatalogService::catalog().map_err(ApiError::Internal)
+pub async fn builtins_get_catalog(
+    state: tauri::State<'_, AppState>,
+) -> Result<BuiltinCatalog, ApiError> {
+    state.host.builtins_get_catalog().await
 }

@@ -25,7 +25,7 @@ RUST_FILES=$(echo "$STAGED" | grep -E '\.rs$' || true)
 
 if [ -n "$RUST_FILES" ]; then
   echo "[pre-commit] formatting rust files with cargo fmt..."
-  (cd src-tauri && cargo fmt) 2>/dev/null || true
+  cargo fmt --all 2>/dev/null || true
   echo "$RUST_FILES" | xargs git add
 fi
 

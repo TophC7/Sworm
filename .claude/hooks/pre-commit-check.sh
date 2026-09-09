@@ -27,7 +27,7 @@ fi
 # Format rust files and re-stage
 RUST_FILES=$(echo "$STAGED" | grep -E '\.rs$' || true)
 if [ -n "$RUST_FILES" ]; then
-  (cd src-tauri && cargo fmt 2>/dev/null)
+  cargo fmt --all 2>/dev/null
   echo "$RUST_FILES" | xargs git add 2>/dev/null
 fi
 

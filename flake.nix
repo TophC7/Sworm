@@ -122,26 +122,23 @@
           };
 
           # Shared args for crane's dep and source builds.
-          # src-tauri IS the Cargo root, so use it directly as the source.
-          # cleanCargoSource strips non-Cargo files; we extend the filter
-          # to keep Tauri assets (config, capabilities, icons, migrations,
-          # builtin manifests/schemas) that build.rs and the runtime need.
-          tauriSourceFilter =
+          # Keep workspace sources and the assets embedded by the member crates.
+          workspaceSourceFilter =
             path: type:
             (craneLib.filterCargoSources path type)
             || (lib.hasSuffix "tauri.conf.json" path)
             || (lib.hasSuffix "sworm.desktop" path)
-            || (lib.hasInfix "/builtins/" path)
-            || (lib.hasInfix "/capabilities/" path)
-            || (lib.hasInfix "/icons/" path)
-            || (lib.hasInfix "/migrations/" path);
+            || (lib.hasInfix "src-crates/sworm-core/builtins" path)
+            || (lib.hasInfix "src-tauri/capabilities" path)
+            || (lib.hasInfix "src-tauri/icons" path)
+            || (lib.hasInfix "src-crates/sworm-core/migrations" path);
 
           commonArgs = {
             pname = "sworm";
             inherit version;
             src = lib.cleanSourceWith {
-              src = ./src-tauri;
-              filter = tauriSourceFilter;
+              src = ./.;
+              filter = workspaceSourceFilter;
             };
 
             strictDeps = true;
@@ -158,9 +155,16 @@
             # is empty otherwise. Scoped to checkPhase to keep dep cache lean.
             nativeCheckInputs = [ pkgs.git ];
 
+            # Tauri's mock windows still create their app-local data directory.
+            preCheck = ''
+              export HOME="$TMPDIR"
+              export XDG_DATA_HOME="$TMPDIR/.local/share"
+            '';
+
             # The tauri CLI injects this feature automatically; raw cargo does not.
             # Without it, cfg(dev) stays active and assets are not embedded.
-            cargoExtraArgs = "--features tauri/custom-protocol";
+            cargoExtraArgs = "--locked -p sworm --features tauri/custom-protocol";
+            cargoTestExtraArgs = "-p sworm-core -p sworm-protocol";
 
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             TAURI_CONFIG = builtins.toJSON { inherit version; };
@@ -173,18 +177,21 @@
               "TAURI_CONFIG"
             ])
             // {
+              # Virtual workspace has no package version; keep dependency metadata
+              # tied to the desktop manifest, not the checkout revision.
+              version = (builtins.fromTOML (builtins.readFile ./src-tauri/Cargo.toml)).package.version;
               # Dummy frontend so Tauri's build.rs doesn't fail during dep compilation.
               # frontendDist in tauri.conf.json is "../build" relative to src-tauri.
               preBuild = ''
-                mkdir -p $NIX_BUILD_TOP/build
-                echo '<html></html>' > $NIX_BUILD_TOP/build/index.html
+                mkdir -p build
+                echo '<html></html>' > build/index.html
               '';
             }
           );
 
           desktopFile = ./src-tauri/sworm.desktop;
 
-          # Phase 2: build the app against pre-built deps (only recompiles sworm crate)
+          # Build the desktop against cached workspace dependencies.
           appPackage = craneLib.buildPackage (
             commonArgs
             // {
@@ -192,12 +199,12 @@
 
               # Place the real frontend where Tauri expects it (frontendDist = "../build").
               preBuild = ''
-                mkdir -p $NIX_BUILD_TOP/build
-                cp -r ${frontend}/* $NIX_BUILD_TOP/build/
+                mkdir -p build
+                cp -r ${frontend}/* build/
               '';
 
               postInstall = ''
-                install -Dm644 icons/128x128.png $out/share/icons/hicolor/128x128/apps/sworm.png
+                install -Dm644 src-tauri/icons/128x128.png $out/share/icons/hicolor/128x128/apps/sworm.png
                 install -Dm644 ${desktopFile} $out/share/applications/sworm.desktop
               '';
 

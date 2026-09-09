@@ -1,16 +1,16 @@
 use crate::app_state::AppState;
-use crate::errors::ApiError;
-use crate::models::folder::{FolderEntry, FolderInfo};
-use crate::services::folders::{folder_name, resolve_folder};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
+use sworm_core::errors::ApiError;
+use sworm_core::services::folders::resolve_folder;
+use sworm_protocol::folder::{FolderEntry, FolderInfo};
 use tauri::Emitter;
 
 const RECENT_FOLDERS_KEY: &str = "recent_folders";
 
 fn read_recent_folders(state: &AppState) -> Result<Vec<String>, ApiError> {
-    let db = state.db.read();
+    let db = state.host.db.read();
     let value = state
         .app_state_kv
         .get(db.conn(), RECENT_FOLDERS_KEY)
@@ -37,7 +37,7 @@ pub async fn recent_folders_touch(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
     let folders = {
-        let db = state.db.write();
+        let db = state.host.db.write();
         let value = state
             .app_state_kv
             .get(db.conn(), RECENT_FOLDERS_KEY)
@@ -71,7 +71,7 @@ pub async fn recent_folders_remove(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
     let filtered = {
-        let db = state.db.write();
+        let db = state.host.db.write();
         let value = state
             .app_state_kv
             .get(db.conn(), RECENT_FOLDERS_KEY)
@@ -127,12 +127,11 @@ pub async fn folder_select_directory(
 
 /// Canonicalize a folder path and return its display name.
 #[tauri::command]
-pub async fn folder_resolve(path: String) -> Result<FolderInfo, ApiError> {
-    let folder = resolve_folder(&path)?;
-    Ok(FolderInfo {
-        name: folder_name(&folder),
-        path: folder.to_string_lossy().into_owned(),
-    })
+pub async fn folder_resolve(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FolderInfo, ApiError> {
+    state.host.folder_resolve(path).await
 }
 
 /// Immediate children of a canonicalized directory; directories first, then
@@ -141,47 +140,9 @@ pub async fn folder_resolve(path: String) -> Result<FolderInfo, ApiError> {
 pub async fn folder_list_entries(
     path: String,
     show_hidden: bool,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FolderEntry>, ApiError> {
-    list_entries(&path, show_hidden)
-}
-
-fn list_entries(path: &str, show_hidden: bool) -> Result<Vec<FolderEntry>, ApiError> {
-    let directory = resolve_folder(path)?;
-    let mut entries = Vec::new();
-
-    for entry in std::fs::read_dir(&directory)? {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !show_hidden && name.starts_with('.') {
-            continue;
-        }
-
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let is_dir = if file_type.is_symlink() {
-            entry.path().is_dir()
-        } else {
-            file_type.is_dir()
-        };
-        let entry_path = entry.path();
-        let sort_name = name.to_lowercase();
-        entries.push((
-            sort_name,
-            FolderEntry {
-                name,
-                path: entry_path.to_string_lossy().into_owned(),
-                is_dir,
-            },
-        ));
-    }
-
-    entries.sort_by(|(a_sort, a), (b_sort, b)| {
-        (!a.is_dir, a_sort, &a.name).cmp(&(!b.is_dir, b_sort, &b.name))
-    });
-    Ok(entries.into_iter().map(|(_, entry)| entry).collect())
+    state.host.folder_list_entries(path, show_hidden).await
 }
 
 #[tauri::command]
@@ -208,14 +169,11 @@ pub async fn folder_release(
     let folder = resolve_folder(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
     let is_last_owner = state.windows.release_folder(window.label(), &folder);
     state
+        .host
         .file_watchers
-        .release_window_folder(window.label(), &folder);
+        .release_subscriber_folder(window.label(), &folder);
     if is_last_owner {
-        state.settings_watchers.stop(&folder);
-        state.git_watchers.stop(&folder);
-        state.issues.evict(&folder);
-        state.issue_bridge.stop(&folder);
-        state.files.evict(&folder);
+        state.host.release_folder(&folder);
     }
     Ok(())
 }
@@ -334,47 +292,4 @@ fn spawn_terminal(_cwd: &Path) -> Result<(), ApiError> {
     Err(ApiError::Internal(
         "Open in terminal is only implemented on Linux".into(),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::list_entries;
-    use std::fs;
-
-    #[test]
-    fn lists_mixed_entries_dirs_first_and_filters_hidden() {
-        let root = std::env::temp_dir().join(format!("sworm-folder-list-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(root.join("zeta")).unwrap();
-        fs::create_dir(root.join("Alpha")).unwrap();
-        fs::create_dir(root.join("alpha")).unwrap();
-        fs::create_dir(root.join(".hidden")).unwrap();
-        fs::write(root.join("beta.txt"), "file").unwrap();
-        fs::write(root.join("Gamma.txt"), "file").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(root.join("Alpha"), root.join("linked-alpha")).unwrap();
-
-        let visible = list_entries(root.to_str().unwrap(), false)
-            .unwrap()
-            .into_iter()
-            .map(|entry| (entry.name, entry.is_dir))
-            .collect::<Vec<_>>();
-        let mut expected = vec![
-            ("Alpha".to_owned(), true),
-            ("alpha".to_owned(), true),
-            ("zeta".to_owned(), true),
-            ("beta.txt".to_owned(), false),
-            ("Gamma.txt".to_owned(), false),
-        ];
-        #[cfg(unix)]
-        expected.insert(2, ("linked-alpha".to_owned(), true));
-        assert_eq!(visible, expected);
-
-        let hidden = list_entries(root.to_str().unwrap(), true).unwrap();
-        assert_eq!(
-            hidden.first().map(|entry| (&*entry.name, entry.is_dir)),
-            Some((".hidden", true))
-        );
-
-        fs::remove_dir_all(root).unwrap();
-    }
 }

@@ -1,7 +1,5 @@
 use crate::app_state::AppState;
-use crate::models::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, WindowSettings};
 use crate::services::app_state_kv::AppStateKvService;
-use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -10,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use sworm_core::services::settings_resolution::resolve_effective_settings_for_folder_path;
+use sworm_protocol::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, WindowSettings};
 use tauri::{
     Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
@@ -182,7 +182,7 @@ impl WindowCoordinatorService {
         let state = app
             .try_state::<AppState>()
             .ok_or_else(|| "AppState is not initialized".to_string())?;
-        let db = state.db.write();
+        let db = state.host.db.write();
         self.save_manifest_with(db.conn(), app)
     }
 
@@ -346,7 +346,7 @@ impl WindowCoordinatorService {
                         return;
                     }
                     release_window_resources(&state, &event_label);
-                    let db = state.db.write();
+                    let db = state.host.db.write();
                     let result = (|| -> Result<(), String> {
                         let tx = db
                             .conn()
@@ -713,7 +713,10 @@ impl WindowCoordinatorService {
             let state = app
                 .try_state::<AppState>()
                 .ok_or_else(|| "AppState is not initialized".to_string())?;
-            state.pty.transfer_owner(run_id, &transfer.target_window)?;
+            state
+                .host
+                .pty
+                .transfer_owner(run_id, &transfer.target_window)?;
         }
         if let Some(file_path) = &transfer.file_path {
             if let Err(error) = self.transfer_file_claim(
@@ -724,7 +727,10 @@ impl WindowCoordinatorService {
             ) {
                 if let Some(run_id) = &transfer.pty_run_id {
                     if let Some(state) = app.try_state::<AppState>() {
-                        let _ = state.pty.transfer_owner(run_id, &transfer.source_window);
+                        let _ = state
+                            .host
+                            .pty
+                            .transfer_owner(run_id, &transfer.source_window);
                     }
                 }
                 return Err(error);
@@ -734,7 +740,7 @@ impl WindowCoordinatorService {
         drop(transfers);
         if let Some(run_id) = &transfer.pty_run_id {
             if let Some(state) = app.try_state::<AppState>() {
-                state.pty.commit_transfer(run_id);
+                state.host.pty.commit_transfer(run_id);
             }
         }
 
@@ -767,9 +773,9 @@ impl WindowCoordinatorService {
             let mut pty_lost = false;
             if let Some(run_id) = &transfer.pty_run_id {
                 if let Some(app_state) = app.try_state::<AppState>() {
-                    if app_state.pty.resume_original(run_id).is_err() {
-                        let _ = app_state.pty.kill(run_id);
-                        app_state.tasks.release_singleton_by_run_id(run_id);
+                    if app_state.host.pty.resume_original(run_id).is_err() {
+                        let _ = app_state.host.pty.kill(run_id);
+                        app_state.host.tasks.release_singleton_by_run_id(run_id);
                         pty_lost = true;
                     }
                 }
@@ -1072,18 +1078,10 @@ impl WindowCoordinatorService {
 }
 fn release_window_resources(state: &AppState, label: &str) {
     let final_folders = state.windows.remove_window(label);
-    state.file_watchers.release_window(label);
-    state.lsp.kill_window(label);
     let protected = state.windows.protected_pty_runs(label);
-    for run_id in state.pty.kill_window(label, &protected) {
-        state.tasks.release_singleton_by_run_id(&run_id);
-    }
+    state.host.release_owner(label, &protected);
     for folder in final_folders {
-        state.settings_watchers.stop(&folder);
-        state.git_watchers.stop(&folder);
-        state.issues.evict(&folder);
-        state.issue_bridge.stop(&folder);
-        state.files.evict(&folder);
+        state.host.release_folder(&folder);
     }
 }
 
@@ -1125,7 +1123,7 @@ fn bounds_intersect_rect(
 }
 
 fn git_root(file: &Path) -> Option<PathBuf> {
-    crate::services::git::GitService::repo_root(file.parent()?)
+    sworm_core::services::git::GitService::repo_root(file.parent()?)
 }
 
 fn focus_window(app: &tauri::AppHandle, label: &str) {

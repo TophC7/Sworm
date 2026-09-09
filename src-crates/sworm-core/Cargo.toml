@@ -1,0 +1,29 @@
+[package]
+name = "sworm-core"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+sworm-protocol = { path = "../sworm-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+jsonc-parser.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+notify = "6"
+ignore = "0.4"
+globset = "0.4"
+thiserror = "2"
+portable-pty = "0.9"
+refinery = { version = "0.8", features = ["rusqlite"] }
+which = "8"
+sha2 = "0.10"
+jsonschema = { version = "0.55.0", default-features = false }

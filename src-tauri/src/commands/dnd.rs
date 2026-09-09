@@ -1,4 +1,4 @@
-use crate::errors::ApiError;
+use sworm_core::errors::ApiError;
 use uuid::Uuid;
 
 #[tauri::command]

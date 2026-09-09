@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
-use crate::errors::ApiError;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use sworm_core::errors::ApiError;
 
 /// Resolve existing launch paths lexically, preserving symlink path forms.
 pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
@@ -16,7 +16,7 @@ pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
             } else {
                 cwd?.join(path)
             };
-            let path = crate::services::folders::normalize_absolute_path(&path);
+            let path = sworm_core::services::folders::normalize_absolute_path(&path);
             (path.is_file() || path.is_dir()).then(|| path.to_string_lossy().into_owned())
         })
         .collect()
@@ -167,7 +167,7 @@ pub async fn app_state_get(
     key: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, ApiError> {
-    let db = state.db.read();
+    let db = state.host.db.read();
     state
         .app_state_kv
         .get(db.conn(), &key)
@@ -181,7 +181,7 @@ pub async fn app_state_put(
     value_json: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.write();
+    let db = state.host.db.write();
     state
         .app_state_kv
         .put(db.conn(), &key, &value_json)
@@ -193,7 +193,7 @@ pub async fn app_state_delete(
     key: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let db = state.db.write();
+    let db = state.host.db.write();
     state
         .app_state_kv
         .delete(db.conn(), &key)

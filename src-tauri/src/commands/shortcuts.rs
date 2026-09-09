@@ -1,8 +1,8 @@
-use crate::errors::ApiError;
-use crate::services::settings::SettingsService;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
+use sworm_core::errors::ApiError;
+use sworm_core::services::settings::SettingsService;
 use tauri_plugin_opener::OpenerExt;
 
 const SHORTCUTS_FILE_TEMPLATE: &str =

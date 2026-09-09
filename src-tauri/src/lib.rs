@@ -1,7 +1,6 @@
 mod app_state;
 mod commands;
-mod errors;
-mod models;
+mod host_events;
 mod services;
 
 use crate::commands::app::launch_path_args;
@@ -17,7 +16,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sworm_lib=info".into()),
+                .unwrap_or_else(|_| "sworm_lib=info,sworm_core=info".into()),
         )
         .init();
 
@@ -46,7 +45,7 @@ pub fn run() {
             let state = AppState::new(app.handle())?;
             let windows = Arc::clone(&state.windows);
             let manifest = {
-                let db = state.db.write();
+                let db = state.host.db.write();
                 windows
                     .load_manifest_or_migrate(app.handle(), &state.app_state_kv, db.conn())
                     .map_err(std::io::Error::other)?
@@ -265,8 +264,7 @@ pub fn run() {
         }
         tauri::RunEvent::Exit => {
             let state = app_handle.state::<AppState>();
-            let cleaned = state.pty.kill_all();
-            let lsp_cleaned = state.lsp.kill_all();
+            let (cleaned, lsp_cleaned) = state.host.shutdown();
             tracing::info!(
                 "App exit cleanup finished, killed {} PTY sessions and {} LSP sessions",
                 cleaned,

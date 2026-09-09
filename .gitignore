@@ -58,6 +58,8 @@ src/lib/paraglide
 .sworm/issues.db-shm
 
 # Tauri / Rust
+/target/
+/.cargo-target/
 src-tauri/target/
 src-tauri/gen/
 

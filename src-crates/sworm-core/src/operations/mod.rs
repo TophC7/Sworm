@@ -1,0 +1,14 @@
+mod activity_map;
+mod builtins;
+mod config_schemas;
+mod files;
+mod folders;
+mod formatting;
+mod git;
+mod issues;
+mod lsp;
+mod nix;
+mod providers;
+mod sessions;
+mod settings;
+mod tasks;
