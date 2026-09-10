@@ -412,25 +412,51 @@ mod tests {
     }
 
     #[test]
-    fn folder_layer_rejects_window_settings_with_window_scoped_diagnostic() {
+    fn folder_layer_rejects_global_only_settings_with_window_scoped_diagnostics() {
         let resolved = resolve(
-            loaded(SettingsLayerKind::Global, "global", json!({})),
+            loaded(
+                SettingsLayerKind::Global,
+                "global",
+                json!({
+                    "window": { "tab_beam_position": "bottom" },
+                    "remotes": {
+                        "home": {
+                            "address": "global.example:7420",
+                            "fingerprint": "SHA256:00"
+                        }
+                    }
+                }),
+            ),
             Some(loaded(
                 SettingsLayerKind::Folder,
                 "folder",
-                json!({ "window": { "tab_beam_position": "bottom" } }),
+                json!({
+                    "window": { "tab_beam_position": "top" },
+                    "remotes": {
+                        "home": {
+                            "address": "folder.example:7420",
+                            "fingerprint": "SHA256:11"
+                        }
+                    }
+                }),
             )),
         );
 
         assert_eq!(
             resolved.settings.window.tab_beam_position,
-            TabBeamPosition::Top
+            TabBeamPosition::Bottom
         );
-        assert_eq!(resolved.diagnostics.len(), 1);
-        let diag = &resolved.diagnostics[0];
-        assert_eq!(diag.code, SettingsDiagnosticCode::UnknownKey);
-        assert_eq!(diag.pointer, "/window");
-        assert!(diag.message.contains("window-scoped"));
+        let remote = &resolved.settings.remotes["home"];
+        assert_eq!(remote.address, "global.example:7420");
+        assert_eq!(remote.fingerprint, "SHA256:00");
+        assert_eq!(resolved.diagnostics.len(), 2);
+        for pointer in ["/window", "/remotes"] {
+            assert!(resolved.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == SettingsDiagnosticCode::UnknownKey
+                    && diagnostic.pointer == pointer
+                    && diagnostic.message.contains("window-scoped")
+            }));
+        }
     }
 
     #[test]

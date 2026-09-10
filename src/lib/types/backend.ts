@@ -195,6 +195,11 @@ export interface ProviderSettings {
   extra_args: string[]
 }
 
+export interface RemoteSettings {
+  address: string
+  fingerprint: string
+}
+
 export interface EffectiveLspServerSettings {
   enabled: boolean
   binary_path_override: string | null
@@ -213,6 +218,7 @@ export interface EffectiveSettings {
   formatting: FormattingSettings
   providers: Record<string, ProviderSettings>
   lsp: { servers: Record<string, EffectiveLspServerSettings> }
+  remotes: Record<string, RemoteSettings>
 }
 
 export type SettingsLayerKind = 'global' | 'folder'

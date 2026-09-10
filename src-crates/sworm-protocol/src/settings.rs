@@ -118,13 +118,23 @@ pub enum TabBeamPosition {
 
 /// JSON Pointer prefixes of settings that are strictly `GlobalOnly` and cannot be
 /// configured in project folder settings.
-pub const GLOBAL_ONLY_POINTERS: &[&str] = &["/window"];
+pub const GLOBAL_ONLY_POINTERS: &[&str] = &["/window", "/remotes"];
 
 pub fn is_global_only_pointer(pointer: &str) -> bool {
     GLOBAL_ONLY_POINTERS.iter().any(|prefix| {
         pointer == *prefix
             || (pointer.starts_with(prefix) && pointer[prefix.len()..].starts_with('/'))
     })
+}
+
+/// One paired `sworm-server`, keyed by the `<server>` segment of `sworm://<server>/…`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteSettings {
+    /// `host:port` the daemon listens on.
+    pub address: String,
+    /// Pinned server certificate fingerprint, `SHA256:<64 lowercase hex>`.
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -291,6 +301,7 @@ pub struct EffectiveSettings {
     /// Keyed by internal provider ID.
     pub providers: BTreeMap<String, ProviderSettings>,
     pub lsp: LspSettings,
+    pub remotes: BTreeMap<String, RemoteSettings>,
 }
 
 impl Default for EffectiveSettings {
@@ -303,6 +314,7 @@ impl Default for EffectiveSettings {
             formatting: FormattingSettings::default(),
             providers: default_provider_settings(),
             lsp: LspSettings::default(),
+            remotes: BTreeMap::new(),
         }
     }
 }
@@ -485,15 +497,17 @@ mod tests {
     }
 
     #[test]
-    fn global_schema_includes_window_settings() {
+    fn global_schema_includes_global_only_settings() {
         let schema = settings_layer_schema(SettingsLayerKind::Global, &[]);
         assert!(schema.pointer("/properties/window").is_some());
+        assert!(schema.pointer("/properties/remotes").is_some());
     }
 
     #[test]
     fn folder_schema_prunes_global_only_settings() {
         let schema = settings_layer_schema(SettingsLayerKind::Folder, &[]);
         assert!(schema.pointer("/properties/window").is_none());
+        assert!(schema.pointer("/properties/remotes").is_none());
         assert!(schema.pointer("/properties/terminal").is_some());
         assert!(schema.pointer("/properties/nix").is_some());
     }

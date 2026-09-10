@@ -15,6 +15,13 @@ pub struct SettingsJsoncLayer {
 }
 
 impl SettingsService {
+    pub fn global_config_dir() -> Result<PathBuf, String> {
+        Self::global_config_dir_from_env_vars(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )
+    }
+
     pub fn global_settings_path() -> Result<PathBuf, String> {
         Self::global_settings_path_from_env_vars(
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -56,18 +63,23 @@ impl SettingsService {
         home: Option<OsString>,
         file_name: &str,
     ) -> Result<PathBuf, String> {
+        Self::global_config_dir_from_env_vars(xdg_config_home, home)
+            .map(|directory| directory.join(file_name))
+    }
+
+    pub fn global_config_dir_from_env_vars(
+        xdg_config_home: Option<OsString>,
+        home: Option<OsString>,
+    ) -> Result<PathBuf, String> {
         if let Some(path) = non_empty_env_path(xdg_config_home) {
-            return Ok(path
-                .join(settings::GLOBAL_SETTINGS_DIR_NAME)
-                .join(file_name));
+            return Ok(path.join(settings::GLOBAL_SETTINGS_DIR_NAME));
         }
 
         let home = non_empty_env_path(home)
             .ok_or_else(|| "HOME is required to resolve global config path".to_string())?;
         Ok(home
             .join(".config")
-            .join(settings::GLOBAL_SETTINGS_DIR_NAME)
-            .join(file_name))
+            .join(settings::GLOBAL_SETTINGS_DIR_NAME))
     }
 
     pub fn folder_settings_path(folder_path: &Path) -> PathBuf {

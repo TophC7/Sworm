@@ -11,7 +11,7 @@ pub async fn git_get_summary(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<GitSummary, ApiError> {
-    state.host.git_get_summary(path).await
+    state.router.git_get_summary(path).await
 }
 
 #[tauri::command]

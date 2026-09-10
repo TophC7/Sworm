@@ -145,6 +145,7 @@ mod tests {
             "formatting",
             "providers",
             "lsp",
+            "remotes",
         ] {
             assert!(rendered.contains(section), "schema includes {section}");
         }

@@ -13,7 +13,24 @@ impl Host {
         project_path: String,
         file_path: String,
     ) -> Result<String, ApiError> {
-        self.files.read(Path::new(&project_path), &file_path)
+        let files = std::sync::Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || files.read(Path::new(&project_path), &file_path))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
+    }
+
+    pub async fn file_read_limited(
+        &self,
+        project_path: String,
+        file_path: String,
+        max_bytes: usize,
+    ) -> Result<String, ApiError> {
+        let files = std::sync::Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || {
+            files.read_limited(Path::new(&project_path), &file_path, max_bytes)
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     /// Write content to a file inside a project.
@@ -143,8 +160,12 @@ impl Host {
         show_hidden: bool,
     ) -> Result<Vec<DirEntry>, ApiError> {
         let generation = *self.settings_generation.lock();
-        self.files
-            .read_dir(Path::new(&project_path), &dir_path, show_hidden, generation)
+        let files = std::sync::Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || {
+            files.read_dir(Path::new(&project_path), &dir_path, show_hidden, generation)
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     /// Flat list of searchable file paths, for Quick Open and the sidebar filter.

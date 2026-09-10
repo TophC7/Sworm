@@ -1,4 +1,5 @@
 use crate::host_events::host_event_sink;
+use crate::router::WorkspaceRouter;
 use crate::services::{app_state_kv::AppStateKvService, windows::WindowCoordinatorService};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +17,8 @@ fn resolve_db_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, anyhow::Err
 
 /// Desktop ownership and IPC adapters around the local host.
 pub struct AppState {
-    pub host: Host,
+    pub host: Arc<Host>,
+    pub router: WorkspaceRouter,
     pub windows: Arc<WindowCoordinatorService>,
     pub app_state_kv: AppStateKvService,
 }
@@ -25,9 +27,11 @@ impl AppState {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
         let windows = Arc::new(WindowCoordinatorService::new());
         let events = host_event_sink(app_handle.clone(), Arc::clone(&windows));
-        let host = Host::new(resolve_db_path(app_handle)?, events)?;
+        let host = Arc::new(Host::new(resolve_db_path(app_handle)?, events)?);
+        let router = WorkspaceRouter::new(Arc::clone(&host));
         Ok(Self {
             host,
+            router,
             windows,
             app_state_kv: AppStateKvService::new(),
         })

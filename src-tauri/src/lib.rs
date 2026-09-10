@@ -1,6 +1,7 @@
 mod app_state;
 mod commands;
 mod host_events;
+pub mod router;
 mod services;
 
 use crate::commands::app::launch_path_args;

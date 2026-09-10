@@ -3,6 +3,8 @@ use crate::services::explorer_filter::{ExplorerFilter, IgnoreChain};
 use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use sworm_protocol::files::{DirEntry, FilePasteCollision, FilePasteMapping, PathList};
@@ -56,8 +58,60 @@ impl FileService {
     pub fn read(&self, project_path: &Path, file_path: &str) -> Result<String, ApiError> {
         self.validate_path(file_path)?;
         let abs = project_path.join(file_path);
-        std::fs::read_to_string(&abs)
-            .map_err(|e| ApiError::Io(format!("Failed to read {}: {}", file_path, e)))
+        let (mut file, size) = Self::open_regular(&abs, file_path)?;
+        let mut contents = String::with_capacity(size as usize);
+        file.read_to_string(&mut contents)
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        Ok(contents)
+    }
+
+    /// Open without blocking on FIFOs/devices, then validate the opened descriptor
+    /// so a path swap between check and open cannot hand back a non-regular file.
+    fn open_regular(abs: &Path, file_path: &str) -> Result<(File, u64), ApiError> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(abs)
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        if !metadata.file_type().is_file() {
+            return Err(ApiError::InvalidArgument(format!(
+                "{file_path} is not a regular file"
+            )));
+        }
+        Ok((file, metadata.len()))
+    }
+
+    /// Read at most `max_bytes`, rejecting larger files before allocating their contents.
+    pub fn read_limited(
+        &self,
+        project_path: &Path,
+        file_path: &str,
+        max_bytes: usize,
+    ) -> Result<String, ApiError> {
+        self.validate_path(file_path)?;
+        let abs = project_path.join(file_path);
+        let (file, size) = Self::open_regular(&abs, file_path)?;
+        if size > max_bytes as u64 {
+            return Err(ApiError::InvalidArgument(format!(
+                "File {file_path} exceeds the {max_bytes}-byte read limit"
+            )));
+        }
+        let mut bytes = Vec::with_capacity(size as usize);
+        file.take(max_bytes as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        if bytes.len() > max_bytes {
+            return Err(ApiError::InvalidArgument(format!(
+                "File {file_path} exceeds the {max_bytes}-byte read limit"
+            )));
+        }
+        String::from_utf8(bytes)
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))
     }
 
     /// Write content to a file inside a project.

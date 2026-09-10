@@ -164,7 +164,7 @@
             # The tauri CLI injects this feature automatically; raw cargo does not.
             # Without it, cfg(dev) stays active and assets are not embedded.
             cargoExtraArgs = "--locked -p sworm --features tauri/custom-protocol";
-            cargoTestExtraArgs = "-p sworm-core -p sworm-protocol";
+            cargoTestExtraArgs = "-p sworm-core -p sworm-protocol -p sworm-remote -p sworm-server -p sworm --features tauri/custom-protocol";
 
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             TAURI_CONFIG = builtins.toJSON { inherit version; };
@@ -216,10 +216,51 @@
               };
             }
           );
+
+          serverArgs = {
+            pname = "sworm-server";
+            inherit version;
+            inherit (commonArgs)
+              src
+              strictDeps
+              nativeCheckInputs
+              preCheck
+              ;
+            cargoExtraArgs = "--locked -p sworm-server";
+            cargoTestExtraArgs = "-p sworm-server";
+          };
+
+          # Cache only the daemon's Rust dependencies; desktop artifacts include Tauri.
+          serverCargoArtifacts = craneLib.buildDepsOnly (
+            (builtins.removeAttrs serverArgs [
+              "version"
+              "nativeCheckInputs"
+              "preCheck"
+              "cargoTestExtraArgs"
+            ])
+            // {
+              version =
+                (builtins.fromTOML (builtins.readFile ./src-crates/sworm-server/Cargo.toml)).package.version;
+            }
+          );
+
+          serverPackage = craneLib.buildPackage (
+            serverArgs
+            // {
+              cargoArtifacts = serverCargoArtifacts;
+              meta = {
+                description = "Headless Sworm daemon for remote workspaces";
+                license = lib.licenses.agpl3Plus;
+                platforms = lib.platforms.linux;
+                mainProgram = "sworm-server";
+              };
+            }
+          );
         in
         {
           inherit frontend;
           default = appPackage;
+          sworm-server = serverPackage;
         }
       );
 

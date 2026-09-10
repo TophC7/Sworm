@@ -9,7 +9,7 @@ pub async fn file_read(
     file_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    state.host.file_read(project_path, file_path).await
+    state.router.file_read(project_path, file_path).await
 }
 
 #[tauri::command]
@@ -100,7 +100,7 @@ pub async fn files_read_dir(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<DirEntry>, ApiError> {
     state
-        .host
+        .router
         .files_read_dir(project_path, dir_path, show_hidden)
         .await
 }

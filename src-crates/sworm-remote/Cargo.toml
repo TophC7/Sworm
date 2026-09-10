@@ -1,0 +1,22 @@
+[package]
+name = "sworm-remote"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+sworm-protocol = { path = "../sworm-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror = "2"
+quinn.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+rcgen.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

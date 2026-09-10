@@ -12,6 +12,7 @@ pub mod nix_env;
 pub mod omp;
 pub mod provider;
 pub mod pty;
+pub mod rpc;
 pub mod session;
 pub mod settings;
 pub mod task;

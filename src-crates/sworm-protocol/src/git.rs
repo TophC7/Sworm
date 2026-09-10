@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Git change entry from `git status --porcelain=v2`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitChange {
     pub path: String,
     pub status: String,
@@ -11,7 +11,7 @@ pub struct GitChange {
 }
 
 /// Summary of git state for a project path.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitSummary {
     pub is_repo: bool,
     pub branch: Option<String>,

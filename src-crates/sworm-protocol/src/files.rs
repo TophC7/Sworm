@@ -13,7 +13,7 @@ pub struct FilePasteMapping {
 }
 
 /// One row in a directory listing.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirEntry {
     /// Display label. A compacted chain carries the whole run, e.g. "lib/utils".
     pub name: String,

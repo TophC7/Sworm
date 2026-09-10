@@ -158,7 +158,7 @@ impl Host {
         self.emit_settings_changed(SettingsLayerKind::Global, diagnostics)
     }
 
-    fn watch_settings_paths(&self, folder_path: Option<&Path>) {
+    pub fn watch_settings_paths(&self, folder_path: Option<&Path>) {
         let generation = Arc::clone(&self.settings_generation);
         if let Err(error) = self
             .settings_watchers
@@ -313,7 +313,7 @@ pub(crate) fn ensure_object_property<'a>(
 fn validate_top_level_section(section: &str) -> Result<(), ApiError> {
     if matches!(
         section,
-        "window" | "terminal" | "nix" | "explorer" | "formatting" | "providers" | "lsp"
+        "window" | "terminal" | "nix" | "explorer" | "formatting" | "providers" | "lsp" | "remotes"
     ) {
         Ok(())
     } else {
@@ -370,6 +370,7 @@ mod tests {
             "formatting",
             "providers",
             "lsp",
+            "remotes",
         ] {
             validate_top_level_section(section).expect("section valid");
         }

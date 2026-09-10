@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "src-crates/sworm-protocol", "src-crates/sworm-core"]
+members = [
+  "src-tauri",
+  "src-crates/sworm-protocol",
+  "src-crates/sworm-core",
+  "src-crates/sworm-remote",
+  "src-crates/sworm-server",
+]
 default-members = ["src-tauri"]
 
 [workspace.dependencies]
@@ -15,3 +21,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net",
 rusqlite = { version = "0.33", features = ["bundled"] }
 tracing = "0.1"
 parking_lot = "0.12"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
