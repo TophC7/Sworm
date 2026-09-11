@@ -57,7 +57,12 @@ impl Host {
         &self,
         input: EffectiveSettingsInput,
     ) -> Result<EffectiveSettingsPayload, ApiError> {
-        let folder_path = input.folder_path.map(PathBuf::from);
+        // Remote workspaces have no local folder layer: the daemon owns their
+        // files, and the desktop's own settings still govern this window.
+        let folder_path = input
+            .folder_path
+            .filter(|path| !path.starts_with("sworm://"))
+            .map(PathBuf::from);
         self.watch_settings_paths(folder_path.as_deref());
         let resolved = resolve_effective_settings_for_folder_path(folder_path.as_deref())
             .map_err(ApiError::Internal)?;

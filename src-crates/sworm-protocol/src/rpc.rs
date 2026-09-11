@@ -73,6 +73,11 @@ macro_rules! sworm_rpc_ops {
             FolderResolve => folder_resolve(
                 path: String,
             ) -> $crate::folder::FolderInfo;
+            #[route(path)]
+            FolderListEntries => folder_list_entries(
+                path: String,
+                show_hidden: bool,
+            ) -> Vec<$crate::folder::FolderEntry>;
             #[route(project_path)]
             FilesWatchDirs => files_watch_dirs(
                 project_path: String,

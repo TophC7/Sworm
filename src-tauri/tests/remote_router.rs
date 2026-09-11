@@ -214,6 +214,17 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         router.folder_resolve(remote_repository.clone()).await?.path,
         canonical_uri
     );
+    // Browsing a remote folder must hand back remote URIs, or the folder
+    // switcher walks out of the workspace on the first click.
+    let listed = router
+        .folder_list_entries(remote_repository.clone(), false)
+        .await?;
+    let source = listed
+        .iter()
+        .find(|entry| entry.name == "src")
+        .expect("remote listing includes src");
+    assert!(source.is_dir);
+    assert_eq!(source.path, format!("{canonical_uri}/src"));
     assert_eq!(
         router
             .file_read(

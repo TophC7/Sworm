@@ -5,11 +5,15 @@ use std::path::{Path, PathBuf};
 use sworm_core::errors::ApiError;
 
 /// Resolve existing launch paths lexically, preserving symlink path forms.
+/// `sworm://` remote workspaces pass through: they name no local file.
 pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
     argv.iter()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))
         .filter_map(|arg| {
+            if arg.starts_with("sworm://") {
+                return Some(arg.clone());
+            }
             let path = PathBuf::from(arg);
             let path = if path.is_absolute() {
                 path
@@ -375,6 +379,13 @@ mod tests {
     fn launch_path_args_returns_empty_for_missing_path() {
         let argv = vec!["sworm".into(), "/nonexistent/path/xyz".into()];
         assert!(launch_path_args(&argv, None).is_empty());
+    }
+
+    #[test]
+    fn launch_path_args_keeps_remote_workspace_uris() {
+        let uri = "sworm://homelab/home/me/project".to_owned();
+        let argv = vec!["sworm".into(), uri.clone()];
+        assert_eq!(launch_path_args(&argv, None), vec![uri]);
     }
 
     #[cfg(unix)]

@@ -8,7 +8,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
-        Arc, Weak,
+        Arc, LazyLock, Weak,
     },
     time::Duration,
 };
@@ -133,7 +133,9 @@ struct PendingStop {
 
 pub(crate) struct RouterInner {
     pub(crate) host: Arc<Host>,
-    endpoint: quinn::Endpoint,
+    /// Bound on first remote use: `quinn` needs a live Tokio runtime, and app
+    /// setup runs outside one.
+    endpoint: LazyLock<quinn::Endpoint>,
     remotes: Mutex<HashMap<String, Arc<RemoteSlot>>>,
     settings: AsyncMutex<SettingsCache>,
     identity: OnceCell<Arc<Identity>>,
@@ -158,7 +160,7 @@ impl WorkspaceRouter {
         Self {
             inner: Arc::new(RouterInner {
                 host,
-                endpoint: client_endpoint(),
+                endpoint: LazyLock::new(client_endpoint),
                 remotes: Mutex::new(HashMap::new()),
                 settings: AsyncMutex::new(SettingsCache {
                     generation: u64::MAX,
@@ -648,6 +650,44 @@ macro_rules! define_router_operation {
                 return Ok(folder);
             }
             self.inner.host.$method($path).await
+        }
+    };
+    (
+        #[route(path)]
+        FolderListEntries => $method:ident(
+            $path:ident: $path_type:ty,
+            $show_hidden:ident: $show_hidden_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $path: $path_type,
+            $show_hidden: $show_hidden_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote {
+                server,
+                path: remote_path,
+            } = Target::parse(&$path)?
+            {
+                // Browsing claims nothing; entries come back as remote URIs so
+                // the switcher keeps navigating the same workspace.
+                let mut entries = self
+                    .call_reply(
+                        server,
+                        Request::FolderListEntries {
+                            path: remote_path.to_owned(),
+                            show_hidden: $show_hidden,
+                        },
+                    )
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from)?;
+                for entry in &mut entries {
+                    entry.path = Target::remote_uri(server, &entry.path);
+                }
+                return Ok(entries);
+            }
+            self.inner.host.$method($path, $show_hidden).await
         }
     };
     (

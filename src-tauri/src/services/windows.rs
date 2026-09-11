@@ -898,6 +898,13 @@ impl WindowCoordinatorService {
     }
 
     pub fn route_open_path(&self, app: &tauri::AppHandle, path_str: &str) {
+        // Remote workspaces are URIs, not filesystem paths: nothing local to
+        // canonicalize or stat.
+        if path_str.starts_with("sworm://") {
+            self.route_open_folder(app, path_str.to_string());
+            return;
+        }
+
         let requested = PathBuf::from(path_str);
         let canonical = match requested.canonicalize() {
             Ok(path) => path,
@@ -915,19 +922,7 @@ impl WindowCoordinatorService {
         };
 
         if canonical.is_dir() {
-            let target = OpenTarget::Folder {
-                folder_path: canonical.to_string_lossy().into_owned(),
-            };
-            match window.external_folder_open_mode {
-                ExternalFolderOpenMode::FocusedWindow => {
-                    if let Some(label) = self.get_focused_window_label() {
-                        self.queue_open_target(&label, target, app);
-                    } else {
-                        self.create_window_with_target(app, target);
-                    }
-                }
-                ExternalFolderOpenMode::NewWindow => self.create_window_with_target(app, target),
-            }
+            self.route_open_folder(app, canonical.to_string_lossy().into_owned());
             return;
         }
 
@@ -973,6 +968,24 @@ impl WindowCoordinatorService {
                 }
             }
             ExternalFileOpenMode::NewWindow => self.create_window_with_target(app, target),
+        }
+    }
+
+    fn route_open_folder(&self, app: &tauri::AppHandle, folder_path: String) {
+        let mode = match resolve_effective_settings_for_folder_path(None) {
+            Ok(resolved) => resolved.settings.window.external_folder_open_mode,
+            Err(error) => {
+                tracing::warn!("Cannot resolve open routing settings: {error}");
+                WindowSettings::default().external_folder_open_mode
+            }
+        };
+        let target = OpenTarget::Folder { folder_path };
+        match mode {
+            ExternalFolderOpenMode::FocusedWindow => match self.get_focused_window_label() {
+                Some(label) => self.queue_open_target(&label, target, app),
+                None => self.create_window_with_target(app, target),
+            },
+            ExternalFolderOpenMode::NewWindow => self.create_window_with_target(app, target),
         }
     }
 

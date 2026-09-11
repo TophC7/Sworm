@@ -71,6 +71,12 @@
   let q = $derived(filterQuery.trim().toLowerCase())
   let crumbs = $derived(folderPathCrumbs(containerPath))
   let recents = $derived(getRecentFolders().slice(0, 6))
+  // A typed absolute path or sworm:// URI is a destination, not a filter.
+  let typedLocation = $derived.by(() => {
+    const value = filterQuery.trim()
+    if (value.startsWith('sworm://')) return splitRemotePath(value) ? value : null
+    return value.startsWith('/') ? value : null
+  })
 
   function isMatch(entry: FolderEntry): boolean {
     return q.length === 0 || entry.name.toLowerCase().includes(q)
@@ -217,9 +223,11 @@
       goUp()
       return
     }
-    if (key === 'Enter' && selectedPath) {
+    if (key === 'Enter') {
+      const target = typedLocation ?? selectedPath
+      if (!target) return
       event.preventDefault()
-      void enterFolder(selectedPath)
+      void enterFolder(target)
       return
     }
     if (key === 'Escape') {
@@ -455,7 +463,17 @@
             {containerPath === '/' ? '/' : `${basename(containerPath)}/`}
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto py-1" aria-live="polite">
-            {#if containerLoad.loading && leftRows.length === 0}
+            {#if typedLocation}
+              <button
+                type="button"
+                class="flex w-full items-center gap-1.5 border-none bg-transparent py-0.5 pr-2 pl-2.5 text-left text-sm text-muted hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none"
+                style:height="22px"
+                onclick={() => void enterFolder(typedLocation)}
+              >
+                <FolderOpen size={12} class="shrink-0 text-accent" />
+                <span class="truncate font-mono text-fg">{typedLocation}</span>
+              </button>
+            {:else if containerLoad.loading && leftRows.length === 0}
               <div class="px-3 py-2 text-sm text-subtle">Loading…</div>
             {:else if containerError}
               <div class="px-3 py-2 text-sm text-danger">{containerError}</div>
@@ -471,8 +489,8 @@
             <Input
               bind:ref={inputRef}
               bind:value={filterQuery}
-              placeholder="Filter folders..."
-              aria-label="Filter folders"
+              placeholder="Filter folders, or type a path"
+              aria-label="Filter folders or open a path"
               class="h-7 py-1 text-sm"
             />
           </div>

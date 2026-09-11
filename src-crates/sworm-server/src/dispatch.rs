@@ -203,6 +203,20 @@ impl DispatchRuntime<'_> {
         self.host.folder_resolve(path).await.map_err(Into::into)
     }
 
+    /// Browsing is not ownership: the folder switcher walks directories the
+    /// desktop never opens, so this claims nothing.
+    async fn folder_list_entries(
+        &self,
+        path: String,
+        show_hidden: bool,
+    ) -> Result<Vec<sworm_protocol::folder::FolderEntry>, WireError> {
+        require_absolute(&path, "path")?;
+        self.host
+            .folder_list_entries(path, show_hidden)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn files_watch_dirs(
         &self,
         project_path: String,

@@ -6,7 +6,7 @@ pub struct FolderInfo {
     pub name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderEntry {
     pub name: String,
     pub path: String,

@@ -144,7 +144,7 @@ pub async fn folder_list_entries(
     show_hidden: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FolderEntry>, ApiError> {
-    state.host.folder_list_entries(path, show_hidden).await
+    state.router.folder_list_entries(path, show_hidden).await
 }
 
 #[tauri::command]
