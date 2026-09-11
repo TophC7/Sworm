@@ -85,8 +85,22 @@ impl Host {
         }
     }
 
-    /// Gracefully terminate all active background child processes (PTY sessions and
-    /// language servers) on application shutdown.
+    /// Release a last window's resources. Local runs are killed; adopted
+    /// shutdown-detaching runs are dropped without invoking their kill policy.
+    pub fn detach_owner(&self, owner: &str, protected_pty_runs: &HashSet<String>) {
+        self.file_watchers.release_subscriber(owner);
+        self.lsp.kill_owner(owner);
+        for run_id in self.pty.detach_owner(owner, protected_pty_runs) {
+            self.tasks.release_singleton_by_run_id(&run_id);
+        }
+    }
+
+    pub fn settings_generation(&self) -> u64 {
+        *self.settings_generation.lock()
+    }
+
+    /// Gracefully terminate local PTYs and language servers while detaching
+    /// adopted runs whose backend owns their remote lifetime.
     pub fn shutdown(&self) -> (usize, usize) {
         let pty_cleaned = self.pty.kill_all();
         let lsp_cleaned = self.lsp.kill_all();

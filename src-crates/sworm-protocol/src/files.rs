@@ -39,7 +39,7 @@ pub struct PathList {
 
 pub const FILES_CHANGED_EVENT: &str = "files-changed";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilesChangedEvent {
     pub folder_path: String,
     /// Project-relative directories whose contents changed; "" is the root.

@@ -1,14 +1,10 @@
 use crate::{
     identity::{Fingerprint, Identity},
     tls::{client_config, peer_fingerprint},
-    wire::{read_frame, write_frame},
+    wire::{read_frame, write_frame_with_limit},
 };
-use serde::de::DeserializeOwned;
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    time::Duration,
-};
-use sworm_protocol::rpc::{Request, Response, WireError};
+use std::{future::Future, net::SocketAddr, time::Duration};
+use sworm_protocol::rpc::{Open, Reply, Request, Response, WireError, MAX_REQUEST_FRAME_BYTES};
 use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,16 +31,11 @@ pub struct RemoteClient {
 impl RemoteClient {
     /// Connect only when the server certificate matches the out-of-band fingerprint.
     pub async fn connect(
+        endpoint: &quinn::Endpoint,
         addr: SocketAddr,
         identity: &Identity,
         expected: Fingerprint,
     ) -> Result<Self, RemoteError> {
-        let bind_addr = match addr {
-            SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        };
-        let endpoint = quinn::Endpoint::client(bind_addr)
-            .map_err(|error| transport_error("bind QUIC client endpoint", error))?;
         let connecting = endpoint
             .connect_with(client_config(identity, expected)?, addr, "sworm")
             .map_err(|error| transport_error("start QUIC connection", error))?;
@@ -64,25 +55,19 @@ impl RemoteClient {
             ));
         }
         Ok(Self {
-            _endpoint: endpoint,
+            _endpoint: endpoint.clone(),
             connection,
         })
     }
 
-    pub async fn call<T: DeserializeOwned>(&self, request: &Request) -> Result<T, RemoteError> {
+    /// Run one bounded request/response exchange.
+    pub async fn call(&self, request: &Request) -> Result<Reply, RemoteError> {
         timeout(REQUEST_TIMEOUT, async {
-            let (mut send, mut recv) = self
-                .connection
-                .open_bi()
-                .await
-                .map_err(|error| connection_error("open request stream", error))?;
-            write_frame(&mut send, request).await?;
+            let (mut send, mut recv) = self.open_stream(Open::Rpc(request.clone())).await?;
             send.finish()
                 .map_err(|error| transport_error("finish request stream", error))?;
             match read_frame::<Response>(&mut recv).await? {
-                Ok(value) => serde_json::from_value(value).map_err(|error| {
-                    RemoteError::Transport(format!("decode response value: {error}"))
-                }),
+                Ok(reply) => Ok(reply),
                 Err(error) => Err(RemoteError::Wire(error)),
             }
         })
@@ -95,18 +80,38 @@ impl RemoteClient {
         })?
     }
 
+    /// Open a lifetime stream. Callers own its timeout and shutdown policy.
+    pub async fn open_stream(
+        &self,
+        open: Open,
+    ) -> Result<(quinn::SendStream, quinn::RecvStream), RemoteError> {
+        let (mut send, recv) = self
+            .connection
+            .open_bi()
+            .await
+            .map_err(|error| connection_error("open stream", error))?;
+        write_frame_with_limit(&mut send, &open, MAX_REQUEST_FRAME_BYTES).await?;
+        Ok((send, recv))
+    }
+
     pub async fn pair(&self, token: &str, name: &str) -> Result<(), RemoteError> {
-        self.call::<serde_json::Value>(&Request::Pair {
+        self.call(&Request::Pair {
             token: token.to_owned(),
             name: name.to_owned(),
         })
-        .await?;
-        Ok(())
+        .await?
+        .pair()
+        .map_err(RemoteError::Wire)
     }
 
     #[doc(hidden)]
     pub fn connection(&self) -> &quinn::Connection {
         &self.connection
+    }
+
+    /// Resolve when QUIC closes locally or remotely.
+    pub fn closed(&self) -> impl Future<Output = quinn::ConnectionError> + '_ {
+        self.connection.closed()
     }
 
     pub fn is_closed(&self) -> bool {

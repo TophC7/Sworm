@@ -22,6 +22,7 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
         folderPath: tab.folderPath,
         title: tab.title,
         providerId: tab.providerId,
+        runId: tab.runId,
         resumeToken: tab.resumeToken,
         locked: tab.locked
       }
@@ -93,10 +94,22 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       // restart instead of silently vanishing from the tab strip.
       return { kind: 'launcher', folderPath: tab.folderPath, locked: tab.locked }
     case 'task':
-      // Tasks are ephemeral runs. Their PTY is tied to a live runId
-      // that dies with the process, so persisting the tab across
-      // restarts would resurrect a dead handle.
-      return null
+      // Local tasks and already-inert tabs stay ephemeral. A live remote
+      // task outlives the last window, so retain its id for reattach.
+      if (!tab.folderPath.startsWith('sworm://') || (tab.status !== 'starting' && tab.status !== 'running')) {
+        return null
+      }
+      return {
+        kind: 'task',
+        folderPath: tab.folderPath,
+        runId: tab.runId,
+        taskId: tab.taskId,
+        activeFilePath: tab.activeFilePath,
+        label: tab.label,
+        icon: tab.icon,
+        group: tab.group,
+        locked: tab.locked
+      }
     default: {
       const _exhaustive: never = tab
       return _exhaustive
@@ -113,9 +126,8 @@ export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV4 {
     if (tab.id === wb.activeTabId) activeTabIndex = tabs.length
     tabs.push(persisted)
   }
-  // If the active tab was dropped from persistence (untitled buffer, task
-  // run), fall back to the last persisted tab so restore lands on
-  // something instead of an empty surface.
+  // If the active tab was dropped from persistence (for example, an
+  // untitled buffer or local task), restore the last persisted tab.
   if (activeTabIndex < 0 && tabs.length > 0) activeTabIndex = tabs.length - 1
   return { version: 4, activeTabIndex, tabs }
 }
@@ -129,9 +141,27 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
         folderPath: persisted.folderPath,
         title: persisted.title,
         providerId: persisted.providerId,
+        runId: persisted.runId ?? null,
         resumeToken: persisted.resumeToken,
         // Restored processes start lazily on first activation.
         status: 'dormant',
+        locked: persisted.locked
+      }
+    case 'task':
+      return {
+        kind: 'task',
+        id,
+        folderPath: persisted.folderPath,
+        runId: persisted.runId,
+        taskId: persisted.taskId,
+        activeFilePath: persisted.activeFilePath,
+        label: persisted.label,
+        icon: persisted.icon,
+        group: persisted.group,
+        // Starting with the persisted id reconnects a live remote run or
+        // replays its retained output and Exit event when already complete.
+        status: 'starting',
+        exitCode: null,
         locked: persisted.locked
       }
     case 'text':

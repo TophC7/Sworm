@@ -29,6 +29,7 @@ quinn.workspace = true
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 chrono.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -21,7 +21,7 @@ pub async fn git_watch(
 ) -> Result<(), ApiError> {
     let windows = std::sync::Arc::clone(&state.windows);
     state
-        .host
+        .router
         .git_watch(project_path, move |folder| windows.folder_claimed(folder))
         .await
 }

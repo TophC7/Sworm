@@ -46,6 +46,22 @@
 
   const containerLoad = createTrackedAsyncLoad<string | null>()
   const selectedLoad = createTrackedAsyncLoad<string | null>()
+  function splitRemotePath(path: string): { root: string; path: string } | null {
+    const match = /^(sworm:\/\/[^/]+)(\/.*)?$/.exec(path)
+    return match ? { root: match[1], path: match[2] || '/' } : null
+  }
+
+  function folderDirname(path: string): string {
+    const remote = splitRemotePath(path)
+    if (!remote) return dirname(path) || '/'
+    return `${remote.root}${dirname(remote.path) || '/'}`
+  }
+
+  function folderPathCrumbs(path: string): Array<{ label: string; path: string }> {
+    const remote = splitRemotePath(path)
+    if (!remote) return pathCrumbs(path)
+    return pathCrumbs(remote.path).map((crumb) => ({ ...crumb, path: `${remote.root}${crumb.path}` }))
+  }
 
   let open = $derived(isFolderSwitcherOpen())
   let leftRows = $derived(
@@ -53,7 +69,7 @@
   )
   let previewEntries = $derived(selectedEntriesPath === selectedPath ? selectedEntries : [])
   let q = $derived(filterQuery.trim().toLowerCase())
-  let crumbs = $derived(pathCrumbs(containerPath))
+  let crumbs = $derived(folderPathCrumbs(containerPath))
   let recents = $derived(getRecentFolders().slice(0, 6))
 
   function isMatch(entry: FolderEntry): boolean {
@@ -67,9 +83,10 @@
   }
 
   function goUp(): void {
-    if (containerPath === '/') return
+    const parent = folderDirname(containerPath)
+    if (parent === containerPath) return
     const previousPath = containerPath
-    containerPath = dirname(previousPath) || '/'
+    containerPath = parent
     selectedPath = previousPath
     filterQuery = ''
   }
@@ -222,7 +239,7 @@
       if (initialPath && basename(initialPath).startsWith('.')) {
         showHidden = true
       }
-      containerPath = initialPath ? dirname(initialPath) || '/' : '/'
+      containerPath = initialPath ? folderDirname(initialPath) : '/'
       selectedPath = initialPath
       filterQuery = ''
       void tick().then(() => {

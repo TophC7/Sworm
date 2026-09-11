@@ -1,6 +1,5 @@
 import { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
 import type { TabId } from '$lib/features/workbench/model'
-import { isTabTransferring } from '$lib/features/workbench/state.svelte'
 import type { TerminalTransferState } from '$lib/types/backend'
 
 const sessions = new Map<TabId, TerminalSessionManager>()
@@ -63,11 +62,10 @@ export function dispose(tabId: TabId): void {
 }
 
 export function disposeAll(): void {
-  for (const [tabId, manager] of sessions) {
-    if (isTabTransferring(tabId)) manager.detachForTransfer()
-    else manager.dispose()
-    sessions.delete(tabId)
+  for (const manager of sessions.values()) {
+    manager.detachForWindowClose()
   }
+  sessions.clear()
 }
 
 export function get(tabId: TabId): TerminalSessionManager | undefined {

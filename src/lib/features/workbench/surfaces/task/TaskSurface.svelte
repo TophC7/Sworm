@@ -2,8 +2,8 @@
   @component
   TaskSurface — host for a single task PTY run.
 
-  Mounts xterm inside its root, spawns the task on mount, and rebinds
-  to a fresh terminal whenever `tab.runId` changes (singleton restart).
+  Mounts xterm inside its root, starts or reconnects the persisted run,
+  and rebinds to a fresh terminal whenever `tab.runId` changes.
   Reports lifecycle transitions back into the tab model via the tasks
   service so the tab title/status badge stay in sync.
 

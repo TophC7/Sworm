@@ -69,14 +69,14 @@ pub struct StashEntry {
 
 pub const GIT_CHANGED_EVENT: &str = "git-changed";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GitChangeScope {
     Summary,
     All,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitChangedEvent {
     pub folder_path: String,
     pub scope: GitChangeScope,

@@ -33,6 +33,7 @@ rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot.workspace = true
+quinn.workspace = true
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-single-instance = "2"
 wl-clipboard-rs = "0.9.3"

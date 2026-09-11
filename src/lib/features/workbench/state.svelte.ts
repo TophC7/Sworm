@@ -33,6 +33,7 @@ import type {
 import { canLockTab } from '$lib/features/workbench/model'
 import {
   loadPersistedWorkbench,
+  flushWorkbench,
   persistedToTab,
   schedulePersistWorkbench,
   serializeWorkbench,
@@ -435,6 +436,7 @@ export function addSessionTab(folderPath: string, init: SessionTabInit): TabId {
     folderPath,
     title: init.title,
     providerId: init.providerId,
+    runId: null,
     resumeToken: init.resumeToken,
     status: 'dormant',
     locked: false
@@ -448,6 +450,18 @@ export function setSessionTabStatus(tabId: TabId, status: SessionStatus): void {
 export function setSessionTabTitle(tabId: TabId, title: string): void {
   if (!title) return
   updateTab(tabId, (t) => (t.kind === 'session' && t.title !== title ? { ...t, title } : t))
+}
+export function setSessionTabRunId(tabId: TabId, runId: string | null): void {
+  updateTab(tabId, (t) => (t.kind === 'session' && t.runId !== runId ? { ...t, runId } : t))
+}
+/**
+ * Persist a newly minted run id before asking the backend to start it.
+ * Durability is best effort: the failed snapshot is requeued by
+ * `flushWorkbench`, and a lost run id only costs reattach after a restart.
+ */
+export async function persistSessionTabRunId(tabId: TabId, runId: string): Promise<void> {
+  setSessionTabRunId(tabId, runId)
+  await flushWorkbench(windowLabel).catch((error) => console.warn('Failed to persist session run id:', error))
 }
 
 export function setSessionTabResumeToken(tabId: TabId, resumeToken: string | null): void {
@@ -874,9 +888,9 @@ export function closeTab(tabId: TabId): void {
   const tab = workbench.tabs[index]
   if (tab.locked) return
 
-  // Snapshot before teardown; `tabToPersisted` returns null for tabs that
-  // can't be meaningfully reopened (untitled buffers, tool tabs, task runs).
-  const snapshot = tabToPersisted(tab)
+  // Remote tasks are persisted across window teardown, but explicit tab
+  // close still kills them and intentionally does not enter reopen history.
+  const snapshot = tab.kind === 'task' ? null : tabToPersisted(tab)
   if (snapshot) pushClosedTab(snapshot)
 
   if (tab.kind === 'session') {
@@ -909,12 +923,16 @@ export async function reopenLastClosedTab(): Promise<TabId | null> {
 
   try {
     switch (head.kind) {
+      // Closing killed this run. Reopen resumes provider history under a fresh PTY id.
       case 'session':
         return addSessionTab(head.folderPath, {
           providerId: head.providerId,
           title: head.title,
           resumeToken: head.resumeToken
         })
+      case 'task':
+        // Task snapshots never enter closedTabs; keep the persisted union exhaustive.
+        return null
       case 'text':
         return head.gitRef
           ? addReadonlyTextTab(head.folderPath, head.filePath, head.gitRef, head.refLabel ?? head.gitRef, false)

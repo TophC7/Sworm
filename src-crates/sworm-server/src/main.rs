@@ -1,9 +1,12 @@
+mod config;
+mod pairing;
+
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf};
 use sworm_core::services::settings::SettingsService;
 use sworm_remote::Identity;
-use sworm_server::{auth, paths, serve, ServeOptions};
+use sworm_server::{paths, serve, ServeOptions};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -23,7 +26,12 @@ enum Command {
         #[arg(long)]
         listen: Option<SocketAddr>,
     },
-    Pair,
+    Pair {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        listen: Option<SocketAddr>,
+    },
     Fingerprint,
 }
 
@@ -60,13 +68,7 @@ async fn main() -> anyhow::Result<()> {
             handle.shutdown().await;
             signal_result?;
         }
-        Command::Pair => {
-            let identity = Identity::load_or_generate(&config_dir, "server")?;
-            let token = auth::write_pairing_token(&config_dir)?;
-            println!("Pairing token: {token}");
-            println!("Valid for 10 minutes");
-            println!("Server fingerprint: {}", identity.fingerprint());
-        }
+        Command::Pair { host, listen } => pairing::run(&config_dir, host, listen)?,
         Command::Fingerprint => {
             let identity = Identity::load_or_generate(&config_dir, "server")?;
             println!("{}", identity.fingerprint());

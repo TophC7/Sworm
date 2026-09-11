@@ -1,4 +1,6 @@
 use crate::app_state::AppState;
+use crate::router::Target;
+use crate::services::windows::release_folder_resources;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
@@ -131,7 +133,7 @@ pub async fn folder_resolve(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<FolderInfo, ApiError> {
-    state.host.folder_resolve(path).await
+    state.router.folder_resolve(path).await
 }
 
 /// Immediate children of a canonicalized directory; directories first, then
@@ -151,8 +153,9 @@ pub async fn folder_claim(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    let folder = resolve_folder(&folder_path)?;
-    state.windows.claim_folder(window.label(), folder);
+    state
+        .windows
+        .claim_folder(window.label(), folder_key(&folder_path)?);
     Ok(())
 }
 
@@ -166,16 +169,25 @@ pub async fn folder_release(
 ) -> Result<(), ApiError> {
     // A previously canonical path remains the resource key if the folder was
     // deleted before its tab closed.
-    let folder = resolve_folder(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
+    let folder = folder_key(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
     let is_last_owner = state.windows.release_folder(window.label(), &folder);
     state
         .host
         .file_watchers
         .release_subscriber_folder(window.label(), &folder);
     if is_last_owner {
-        state.host.release_folder(&folder);
+        release_folder_resources(&state, &folder);
     }
     Ok(())
+}
+
+/// Remote workspaces are owned by their `sworm://` URI; local folders by their
+/// canonical path.
+fn folder_key(folder_path: &str) -> Result<PathBuf, ApiError> {
+    match Target::parse(folder_path)? {
+        Target::Remote { .. } => Ok(PathBuf::from(folder_path)),
+        Target::Local => resolve_folder(folder_path),
+    }
 }
 
 /// Spawn a detached system terminal emulator rooted at the given path.

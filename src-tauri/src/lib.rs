@@ -1,6 +1,7 @@
 mod app_state;
 mod commands;
 mod host_events;
+mod remote_runs;
 pub mod router;
 mod services;
 
@@ -51,6 +52,7 @@ pub fn run() {
                     .load_manifest_or_migrate(app.handle(), &state.app_state_kv, db.conn())
                     .map_err(std::io::Error::other)?
             };
+            state.router.retry_pending_stops();
             app.manage(state);
 
             for entry in manifest.windows {

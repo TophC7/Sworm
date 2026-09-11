@@ -1,6 +1,7 @@
 pub mod activity_map;
 pub mod builtins;
 pub mod codex_state;
+pub mod completed_runs;
 pub mod config_schemas;
 pub mod db;
 pub mod env;

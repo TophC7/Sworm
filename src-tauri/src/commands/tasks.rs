@@ -9,7 +9,7 @@ pub async fn tasks_list(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TaskDefinition>, ApiError> {
-    state.host.tasks_list(folder_path).await
+    state.router.tasks_list(folder_path).await
 }
 
 #[tauri::command]
@@ -25,10 +25,11 @@ pub async fn tasks_start(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    let owner = window.label().to_string();
     state
-        .host
+        .router
         .tasks_start(
-            run_id,
+            run_id.clone(),
             folder_path,
             task_id,
             active_file_path,
@@ -36,9 +37,13 @@ pub async fn tasks_start(
             rows,
             channel_sink(output),
             channel_sink(events),
-            Some(window.label().to_string()),
+            Some(owner.clone()),
         )
-        .await
+        .await?;
+    if !state.windows.has_window(&owner) && !state.windows.destroy_detaches_runs() {
+        state.router.tasks_stop(run_id).await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -47,7 +52,7 @@ pub async fn tasks_write(
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.tasks_write(run_id, data).await
+    state.router.tasks_write(run_id, data).await
 }
 
 #[tauri::command]
@@ -57,10 +62,10 @@ pub async fn tasks_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.tasks_resize(run_id, cols, rows).await
+    state.router.tasks_resize(run_id, cols, rows).await
 }
 
 #[tauri::command]
 pub async fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
-    state.host.tasks_stop(run_id).await
+    state.router.tasks_stop(run_id).await
 }

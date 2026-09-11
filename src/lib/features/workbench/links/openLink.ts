@@ -83,6 +83,11 @@ async function handleUriLink(target: ParsedLinkTarget, folderPath?: string | nul
     return handleFileScheme(fullUrl, folderPath)
   }
 
+  if (scheme === 'sworm') {
+    await openFolder(fullUrl)
+    return true
+  }
+
   if (scheme === 'issue' || scheme === 'pr') {
     return handleIssueOrPrScheme(scheme, fullUrl, folderPath)
   }

@@ -1,21 +1,17 @@
-use crate::{config, dispatch};
+use crate::{config, dispatch, events, pty_stream};
 use anyhow::Context;
-use std::{
-    collections::{HashMap, HashSet},
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use sworm_core::{services::completed_runs::CompletedRunStore, Host};
+use sworm_protocol::rpc::{
+    Open, Response, WireError, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
 };
-use sworm_core::Host;
-use sworm_protocol::rpc::{Request, WireError, MAX_REQUEST_FRAME_BYTES};
 use sworm_remote::{
     tls::{peer_fingerprint, server_config},
     wire::{read_frame_with_limit, write_frame},
     Fingerprint, Identity,
 };
 use tokio::{
-    sync::{watch, Mutex, Semaphore},
+    sync::{broadcast, watch, Mutex, Semaphore},
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
@@ -25,8 +21,12 @@ const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const UNAUTHORIZED_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CONNECTIONS: usize = 128;
-const MAX_STREAMS_PER_CONNECTION: u32 = 16;
 const MAX_ACTIVE_REQUESTS: usize = 64;
+const HOST_EVENT_CAPACITY: usize = 1024;
+/// Transcripts of finished runs are bounded by both age and count: a daemon
+/// that ran hundreds of tasks today must not fill its disk either way.
+const COMPLETED_RUNS_KEPT: usize = 200;
+const COMPLETED_RUN_DAYS: i64 = 7;
 
 pub struct ServeOptions {
     pub config_dir: PathBuf,
@@ -57,13 +57,29 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let fingerprint = identity.fingerprint();
     std::fs::create_dir_all(&options.data_dir)
         .with_context(|| format!("create data directory {}", options.data_dir.display()))?;
+    let (host_events, _) = broadcast::channel(HOST_EVENT_CAPACITY);
+    let event_sender = host_events.clone();
     let host = Arc::new(Host::new(
         options.data_dir.join("server.db"),
-        Arc::new(|_| {
-            tracing::debug!("host event");
+        Arc::new(move |event| {
+            if let Some(event) = events::to_wire(event) {
+                let _ = event_sender.send(Arc::new(event));
+            }
             Ok(())
         }),
     )?);
+    let completed = Arc::new(CompletedRunStore::new(
+        Arc::clone(&host.db),
+        COMPLETED_RUNS_KEPT,
+        chrono::Duration::days(COMPLETED_RUN_DAYS),
+    ));
+    let store = Arc::clone(&completed);
+    host.pty.on_completed_run(Arc::new(move |run| {
+        let run_id = run.run_id.clone();
+        if let Err(error) = store.put(&run) {
+            tracing::error!(%error, run_id, "failed to store completed run");
+        }
+    }));
 
     let mut quic_config = server_config(&identity)?;
     let mut transport = quinn::TransportConfig::default();
@@ -74,7 +90,8 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
             Duration::from_secs(30)
                 .try_into()
                 .expect("30 second QUIC idle timeout is representable"),
-        ));
+        ))
+        .keep_alive_interval(Some(Duration::from_secs(10)));
     quic_config.transport_config(Arc::new(transport));
     quic_config
         .max_incoming(MAX_CONNECTIONS)
@@ -84,12 +101,12 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let endpoint = quinn::Endpoint::server(quic_config, listen)
         .with_context(|| format!("bind QUIC server to {listen}"))?;
     let local_addr = endpoint.local_addr()?;
-    let context = Arc::new(dispatch::ServerContext {
-        config_dir: options.config_dir,
-        auth_token: loaded.auth_token,
-        pairing: Mutex::new(()),
-        folders: parking_lot::Mutex::new(HashMap::new()),
-    });
+    let context = Arc::new(dispatch::ServerContext::new(
+        options.config_dir,
+        loaded.auth_token,
+        host_events,
+        completed,
+    ));
     let (shutdown, shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(run_server(endpoint, host, context, shutdown_rx));
 
@@ -192,7 +209,10 @@ async fn run_connection(
     let session = Arc::new(Mutex::new(dispatch::Session {
         fingerprint,
         authorized,
+        subscriber_id: uuid::Uuid::new_v4().to_string(),
         folders: HashSet::new(),
+        next_events: 0,
+        events: None,
     }));
     let mut streams = JoinSet::new();
 
@@ -211,7 +231,17 @@ async fn run_connection(
                     let context = Arc::clone(&context);
                     let session = Arc::clone(&session);
                     let request_permits = Arc::clone(&request_permits);
-                    streams.spawn(process_stream(connection, host, context, session, request_permits, send, recv));
+                    let stream_shutdown = shutdown.clone();
+                    streams.spawn(process_stream(
+                        connection,
+                        host,
+                        context,
+                        session,
+                        request_permits,
+                        send,
+                        recv,
+                        stream_shutdown,
+                    ));
                 }
                 Err(_) => break,
             },
@@ -229,12 +259,22 @@ async fn run_connection(
         }
     }
 
-    let folders = std::mem::take(&mut session.lock().await.folders);
+    let (folders, subscriber_id) = {
+        let mut session = session.lock().await;
+        if let Some((_, stop)) = session.events.take() {
+            let _ = stop.send(true);
+        }
+        (
+            std::mem::take(&mut session.folders),
+            session.subscriber_id.clone(),
+        )
+    };
     for folder in folders {
         if context.release_folder(&folder) {
             host.release_folder(&folder);
         }
     }
+    host.file_watchers.release_subscriber(&subscriber_id);
 }
 
 async fn process_stream(
@@ -245,49 +285,100 @@ async fn process_stream(
     request_permits: Arc<Semaphore>,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    shutdown: watch::Receiver<bool>,
 ) {
-    let request = match timeout(
+    let open = match timeout(
         STREAM_READ_TIMEOUT,
-        read_frame_with_limit::<Request>(&mut recv, MAX_REQUEST_FRAME_BYTES),
+        read_frame_with_limit::<Open>(&mut recv, MAX_REQUEST_FRAME_BYTES),
     )
     .await
     {
-        Ok(Ok(request)) => request,
+        Ok(Ok(open)) => open,
         Ok(Err(error)) => {
-            tracing::warn!(%error, "invalid request frame");
+            tracing::warn!(%error, "invalid stream open frame");
             return;
         }
         Err(_) => {
-            tracing::warn!("request frame timed out");
+            tracing::warn!("stream open frame timed out");
             return;
         }
     };
-    // Bound execution, not intake: idle or slow peers must not hold dispatch capacity.
-    let Ok(_permit) = request_permits.acquire_owned().await else {
-        return;
-    };
-    let response = dispatch::handle(&host, &context, &session, request).await;
-    let unauthorized = matches!(response, Err(WireError::Unauthorized { .. }));
 
-    match timeout(STREAM_WRITE_TIMEOUT, write_frame(&mut send, &response)).await {
+    match open {
+        Open::Rpc(request) => {
+            // Bound RPC execution only. Stream intake and response backpressure hold no permit.
+            let response = {
+                let Ok(_permit) = request_permits.acquire_owned().await else {
+                    return;
+                };
+                dispatch::handle(&host, &context, &session, request).await
+            };
+            let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
+            if !write_response(&mut send, &response).await {
+                return;
+            }
+            if unauthorized {
+                close_unauthorized(&connection, &mut send).await;
+            }
+        }
+        Open::Events => {
+            if !session.lock().await.authorized {
+                let response: Response = Err(dispatch::unauthorized(
+                    "client is not paired with this server",
+                ));
+                if write_response(&mut send, &response).await {
+                    close_unauthorized(&connection, &mut send).await;
+                }
+                return;
+            }
+            events::run(
+                session,
+                context.host_events.clone(),
+                connection,
+                send,
+                shutdown,
+            )
+            .await;
+        }
+        Open::Pty { run_id, cursor } => {
+            if !session.lock().await.authorized {
+                let response: Response = Err(dispatch::unauthorized(
+                    "client is not paired with this server",
+                ));
+                if write_response(&mut send, &response).await {
+                    close_unauthorized(&connection, &mut send).await;
+                }
+                return;
+            }
+            pty_stream::run(
+                host, context, run_id, cursor, connection, send, recv, shutdown,
+            )
+            .await;
+        }
+    }
+}
+
+async fn write_response(send: &mut quinn::SendStream, response: &Response) -> bool {
+    match timeout(STREAM_WRITE_TIMEOUT, write_frame(send, response)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::warn!(%error, "failed to write response frame");
-            return;
+            return false;
         }
         Err(_) => {
             tracing::warn!("response frame timed out");
-            return;
+            return false;
         }
     }
     if let Err(error) = send.finish() {
         tracing::warn!(%error, "failed to finish response stream");
-        return;
+        return false;
     }
+    true
+}
 
-    if unauthorized {
-        // Let the peer read the stream error before CONNECTION_CLOSE invalidates in-flight data.
-        let _ = timeout(UNAUTHORIZED_ACK_TIMEOUT, send.stopped()).await;
-        connection.close(1u32.into(), b"unauthorized");
-    }
+async fn close_unauthorized(connection: &quinn::Connection, send: &mut quinn::SendStream) {
+    // Let the peer read the stream error before CONNECTION_CLOSE invalidates in-flight data.
+    let _ = timeout(UNAUTHORIZED_ACK_TIMEOUT, send.stopped()).await;
+    connection.close(1u32.into(), b"unauthorized");
 }

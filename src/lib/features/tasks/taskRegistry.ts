@@ -1,5 +1,4 @@
 import { TaskTerminal, type TaskTerminalInit } from '$lib/features/tasks/terminal'
-import { getTabs, isTabTransferring } from '$lib/features/workbench/state.svelte'
 import type { TerminalTransferState } from '$lib/types/backend'
 
 const runs = new Map<string, TaskTerminal>()
@@ -60,10 +59,8 @@ export function dispose(runId: string): void {
 }
 
 export function disposeAll(): void {
-  for (const [runId, terminal] of runs) {
-    const tab = getTabs().find((tab) => tab.kind === 'task' && tab.runId === runId)
-    if (tab && isTabTransferring(tab.id)) terminal.detachForTransfer()
-    else terminal.dispose()
+  for (const terminal of runs.values()) {
+    terminal.detachForWindowTeardown()
   }
   runs.clear()
 }

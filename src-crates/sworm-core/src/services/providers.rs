@@ -455,11 +455,8 @@ mod tests {
 
     #[test]
     fn claude_transcript_path_shape() {
-        std::env::set_var("HOME", "/tmp/fakehome");
+        let home = home_dir().expect("HOME should be set for this test");
         let path = claude_transcript_path("/repo/x", "abc-123").unwrap();
-        assert_eq!(
-            path,
-            PathBuf::from("/tmp/fakehome/.claude/projects/-repo-x/abc-123.jsonl")
-        );
+        assert_eq!(path, home.join(".claude/projects/-repo-x/abc-123.jsonl"));
     }
 }

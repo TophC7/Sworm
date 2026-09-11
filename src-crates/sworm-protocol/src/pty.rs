@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Events emitted over the lifecycle channel. `run_id` is the ephemeral
 /// PTY identity minted by the frontend for one spawn; the durable tab
 /// identity never reaches this layer.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PtyEvent {
     Started {

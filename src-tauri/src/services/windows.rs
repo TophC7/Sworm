@@ -342,10 +342,11 @@ impl WindowCoordinatorService {
                     state
                         .windows
                         .abort_transfers_for_window(&event_app, &event_label);
-                    if !state.windows.destroy_discards_snapshot() {
+                    let discard_snapshot = state.windows.destroy_discards_snapshot();
+                    release_window_resources(&state, &event_label);
+                    if !discard_snapshot {
                         return;
                     }
-                    release_window_resources(&state, &event_label);
                     let db = state.host.db.write();
                     let result = (|| -> Result<(), String> {
                         let tx = db
@@ -1014,6 +1015,16 @@ impl WindowCoordinatorService {
         self.records.lock().len()
     }
 
+    /// Quitting detaches wire-backed runs even while sibling windows are still
+    /// being destroyed; only a genuine last-window close relies on the count.
+    pub(crate) fn destroy_detaches_runs(&self) -> bool {
+        self.is_exit_requested() || self.records.lock().is_empty()
+    }
+
+    pub(crate) fn has_window(&self, label: &str) -> bool {
+        self.records.lock().contains_key(label)
+    }
+
     fn next_focus_order(&self) -> usize {
         self.records
             .lock()
@@ -1079,10 +1090,20 @@ impl WindowCoordinatorService {
 fn release_window_resources(state: &AppState, label: &str) {
     let final_folders = state.windows.remove_window(label);
     let protected = state.windows.protected_pty_runs(label);
-    state.host.release_owner(label, &protected);
-    for folder in final_folders {
-        state.host.release_folder(&folder);
+    if state.windows.destroy_detaches_runs() {
+        state.host.detach_owner(label, &protected);
+    } else {
+        state.host.release_owner(label, &protected);
     }
+    for folder in final_folders {
+        release_folder_resources(state, &folder);
+    }
+}
+
+/// Evict the shared resources of a folder that lost its last owning window.
+pub(crate) fn release_folder_resources(state: &AppState, folder: &Path) {
+    state.router.release_folder(&folder.to_string_lossy());
+    state.host.release_folder(folder);
 }
 
 /// `folder` is always an ancestor of `file` here (claimed folder, git root, or parent dir).
@@ -1462,6 +1483,30 @@ mod tests {
 
         service.set_exit_requested(true);
         assert!(!service.destroy_discards_snapshot());
+    }
+
+    #[test]
+    fn test_quit_detaches_runs_before_the_final_window_is_destroyed() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "workbench-a", 1);
+        add_window(&service, "workbench-b", 2);
+        assert!(!service.destroy_detaches_runs());
+
+        service.set_exit_requested(true);
+        service.remove_window("workbench-a");
+        assert!(service.destroy_detaches_runs());
+    }
+
+    #[test]
+    fn test_sibling_close_kills_runs_until_the_last_window_leaves() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "workbench-a", 1);
+        add_window(&service, "workbench-b", 2);
+        service.remove_window("workbench-a");
+        assert!(!service.destroy_detaches_runs());
+
+        service.remove_window("workbench-b");
+        assert!(service.destroy_detaches_runs());
     }
 
     #[test]

@@ -38,6 +38,7 @@ impl Host {
         output: EventSink<Vec<u8>>,
         events: EventSink<PtyEvent>,
         owner_id: Option<String>,
+        window: bool,
     ) -> Result<(), ApiError> {
         let folder = resolve_folder(&folder_path)?;
         let folder_path = folder.to_string_lossy().into_owned();
@@ -84,6 +85,7 @@ impl Host {
             output,
             events,
             owner_id,
+            window,
             on_exit,
         ) {
             self.tasks.release_singleton_by_run_id(&run_id);

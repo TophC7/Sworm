@@ -17,10 +17,11 @@ pub async fn session_start(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<SessionStartInfo, ApiError> {
-    state
-        .host
+    let owner = window.label().to_string();
+    let info = state
+        .router
         .session_start(
-            run_id,
+            run_id.clone(),
             folder_path,
             provider_id,
             resume_token,
@@ -28,9 +29,13 @@ pub async fn session_start(
             rows,
             channel_sink(output),
             channel_sink(events),
-            Some(window.label().to_string()),
+            Some(owner.clone()),
         )
-        .await
+        .await?;
+    if !state.windows.has_window(&owner) && !state.windows.destroy_detaches_runs() {
+        state.router.session_stop(run_id).await?;
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -39,7 +44,7 @@ pub async fn session_write(
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.session_write(run_id, data).await
+    state.router.session_write(run_id, data).await
 }
 
 #[tauri::command]
@@ -49,7 +54,7 @@ pub async fn session_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.session_resize(run_id, cols, rows).await
+    state.router.session_resize(run_id, cols, rows).await
 }
 
 #[tauri::command]
@@ -57,7 +62,7 @@ pub async fn session_stop(
     run_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.session_stop(run_id).await
+    state.router.session_stop(run_id).await
 }
 
 #[tauri::command]

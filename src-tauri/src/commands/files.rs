@@ -122,7 +122,7 @@ pub async fn files_watch_dirs(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     state
-        .host
+        .router
         .files_watch_dirs(window.label().to_string(), project_path, dirs)
         .await
 }

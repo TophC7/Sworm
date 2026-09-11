@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Result of `session_start`.
 ///
@@ -7,7 +7,7 @@ use serde::Serialize;
 /// one (resumed or freshly minted); Codex/Antigravity/OMP only when
 /// resuming a validated token, otherwise `None` and post-spawn discovery
 /// announces it later via `PtyEvent::ResumeTokenBound`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStartInfo {
     /// Whether the provider resumed an existing conversation.

@@ -27,8 +27,11 @@ impl AppState {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
         let windows = Arc::new(WindowCoordinatorService::new());
         let events = host_event_sink(app_handle.clone(), Arc::clone(&windows));
-        let host = Arc::new(Host::new(resolve_db_path(app_handle)?, events)?);
-        let router = WorkspaceRouter::new(Arc::clone(&host));
+        let host = Arc::new(Host::new(
+            resolve_db_path(app_handle)?,
+            Arc::clone(&events),
+        )?);
+        let router = WorkspaceRouter::with_events(Arc::clone(&host), events);
         Ok(Self {
             host,
             router,

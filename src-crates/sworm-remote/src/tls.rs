@@ -6,8 +6,8 @@ use rustls::{
     server::danger::{ClientCertVerified, ClientCertVerifier},
     DigitallySignedStruct, DistinguishedName, SignatureScheme,
 };
-use std::sync::Arc;
-use sworm_protocol::rpc::ALPN;
+use std::{sync::Arc, time::Duration};
+use sworm_protocol::rpc::{ALPN, MAX_STREAMS_PER_CONNECTION};
 
 /// Admits unknown self-signed client certificates for pairing. CertificateVerify
 /// still proves possession; daemon authorization pins the resulting fingerprint.
@@ -171,7 +171,14 @@ pub fn client_config(
     config.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(config)
         .map_err(|error| tls_error("configure QUIC client TLS", error))?;
-    Ok(quinn::ClientConfig::new(Arc::new(crypto)))
+    let mut config = quinn::ClientConfig::new(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONNECTION.into())
+        .max_concurrent_uni_streams(0u32.into())
+        .keep_alive_interval(Some(Duration::from_secs(10)));
+    config.transport_config(Arc::new(transport));
+    Ok(config)
 }
 
 pub fn peer_fingerprint(connection: &quinn::Connection) -> Option<Fingerprint> {

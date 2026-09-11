@@ -61,6 +61,7 @@ impl Host {
         output: EventSink<Vec<u8>>,
         events: EventSink<PtyEvent>,
         owner_id: Option<String>,
+        window: bool,
     ) -> Result<SessionStartInfo, ApiError> {
         let provider = ProviderService::definition(&provider_id)
             .map(|definition| definition.id)
@@ -195,6 +196,7 @@ impl Host {
                 output,
                 events,
                 owner_id,
+                window,
                 Some(on_exit),
             )
             .map_err(ApiError::Pty)?;

@@ -19,6 +19,8 @@ export interface SessionTab extends TabBase {
   kind: 'session'
   title: string
   providerId: string
+  /** Frontend-generated UUID used as the PTY key; retained while the run may still be live. */
+  runId: string | null
   /**
    * Provider-owned conversation identity (Claude session uuid, Codex thread
    * id, Antigravity conversation id, OMP session id); null until known.
@@ -125,7 +127,20 @@ export type PersistedTab = { folderPath: string } & (
       kind: 'session'
       title: string
       providerId: string
+      /** Absent in legacy blobs; hydrate as null. */
+      runId?: string | null
       resumeToken: string | null
+      locked: boolean
+    }
+  | {
+      kind: 'task'
+      /** Stable remote PTY identity, reused to reattach after app restart. */
+      runId: string
+      taskId: string
+      activeFilePath: string | null
+      label: string
+      icon: string | null
+      group: string | null
       locked: boolean
     }
   | {

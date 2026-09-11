@@ -7,7 +7,9 @@ import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
   getTabs,
+  persistSessionTabRunId,
   setSessionTabResumeToken,
+  setSessionTabRunId,
   setSessionTabStatus,
   setSessionTabTitle
 } from '$lib/features/workbench/state.svelte'
@@ -63,8 +65,10 @@ type DeferredOutput = { bytes: Uint8Array; sequence: number }
 
 export class TerminalSessionManager {
   readonly tabId: TabId
-  // Ephemeral PTY identity, minted per spawn; null while no run is live.
+  // PTY identity mirrors the persisted tab while the run may still be live.
   private runId: string | null = null
+  // Exit clears the restart id, but the runtime stream identity remains for
+  // trailing replay and explicit cleanup until its channels are released.
   private streamRunId: string | null = null
 
   private terminal: Terminal | null = null
@@ -92,6 +96,7 @@ export class TerminalSessionManager {
   // Single-flight PTY spawn: concurrent callers (mount debounce, Restart)
   // await the same promise instead of spawning twice.
   private startPromise: Promise<SessionStartInfo> | null = null
+  private stopPtyWhenStarted = false
   // Terminal creation yields while the font loads. Every entry path
   // shares this promise so concurrent attach/load/start calls cannot
   // create competing xterm instances or WebGL contexts.
@@ -245,7 +250,11 @@ export class TerminalSessionManager {
     this.textDecoder = new TextDecoder()
     this.titleParser.reset()
     await this.ensureTerminal()
-    this.releaseChannels()
+    if (this.streamRunId) {
+      await this.stopPty()
+    } else {
+      this.releaseChannels()
+    }
 
     const terminal = this.terminal
     if (!terminal) {
@@ -254,7 +263,9 @@ export class TerminalSessionManager {
 
     this.lastError = null
     this.providerId = spec.providerId
-    const runId = crypto.randomUUID()
+    const tab = getTabs().find((candidate) => candidate.id === this.tabId)
+    const runId = tab?.kind === 'session' && tab.runId ? tab.runId : crypto.randomUUID()
+    await persistSessionTabRunId(this.tabId, runId)
     this.runId = runId
     this.barrier.reset()
     this.streamRunId = runId
@@ -274,24 +285,33 @@ export class TerminalSessionManager {
     try {
       const info = await backend.sessions.start({ ...spec, runId }, terminal.cols, terminal.rows, output, events)
       if (this.disposed) {
-        // Disposed while the spawn was in flight: nobody owns this PTY
-        // any more, so kill it rather than leak it until app exit.
-        void backend.sessions.stop(runId).catch((error) => {
-          console.error('Failed to stop disposed session:', error)
-        })
-        this.runId = null
+        // Explicit tab disposal still owns process termination. Window and
+        // transfer teardown only drop this frontend subscriber; backend
+        // window ownership decides whether the process stops or detaches.
+        if (this.stopPtyWhenStarted) {
+          void backend.sessions.stop(runId).catch(() => {})
+          this.ptyActive = false
+          this.runId = null
+          setSessionTabRunId(this.tabId, null)
+        }
         this.releaseChannels()
         return info
       }
-      this.ptyActive = true
+      this.ptyActive = this.runId === runId
       return info
     } catch (error) {
       this.ptyActive = false
-      this.runId = null
+      if (this.stopPtyWhenStarted) {
+        void backend.sessions.stop(runId).catch(() => {})
+        this.runId = null
+        setSessionTabRunId(this.tabId, null)
+      } else if (!this.disposed) {
+        this.runId = null
+        this.lastError = String(error)
+        this.emitError(this.lastError)
+        setSessionTabStatus(this.tabId, 'failed')
+      }
       this.releaseChannels()
-      this.lastError = String(error)
-      this.emitError(this.lastError)
-      setSessionTabStatus(this.tabId, 'failed')
       throw error
     }
   }
@@ -300,10 +320,6 @@ export class TerminalSessionManager {
     if (this.disposed || this.streamRunId !== runId) return
 
     const sequence = this.barrier.next()
-    if (this.runId !== runId) {
-      this.barrier.markRendered(sequence)
-      return
-    }
     const text = this.textDecoder.decode(bytes, { stream: true })
     let title = this.titleParser.push(text)
     if (providerId === 'omp' && title?.startsWith('π')) {
@@ -312,24 +328,20 @@ export class TerminalSessionManager {
     }
     if (title) setSessionTabTitle(this.tabId, title)
 
-    if (this.container || this.transferBarrierActive) {
-      this.writeTerminal(bytes, sequence)
-    } else {
-      this.deferDetachedBytes(bytes, sequence)
-    }
+    this.renderOutput(bytes, sequence)
   }
 
   private handlePtyEvent(runId: string, event: PtyEvent): void {
     if (this.disposed || this.streamRunId !== runId) return
     if (event.type === 'synced') {
-      if (this.runId === runId && event.run_id === runId && event.sequence !== undefined) {
+      if (event.run_id === runId && event.sequence !== undefined) {
         this.barrier.seed(event.sequence)
       }
       return
     }
 
     const sequence = this.barrier.next()
-    if (this.runId !== runId || event.run_id !== runId) {
+    if (event.run_id !== runId) {
       this.barrier.markRendered(sequence)
       return
     }
@@ -341,7 +353,8 @@ export class TerminalSessionManager {
     } else if (event.type === 'exit') {
       this.ptyActive = false
       this.runId = null
-      this.writeTerminal(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'), sequence)
+      setSessionTabRunId(this.tabId, null)
+      this.renderOutput(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'), sequence)
       setSessionTabStatus(this.tabId, 'exited')
     } else {
       this.barrier.markRendered(sequence)
@@ -407,8 +420,8 @@ export class TerminalSessionManager {
 
     this.releaseChannels()
     this.runId = state.runId
-    this.providerId = state.providerId ?? null
     this.barrier.reset()
+    this.providerId = state.providerId ?? null
     await this.ensureTerminal()
 
     const terminal = this.terminal
@@ -455,22 +468,28 @@ export class TerminalSessionManager {
     this.disposeSurface()
   }
 
+  detachForWindowClose(): void {
+    this.detachForTransfer()
+  }
+
   markPtyLost(): void {
     this.ptyActive = false
     this.runId = null
+    setSessionTabRunId(this.tabId, null)
     this.releaseChannels()
     this.writeTerminal('\r\n\x1b[31m[Connection to process lost]\x1b[0m\r\n')
     setSessionTabStatus(this.tabId, 'failed')
   }
 
   async stopPty(): Promise<void> {
-    const runId = this.runId
+    const runId = this.streamRunId ?? this.runId
     if (!runId) return
     try {
       await backend.sessions.stop(runId)
     } finally {
       this.ptyActive = false
       this.runId = null
+      setSessionTabRunId(this.tabId, null)
       this.releaseChannels()
       setSessionTabStatus(this.tabId, 'exited')
     }
@@ -480,8 +499,12 @@ export class TerminalSessionManager {
     if (this.disposed) return
     this.disposed = true
 
-    // An in-flight spawn is handled by `spawnPty` once the backend answers.
-    if (this.ptyActive) {
+    if (this.startPromise) {
+      // If tab disposal races a spawn, the late successful reply must
+      // terminate that run. Non-owning detach paths leave this false.
+      this.stopPtyWhenStarted = true
+      this.releaseChannels()
+    } else if (this.streamRunId || this.runId) {
       void this.stopPty().catch(() => {})
     } else {
       this.releaseChannels()
@@ -515,6 +538,14 @@ export class TerminalSessionManager {
 
   sendText(text: string): void {
     this.writeToPty(text)
+  }
+
+  private renderOutput(bytes: Uint8Array, sequence: number): void {
+    if (this.container || this.transferBarrierActive) {
+      this.writeTerminal(bytes, sequence)
+    } else {
+      this.deferDetachedBytes(bytes, sequence)
+    }
   }
 
   private deferDetachedBytes(bytes: Uint8Array, sequence: number): void {

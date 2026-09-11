@@ -72,7 +72,10 @@ export class TaskTerminal {
   private readonly activeFilePath: string | null
   private readonly onStatusChange?: (status: TaskRunStatus, exitCode: number | null) => void
   private disposed = false
+  private disposalMode: 'stop' | 'detach' | null = null
+  private startInFlight = false
   private spawned = false
+  private streamRunId: string | null = null
   private status: TaskRunStatus | 'idle' = 'idle'
   private outputChannel: Channel<Uint8Array> | null = null
   private eventsChannel: Channel<PtyEvent> | null = null
@@ -159,34 +162,47 @@ export class TaskTerminal {
     this.status = 'starting'
     this.barrier.reset()
 
+    const runId = this.runId
+    this.streamRunId = runId
     const { cols, rows } = this.term
+    this.startInFlight = true
     try {
       await backend.tasks.start(
-        this.runId,
+        runId,
         this.folderPath,
         this.taskId,
         this.activeFilePath,
         cols,
         rows,
-        (data) => this.handleOutput(data),
-        (event) => this.handlePtyEvent(event)
+        (data) => this.handleOutput(runId, data),
+        (event) => this.handlePtyEvent(runId, event)
       )
+      // Explicit tab disposal owns process cleanup. Window teardown does
+      // not: Rust decides whether a detached local/remote run survives.
+      if (this.disposalMode === 'stop') {
+        void backend.tasks.stop(runId).catch(() => {})
+      }
     } catch (error) {
-      this.status = 'failed'
-      this.onStatusChange?.('failed', null)
+      if (this.disposalMode === 'stop') {
+        void backend.tasks.stop(runId).catch(() => {})
+      } else if (!this.disposed) {
+        this.status = 'failed'
+        this.onStatusChange?.('failed', null)
+      }
       throw error
+    } finally {
+      this.startInFlight = false
     }
   }
 
-  private handleOutput(data: Uint8Array): void {
-    if (this.disposed) return
+  private handleOutput(runId: string, data: Uint8Array): void {
+    if (this.disposed || this.streamRunId !== runId) return
     const sequence = this.barrier.next()
     this.term.write(data, () => this.barrier.markRendered(sequence))
   }
 
-  private handlePtyEvent(event: PtyEvent): void {
-    if (this.disposed) return
-    if (event.run_id !== this.runId) return
+  private handlePtyEvent(runId: string, event: PtyEvent): void {
+    if (this.disposed || this.streamRunId !== runId || event.run_id !== runId) return
     if (event.type === 'synced') {
       if (event.sequence !== undefined) this.barrier.seed(event.sequence)
       return
@@ -200,6 +216,8 @@ export class TaskTerminal {
       const code = event.code ?? null
       this.status = 'exited'
       this.onStatusChange?.('exited', code)
+      // Keep both ids through Exit: retained replay can still deliver tail
+      // output and Synced after the completion event.
       this.barrier.markRendered(sequence)
     } else if (event.type === 'error') {
       this.term.write(textEncoder.encode(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`), () =>
@@ -246,14 +264,16 @@ export class TaskTerminal {
     this.spawned = true
     if (state.runId == null) return
     this.runId = state.runId
+    const runId = state.runId
+    this.streamRunId = runId
 
-    const output = backend.tasks.createOutputChannel((data) => this.handleOutput(data))
-    const events = backend.tasks.createEventChannel((event) => this.handlePtyEvent(event))
+    const output = backend.tasks.createOutputChannel((data) => this.handleOutput(runId, data))
+    const events = backend.tasks.createEventChannel((event) => this.handlePtyEvent(runId, event))
     this.outputChannel = output
     this.eventsChannel = events
 
     try {
-      const seq = await backend.pty.attach(this.runId, transferId, output, events)
+      const seq = await backend.pty.attach(runId, transferId, output, events)
       this.barrier.seed(seq)
     } catch (error) {
       this.outputChannel = null
@@ -263,11 +283,11 @@ export class TaskTerminal {
   }
 
   detachForTransfer(): void {
-    if (this.disposed) return
-    this.disposed = true
-    this.outputChannel = null
-    this.eventsChannel = null
-    this.disposeSurface()
+    this.disposeDetached()
+  }
+
+  detachForWindowTeardown(): void {
+    this.disposeDetached()
   }
 
   markPtyLost(): void {
@@ -291,13 +311,28 @@ export class TaskTerminal {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    // Kill the PTY too; a lingering task shouldn't outlive its tab.
-    if (this.status === 'starting' || this.status === 'running') {
-      backend.tasks.stop(this.runId).catch(() => {})
+    this.disposalMode = 'stop'
+    // A fresh start is stopped after its RPC resolves; stopping before
+    // registration can race and leak the newly-created run. Every other
+    // spawned run, including a completed one, retains daemon state until stop.
+    if (this.spawned && !this.startInFlight) {
+      void backend.tasks.stop(this.runId).catch(() => {})
     }
+    this.releaseChannels()
+    this.disposeSurface()
+  }
+
+  private disposeDetached(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.disposalMode = 'detach'
+    this.releaseChannels()
+    this.disposeSurface()
+  }
+
+  private releaseChannels(): void {
     this.outputChannel = null
     this.eventsChannel = null
-    this.disposeSurface()
   }
 
   private disposeSurface(): void {
