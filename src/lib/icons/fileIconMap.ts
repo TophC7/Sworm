@@ -18,7 +18,10 @@ import { basename, dirname } from '$lib/utils/paths'
 // the immediate parent directory; `ext` is the file extension
 // (lowercase, no leading dot).
 const parentDirRules: Array<{ parent: string; ext: string; icon: string }> = [
-  { parent: '.sworm', ext: 'json', icon: 'sworm' }
+  { parent: '.sworm', ext: 'jsonc', icon: 'sworm' },
+  { parent: '.sworm', ext: 'json', icon: 'json' },
+  { parent: 'sworm', ext: 'jsonc', icon: 'sworm' },
+  { parent: 'sworm', ext: 'json', icon: 'json' }
 ]
 
 // Exact filename → icon name (lowercased keys for case-insensitive lookup)
@@ -188,6 +191,8 @@ const fileNameMap: Record<string, string> = {
   'cmakelists.txt': 'cmake',
   'launch.json': 'launch',
   'tasks.json': 'vscode',
+  'tasks.jsonc': 'sworm',
+  'settings.jsonc': 'sworm',
   'manifest.json': 'manifest',
   '.stylelintrc': 'stylelint',
   'stylelint.config.js': 'stylelint',
@@ -237,6 +242,7 @@ const extMap: Record<string, string> = {
   mts: 'typescript',
   cts: 'typescript',
   json: 'json',
+  jsonc: 'json',
   json5: 'json5',
   svelte: 'svelte',
   rs: 'rust',

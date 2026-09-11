@@ -85,7 +85,7 @@ export interface TaskTab extends TabBase {
   kind: 'task'
   /** Frontend-generated UUID used as the PTY key for the live run. */
   runId: string
-  /** Stable task id from .sworm/tasks.json; used to re-resolve on restart. */
+  /** Stable task id from .sworm/tasks.jsonc; used to re-resolve on restart. */
   taskId: string
   /** Active editor path captured when the run was launched. */
   activeFilePath: string | null

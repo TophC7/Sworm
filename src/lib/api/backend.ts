@@ -757,7 +757,7 @@ export const backend = {
   },
 
   tasks: {
-    /** Return the parsed task list for a folder. Empty array when no `.sworm/tasks.json` exists. */
+    /** Return the parsed task list for a folder. Empty array when no `.sworm/tasks.jsonc` exists. */
     list(folderPath: string): Promise<TaskDefinition[]> {
       return invoke<TaskDefinition[]>('tasks_list', { folderPath })
     },

@@ -29,7 +29,10 @@ pub fn all_config_schemas() -> Result<Vec<ConfigSchemaEntry>, String> {
     Ok(vec![
         ConfigSchemaEntry {
             id: "sworm.tasks".into(),
-            file_match: vec!["**/.sworm/tasks.json".into()],
+            file_match: vec![
+                "**/.sworm/tasks.jsonc".into(),
+                "**/.sworm/tasks.json".into(),
+            ],
             schema: serde_json::to_value(schema_for!(TasksFile)).expect("tasks schema serializes"),
         },
         ConfigSchemaEntry {
@@ -125,6 +128,20 @@ mod tests {
 
         assert_eq!(shortcuts.file_match, vec!["**/shortcuts.jsonc"]);
         assert!(shortcuts.schema.to_string().contains("unboundCommands"));
+    }
+
+    #[test]
+    fn registers_tasks_jsonc_schema() {
+        let schemas = all_config_schemas().expect("schemas build");
+        let tasks = schemas
+            .iter()
+            .find(|entry| entry.id == "sworm.tasks")
+            .expect("tasks schema registered");
+
+        assert_eq!(
+            tasks.file_match,
+            vec!["**/.sworm/tasks.jsonc", "**/.sworm/tasks.json"]
+        );
     }
 
     #[test]

@@ -500,7 +500,7 @@ export interface FilePasteCollision {
   destination: string
 }
 
-// JSON Schema for a project-scoped config file (e.g. .sworm/tasks.json).
+// JSON Schema for a project-scoped config file (e.g. .sworm/tasks.jsonc).
 // Schemas are derived from Rust types via schemars so they can't drift
 // from the deserialization contract.
 export interface ConfigSchemaEntry {

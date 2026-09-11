@@ -111,7 +111,7 @@ export async function openTaskTab(
 /**
  * Launch the most recently run task in this folder. Returns null
  * when no prior task has been launched or the stored task id is no
- * longer present in `.sworm/tasks.json`.
+ * longer present in `.sworm/tasks.jsonc`.
  */
 export async function rerunLastTask(folderPath: string): Promise<TabId | null> {
   const taskId = getLastTaskId(folderPath)

@@ -54,8 +54,9 @@ src/lib/paraglide
 
 # AI Agent
 .omp/settings.local.json
-.sworm/issues.db-wal
-.sworm/issues.db-shm
+
+# Sworm
+!.sworm/*.json*
 
 # Tauri / Rust
 /target/

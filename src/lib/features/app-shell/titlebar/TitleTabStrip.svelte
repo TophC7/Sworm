@@ -212,7 +212,7 @@
     if (tab.kind !== 'task') return
     const def = findTask(tab.folderPath, tab.taskId)
     if (!def) {
-      notify.error('Cannot restart task', `Task "${tab.taskId}" is no longer defined in .sworm/tasks.json`)
+      notify.error('Cannot restart task', `Task "${tab.taskId}" is no longer defined in .sworm/tasks.jsonc`)
       return
     }
     await openTaskTab(tab.folderPath, def, { activeFilePath: tab.activeFilePath })
@@ -277,7 +277,7 @@
                 {:else if surfaceKind === 'launcher'}
                   <Plus size={14} class="shrink-0 text-accent" />
                 {:else if surfaceKind === 'task'}
-                  <!-- Task icon comes from .sworm/tasks.json. Any Lucide name
+                  <!-- Task icon comes from .sworm/tasks.jsonc. Any Lucide name
                      is valid; fall back to the terminal glyph when the
                      dynamic loader can't find a match. -->
                   {#if presentation.lucideIcon}

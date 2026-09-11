@@ -2,7 +2,7 @@
 //
 // Pulls every JSON schema declared by the Rust backend and pushes it
 // into the Monaco schema registry. Called once on app boot. After this
-// runs, opening any matching config file (e.g. `.sworm/tasks.json`)
+// runs, opening any matching config file (e.g. `.sworm/tasks.jsonc`)
 // gets autocomplete, validation, and hover docs for free.
 //
 // Adding a new config schema is a backend-only change:

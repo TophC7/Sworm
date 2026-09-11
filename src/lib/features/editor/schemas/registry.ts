@@ -15,7 +15,7 @@
 export interface SchemaEntry {
   /** Stable identifier, e.g. `sworm.tasks` or `settings:lsp.typescript`. */
   id: string
-  /** Globs matched against model URIs, e.g. `['**\/.sworm/tasks.json']`. */
+  /** Globs matched against model URIs, e.g. `['**\/.sworm/tasks.jsonc']`. */
   fileMatch: string[]
   /** JSON Schema object. */
   schema: unknown

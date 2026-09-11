@@ -2,7 +2,7 @@
 //
 // Fetches lazily on first access and refreshes when the backend emits
 // a `tasks-changed` event (triggered by the notify watcher on
-// `.sworm/tasks.json`). Never throws on load failure — returns an
+// `.sworm/tasks.jsonc`). Never throws on load failure — returns an
 // empty list so the palette and menus stay responsive when the file
 // is missing or malformed.
 
@@ -22,7 +22,7 @@ async function ensureListener(): Promise<void> {
   if (listenerBooted) return
   listenerBooted = true
   try {
-    // Payload is the canonical folder path whose tasks.json changed.
+    // Payload is the canonical folder path whose tasks file changed.
     await listen<string>(TASKS_CHANGED_EVENT, (event) => {
       const folderPath = event.payload
       if (loadedFolders.has(folderPath)) {

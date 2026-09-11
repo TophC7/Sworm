@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "dev",
+      "label": "Tauri Dev",
+      "command": "bun app:dev",
+      "singleton": true,
+      "clearOnRerun": false,
+      "icon": "play",
+      "group": "serve"
+    },
+    {
+      "id": "dev-remote",
+      "label": "Tauri Dev + Daemon",
+      "command": "sh -c 'mkdir -p .sworm/dev-remote/config .sworm/dev-remote/data; cargo build -p sworm-server || exit 1; setpriv --pdeathsig TERM ./target/debug/sworm-server --config-dir .sworm/dev-remote/config --data-dir .sworm/dev-remote/data serve --listen 127.0.0.1:7420 & exec bun app:dev'",
+      "singleton": true,
+      "clearOnRerun": false,
+      "icon": "play",
+      "group": "serve"
+    },
+    {
+      "id": "check",
+      "label": "Typecheck",
+      "command": "bun run check",
+      "icon": "check",
+      "group": "build"
+    }
+  ]
+}

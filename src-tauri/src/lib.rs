@@ -165,7 +165,7 @@ pub fn run() {
             // Formatter commands
             commands::formatting::formatting_format_biome,
             commands::formatting::formatting_format_nixfmt,
-            // Task commands (folder-scoped .sworm/tasks.json)
+            // Task commands (folder-scoped .sworm/tasks.jsonc)
             commands::tasks::tasks_list,
             commands::tasks::tasks_start,
             commands::tasks::tasks_write,

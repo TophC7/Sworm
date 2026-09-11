@@ -143,7 +143,7 @@ export async function rerunLastFolderTask(): Promise<void> {
   if (!getLastTaskId(folderPath)) return
   const tabId = await rerunLastTask(folderPath)
   if (tabId === null) {
-    notify.error('Cannot re-run task', 'The last task is no longer defined in .sworm/tasks.json')
+    notify.error('Cannot re-run task', 'The last task is no longer defined in .sworm/tasks.jsonc')
   }
 }
 

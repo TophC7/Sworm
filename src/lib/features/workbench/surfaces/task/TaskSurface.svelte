@@ -8,7 +8,7 @@
   service so the tab title/status badge stay in sync.
 
   @param tab - the TaskTab describing this run
-  @param folderPath - the folder whose `.sworm/tasks.json` defines the task
+  @param folderPath - the folder whose `.sworm/tasks.jsonc` defines the task
 -->
 
 <script lang="ts">

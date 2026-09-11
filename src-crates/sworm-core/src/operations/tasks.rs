@@ -11,7 +11,7 @@ use sworm_protocol::task::TaskDefinition;
 impl Host {
     /// Return the parsed task list for a folder. Idempotently wires up
     /// the file watcher so callers receive task-change events when the
-    /// folder's `.sworm/tasks.json` is modified externally.
+    /// folder's `.sworm/tasks.jsonc` is modified externally.
     pub async fn tasks_list(&self, folder_path: String) -> Result<Vec<TaskDefinition>, ApiError> {
         let folder = resolve_folder(&folder_path)?;
 

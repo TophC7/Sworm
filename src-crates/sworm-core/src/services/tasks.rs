@@ -1,9 +1,9 @@
 // Per-folder task loading, variable substitution, and file watching.
 //
-// Tasks live in `<folder>/.sworm/tasks.json`. This service reads them,
-// resolves `${workspaceFolder}`, `${file}`, and `${env:NAME}` variables
-// against the current folder context, and watches the file so the
-// frontend can refresh its palette/menu listings when it changes.
+// Tasks live in `<folder>/.sworm/tasks.jsonc` (or legacy `.sworm/tasks.json`).
+// This service reads them, resolves `${workspaceFolder}`, `${file}`, and
+// `${env:NAME}` variables against the current folder context, and watches
+// the file so the frontend can refresh its palette/menu listings when it changes.
 //
 // PTY spawn itself is driven by Host task operations; this service is purely
 // config loading and bookkeeping.
@@ -20,7 +20,8 @@ use tracing::warn;
 
 use sworm_protocol::task::{TaskDefinition, TasksFile};
 
-pub const TASKS_FILE_REL: &str = ".sworm/tasks.json";
+pub const TASKS_FILE_REL: &str = ".sworm/tasks.jsonc";
+pub const TASKS_FILE_REL_LEGACY: &str = ".sworm/tasks.json";
 
 /// A task with its command, cwd, and env fully resolved for spawn.
 pub struct ResolvedTask {
@@ -88,18 +89,37 @@ impl TaskService {
             .retain(|_, active_run_id| active_run_id != run_id);
     }
 
-    /// Parse `.sworm/tasks.json` from the given project path. Returns
-    /// an empty list when the file is absent so callers don't need to
-    /// distinguish "no config" from "empty config".
+    /// Parse `.sworm/tasks.jsonc` (or fallback `.sworm/tasks.json`) from
+    /// the given project path. Returns an empty list when the file is absent
+    /// so callers don't need to distinguish "no config" from "empty config".
     pub fn load(&self, project_path: &Path) -> Result<Vec<TaskDefinition>, String> {
-        let path = project_path.join(TASKS_FILE_REL);
-        if !path.exists() {
+        let path_jsonc = project_path.join(TASKS_FILE_REL);
+        let path_json = project_path.join(TASKS_FILE_REL_LEGACY);
+        let path = if path_jsonc.exists() {
+            path_jsonc
+        } else if path_json.exists() {
+            path_json
+        } else {
             return Ok(Vec::new());
-        }
+        };
         let content = fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-        let parsed: TasksFile =
-            serde_json::from_str(&content).map_err(|e| format!("Invalid tasks.json: {}", e))?;
+        let value: serde_json::Value =
+            jsonc_parser::parse_to_serde_value::<serde_json::Value>(&content, &Default::default())
+                .map_err(|e| {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("tasks file");
+                    format!("Invalid {file_name}: {e}")
+                })?;
+        let parsed: TasksFile = serde_json::from_value(value).map_err(|e| {
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("tasks file");
+            format!("Invalid {file_name}: {e}")
+        })?;
         Ok(parsed.tasks)
     }
 
@@ -221,7 +241,9 @@ fn is_tasks_event_path(path: &Path, sworm_dir: &Path, tasks_file: &Path) -> bool
     path == sworm_dir
         || path == tasks_file
         || (path.parent() == Some(sworm_dir)
-            && path.file_name().is_some_and(|name| name == "tasks.json"))
+            && path
+                .file_name()
+                .is_some_and(|name| name == "tasks.jsonc" || name == "tasks.json"))
 }
 
 fn substitute_vars(
@@ -292,6 +314,12 @@ fn resolve_var(
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("sworm-tasks-{name}-{}", Uuid::new_v4()))
+    }
+
     use super::*;
 
     fn empty_env() -> HashMap<String, String> {
@@ -345,16 +373,21 @@ mod tests {
         assert!(is_tasks_event_path(
             Path::new("/repo/.sworm"),
             Path::new("/repo/.sworm"),
-            Path::new("/repo/.sworm/tasks.json"),
+            Path::new("/repo/.sworm/tasks.jsonc"),
         ));
     }
 
     #[test]
     fn matches_tasks_file_events() {
         assert!(is_tasks_event_path(
+            Path::new("/repo/.sworm/tasks.jsonc"),
+            Path::new("/repo/.sworm"),
+            Path::new("/repo/.sworm/tasks.jsonc"),
+        ));
+        assert!(is_tasks_event_path(
             Path::new("/repo/.sworm/tasks.json"),
             Path::new("/repo/.sworm"),
-            Path::new("/repo/.sworm/tasks.json"),
+            Path::new("/repo/.sworm/tasks.jsonc"),
         ));
     }
 
@@ -363,7 +396,7 @@ mod tests {
         assert!(!is_tasks_event_path(
             Path::new("/repo/src/main.rs"),
             Path::new("/repo/.sworm"),
-            Path::new("/repo/.sworm/tasks.json"),
+            Path::new("/repo/.sworm/tasks.jsonc"),
         ));
     }
 
@@ -383,5 +416,92 @@ mod tests {
         service
             .register_singleton(folder, "build".into(), "run-2".into())
             .expect("released singleton can register again");
+    }
+
+    #[test]
+    fn loads_tasks_jsonc_with_comments_and_trailing_commas() {
+        let root = temp_root("jsonc");
+        let sworm_dir = root.join(".sworm");
+        fs::create_dir_all(&sworm_dir).expect("sworm dir created");
+        let file_path = sworm_dir.join("tasks.jsonc");
+        fs::write(
+            &file_path,
+            r#"{
+                // Comments are allowed
+                "version": 1,
+                "tasks": [
+                    {
+                        "id": "test",
+                        "label": "Run Tests",
+                        "command": "cargo test",
+                    },
+                ],
+            }"#,
+        )
+        .expect("write tasks.jsonc");
+
+        let service = TaskService::new();
+        let tasks = service.load(&root).expect("loads tasks.jsonc");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "test");
+        assert_eq!(tasks[0].command, "cargo test");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loads_legacy_tasks_json_fallback() {
+        let root = temp_root("legacy");
+        let sworm_dir = root.join(".sworm");
+        fs::create_dir_all(&sworm_dir).expect("sworm dir created");
+        let file_path = sworm_dir.join("tasks.json");
+        fs::write(
+            &file_path,
+            r#"{
+                "version": 1,
+                "tasks": [
+                    {
+                        "id": "legacy",
+                        "label": "Legacy Task",
+                        "command": "echo legacy"
+                    }
+                ]
+            }"#,
+        )
+        .expect("write tasks.json");
+
+        let service = TaskService::new();
+        let tasks = service.load(&root).expect("loads tasks.json");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "legacy");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prefers_tasks_jsonc_over_tasks_json() {
+        let root = temp_root("precedence");
+        let sworm_dir = root.join(".sworm");
+        fs::create_dir_all(&sworm_dir).expect("sworm dir created");
+        fs::write(
+            sworm_dir.join("tasks.jsonc"),
+            r#"{
+                "version": 1,
+                "tasks": [{ "id": "jsonc", "label": "JSONC", "command": "echo jsonc" }]
+            }"#,
+        )
+        .expect("write tasks.jsonc");
+        fs::write(
+            sworm_dir.join("tasks.json"),
+            r#"{
+                "version": 1,
+                "tasks": [{ "id": "json", "label": "JSON", "command": "echo json" }]
+            }"#,
+        )
+        .expect("write tasks.json");
+
+        let service = TaskService::new();
+        let tasks = service.load(&root).expect("loads tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "jsonc");
+        let _ = fs::remove_dir_all(root);
     }
 }

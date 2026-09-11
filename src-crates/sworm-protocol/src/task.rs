@@ -1,4 +1,4 @@
-// Per-project task definitions parsed from `.sworm/tasks.json`.
+// Per-project task definitions parsed from `.sworm/tasks.jsonc`.
 //
 // Doc comments on each field become `description` entries in the
 // generated JSON Schema, which Monaco surfaces as hover tooltips and
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TASKS_CHANGED_EVENT: &str = "tasks-changed";
 
-/// Root shape of `.sworm/tasks.json`. Committed to the repo and
+/// Root shape of `.sworm/tasks.jsonc`. Committed to the repo and
 /// shared by the whole team.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
