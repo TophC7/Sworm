@@ -22,36 +22,64 @@ jobs:
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
           echo "package=0.0.$GITHUB_RUN_NUMBER+$hash" >> "$GITHUB_OUTPUT"
 
+  test:
+    name: Test workspace
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Run workspace tests
+        run: nix develop --command cargo test --workspace -- --quiet
+
   deb:
     name: Debian (${{ matrix.arch }})
-    needs: version
+    needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
+            system: x86_64-linux
             runner: ubuntu-24.04
           - arch: arm64
+            system: aarch64-linux
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
       APP_VERSION: ${{ needs.version.outputs.package }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build native Debian package
-        run: >-
-          docker build --file packaging/debian/Dockerfile
-          --build-arg APP_VERSION="$APP_VERSION"
-          --target artifacts --output type=local,dest=dist .
-      - name: Check installation and launch
-        run: >-
-          docker build --file packaging/debian/Dockerfile
-          --build-arg APP_VERSION="$APP_VERSION"
-          --target smoke .
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Build packages with Nix
+        run: |
+          mkdir -p dist
+          nix build \
+            .#packages.${{ matrix.system }}.deb \
+            .#packages.${{ matrix.system }}.server-deb \
+            .#packages.${{ matrix.system }}.server-tarball \
+            --impure --out-link result
+          cp -L result*/*.deb result*/*.tar.gz dist/
+      - name: Install and smoke test packages on runner
+        run: |
+          sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils
+          sudo dpkg -i dist/sworm_*.deb dist/sworm-server_*.deb
+          desktop-file-validate /usr/share/applications/sworm.desktop
+          dbus-run-session -- xvfb-run -a sh nix/packaging/smoke.sh
+          sworm-server --help
+          sworm-server fingerprint --help
+          # Smoke test standalone tarball
+          mkdir -p test-tarball
+          tar -xzf dist/sworm-server-*.tar.gz -C test-tarball
+          test-tarball/*/bin/sworm-server --help
+          test-tarball/*/bin/sworm-server fingerprint --help
       - uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ matrix.arch }}
-          path: dist/*.deb
+          name: packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -70,37 +98,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
       - uses: actions/download-artifact@v4
         with:
-          pattern: deb-*
+          pattern: packages-*
           merge-multiple: true
           path: dist
-      - name: Install release tools
-        run: sudo apt-get update && sudo apt-get install --yes fish
       - name: Generate checksum-pinned AUR recipe
-        run: fish packaging/aur/generate.fish "$APP_VERSION" dist dist/aur
-      - name: Build Arch package and generate SRCINFO
+        run: nix run .#generate-aur -- "$APP_VERSION" dist
+      - name: Compute checksums
         run: |
-          docker run --rm -v "$PWD/dist:/dist" -v "$PWD/packaging/smoke.fish:/smoke.fish:ro" archlinux:base-devel bash -euc '
-            useradd --create-home builder
-            cp -r /dist/aur /home/builder/package
-            cp /dist/*.deb /home/builder/package/
-            chown -R builder:builder /home/builder/package
-            cd /home/builder/package
-            runuser -u builder -- makepkg --verifysource --noconfirm
-            runuser -u builder -- makepkg --nodeps --noconfirm
-            runuser -u builder -- makepkg --printsrcinfo > /dist/aur/.SRCINFO
-            pacman -Syu --noconfirm --needed fish xorg-server-xvfb xorg-xauth xdotool dbus
-            pacman -U --noconfirm ./*.pkg.tar.zst
-            ldd /usr/bin/sworm > /tmp/sworm-libraries
-            cat /tmp/sworm-libraries
-            if grep -q "not found" /tmp/sworm-libraries; then exit 1; fi
-            # Only the disposable test container bypasses WebKit namespace isolation.
-            WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 dbus-run-session -- xvfb-run -a fish /smoke.fish
-          '
-      - name: Bundle release files
-        run: |
-          tar -czf "dist/sworm-bin-$COMMIT_HASH.tar.gz" -C dist/aur PKGBUILD .SRCINFO
           cd dist
           sha256sum *.deb *.tar.gz > SHA256SUMS
       - uses: actions/upload-artifact@v4
