@@ -78,12 +78,7 @@ impl ExplorerFilter {
             .find(|dir| dir.join(".git").exists())
             .map(Path::to_path_buf);
         let (repo_exclude, global_exclude) = match &repo_root {
-            Some(repo) => {
-                let mut builder = GitignoreBuilder::new(repo);
-                builder.add(repo.join(".git").join("info").join("exclude"));
-                let repo = builder.build().unwrap_or_else(|_| Gitignore::empty());
-                (repo, Gitignore::global().0)
-            }
+            Some(repo) => (resolve_repo_exclude(repo), resolve_global_exclude(repo)),
             None => (Gitignore::empty(), Gitignore::empty()),
         };
 
@@ -126,10 +121,33 @@ impl ExplorerFilter {
         }
     }
 
-    /// Matched by git's ignore rules. Prefer `ignore_chain` when testing more
-    /// than one entry of the same directory.
+    /// Matched by git's ignore rules. Checks ancestor directories first: if any
+    /// parent directory is ignored, the entry is ignored too (git rules forbid
+    /// re-including files inside an excluded directory).
     pub fn is_ignored(&self, rel_path: &str, is_dir: bool) -> bool {
-        let parent = rel_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if rel_path.is_empty() || self.repo_root.is_none() {
+            return false;
+        }
+
+        let mut last_slash = None;
+        for (idx, byte) in rel_path.bytes().enumerate() {
+            if byte == b'/' {
+                let ancestor = &rel_path[..idx];
+                let parent = match last_slash {
+                    None => "",
+                    Some(s) => &rel_path[..s],
+                };
+                if self.ignore_chain(parent).is_ignored(ancestor, true) {
+                    return true;
+                }
+                last_slash = Some(idx);
+            }
+        }
+
+        let parent = match last_slash {
+            None => "",
+            Some(s) => &rel_path[..s],
+        };
         self.ignore_chain(parent).is_ignored(rel_path, is_dir)
     }
 
@@ -166,7 +184,7 @@ impl IgnoreChain<'_> {
     /// `rel_path` is project-relative with forward slashes and must live in the
     /// directory this chain was built for.
     pub fn is_ignored(&self, rel_path: &str, is_dir: bool) -> bool {
-        if self.matchers.is_empty() || rel_path.is_empty() {
+        if rel_path.is_empty() || self.filter.repo_root.is_none() {
             return false;
         }
 
@@ -179,14 +197,70 @@ impl IgnoreChain<'_> {
             }
         }
 
-        matches!(
-            self.filter.repo_exclude.matched(&abs, is_dir),
-            Match::Ignore(_)
-        ) || matches!(
-            self.filter.global_exclude.matched(&abs, is_dir),
-            Match::Ignore(_)
-        )
+        match self.filter.repo_exclude.matched(&abs, is_dir) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => {}
+        }
+
+        match self.filter.global_exclude.matched(&abs, is_dir) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => {}
+        }
+
+        false
     }
+}
+
+fn resolve_repo_exclude(repo: &Path) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(repo);
+    let exclude_file = repo.join(".git").join("info").join("exclude");
+    if exclude_file.is_file() {
+        builder.add(exclude_file);
+    } else {
+        // In a worktree or submodule, `.git` is a file containing `gitdir: <path>`.
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["--no-optional-locks", "rev-parse", "--git-path", "info/exclude"])
+            .current_dir(repo)
+            .output()
+        {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    let path = repo.join(path_str);
+                    if path.is_file() {
+                        builder.add(path);
+                    }
+                }
+            }
+        }
+    }
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
+fn resolve_global_exclude(repo: &Path) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(repo);
+    // 1. Check if git config specifies an explicit core.excludesFile.
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["--no-optional-locks", "config", "--path", "--get", "core.excludesfile"])
+        .current_dir(repo)
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                let path = PathBuf::from(path_str);
+                if path.is_file() {
+                    builder.add(path);
+                    return builder.build().unwrap_or_else(|_| Gitignore::empty());
+                }
+            }
+        }
+    }
+
+    // 2. Fall back to standard global gitignore file (e.g. ~/.config/git/ignore or $XDG_CONFIG_HOME/git/ignore).
+    builder.build_global().0
 }
 
 #[cfg(test)]
@@ -287,6 +361,100 @@ mod tests {
         std::fs::write(dir.join(".gitignore"), "*.tmp\n").expect("rewrite ignore file");
         assert!(!filter.is_ignored("app.log", false));
         assert!(filter.is_ignored("app.tmp", false));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn global_gitignore_matches_patterns_and_negations() {
+        let dir = unique_test_dir("global-ignore");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .expect("git init");
+
+        let global_ignore = dir.join("custom_global_ignore");
+        std::fs::write(
+            &global_ignore,
+            "*.globlog\nglobal_dir/\n.sworm/*\n!.sworm/*.json*\n",
+        )
+        .expect("write global ignore");
+
+        std::process::Command::new("git")
+            .args([
+                "config",
+                "core.excludesfile",
+                global_ignore.to_str().unwrap(),
+            ])
+            .current_dir(&dir)
+            .status()
+            .expect("git config");
+
+        let filter = ExplorerFilter::build(&dir, &settings(&[])).expect("build filter");
+
+        // Flat pattern from global ignore
+        assert!(filter.is_ignored("app.globlog", false));
+        assert!(filter.is_ignored("sub/deep/app.globlog", false));
+
+        // Directory with trailing slash from global ignore
+        assert!(filter.is_ignored("global_dir", true));
+        assert!(filter.is_ignored("global_dir/file.txt", false));
+        assert!(filter.is_ignored("sub/global_dir", true));
+
+        // Path with intermediate slash + negation from global ignore
+        assert!(filter.is_ignored(".sworm/cache.bin", false));
+        assert!(!filter.is_ignored(".sworm/config.json", false));
+
+        // Unignored files remain unignored
+        assert!(!filter.is_ignored("src/main.rs", false));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ancestor_ignored_directory_ignores_all_descendants() {
+        let dir = unique_test_dir("ancestor-ignore");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        std::fs::write(dir.join(".gitignore"), "build/\nnode_modules\n").expect("write ignore");
+
+        let filter = ExplorerFilter::build(&dir, &settings(&[])).expect("build filter");
+
+        assert!(filter.is_ignored("build", true));
+        assert!(filter.is_ignored("build/sub", true));
+        assert!(filter.is_ignored("build/sub/file.txt", false));
+        assert!(filter.is_ignored("node_modules/pkg/index.js", false));
+        assert!(!filter.is_ignored("src/build.rs", false));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deeply_nested_gitignore_precedence() {
+        let dir = unique_test_dir("deep-nested-ignore");
+        std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
+        std::fs::create_dir_all(dir.join("a/b/c")).expect("create nested dirs");
+
+        std::fs::write(dir.join(".gitignore"), "*.log\n").expect("root ignore");
+        std::fs::write(dir.join("a/b/.gitignore"), "!keep.log\nlocal_only/\n").expect("nested b ignore");
+
+        let filter = ExplorerFilter::build(&dir, &settings(&[])).expect("build filter");
+
+        // Root ignore applies outside a/b
+        assert!(filter.is_ignored("root.log", false));
+        assert!(filter.is_ignored("a/root.log", false));
+
+        // Nested negation in a/b wins over root ignore
+        assert!(!filter.is_ignored("a/b/keep.log", false));
+        assert!(!filter.is_ignored("a/b/c/keep.log", false));
+
+        // Other logs in a/b are still ignored by root rule
+        assert!(filter.is_ignored("a/b/other.log", false));
+
+        // Rule introduced in nested .gitignore applies to its subtree
+        assert!(filter.is_ignored("a/b/local_only", true));
+        assert!(filter.is_ignored("a/b/local_only/deep.txt", false));
+        assert!(!filter.is_ignored("local_only", true));
 
         std::fs::remove_dir_all(&dir).ok();
     }

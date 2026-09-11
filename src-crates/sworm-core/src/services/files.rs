@@ -902,6 +902,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".git")).expect("fake git dir");
         std::fs::write(dir.join(".gitignore"), "gen/\n").expect("ignore file");
         touch(dir.join("gen/out.js"));
+        touch(dir.join("gen/deep/inner.js"));
         touch(dir.join("src/main.rs"));
 
         let filter = filter(&dir, false, false);
@@ -922,8 +923,11 @@ mod tests {
 
         // Children inherit the parent's ignored state; git does not repeat itself.
         let children = read_dir_with_filter(&dir, "gen", false, &filter).expect("read dir");
-        assert!(children[0].ignored);
+        assert!(children.iter().all(|entry| entry.ignored));
 
+        // Grandchildren of an ignored directory remain ignored too.
+        let grandchildren = read_dir_with_filter(&dir, "gen/deep", false, &filter).expect("read dir");
+        assert!(grandchildren[0].ignored);
         std::fs::remove_dir_all(&dir).ok();
     }
 

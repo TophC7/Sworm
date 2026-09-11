@@ -313,7 +313,7 @@ async fn write_loop(
                 }
                 continue 'reattach;
             }
-            AttachOutcome::Backpressured(error) if wrote => {
+            AttachOutcome::Backpressured(_error) if wrote => {
                 tracing::debug!(
                     run_id,
                     "PTY replay queue filled; resuming from written cursor"
