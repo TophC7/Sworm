@@ -1,14 +1,16 @@
 use crate::app_state::AppState;
 use std::collections::HashMap;
 use sworm_core::errors::ApiError;
-use sworm_protocol::files::{DirEntry, FilePasteCollision, FilePasteMapping, PathList};
+use sworm_protocol::files::{
+    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, PathList,
+};
 
 #[tauri::command]
 pub async fn file_read(
     project_path: String,
     file_path: String,
     state: tauri::State<'_, AppState>,
-) -> Result<String, ApiError> {
+) -> Result<FileContent, ApiError> {
     state.router.file_read(project_path, file_path).await
 }
 
@@ -17,11 +19,12 @@ pub async fn file_write(
     project_path: String,
     file_path: String,
     content: String,
+    expected_version: Option<String>,
     state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
     state
-        .host
-        .file_write(project_path, file_path, content)
+        .router
+        .file_write(project_path, file_path, content, expected_version)
         .await
 }
 
@@ -31,7 +34,7 @@ pub async fn file_create_dir(
     dir_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.file_create_dir(project_path, dir_path).await
+    state.router.file_create_dir(project_path, dir_path).await
 }
 
 #[tauri::command]
@@ -42,7 +45,7 @@ pub async fn file_rename(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     state
-        .host
+        .router
         .file_rename(project_path, old_path, new_path)
         .await
 }
@@ -58,7 +61,7 @@ pub async fn file_paste(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FilePasteMapping>, ApiError> {
     state
-        .host
+        .router
         .file_paste(
             project_path,
             target_dir,
@@ -78,7 +81,7 @@ pub async fn file_paste_collisions(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FilePasteCollision>, ApiError> {
     state
-        .host
+        .router
         .file_paste_collisions(project_path, target_dir, sources)
         .await
 }
@@ -89,7 +92,7 @@ pub async fn file_delete(
     file_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.file_delete(project_path, file_path).await
+    state.router.file_delete(project_path, file_path).await
 }
 
 #[tauri::command]
@@ -111,7 +114,10 @@ pub async fn files_list_paths(
     show_hidden: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<PathList, ApiError> {
-    state.host.files_list_paths(project_path, show_hidden).await
+    state
+        .router
+        .files_list_paths(project_path, show_hidden)
+        .await
 }
 
 #[tauri::command]

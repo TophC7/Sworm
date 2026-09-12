@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
@@ -24,6 +24,7 @@ use sworm_core::{
 use sworm_protocol::{
     pty::PtyEvent,
     rpc::{HostEventFrame, HostEventWire, Open, Reply, Request, RunStatus},
+    settings::{merge_desktop_sections, tag_host_diagnostics, EffectiveSettingsInput},
 };
 use sworm_remote::{wire::read_frame, Fingerprint, Identity, RemoteClient, RemoteError};
 use tokio::{
@@ -141,6 +142,7 @@ pub(crate) struct RouterInner {
     identity: OnceCell<Arc<Identity>>,
     events: EventSink<HostEvent>,
     pub(crate) remote_runs: RemoteRunService,
+    pub(crate) remote_lsp: crate::remote_lsp::RemoteLspService,
     pending_stops: Mutex<HashMap<String, PendingStop>>,
     pending_stop_running: AtomicBool,
 }
@@ -169,6 +171,7 @@ impl WorkspaceRouter {
                 identity: OnceCell::new(),
                 events,
                 remote_runs: RemoteRunService::new(),
+                remote_lsp: crate::remote_lsp::RemoteLspService::new(),
                 pending_stops: Mutex::new(pending_stops),
                 pending_stop_running: AtomicBool::new(false),
             }),
@@ -200,6 +203,20 @@ impl WorkspaceRouter {
 
     pub async fn tasks_resize(&self, run_id: String, cols: u16, rows: u16) -> Result<(), ApiError> {
         self.inner.host.tasks_resize(run_id, cols, rows).await
+    }
+
+    /// Ordered client messages: a remote session's stream, a local server's
+    /// stdin. Not a table op because ordering rules out a fresh RPC stream.
+    pub async fn lsp_send(&self, session_id: String, message_json: String) -> Result<(), ApiError> {
+        if let Some(result) = self.inner.remote_lsp.send(&session_id, &message_json) {
+            return result;
+        }
+        self.inner.host.lsp_send(session_id, message_json).await
+    }
+
+    /// A closing window drops its language servers on every host it reached.
+    pub fn release_lsp_owner(&self, owner_id: &str) {
+        self.inner.remote_lsp.release_owner(owner_id);
     }
 
     pub fn server_for_run(&self, run_id: &str) -> Option<String> {
@@ -247,6 +264,14 @@ impl WorkspaceRouter {
 
     async fn call_reply(&self, server: &str, request: Request) -> Result<Reply, ApiError> {
         self.inner.call_reply(server, request).await
+    }
+
+    /// A remote mutation runs inside the daemon's `Host`, whose `FileMoved`
+    /// and `FileDeleted` events are local bookkeeping the events stream never
+    /// carries. Re-emitting them here against workspace URIs keeps window
+    /// claims and the editor's path tracking identical to a local folder.
+    fn emit(&self, event: HostEvent) -> Result<(), ApiError> {
+        (self.inner.events)(event).map_err(ApiError::Internal)
     }
 
     async fn stop_registered(
@@ -894,6 +919,401 @@ macro_rules! define_router_operation {
         }
     };
     (
+        #[route(project_path)]
+        FileRename => $method:ident(
+            $project_path:ident: $project_path_type:ty,
+            $old_path:ident: $old_path_type:ty,
+            $new_path:ident: $new_path_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $project_path: $project_path_type,
+            $old_path: $old_path_type,
+            $new_path: $new_path_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$project_path)? {
+                self.inner.remember_claim(server, path, None, false);
+                self.call_reply(
+                    server,
+                    Request::FileRename {
+                        project_path: path.to_owned(),
+                        old_path: $old_path.clone(),
+                        new_path: $new_path.clone(),
+                    },
+                )
+                .await?
+                .$method()
+                .map_err(ApiError::from)?;
+                return self.emit(HostEvent::FileMoved {
+                    folder_path: PathBuf::from(Target::remote_uri(server, path)),
+                    old_path: remote_child_uri(server, path, &$old_path),
+                    new_path: remote_child_uri(server, path, &$new_path),
+                    replace_destination: false,
+                });
+            }
+            self.inner
+                .host
+                .$method($project_path, $old_path, $new_path)
+                .await
+        }
+    };
+    (
+        #[route(project_path)]
+        FileDelete => $method:ident(
+            $project_path:ident: $project_path_type:ty,
+            $file_path:ident: $file_path_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $project_path: $project_path_type,
+            $file_path: $file_path_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$project_path)? {
+                self.inner.remember_claim(server, path, None, false);
+                self.call_reply(
+                    server,
+                    Request::FileDelete {
+                        project_path: path.to_owned(),
+                        file_path: $file_path.clone(),
+                    },
+                )
+                .await?
+                .$method()
+                .map_err(ApiError::from)?;
+                return self.emit(HostEvent::FileDeleted(remote_child_uri(
+                    server,
+                    path,
+                    &$file_path,
+                )));
+            }
+            self.inner.host.$method($project_path, $file_path).await
+        }
+    };
+    (
+        #[route(project_path)]
+        FilePaste => $method:ident(
+            $project_path:ident: $project_path_type:ty,
+            $target_dir:ident: $target_dir_type:ty,
+            $op:ident: $op_type:ty,
+            $sources:ident: $sources_type:ty,
+            $collision_policy:ident: $collision_policy_type:ty,
+            $rename_map:ident: $rename_map_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        #[allow(clippy::too_many_arguments)]
+        pub async fn $method(
+            &self,
+            $project_path: $project_path_type,
+            $target_dir: $target_dir_type,
+            $op: $op_type,
+            $sources: $sources_type,
+            $collision_policy: $collision_policy_type,
+            $rename_map: $rename_map_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$project_path)? {
+                self.inner.remember_claim(server, path, None, false);
+                let sources = remote_paste_sources(server, &$sources)?;
+                let rename_map = match $rename_map {
+                    Some(map) => Some(
+                        map.into_iter()
+                            .map(|(source, name)| {
+                                remote_paste_source(server, &source).map(|source| (source, name))
+                            })
+                            .collect::<Result<HashMap<String, String>, ApiError>>()?,
+                    ),
+                    None => None,
+                };
+                let cut = $op == "cut";
+                let mut mappings = self
+                    .call_reply(
+                        server,
+                        Request::FilePaste {
+                            project_path: path.to_owned(),
+                            target_dir: $target_dir,
+                            op: $op,
+                            sources,
+                            collision_policy: $collision_policy,
+                            rename_map,
+                        },
+                    )
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from)?;
+                for mapping in &mut mappings {
+                    if cut {
+                        self.emit(HostEvent::FileMoved {
+                            folder_path: PathBuf::from(Target::remote_uri(server, path)),
+                            old_path: PathBuf::from(Target::remote_uri(server, &mapping.source)),
+                            new_path: remote_child_uri(server, path, &mapping.destination),
+                            replace_destination: true,
+                        })?;
+                    }
+                    // Hand back the URI the caller pasted, not the daemon path.
+                    mapping.source = Target::remote_uri(server, &mapping.source);
+                }
+                return Ok(mappings);
+            }
+            self.inner
+                .host
+                .$method(
+                    $project_path,
+                    $target_dir,
+                    $op,
+                    $sources,
+                    $collision_policy,
+                    $rename_map,
+                )
+                .await
+        }
+    };
+    (
+        #[route(project_path)]
+        FilePasteCollisions => $method:ident(
+            $project_path:ident: $project_path_type:ty,
+            $target_dir:ident: $target_dir_type:ty,
+            $sources:ident: $sources_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $project_path: $project_path_type,
+            $target_dir: $target_dir_type,
+            $sources: $sources_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$project_path)? {
+                self.inner.remember_claim(server, path, None, false);
+                let sources = remote_paste_sources(server, &$sources)?;
+                let mut collisions = self
+                    .call_reply(
+                        server,
+                        Request::FilePasteCollisions {
+                            project_path: path.to_owned(),
+                            target_dir: $target_dir,
+                            sources,
+                        },
+                    )
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from)?;
+                for collision in &mut collisions {
+                    collision.source = Target::remote_uri(server, &collision.source);
+                }
+                return Ok(collisions);
+            }
+            self.inner
+                .host
+                .$method($project_path, $target_dir, $sources)
+                .await
+        }
+    };
+    (
+        #[route(input_folder_path)]
+        SettingsGetEffective => $method:ident(
+            $input:ident: $input_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        /// Host sections resolve where the folder lives; desktop sections
+        /// describe this window, so the local layer wins for those.
+        pub async fn $method(&self, $input: $input_type) -> Result<$return_type, ApiError> {
+            if let Some(folder_path) = $input.folder_path.as_deref() {
+                if let Target::Remote { server, path } = Target::parse(folder_path)? {
+                    let mut remote = self
+                        .call_reply(
+                            server,
+                            Request::SettingsGetEffective {
+                                input: EffectiveSettingsInput {
+                                    folder_path: Some(path.to_owned()),
+                                },
+                            },
+                        )
+                        .await?
+                        .$method()
+                        .map_err(ApiError::from)?;
+                    let local = self
+                        .inner
+                        .host
+                        .$method(EffectiveSettingsInput { folder_path: None })
+                        .await?;
+                    merge_desktop_sections(&mut remote, local, server);
+                    return Ok(remote);
+                }
+            }
+            self.inner.host.$method($input).await
+        }
+    };
+    (
+        #[route(input_path)]
+        SettingsOpenFolderFile => $method:ident(
+            $input:ident: $input_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(&self, mut $input: $input_type) -> Result<$return_type, ApiError> {
+            // Owned up front: the folder field is rewritten to the daemon path.
+            let routed = match Target::parse(&$input.folder_path)? {
+                Target::Local => None,
+                Target::Remote { server, path } => Some((server.to_owned(), path.to_owned())),
+            };
+            if let Some((server, path)) = routed {
+                self.inner.remember_claim(&server, &path, None, false);
+                $input.folder_path = path;
+                let mut result = self
+                    .call_reply(&server, Request::SettingsOpenFolderFile { input: $input })
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from)?;
+                // The file the caller opens next lives on the daemon.
+                result.path = Target::remote_uri(&server, &result.path);
+                return Ok(result);
+            }
+            self.inner.host.$method($input).await
+        }
+    };
+    (
+        #[route(server)]
+        $variant:ident => $method:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        /// Host-owned settings belong to whichever server runs the workspace
+        /// being edited, so the caller names it instead of a path.
+        pub async fn $method(
+            &self,
+            server: Option<String>,
+            $($argument: $argument_type),*
+        ) -> Result<$return_type, ApiError> {
+            if let Some(server) = server.as_deref() {
+                return self
+                    .call_reply(server, Request::$variant { $($argument),* })
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from);
+            }
+            self.inner.host.$method($($argument),*).await
+        }
+    };
+    (
+        #[route(opt_folder_path)]
+        $variant:ident => $method:ident(
+            $folder_path:ident: $folder_path_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $folder_path: $folder_path_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Some(folder_path) = $folder_path.as_deref() {
+                if let Target::Remote { server, path } = Target::parse(folder_path)? {
+                    self.inner.remember_claim(server, path, None, false);
+                    return self
+                        .call_reply(
+                            server,
+                            Request::$variant {
+                                $folder_path: Some(path.to_owned()),
+                            },
+                        )
+                        .await?
+                        .$method()
+                        .map_err(ApiError::from);
+                }
+            }
+            self.inner.host.$method($folder_path).await
+        }
+    };
+    (
+        #[route(folder_path)]
+        LspStart => $method:ident(
+            $session_id:ident: $session_id_type:ty,
+            $folder_path:ident: $folder_path_type:ty,
+            $server_definition_id:ident: $server_definition_id_type:ty,
+            $root_path:ident: $root_path_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            owner_id: Option<String>,
+            $session_id: $session_id_type,
+            $folder_path: $folder_path_type,
+            $server_definition_id: $server_definition_id_type,
+            $root_path: $root_path_type,
+            events: EventSink<sworm_protocol::lsp::LspEvent>,
+        ) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$folder_path)? {
+                self.inner.remember_claim(server, path, None, false);
+                // The language server only ever sees daemon-absolute paths.
+                let root_path = crate::remote_lsp::daemon_root_path(server, &$root_path);
+                // Register before starting: the daemon rejects a start whose
+                // event stream is missing.
+                self.inner
+                    .remote_lsp
+                    .attach(&self.inner, &$session_id, server, owner_id, events)
+                    .await?;
+                let result = match self
+                    .call_reply(
+                        server,
+                        Request::LspStart {
+                            session_id: $session_id.clone(),
+                            folder_path: path.to_owned(),
+                            server_definition_id: $server_definition_id,
+                            root_path,
+                        },
+                    )
+                    .await
+                {
+                    Ok(reply) => reply.$method().map_err(ApiError::from),
+                    Err(error) => Err(error),
+                };
+                if result.is_err() {
+                    self.inner.remote_lsp.cancel(&$session_id);
+                }
+                return result;
+            }
+            self.inner
+                .host
+                .$method(
+                    owner_id,
+                    $session_id,
+                    $folder_path,
+                    $server_definition_id,
+                    $root_path,
+                    events,
+                )
+                .await
+        }
+    };
+    (
+        #[route(lsp)]
+        LspStop => $method:ident($session_id:ident: $session_id_type:ty $(,)?) -> $return_type:ty;
+    ) => {
+        pub async fn $method(&self, $session_id: $session_id_type) -> Result<$return_type, ApiError> {
+            let Some(server) = self.inner.remote_lsp.server_for(&$session_id) else {
+                return self.inner.host.$method($session_id).await;
+            };
+            // The stream is this session's lease: once it is gone the daemon
+            // already killed the server, and a stop for the id could only reach
+            // the session that replaced this one.
+            if self.inner.remote_lsp.cancel_if_ended(&$session_id) {
+                return Ok(Default::default());
+            }
+            let result = match self
+                .call_reply(
+                    &server,
+                    Request::LspStop {
+                        session_id: $session_id.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(reply) => reply.$method().map_err(ApiError::from),
+                Err(error) => Err(error),
+            };
+            // Closing the stream is the backstop kill, so drop it either way.
+            self.inner.remote_lsp.cancel(&$session_id);
+            result
+        }
+    };
+    (
         #[route($route:ident)]
         $variant:ident => $method:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
@@ -1117,6 +1537,8 @@ fn remote_host_event(server: &str, event: HostEventWire) -> HostEvent {
             event.folder_path = event
                 .folder_path
                 .map(|folder| Target::remote_uri(server, &folder));
+            // Diagnostics from the daemon's layers must not read as local ones.
+            tag_host_diagnostics(&mut event.diagnostics, server);
             HostEvent::SettingsChanged(event)
         }
         HostEventWire::TasksChanged(folder) => {
@@ -1217,7 +1639,50 @@ async fn connect_happy(
     Err(last_error.unwrap_or_else(|| RemoteError::Transport("no resolved addresses".to_owned())))
 }
 
-fn remote_error(server: &str, error: RemoteError) -> ApiError {
+/// Absolute URI of a workspace-relative path inside a remote folder.
+fn remote_child_uri(server: &str, folder: &str, relative: &str) -> PathBuf {
+    let folder = folder.trim_end_matches('/');
+    let relative = relative.trim_start_matches('/');
+    PathBuf::from(Target::remote_uri(server, &format!("{folder}/{relative}")))
+}
+
+/// Clipboard sources name files on the host that owns them. A local path here
+/// would be a file the daemon cannot see, and another server's URI a file
+/// neither host can reach, so both are refused instead of silently pasting
+/// whatever happens to exist at that path on the daemon.
+fn remote_paste_source(server: &str, source: &str) -> Result<String, ApiError> {
+    match Target::parse(source)? {
+        Target::Remote {
+            server: origin,
+            path,
+        } if origin == server => Ok(path.to_owned()),
+        Target::Remote { server: origin, .. } => Err(ApiError::Remote(format!(
+            "cannot paste files from `{origin}` into a workspace on `{server}`"
+        ))),
+        Target::Local => Err(ApiError::Remote(format!(
+            "pasting local files into a remote workspace is not supported: {source}"
+        ))),
+    }
+}
+
+fn remote_paste_sources(server: &str, sources: &[String]) -> Result<Vec<String>, ApiError> {
+    sources
+        .iter()
+        .map(|source| remote_paste_source(server, source))
+        .collect()
+}
+
+/// Refuse a remote target for a command that can only act on this machine.
+pub fn reject_remote(command: &str, path: &str) -> Result<(), ApiError> {
+    match Target::parse(path)? {
+        Target::Local => Ok(()),
+        Target::Remote { .. } => Err(ApiError::Remote(format!(
+            "{command} is not supported on remote workspaces"
+        ))),
+    }
+}
+
+pub(crate) fn remote_error(server: &str, error: RemoteError) -> ApiError {
     match error {
         RemoteError::Wire(error) => ApiError::from(error),
         RemoteError::Connection(message)

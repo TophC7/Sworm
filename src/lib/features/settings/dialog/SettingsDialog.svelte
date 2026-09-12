@@ -26,7 +26,8 @@
     SettingsIcon,
     X
   } from '$lib/icons/lucideExports'
-  import { loadSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getSettingsHost, getSettingsServer, loadSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import type { BuiltinSettingsPage } from '$lib/types/backend'
   import { getVersion } from '@tauri-apps/api/app'
   import { onMount, type Component } from 'svelte'
@@ -50,7 +51,6 @@
   type View = 'appearance' | 'keyboard-shortcuts' | 'providers' | 'window' | string
   type NavIcon = { kind: 'lucide'; icon: Component } | { kind: 'file'; filename: string } | { kind: 'mask' }
   type NavItem = { id: View; label: string; icon: NavIcon }
-  type NavSection = { title: string; items: NavItem[] }
 
   const GENERAL_ITEMS: NavItem[] = [
     { id: 'appearance', label: 'Appearance', icon: { kind: 'lucide', icon: PaintbrushIcon } },
@@ -78,6 +78,16 @@
   let activeLabel = $derived(activeItem.label)
   let activeLanguagePage = $derived(languagePages.find((definition) => definition.id === active) ?? null)
 
+  // Providers, nix, formatting and LSP resolve on whichever host runs the
+  // active folder, so a remote workspace reads and writes its daemon's
+  // settings file. Pages that only touch desktop sections stay uncaptioned.
+  let hostSectionServer = $derived(active === 'providers' || activeLanguagePage ? getSettingsServer() : null)
+
+  // Host-section editors seed drafts from the loaded owner's values, so they
+  // re-mount when ownership moves rather than flushing stale drafts to a new
+  // host. The key is stable while the desktop owns the sections.
+  let hostKey = $derived(getSettingsHost() ?? 'local')
+
   // SAVE STATUS //
 
   let pending = $state(0)
@@ -99,12 +109,22 @@
     }
   }
 
+  // SETTINGS LOAD //
+
+  // The dialog stays mounted, so only refresh while it is open: host-section
+  // reads probe provider binaries on the owning machine. Reloading on every
+  // active-folder change keeps the values, the caption and the file a save
+  // lands in on the same host.
+  $effect(() => {
+    if (!open) return
+    void loadSettings(getActiveFolderPath())
+  })
+
   // VERSION //
 
   let version = $state<string | null>(null)
 
   onMount(() => {
-    void loadSettings()
     void versionPromise.then((v) => (version = v))
     void preloadBuiltinCatalog()
       .then((catalog) => {
@@ -183,16 +203,23 @@
         </header>
 
         <ScrollArea class="flex-1">
+          {#if hostSectionServer}
+            <p class="border-b border-edge px-5 py-2 text-xs text-muted">
+              These settings live on <span class="font-mono text-fg">{hostSectionServer}</span>
+            </p>
+          {/if}
           {#if active === 'appearance'}
             <GeneralView />
           {:else if active === 'keyboard-shortcuts'}
             <KeyboardShortcutsView />
           {:else if active === 'providers'}
-            <ProvidersView {onSaving} {onSaved} />
+            {#key hostKey}
+              <ProvidersView {onSaving} {onSaved} />
+            {/key}
           {:else if active === 'window'}
             <WindowView />
           {:else if activeLanguagePage}
-            {#key activeLanguagePage.id}
+            {#key `${hostKey}/${activeLanguagePage.id}`}
               {#if activeLanguagePage.kind === 'nix'}
                 <NixView definition={activeLanguagePage} {onSaving} {onSaved} />
               {:else}

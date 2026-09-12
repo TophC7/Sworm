@@ -156,6 +156,12 @@ export interface ExplorerPathList {
   truncated: boolean
 }
 
+/** A file's text plus the version of the bytes it was read from. */
+export interface FileContent {
+  content: string
+  version: string
+}
+
 /** Project-relative directories whose contents changed; '' is the root. */
 export interface FilesChangedEvent {
   folder_path: string
@@ -224,9 +230,12 @@ export interface EffectiveSettings {
 export type SettingsLayerKind = 'global' | 'folder'
 export type SettingsDiagnosticCode = 'parse_error' | 'invalid_value' | 'unknown_key'
 export type SettingsDiagnosticSeverity = 'warning' | 'error'
+/** Machine that resolved the layer: this desktop, or the daemon hosting a remote folder. */
+export type SettingsOrigin = 'desktop' | 'host'
 
 export interface SettingsDiagnostic {
   layer: SettingsLayerKind
+  origin: SettingsOrigin
   path: string
   pointer: string
   code: SettingsDiagnosticCode

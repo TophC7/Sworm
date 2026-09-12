@@ -126,6 +126,12 @@ function toFullDocumentEdit(model: MonacoModel, formatted: string): MonacoTextEd
   return [{ range: model.getFullModelRange(), text: formatted }]
 }
 
+/**
+ * Host-absolute path of the model's file. A remote workspace's models carry a
+ * `sworm://<server>` authority, and the daemon that formats them only knows
+ * the path underneath it.
+ */
 function fileUriToPath(model: MonacoModel): string | null {
-  return model.uri.scheme === 'file' ? model.uri.fsPath : null
+  if (model.uri.scheme === 'file') return model.uri.fsPath
+  return model.uri.scheme === 'sworm' ? model.uri.path : null
 }

@@ -127,6 +127,16 @@ pub fn is_global_only_pointer(pointer: &str) -> bool {
     })
 }
 
+/// Sections owned by the desktop window rather than the host that runs the
+/// folder. A remote workspace resolves every other section on its daemon; these
+/// three describe the window the user is looking at, so they stay local and the
+/// daemon refuses patches to them.
+pub const DESKTOP_SECTIONS: &[&str] = &["window", "terminal", "remotes"];
+
+pub fn is_desktop_section(section: &str) -> bool {
+    DESKTOP_SECTIONS.contains(&section)
+}
+
 /// One paired `sworm-server`, keyed by the `<server>` segment of `sworm://<server>/…`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -448,9 +458,26 @@ pub enum SettingsDiagnosticSeverity {
     Error,
 }
 
+/// Which machine resolved the layer a diagnostic came from. A remote workspace
+/// shows both at once: the daemon's layers plus this desktop's.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsOrigin {
+    /// Resolved by the process that produced the payload. For a remote
+    /// workspace `merge_desktop_sections` retags the daemon's own as `Host`.
+    #[default]
+    Desktop,
+    /// Resolved on the paired daemon that hosts the folder.
+    Host,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SettingsDiagnostic {
     pub layer: SettingsLayerKind,
+    /// Defaulted so a payload from a daemon that predates this field still
+    /// deserializes as locally resolved.
+    #[serde(default)]
+    pub origin: SettingsOrigin,
     pub path: String,
     pub pointer: String,
     pub code: SettingsDiagnosticCode,
@@ -511,17 +538,102 @@ mod tests {
         assert!(schema.pointer("/properties/terminal").is_some());
         assert!(schema.pointer("/properties/nix").is_some());
     }
+
+    #[test]
+    fn settings_effective_merges_desktop_sections() {
+        let mut remote = EffectiveSettingsPayload {
+            settings: EffectiveSettings::default(),
+            diagnostics: vec![diagnostic("/srv/repo/.sworm/settings.jsonc", "/explorer")],
+        };
+        remote.settings.terminal.font_size = 11;
+        remote.settings.window.tab_beam_position = TabBeamPosition::Bottom;
+        remote.settings.explorer.exclude = BTreeMap::from([("**/target".to_owned(), true)]);
+        remote.settings.nix.eval_timeout_secs = 42;
+
+        let mut local = EffectiveSettingsPayload {
+            settings: EffectiveSettings::default(),
+            diagnostics: vec![diagnostic(
+                "/home/me/.config/sworm/settings.jsonc",
+                "/window",
+            )],
+        };
+        local.settings.terminal.font_size = 17;
+        local.settings.window.tab_beam_position = TabBeamPosition::Top;
+        local.settings.remotes = BTreeMap::from([(
+            "loop".to_owned(),
+            RemoteSettings {
+                address: "127.0.0.1:7420".to_owned(),
+                fingerprint: "SHA256:beef".to_owned(),
+            },
+        )]);
+
+        merge_desktop_sections(&mut remote, local, "loop");
+
+        // Desktop sections win, host sections stay on the daemon's values.
+        assert_eq!(remote.settings.terminal.font_size, 17);
+        assert_eq!(
+            remote.settings.window.tab_beam_position,
+            TabBeamPosition::Top
+        );
+        assert!(remote.settings.remotes.contains_key("loop"));
+        assert_eq!(
+            remote.settings.explorer.exclude,
+            BTreeMap::from([("**/target".to_owned(), true)])
+        );
+        assert_eq!(remote.settings.nix.eval_timeout_secs, 42);
+
+        // Each merged diagnostic says which machine resolved it, keeps its
+        // layer, and keeps a path that names the machine too.
+        let merged: Vec<_> = remote
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.origin,
+                    diagnostic.layer,
+                    diagnostic.path.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            merged,
+            vec![
+                (
+                    SettingsOrigin::Host,
+                    SettingsLayerKind::Folder,
+                    "sworm://loop/srv/repo/.sworm/settings.jsonc"
+                ),
+                (
+                    SettingsOrigin::Desktop,
+                    SettingsLayerKind::Folder,
+                    "/home/me/.config/sworm/settings.jsonc"
+                )
+            ]
+        );
+    }
+
+    fn diagnostic(path: &str, pointer: &str) -> SettingsDiagnostic {
+        SettingsDiagnostic {
+            layer: SettingsLayerKind::Folder,
+            origin: SettingsOrigin::Desktop,
+            path: path.to_owned(),
+            pointer: pointer.to_owned(),
+            code: SettingsDiagnosticCode::InvalidValue,
+            severity: SettingsDiagnosticSeverity::Warning,
+            message: "bad value".to_owned(),
+        }
+    }
 }
 
 pub const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderSettingsEntry {
     pub provider: ProviderStatus,
     pub config: ProviderConfigRecord,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsPayload {
     pub window: WindowSettings,
     pub terminal: TerminalSettings,
@@ -530,13 +642,44 @@ pub struct SettingsPayload {
     pub providers: Vec<ProviderSettingsEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveSettingsPayload {
     pub settings: EffectiveSettings,
     pub diagnostics: Vec<SettingsDiagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Retag diagnostics resolved by `server`'s daemon: `Host` origin, and paths in
+/// `sworm://<server>/…` form so two same-named `settings.jsonc` files on
+/// different machines stay distinguishable both to code and in the status bar.
+pub fn tag_host_diagnostics(diagnostics: &mut [SettingsDiagnostic], server: &str) {
+    for diagnostic in diagnostics {
+        diagnostic.origin = SettingsOrigin::Host;
+        diagnostic.path = format!(
+            "sworm://{server}/{}",
+            diagnostic.path.trim_start_matches('/')
+        );
+    }
+}
+
+/// Overlay the desktop's own `DESKTOP_SECTIONS` onto a remote workspace's
+/// effective settings: host sections resolve on the machine that runs the
+/// folder, window/terminal/remotes describe this window.
+///
+/// Both machines' diagnostics survive the merge, the daemon's retagged as
+/// `Host` so the desktop can tell them apart.
+pub fn merge_desktop_sections(
+    remote: &mut EffectiveSettingsPayload,
+    local: EffectiveSettingsPayload,
+    server: &str,
+) {
+    remote.settings.window = local.settings.window;
+    remote.settings.terminal = local.settings.terminal;
+    remote.settings.remotes = local.settings.remotes;
+    tag_host_diagnostics(&mut remote.diagnostics, server);
+    remote.diagnostics.extend(local.diagnostics);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsLayerPayload {
     pub path: String,
     pub loaded: bool,
@@ -544,12 +687,12 @@ pub struct SettingsLayerPayload {
     pub diagnostics: Vec<SettingsDiagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsFileResult {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveProviderConfigInput {
     pub provider_id: String,
     pub enabled: bool,
@@ -557,18 +700,18 @@ pub struct SaveProviderConfigInput {
     pub extra_args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchSettingsSectionInput {
     pub section: String,
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderSettingsFileInput {
     pub folder_path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveSettingsInput {
     pub folder_path: Option<String>,
 }

@@ -112,7 +112,6 @@ impl Host {
 
         self.lsp
             .spawn(session_id, owner_id, config.trace, resolved, events)
-            .map_err(ApiError::Internal)
     }
 
     pub async fn lsp_send(&self, session_id: String, message_json: String) -> Result<(), ApiError> {
@@ -122,7 +121,14 @@ impl Host {
     }
 
     pub async fn lsp_stop(&self, session_id: String) -> Result<(), ApiError> {
-        self.lsp.kill(&session_id).map_err(ApiError::Internal)
+        self.lsp_kill(&session_id).map_err(ApiError::Internal)
+    }
+
+    /// Blocking twin of `lsp_stop`, for holders of a lock or a `Drop` impl
+    /// that must kill a server without an executor. Killing is synchronous
+    /// anyway: the async signature exists only for the RPC table.
+    pub fn lsp_kill(&self, session_id: &str) -> Result<(), String> {
+        self.lsp.kill(session_id)
     }
 }
 

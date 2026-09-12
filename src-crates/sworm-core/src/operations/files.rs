@@ -4,7 +4,9 @@ use crate::host::Host;
 use crate::services::folders::{normalize_absolute_path, resolve_folder};
 use std::collections::HashMap;
 use std::path::Path;
-use sworm_protocol::files::{DirEntry, FilePasteCollision, FilePasteMapping, PathList};
+use sworm_protocol::files::{
+    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, PathList,
+};
 
 /// Read the contents of a file inside a project.
 impl Host {
@@ -12,7 +14,7 @@ impl Host {
         &self,
         project_path: String,
         file_path: String,
-    ) -> Result<String, ApiError> {
+    ) -> Result<FileContent, ApiError> {
         let files = std::sync::Arc::clone(&self.files);
         tokio::task::spawn_blocking(move || files.read(Path::new(&project_path), &file_path))
             .await
@@ -24,7 +26,7 @@ impl Host {
         project_path: String,
         file_path: String,
         max_bytes: usize,
-    ) -> Result<String, ApiError> {
+    ) -> Result<FileContent, ApiError> {
         let files = std::sync::Arc::clone(&self.files);
         tokio::task::spawn_blocking(move || {
             files.read_limited(Path::new(&project_path), &file_path, max_bytes)
@@ -33,15 +35,30 @@ impl Host {
         .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
-    /// Write content to a file inside a project.
+    /// Write content to a file inside a project, returning the new version.
+    /// `expected_version` is the version the caller read: the write is refused
+    /// if the file changed (`Conflict`) or was deleted (`NotFound`) since.
+    /// `None` overwrites, or creates, whatever is there.
     pub async fn file_write(
         &self,
         project_path: String,
         file_path: String,
         content: String,
-    ) -> Result<(), ApiError> {
-        self.files
-            .write(Path::new(&project_path), &file_path, &content)
+        expected_version: Option<String>,
+    ) -> Result<String, ApiError> {
+        let files = std::sync::Arc::clone(&self.files);
+        // The version check reads the whole file back, so this belongs off the
+        // async runtime just as much as `file_read` does.
+        tokio::task::spawn_blocking(move || {
+            files.write(
+                Path::new(&project_path),
+                &file_path,
+                &content,
+                expected_version.as_deref(),
+            )
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     /// Create a directory inside a project.

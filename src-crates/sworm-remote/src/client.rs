@@ -3,8 +3,11 @@ use crate::{
     tls::{client_config, peer_fingerprint},
     wire::{read_frame, write_frame_with_limit},
 };
+use serde::Serialize;
 use std::{future::Future, net::SocketAddr, time::Duration};
-use sworm_protocol::rpc::{Open, Reply, Request, Response, WireError, MAX_REQUEST_FRAME_BYTES};
+use sworm_protocol::rpc::{
+    Open, OpenRpc, Reply, Request, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES,
+};
 use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -61,9 +64,15 @@ impl RemoteClient {
     }
 
     /// Run one bounded request/response exchange.
+    ///
+    /// An RPC may carry a file body, so its open frame is bounded by the
+    /// whole-frame ceiling rather than the small intake cap. The daemon only
+    /// accepts a frame that large once this connection is paired.
     pub async fn call(&self, request: &Request) -> Result<Reply, RemoteError> {
         timeout(REQUEST_TIMEOUT, async {
-            let (mut send, mut recv) = self.open_stream(Open::Rpc(request.clone())).await?;
+            let (mut send, mut recv) = self
+                .open_frame(&OpenRpc::new(request), MAX_FRAME_BYTES)
+                .await?;
             send.finish()
                 .map_err(|error| transport_error("finish request stream", error))?;
             match read_frame::<Response>(&mut recv).await? {
@@ -81,16 +90,27 @@ impl RemoteClient {
     }
 
     /// Open a lifetime stream. Callers own its timeout and shutdown policy.
+    ///
+    /// Every non-RPC open is small, so these stay inside the intake cap and
+    /// keep working before pairing.
     pub async fn open_stream(
         &self,
         open: Open,
+    ) -> Result<(quinn::SendStream, quinn::RecvStream), RemoteError> {
+        self.open_frame(&open, MAX_REQUEST_FRAME_BYTES).await
+    }
+
+    async fn open_frame<T: Serialize>(
+        &self,
+        open: &T,
+        limit: usize,
     ) -> Result<(quinn::SendStream, quinn::RecvStream), RemoteError> {
         let (mut send, recv) = self
             .connection
             .open_bi()
             .await
             .map_err(|error| connection_error("open stream", error))?;
-        write_frame_with_limit(&mut send, &open, MAX_REQUEST_FRAME_BYTES).await?;
+        write_frame_with_limit(&mut send, open, limit).await?;
         Ok((send, recv))
     }
 

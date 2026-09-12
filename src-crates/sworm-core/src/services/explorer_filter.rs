@@ -221,7 +221,12 @@ fn resolve_repo_exclude(repo: &Path) -> Gitignore {
     } else {
         // In a worktree or submodule, `.git` is a file containing `gitdir: <path>`.
         if let Ok(output) = std::process::Command::new("git")
-            .args(["--no-optional-locks", "rev-parse", "--git-path", "info/exclude"])
+            .args([
+                "--no-optional-locks",
+                "rev-parse",
+                "--git-path",
+                "info/exclude",
+            ])
             .current_dir(repo)
             .output()
         {
@@ -243,7 +248,13 @@ fn resolve_global_exclude(repo: &Path) -> Gitignore {
     let mut builder = GitignoreBuilder::new(repo);
     // 1. Check if git config specifies an explicit core.excludesFile.
     if let Ok(output) = std::process::Command::new("git")
-        .args(["--no-optional-locks", "config", "--path", "--get", "core.excludesfile"])
+        .args([
+            "--no-optional-locks",
+            "config",
+            "--path",
+            "--get",
+            "core.excludesfile",
+        ])
         .current_dir(repo)
         .output()
     {
@@ -436,7 +447,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("a/b/c")).expect("create nested dirs");
 
         std::fs::write(dir.join(".gitignore"), "*.log\n").expect("root ignore");
-        std::fs::write(dir.join("a/b/.gitignore"), "!keep.log\nlocal_only/\n").expect("nested b ignore");
+        std::fs::write(dir.join("a/b/.gitignore"), "!keep.log\nlocal_only/\n")
+            .expect("nested b ignore");
 
         let filter = ExplorerFilter::build(&dir, &settings(&[])).expect("build filter");
 

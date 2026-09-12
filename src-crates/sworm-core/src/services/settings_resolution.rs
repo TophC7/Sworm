@@ -11,7 +11,7 @@ use std::{
 use sworm_protocol::settings::{
     is_global_only_pointer, settings_layer_schema, EffectiveSettings, LspServerConfigRecord,
     LspServerSettings, ProviderConfigRecord, ProviderSettings, SettingsDiagnostic,
-    SettingsDiagnosticCode, SettingsDiagnosticSeverity, SettingsLayerKind,
+    SettingsDiagnosticCode, SettingsDiagnosticSeverity, SettingsLayerKind, SettingsOrigin,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +117,9 @@ pub fn parse_error_diagnostic(
 ) -> SettingsDiagnostic {
     SettingsDiagnostic {
         layer,
+        // Resolved by this process; a remote workspace's payload is retagged
+        // `Host` when the desktop merges it.
+        origin: SettingsOrigin::Desktop,
         path: path.to_string_lossy().into_owned(),
         pointer: String::new(),
         code: SettingsDiagnosticCode::ParseError,
@@ -254,6 +257,7 @@ fn validate_layer(
         remove_at(&mut value, &pointer);
         diagnostics.push(SettingsDiagnostic {
             layer: kind,
+            origin: SettingsOrigin::Desktop,
             path: path.clone(),
             severity: if pointer.is_empty() {
                 SettingsDiagnosticSeverity::Error

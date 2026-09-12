@@ -26,8 +26,8 @@ async function getGitHubRepo(folderPath: string): Promise<{ owner: string; repo:
   }
 
   try {
-    const config = await backend.files.read(folderPath, '.git/config')
-    const match = config.match(GITHUB_REMOTE_REGEX)
+    const { content } = await backend.files.read(folderPath, '.git/config')
+    const match = content.match(GITHUB_REMOTE_REGEX)
     const result = match ? { owner: match[1], repo: match[2] } : null
     if (gitRepoCache.size >= MAX_GIT_CACHE_ENTRIES) gitRepoCache.clear()
     gitRepoCache.set(folderPath, result)

@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::host_events::channel_sink;
+use crate::router::Target;
 use crate::services::windows::{
     ClaimFileResult, TabTransferExportPayload, TabTransferInitiateParams,
 };
@@ -137,7 +138,12 @@ pub fn window_close(window: WebviewWindow) -> Result<(), ApiError> {
         .map_err(|error| ApiError::Internal(error.to_string()))
 }
 
+/// Claims are string keys, and a remote file has no local path to
+/// canonicalize, so its `sworm://` URI is the key.
 fn resolve_file_path(file_path: &str) -> Result<PathBuf, ApiError> {
+    if let Target::Remote { .. } = Target::parse(file_path)? {
+        return Ok(PathBuf::from(file_path));
+    }
     let path = std::path::absolute(Path::new(file_path))?;
     Ok(sworm_core::services::folders::normalize_absolute_path(
         &path,

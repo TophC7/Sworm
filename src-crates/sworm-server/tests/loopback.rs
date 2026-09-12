@@ -1,16 +1,24 @@
 use anyhow::{bail, Context, Result};
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 use sworm_protocol::{
-    files::DirEntry,
+    files::{DirEntry, FileContent},
     git::GitSummary,
+    lsp::LspEvent,
     pty::PtyEvent,
     rpc::{
-        HostEventFrame, HostEventWire, Open, PtyCursor, PtyDown, Request, RunStatus, WireError,
-        MAX_REMOTE_FILE_BYTES, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
+        HostEventFrame, HostEventWire, LspDown, LspUp, Open, PtyCursor, PtyDown, Request, Response,
+        RunStatus, WireError, MAX_REMOTE_FILE_BYTES, MAX_REQUEST_FRAME_BYTES,
+        MAX_STREAMS_PER_CONNECTION,
     },
 };
 use sworm_remote::{
-    wire::{read_frame, read_tagged_frame, write_raw_frame, Frame},
+    wire::{read_frame, read_tagged_frame, write_frame, write_raw_frame, Frame},
     Fingerprint, Identity, RemoteClient, RemoteError,
 };
 use sworm_server::{auth, serve, ServeOptions, ServerHandle};
@@ -19,6 +27,8 @@ use tokio::time::{sleep, timeout};
 
 const SHORT_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Any builtin definition works: the test overrides its binary.
+const FAKE_LSP_SERVER_ID: &str = "dev.sworm.nix::nil";
 
 struct Fixture {
     config: TempDir,
@@ -375,6 +385,9 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     let fixture = Fixture::start(None).await?;
     let project_path = fixture.repo_path();
 
+    // An unpaired peer's oversized request dies at the server's 64KiB
+    // unauthenticated intake, not at a client-side limit: the reset stream
+    // surfaces as a transport failure, never a dispatched reply.
     let oversized_request = fixture.client().await?;
     let oversized_result = oversized_request
         .call(&Request::FileRead {
@@ -471,7 +484,8 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
         .await?
         .file_read()
         .map_err(RemoteError::Wire)?;
-    assert_eq!(contents, "sentinel\n");
+    assert_eq!(contents.content, "sentinel\n");
+    assert!(!contents.version.is_empty());
 
     let oversized_path = fixture.repo.path().join("oversized.txt");
     fs::File::create(&oversized_path)?.set_len(MAX_REMOTE_FILE_BYTES as u64 + 1)?;
@@ -618,7 +632,7 @@ async fn static_token_pairs_without_pending_token_file() -> Result<()> {
         .await?
         .file_read()
         .map_err(RemoteError::Wire)?;
-    assert_eq!(contents, "sentinel\n");
+    assert_eq!(contents.content, "sentinel\n");
 
     fixture.handle.shutdown().await;
     wait_closed(&client).await;
@@ -685,6 +699,162 @@ async fn fifo_read_is_rejected_and_shutdown_stays_prompt() -> Result<()> {
     timeout(SHORT_TIMEOUT, fixture.handle.shutdown())
         .await
         .context("server shutdown stalled after FIFO read")?;
+    Ok(())
+}
+
+/// Past the request-frame ceiling, and shaped so JSON escaping has real work
+/// to do: quotes, backslashes, and multi-byte characters all have to survive
+/// the round trip byte for byte.
+fn large_unicode_content() -> String {
+    let unit = "λ ünïcødé \"quoted\" \\ escaped\ttab\n";
+    unit.repeat(256 * 1024 / unit.len() + 1)
+}
+
+async fn write_file(
+    client: &RemoteClient,
+    project_path: &str,
+    file_path: &str,
+    content: &str,
+    expected_version: Option<String>,
+) -> Result<String, RemoteError> {
+    client
+        .call(&Request::FileWrite {
+            project_path: project_path.to_owned(),
+            file_path: file_path.to_owned(),
+            content: content.to_owned(),
+            expected_version,
+        })
+        .await?
+        .file_write()
+        .map_err(RemoteError::Wire)
+}
+
+async fn read_file(
+    client: &RemoteClient,
+    project_path: &str,
+    file_path: &str,
+) -> Result<FileContent, RemoteError> {
+    client
+        .call(&Request::FileRead {
+            project_path: project_path.to_owned(),
+            file_path: file_path.to_owned(),
+        })
+        .await?
+        .file_read()
+        .map_err(RemoteError::Wire)
+}
+
+/// A save carries the file, so a paired client's frame budget has to follow
+/// the payload rather than the smallest control frame — without loosening the
+/// write limit or the version check the editor relies on.
+#[tokio::test(flavor = "multi_thread")]
+async fn paired_client_writes_a_large_file_and_still_loses_a_stale_write() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let project_path = fixture.repo_path();
+
+    let seed = write_file(&client, &project_path, "big.txt", "seed\n", None).await?;
+
+    let content = large_unicode_content();
+    assert!(content.len() > MAX_REQUEST_FRAME_BYTES);
+    let version = timeout(
+        OUTPUT_TIMEOUT,
+        write_file(
+            &client,
+            &project_path,
+            "big.txt",
+            &content,
+            Some(seed.clone()),
+        ),
+    )
+    .await
+    .context("large write did not complete")??;
+    assert_ne!(version, seed);
+
+    let stored = timeout(OUTPUT_TIMEOUT, read_file(&client, &project_path, "big.txt"))
+        .await
+        .context("large read did not complete")??;
+    assert_eq!(stored.content, content);
+    assert_eq!(stored.version, version);
+
+    // Payload frames are large, not unbounded: writes stop where reads do.
+    let oversized = timeout(
+        OUTPUT_TIMEOUT,
+        write_file(
+            &client,
+            &project_path,
+            "big.txt",
+            &"a".repeat(MAX_REMOTE_FILE_BYTES + 1),
+            Some(version.clone()),
+        ),
+    )
+    .await
+    .context("oversized write did not return promptly")?;
+    assert!(matches!(
+        oversized,
+        Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
+    ));
+
+    let stale = write_file(&client, &project_path, "big.txt", "clobbered\n", Some(seed)).await;
+    assert!(matches!(
+        stale,
+        Err(RemoteError::Wire(WireError::Conflict { current_version }))
+            if current_version == version
+    ));
+
+    let unchanged = timeout(OUTPUT_TIMEOUT, read_file(&client, &project_path, "big.txt"))
+        .await
+        .context("read after the refused writes did not complete")??;
+    assert_eq!(unchanged.content, content);
+    assert_eq!(unchanged.version, version);
+
+    client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+/// Unauthenticated intake stays small: an unpaired peer cannot make the daemon
+/// size a buffer for, or wait on, a body it never sends.
+#[tokio::test(flavor = "multi_thread")]
+async fn oversized_unauthenticated_open_frame_is_refused_without_dispatch() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let paired = fixture.paired_client().await?;
+    let intruder_dir = tempfile::tempdir()?;
+    let intruder_identity = Identity::load_or_generate(intruder_dir.path(), "client")?;
+    let intruder = RemoteClient::connect(
+        &fixture.endpoint,
+        fixture.handle.local_addr,
+        &intruder_identity,
+        fixture.handle.fingerprint,
+    )
+    .await?;
+
+    let (mut send, mut recv) = intruder.connection().open_bi().await?;
+    send.write_all(&(MAX_REQUEST_FRAME_BYTES as u32 + 1).to_be_bytes())
+        .await?;
+    send.write_all(&[0u8]).await?;
+
+    let refused = timeout(SHORT_TIMEOUT, read_frame::<Response>(&mut recv))
+        .await
+        .context("oversized unauthenticated frame was not refused promptly")?;
+    assert!(matches!(refused, Err(RemoteError::Transport(_))));
+    // A dispatched request from an unpaired client answers and then closes the
+    // connection; a refused header never reaches dispatch, so it stays open.
+    assert!(
+        timeout(Duration::from_millis(500), intruder.closed())
+            .await
+            .is_err(),
+        "oversized open frame reached dispatch"
+    );
+
+    let entries = timeout(SHORT_TIMEOUT, root_entries(&paired, &fixture.repo_path()))
+        .await
+        .context("daemon stopped serving after refusing an oversized frame")??;
+    assert!(entries.iter().any(|entry| entry.name == "src"));
+
+    paired.close();
+    intruder.close();
+    fixture.handle.shutdown().await;
     Ok(())
 }
 
@@ -1170,6 +1340,357 @@ async fn slow_client_recovers_twenty_mebibytes_with_contiguous_offsets() -> Resu
 
     assert!(run_status(&client, run_id).await?.live);
     stop_session(&client, run_id).await?;
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+/// A language server stand-in: it announces itself, then answers anything that
+/// looks like an `initialize` request. Shell builtins only — the child runs
+/// with a cleared environment.
+fn write_fake_lsp(dir: &Path) -> Result<PathBuf> {
+    let path = dir.join("fake-lsp.sh");
+    fs::write(
+        &path,
+        r#"#!/bin/sh
+say() {
+  printf 'Content-Length: %s\r\n\r\n%s' "${#1}" "$1"
+}
+say '{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"fake-lsp-started"}}'
+while IFS= read -r line; do
+  case "$line" in
+    *initialize*) say '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}' ;;
+  esac
+done
+"#,
+    )?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    Ok(path)
+}
+
+/// Rewrites the fixture's folder settings, keeping its terminal provider: the
+/// folder layer is also what pins `enabled`, so a developer's global settings
+/// cannot disable the fake server.
+fn enable_fake_lsp(repo: &Path, script: &Path) -> Result<()> {
+    fs::write(
+        repo.join(".sworm/settings.jsonc"),
+        format!(
+            r#"{{
+  "providers": {{ "terminal": {{ "enabled": true, "binary_path_override": "sh", "extra_args": [] }} }},
+  "lsp": {{ "servers": {{ "{FAKE_LSP_SERVER_ID}": {{ "enabled": true, "binary_path_override": "{}" }} }} }}
+}}"#,
+            script.display()
+        ),
+    )?;
+    Ok(())
+}
+
+async fn open_fake_lsp(
+    client: &RemoteClient,
+    fixture: &Fixture,
+    session_id: &str,
+) -> Result<(quinn::SendStream, quinn::RecvStream, u32)> {
+    let (send, mut recv) = client
+        .open_stream(Open::Lsp {
+            session_id: session_id.to_owned(),
+        })
+        .await?;
+    // The daemon registers the session before it answers, so the start below
+    // can never outrun its own event sink.
+    match timeout(SHORT_TIMEOUT, read_frame::<LspDown>(&mut recv)).await?? {
+        LspDown::Ready => {}
+        other => bail!("expected a ready frame, got {other:?}"),
+    }
+
+    client
+        .call(&Request::LspStart {
+            session_id: session_id.to_owned(),
+            folder_path: fixture.repo_path(),
+            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+            root_path: fixture.repo_path(),
+        })
+        .await?
+        .lsp_start()
+        .map_err(RemoteError::Wire)?;
+
+    let pid = match next_lsp_event(&mut recv).await? {
+        LspEvent::Started { pid, .. } => pid.context("started event carried no pid")?,
+        other => bail!("expected a started event, got {other:?}"),
+    };
+    Ok((send, recv, pid))
+}
+
+async fn next_lsp_event(recv: &mut quinn::RecvStream) -> Result<LspEvent> {
+    match timeout(SHORT_TIMEOUT, read_frame::<LspDown>(recv))
+        .await
+        .context("LSP stream went quiet")??
+    {
+        LspDown::Event { event } => Ok(event),
+        LspDown::Ready => bail!("LSP stream announced itself twice"),
+    }
+}
+
+/// Servers interleave chatter, so scan a bounded number of frames.
+async fn wait_for_lsp_message(recv: &mut quinn::RecvStream, needle: &str) -> Result<()> {
+    for _ in 0..16 {
+        match next_lsp_event(recv).await? {
+            LspEvent::Message { payload_json, .. } if payload_json.contains(needle) => {
+                return Ok(())
+            }
+            LspEvent::Message { .. } | LspEvent::Trace { .. } | LspEvent::Started { .. } => {}
+            other => bail!("LSP session ended before {needle}: {other:?}"),
+        }
+    }
+    bail!("no LSP message contained {needle}")
+}
+
+/// The daemon reaps its LSP children, so a killed one loses its `/proc` entry.
+async fn wait_process_exited(pid: u32) -> Result<()> {
+    let path = PathBuf::from(format!("/proc/{pid}"));
+    timeout(SHORT_TIMEOUT, async {
+        while path.exists() {
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("LSP process {pid} outlived its stream"))?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lsp_stream_forwards_events_and_kills_on_close() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let script = write_fake_lsp(fixture.repo.path())?;
+    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, "loopback-lsp").await?;
+    // The server speaks first: daemon -> desktop forwarding works.
+    wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
+
+    write_frame(
+        &mut send,
+        &LspUp::Message {
+            payload_json:
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+                    .to_owned(),
+        },
+    )
+    .await?;
+    // Its reply proves the up-frame reached the process stdin.
+    wait_for_lsp_message(&mut recv, "\"id\":1").await?;
+
+    // No retention: closing the stream is the kill signal.
+    drop(send);
+    drop(recv);
+    wait_process_exited(pid).await?;
+
+    client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_lsp_server_is_refused_by_name_not_by_message() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let script = write_fake_lsp(fixture.repo.path())?;
+    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    let session_id = "loopback-lsp-restart";
+    let (send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
+
+    // A reloaded webview forgets its instances while their servers keep
+    // running. The desktop replaces its own orphan and must leave every other
+    // start failure alone, so the refusal has to be identifiable as itself.
+    let refused = client
+        .call(&Request::LspStart {
+            session_id: session_id.to_owned(),
+            folder_path: fixture.repo_path(),
+            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+            root_path: fixture.repo_path(),
+        })
+        .await;
+    assert!(
+        matches!(
+            &refused,
+            Err(RemoteError::Wire(WireError::LspAlreadyActive { session_id: named }))
+                if named == session_id
+        ),
+        "a duplicate start must name the live session, got {refused:?}"
+    );
+    assert!(
+        process_alive(pid),
+        "a refused duplicate start killed the live LSP server"
+    );
+
+    drop(send);
+    drop(recv);
+    wait_process_exited(pid).await?;
+    client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_drop_kills_lsp_and_keeps_pty_alive() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let script = write_fake_lsp(fixture.repo.path())?;
+    enable_fake_lsp(fixture.repo.path(), &script)?;
+    let run_id = "loopback-lsp-pty";
+    start_terminal(&client, run_id, &fixture.repo_path()).await?;
+
+    let (send, recv, pid) = open_fake_lsp(&client, &fixture, "loopback-lsp-drop").await?;
+
+    client.close();
+    wait_closed(&client).await;
+    drop(send);
+    drop(recv);
+
+    // A language server holds no state worth keeping, so it dies with its
+    // connection. A terminal does, so the same disconnect must spare it.
+    wait_process_exited(pid).await?;
+    let reconnected = fixture.client().await?;
+    assert!(
+        run_status(&reconnected, run_id).await?.live,
+        "disconnect killed the PTY run along with the LSP session"
+    );
+
+    stop_session(&reconnected, run_id).await?;
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+/// Round-trip a request through the stream: the reply proves this stream still
+/// reaches a live server's stdin.
+async fn assert_lsp_answers(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+) -> Result<()> {
+    write_frame(
+        send,
+        &LspUp::Message {
+            payload_json:
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+                    .to_owned(),
+        },
+    )
+    .await?;
+    // The fake server answers `initialize` with id 1.
+    wait_for_lsp_message(recv, "\"id\":1").await
+}
+
+fn process_alive(pid: u32) -> bool {
+    PathBuf::from(format!("/proc/{pid}")).exists()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_lsp_stream_is_refused_and_spares_the_live_session() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let script = write_fake_lsp(fixture.repo.path())?;
+    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    let session_id = "loopback-lsp-duplicate";
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
+
+    // The session id is leased, so a second stream for it is refused instead of
+    // taking the first stream's server over.
+    let (duplicate_send, mut duplicate_recv) = client
+        .open_stream(Open::Lsp {
+            session_id: session_id.to_owned(),
+        })
+        .await?;
+    match timeout(SHORT_TIMEOUT, read_frame::<LspDown>(&mut duplicate_recv)).await?? {
+        LspDown::Event {
+            event: LspEvent::Error { message, .. },
+        } => assert!(
+            message.contains("already has an open stream"),
+            "second stream was refused for the wrong reason: {message}"
+        ),
+        other => bail!("second stream was not refused: {other:?}"),
+    }
+    // The refused stream owns no lease, so its teardown must kill nothing.
+    drop(duplicate_send);
+    drop(duplicate_recv);
+
+    assert_lsp_answers(&mut send, &mut recv).await?;
+    assert!(
+        process_alive(pid),
+        "a refused duplicate stream killed the live LSP server"
+    );
+
+    // The lease holder is still the one that decides: closing it kills.
+    drop(send);
+    drop(recv);
+    wait_process_exited(pid).await?;
+
+    client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn foreign_connection_cannot_start_or_stop_a_leased_lsp_session() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let script = write_fake_lsp(fixture.repo.path())?;
+    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    let session_id = "loopback-lsp-foreign";
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
+
+    // Paired, but holding no lease on this session id.
+    let intruder = fixture.client().await?;
+    let stopped = intruder
+        .call(&Request::LspStop {
+            session_id: session_id.to_owned(),
+        })
+        .await;
+    assert!(
+        matches!(
+            &stopped,
+            Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
+        ),
+        "a foreign connection was allowed to stop the session: {stopped:?}"
+    );
+    let started = intruder
+        .call(&Request::LspStart {
+            session_id: session_id.to_owned(),
+            folder_path: fixture.repo_path(),
+            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+            root_path: fixture.repo_path(),
+        })
+        .await;
+    assert!(
+        matches!(
+            &started,
+            Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
+        ),
+        "a foreign connection was allowed to start into the session: {started:?}"
+    );
+
+    assert_lsp_answers(&mut send, &mut recv).await?;
+    assert!(
+        process_alive(pid),
+        "a foreign connection killed the session's LSP server"
+    );
+
+    // The lease holder still owns the stop.
+    client
+        .call(&Request::LspStop {
+            session_id: session_id.to_owned(),
+        })
+        .await?
+        .lsp_stop()
+        .map_err(RemoteError::Wire)?;
+    wait_process_exited(pid).await?;
+
+    intruder.close();
+    client.close();
     fixture.handle.shutdown().await;
     Ok(())
 }

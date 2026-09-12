@@ -71,5 +71,10 @@ pub async fn omp_resolve_uri(
     cwd: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<sworm_protocol::omp::OmpResolvedTarget, ApiError> {
+    // Resolution walks this machine's filesystem, so a remote workspace's cwd
+    // would silently resolve against whatever exists at that path locally.
+    if let Some(cwd) = &cwd {
+        crate::router::reject_remote("omp_resolve_uri", cwd)?;
+    }
     state.host.omp_resolve_uri(uri, cwd).await
 }

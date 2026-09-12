@@ -8,7 +8,7 @@ pub async fn issues_list(
     filters: IssueListFilters,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Issue>, ApiError> {
-    state.host.issues_list(folder_path, filters).await
+    state.router.issues_list(folder_path, filters).await
 }
 
 #[tauri::command]
@@ -18,7 +18,7 @@ pub async fn issues_ready(
     filters: Option<IssueReadyFilters>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Issue>, ApiError> {
-    state.host.issues_ready(folder_path, limit, filters).await
+    state.router.issues_ready(folder_path, limit, filters).await
 }
 
 #[tauri::command]
@@ -28,7 +28,10 @@ pub async fn issues_search(
     filters: IssueSearchFilters,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Issue>, ApiError> {
-    state.host.issues_search(folder_path, query, filters).await
+    state
+        .router
+        .issues_search(folder_path, query, filters)
+        .await
 }
 
 #[tauri::command]
@@ -37,7 +40,7 @@ pub async fn issues_get(
     issue_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueDetail, ApiError> {
-    state.host.issues_get(folder_path, issue_id).await
+    state.router.issues_get(folder_path, issue_id).await
 }
 
 #[tauri::command]
@@ -46,7 +49,7 @@ pub async fn issues_create(
     input: IssueCreateInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<Issue, ApiError> {
-    state.host.issues_create(folder_path, input).await
+    state.router.issues_create(folder_path, input).await
 }
 
 #[tauri::command]
@@ -56,7 +59,10 @@ pub async fn issues_update(
     patch: IssueUpdateInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<Issue, ApiError> {
-    state.host.issues_update(folder_path, issue_id, patch).await
+    state
+        .router
+        .issues_update(folder_path, issue_id, patch)
+        .await
 }
 
 #[tauri::command]
@@ -65,7 +71,7 @@ pub async fn issues_delete(
     issue_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.issues_delete(folder_path, issue_id).await
+    state.router.issues_delete(folder_path, issue_id).await
 }
 
 #[tauri::command]
@@ -74,7 +80,7 @@ pub async fn issue_epics_create(
     input: IssueEpicCreateInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueEpic, ApiError> {
-    state.host.issue_epics_create(folder_path, input).await
+    state.router.issue_epics_create(folder_path, input).await
 }
 
 #[tauri::command]
@@ -82,7 +88,7 @@ pub async fn issue_epics_list(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<IssueEpic>, ApiError> {
-    state.host.issue_epics_list(folder_path).await
+    state.router.issue_epics_list(folder_path).await
 }
 
 #[tauri::command]
@@ -91,7 +97,7 @@ pub async fn issue_epics_get(
     epic_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueEpic, ApiError> {
-    state.host.issue_epics_get(folder_path, epic_id).await
+    state.router.issue_epics_get(folder_path, epic_id).await
 }
 
 #[tauri::command]
@@ -102,7 +108,7 @@ pub async fn issue_epics_update(
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueEpic, ApiError> {
     state
-        .host
+        .router
         .issue_epics_update(folder_path, epic_id, patch)
         .await
 }
@@ -113,7 +119,7 @@ pub async fn issue_epics_delete(
     epic_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.host.issue_epics_delete(folder_path, epic_id).await
+    state.router.issue_epics_delete(folder_path, epic_id).await
 }
 
 #[tauri::command]
@@ -122,7 +128,7 @@ pub async fn issue_comments_add(
     input: IssueCommentCreateInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueComment, ApiError> {
-    state.host.issue_comments_add(folder_path, input).await
+    state.router.issue_comments_add(folder_path, input).await
 }
 
 #[tauri::command]
@@ -131,7 +137,10 @@ pub async fn issue_comments_list(
     issue_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<IssueComment>, ApiError> {
-    state.host.issue_comments_list(folder_path, issue_id).await
+    state
+        .router
+        .issue_comments_list(folder_path, issue_id)
+        .await
 }
 
 #[tauri::command]
@@ -142,7 +151,7 @@ pub async fn issue_comments_update(
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueComment, ApiError> {
     state
-        .host
+        .router
         .issue_comments_update(folder_path, comment_id, input)
         .await
 }
@@ -154,7 +163,7 @@ pub async fn issue_comments_delete(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     state
-        .host
+        .router
         .issue_comments_delete(folder_path, comment_id)
         .await
 }
@@ -165,7 +174,10 @@ pub async fn issue_dependencies_add(
     input: IssueDependencyInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssueDependency, ApiError> {
-    state.host.issue_dependencies_add(folder_path, input).await
+    state
+        .router
+        .issue_dependencies_add(folder_path, input)
+        .await
 }
 
 #[tauri::command]
@@ -175,7 +187,7 @@ pub async fn issue_dependencies_remove(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     state
-        .host
+        .router
         .issue_dependencies_remove(folder_path, input)
         .await
 }
@@ -187,7 +199,7 @@ pub async fn issue_dependencies_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<IssueDependency>, ApiError> {
     state
-        .host
+        .router
         .issue_dependencies_list(folder_path, issue_id)
         .await
 }
@@ -197,7 +209,7 @@ pub async fn issue_current_git_user(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    state.host.issue_current_git_user(folder_path).await
+    state.router.issue_current_git_user(folder_path).await
 }
 
 #[tauri::command]
@@ -205,5 +217,5 @@ pub async fn issue_config_list(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<IssueConfigEntry>, ApiError> {
-    state.host.issue_config_list(folder_path).await
+    state.router.issue_config_list(folder_path).await
 }

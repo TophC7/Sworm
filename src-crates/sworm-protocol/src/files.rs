@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+/// A file's text plus the version of the bytes it was read from, so a later
+/// write can detect that something else changed the file in between.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContent {
+    pub content: String,
+    /// Hex SHA-256 of the bytes as read.
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePasteCollision {
     pub source: String,
     pub destination: String,
@@ -31,7 +40,7 @@ pub struct DirEntry {
     pub hops: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathList {
     pub paths: Vec<String>,
     pub truncated: bool,

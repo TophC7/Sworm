@@ -25,7 +25,7 @@ pub struct GitSummary {
 }
 
 /// Commit data for git graph rendering (includes parent hashes and refs).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphCommit {
     pub hash: String,
     pub short_hash: String,
@@ -37,7 +37,7 @@ pub struct GraphCommit {
 }
 
 /// Full commit detail for the commit-view page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitDetail {
     pub hash: String,
     pub short_hash: String,
@@ -50,7 +50,7 @@ pub struct CommitDetail {
 }
 
 /// Single file entry within a commit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitFileChange {
     pub path: String,
     pub status: String,
@@ -59,7 +59,7 @@ pub struct CommitFileChange {
 }
 
 /// A single stash entry with its file changes.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StashEntry {
     pub index: usize,
     pub message: String,
@@ -83,7 +83,7 @@ pub struct GitChangedEvent {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitQuickDiffData {
     pub index_content: Option<String>,
@@ -91,7 +91,7 @@ pub struct GitQuickDiffData {
     pub has_index_changes: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffFileContent {
     pub old_content: Option<String>,

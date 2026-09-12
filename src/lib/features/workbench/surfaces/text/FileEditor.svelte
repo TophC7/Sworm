@@ -5,20 +5,31 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
+  import {
+    DialogRoot,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
+    DialogFooter
+  } from '$lib/components/ui/dialog'
   import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
   import { filePathToLanguage, isBinaryFile, isMarkdownFile, mediaKind } from '$lib/features/editor/languageMap'
-  import { basename } from '$lib/utils/paths'
+  import { basename, dirname } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import MediaViewer from '$lib/features/workbench/surfaces/text/MediaViewer.svelte'
+  import { watchFileDir } from '$lib/features/files/fileTree.svelte'
   import {
     clearTextSurfaceDirtyIfClosed,
     discardTextSurfaceBuffer,
+    getTextBaseVersion,
     isTextSurfaceDirty,
     markTextSurfaceSaved,
+    setTextBaseVersion,
     setTextSurfaceDirty
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
@@ -52,9 +63,17 @@
 
   let content = $state('')
   let editContent = $state('')
+  // Version of the bytes `content` was read from. Passed back on save so a
+  // write that would clobber someone else's change is refused instead.
+  // `null` for untitled buffers and snapshots — nothing to check against.
+  let diskVersion = $state<string | null>(null)
   let loading = $state(true)
   let saving = $state(false)
   let error = $state<string | null>(null)
+  // A save the backend refused because the file moved underneath us — its
+  // version changed, or it was deleted — holding what it was trying to write
+  // until the user picks a resolution.
+  let conflict = $state<{ targetRel: string; content: string; kind: 'conflict' | 'deleted' } | null>(null)
   // Untitled buffers are dirty as soon as they contain any text; without
   // this we'd treat "empty unsaved file" as clean and silently drop it
   // on tab close.
@@ -146,7 +165,6 @@
   // clear their dirty flag before the model has had a chance to reattach.
   let retainedDirtyPending = $state(false)
   let promotedOnEdit = $state(false)
-  let promoteTimer: ReturnType<typeof setTimeout> | null = null
   $effect.pre(() => {
     const id = tabId
     untrack(() => {
@@ -166,32 +184,46 @@
 
   let previewSource = $derived(mode === 'preview' ? content : debouncedEdit)
 
+  // Bumped by every read of this surface. A read whose token went stale lost
+  // its race — a newer load started, or the tab was rebound to another path —
+  // and must not apply its bytes over whatever replaced it.
+  let readToken = 0
+
+  function applyRead(token: number, value: string, version: string | null) {
+    if (token !== readToken) return
+    content = value
+    editContent = value
+    debouncedEdit = value
+    diskVersion = version
+  }
+
   async function load() {
+    const token = ++readToken
+    const target = filePath
     loading = true
     error = null
+    diskVersion = null
     try {
-      if (filePath == null) {
-        // Untitled buffer: start empty, skip backend read entirely.
-        content = ''
-        editContent = ''
-        debouncedEdit = ''
-      } else if (isBinaryFile(filePath)) {
-        content = ''
-        editContent = ''
-        debouncedEdit = ''
+      if (target == null || isBinaryFile(target)) {
+        // Untitled buffer or binary file: nothing to read.
+        applyRead(token, '', null)
       } else if (gitRef) {
-        content = await backend.editor.showFile(folderPath, gitRef, filePath)
-        editContent = content
-        debouncedEdit = content
+        applyRead(token, await backend.editor.showFile(folderPath, gitRef, target), null)
       } else {
-        content = await backend.files.read(folderPath, filePath)
-        editContent = content
-        debouncedEdit = content
+        const file = await backend.files.read(folderPath, target)
+        // A buffer with unsaved edits keeps the version those edits were based
+        // on — retained in the Monaco model across an unmount, or still live
+        // here after an external rename. Saving them against the version just
+        // read would replace an external change instead of prompting for it.
+        const retainedBase = dirty || retainedDirtyPending ? getTextBaseVersion(folderPath, target) : null
+        applyRead(token, file.content, retainedBase ?? file.version)
+        if (retainedBase == null) setTextBaseVersion(folderPath, target, file.version)
       }
     } catch (e) {
+      if (token !== readToken) return
       error = e instanceof Error ? e.message : String(e)
     } finally {
-      loading = false
+      if (token === readToken) loading = false
     }
   }
 
@@ -239,10 +271,19 @@
       saving = true
     }
 
+    await persist(targetRel, editContent, filePath == null ? null : diskVersion)
+  }
+
+  /**
+   * The write itself. `expectedVersion` null overwrites unconditionally —
+   * untitled save-as (the OS dialog already confirmed any replacement) and
+   * the explicit overwrite out of the conflict prompt.
+   */
+  async function persist(targetRel: string, savedContent: string, expectedVersion: string | null) {
     error = null
     try {
-      const savedContent = editContent
-      await backend.files.write(folderPath, targetRel, savedContent)
+      diskVersion = await backend.files.write(folderPath, targetRel, savedContent, expectedVersion)
+      setTextBaseVersion(folderPath, targetRel, diskVersion)
       markTextSurfaceSaved(folderPath, targetRel, savedContent)
       content = savedContent
       if (filePath == null) {
@@ -259,11 +300,120 @@
         }
       }
     } catch (e) {
+      const kind = saveFailureKind(e)
+      if (kind) {
+        // The file changed or vanished since we read it. Keep the buffer dirty
+        // and hold the write until the user picks a resolution.
+        conflict = { targetRel, content: savedContent, kind }
+        return
+      }
       error = e instanceof Error ? e.message : String(e)
     } finally {
       saving = false
     }
   }
+
+  /**
+   * `conflict` = the on-disk version moved, `deleted` = the file is gone.
+   * Both arrive as `{ kind }` from the backend and both are resolvable by
+   * writing with a null expected version.
+   */
+  function saveFailureKind(value: unknown): 'conflict' | 'deleted' | null {
+    if (typeof value !== 'object' || value === null || !('kind' in value)) return null
+    const kind = (value as { kind?: unknown }).kind
+    return kind === 'conflict' || kind === 'deleted' ? kind : null
+  }
+
+  /** Take the on-disk version, dropping the unsaved edits. */
+  async function reloadFromDisk() {
+    const target = filePath
+    const pending = conflict
+    if (target == null || pending == null) return
+    const token = ++readToken
+    error = null
+    try {
+      const file = await backend.files.read(folderPath, target)
+      if (token !== readToken || filePath !== target || conflict !== pending) return
+      // Keep Monaco mounted: load() would reattach its retained dirty buffer.
+      retainedDirtyPending = false
+      applyRead(token, file.content, file.version)
+      setTextBaseVersion(folderPath, target, file.version)
+      markTextSurfaceSaved(folderPath, target, file.content)
+      conflict = null
+    } catch (e) {
+      if (token !== readToken || conflict !== pending) return
+      error = e instanceof Error ? e.message : String(e)
+      conflict = null
+    }
+  }
+
+  /** Keep the editor's version, replacing whatever is on disk. */
+  async function overwriteOnDisk() {
+    const pending = conflict
+    conflict = null
+    if (!pending || saving) return
+    saving = true
+    await persist(pending.targetRel, pending.content, null)
+  }
+
+  /**
+   * An external change to this file. Clean buffers follow disk; dirty ones keep
+   * their edits *and* their now-stale `diskVersion`, so the next save is
+   * refused and the conflict prompt — not this reload — decides what wins.
+   */
+  async function reloadOnDiskChange() {
+    const target = filePath
+    if (target == null) return
+    // `saving` and `conflict` are the windows where a write already owns the
+    // version; `retainedDirtyPending` means unsaved edits are still parked in
+    // the retained Monaco model and have not reached `editContent` yet.
+    if (loading || saving || dirty || retainedDirtyPending || conflict !== null) return
+    const token = ++readToken
+    try {
+      const file = await backend.files.read(folderPath, target)
+      // Our own save is the common case: the version already matches.
+      if (token !== readToken || file.version === diskVersion) return
+      // Typing during the read wins; its edits are now based on the old bytes,
+      // and the stale `diskVersion` they carry is what makes the save prompt.
+      if (filePath !== target || saving || dirty || conflict !== null) return
+      applyRead(token, file.content, file.version)
+      setTextBaseVersion(folderPath, target, file.version)
+      markTextSurfaceSaved(folderPath, target, file.content)
+    } catch {
+      // Deleted, or briefly unreadable mid-write by another process. The
+      // delete listener owns closing the tab, and the next event re-reads.
+    }
+  }
+
+  // An open file follows disk. The watcher only reports directories this
+  // window asked for, so register this file's own: the explorer's set covers
+  // it only while the sidebar happens to render that directory.
+  $effect(() => {
+    const folder = folderPath
+    const dir = filePath != null && !gitRef && !isBinary && mediaKindValue == null ? dirname(filePath) : null
+    if (dir == null) return
+    const unwatch = watchFileDir(folder, dir)
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    void backend.files
+      .onChanged((event) => {
+        if (disposed) return
+        if (event.folder_path !== folder || !event.dirs.includes(dir)) return
+        void reloadOnDiskChange()
+      })
+      .then((stop) => {
+        // Disposed before the subscription resolved: drop it immediately.
+        if (disposed) stop()
+        else unlisten = stop
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+      unlisten = null
+      unwatch()
+    }
+  })
 
   async function shouldUseLegacyNixLint(target: string): Promise<boolean> {
     try {
@@ -325,8 +475,7 @@
       const id = tabId
       // Keep the first edit's Monaco update isolated from the workbench
       // commit that flips preview chrome to persistent chrome.
-      promoteTimer = setTimeout(() => {
-        promoteTimer = null
+      setTimeout(() => {
         promoteTab(id)
       }, 0)
     }
@@ -510,3 +659,37 @@
     {/if}
   </div>
 </div>
+
+<DialogRoot
+  open={conflict !== null}
+  onOpenChange={(open) => {
+    // Dismissing keeps the buffer dirty; nothing is written either way.
+    if (!open) conflict = null
+  }}
+>
+  <DialogContent>
+    {#if conflict}
+      <DialogHeader>
+        <DialogTitle>{conflict.kind === 'deleted' ? 'File Deleted on Disk' : 'File Changed on Disk'}</DialogTitle>
+        <DialogDescription>
+          <span class="font-mono text-fg">{basename(conflict.targetRel)}</span>
+          {#if conflict.kind === 'deleted'}
+            was deleted on disk after it was opened. Recreate writes the unsaved edits in this editor back to that path.
+          {:else}
+            changed on disk after it was opened. Reload discards the unsaved edits in this editor. Overwrite replaces
+            the file on disk with them.
+          {/if}
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onclick={() => (conflict = null)}>Cancel</Button>
+        {#if conflict.kind === 'deleted'}
+          <Button onclick={() => void overwriteOnDisk()}>Recreate</Button>
+        {:else}
+          <Button onclick={() => void reloadFromDisk()}>Reload</Button>
+          <Button variant="destructive" onclick={() => void overwriteOnDisk()}>Overwrite</Button>
+        {/if}
+      </DialogFooter>
+    {/if}
+  </DialogContent>
+</DialogRoot>

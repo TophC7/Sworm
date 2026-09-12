@@ -1,6 +1,7 @@
 mod app_state;
 mod commands;
 mod host_events;
+mod remote_lsp;
 mod remote_runs;
 pub mod router;
 mod services;

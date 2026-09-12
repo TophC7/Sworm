@@ -2,12 +2,15 @@ use crate::errors::ApiError;
 use crate::services::explorer_filter::{ExplorerFilter, IgnoreChain};
 use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use sworm_protocol::files::{DirEntry, FilePasteCollision, FilePasteMapping, PathList};
+use sworm_protocol::files::{
+    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, PathList,
+};
 #[cfg(test)]
 use sworm_protocol::settings::ExplorerSettings;
 
@@ -54,27 +57,33 @@ impl FileService {
         Ok(())
     }
 
-    /// Read the contents of a file inside a project.
-    pub fn read(&self, project_path: &Path, file_path: &str) -> Result<String, ApiError> {
+    /// Read the contents of a file inside a project, with the version of the
+    /// bytes it was read from.
+    pub fn read(&self, project_path: &Path, file_path: &str) -> Result<FileContent, ApiError> {
         self.validate_path(file_path)?;
         let abs = project_path.join(file_path);
         let (mut file, size) = Self::open_regular(&abs, file_path)?;
-        let mut contents = String::with_capacity(size as usize);
-        file.read_to_string(&mut contents)
+        let mut bytes = Vec::with_capacity(size as usize);
+        file.read_to_end(&mut bytes)
             .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
-        Ok(contents)
+        file_content(bytes, file_path)
     }
 
     /// Open without blocking on FIFOs/devices, then validate the opened descriptor
     /// so a path swap between check and open cannot hand back a non-regular file.
-    fn open_regular(abs: &Path, file_path: &str) -> Result<(File, u64), ApiError> {
+    /// `Ok(None)` means the path does not exist.
+    fn open_regular_opt(abs: &Path, file_path: &str) -> Result<Option<(File, u64)>, ApiError> {
         use std::os::unix::fs::OpenOptionsExt;
 
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(abs)
-            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ApiError::Io(format!("Failed to read {file_path}: {error}"))),
+        };
         let metadata = file
             .metadata()
             .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
@@ -83,7 +92,29 @@ impl FileService {
                 "{file_path} is not a regular file"
             )));
         }
-        Ok((file, metadata.len()))
+        Ok(Some((file, metadata.len())))
+    }
+
+    fn open_regular(abs: &Path, file_path: &str) -> Result<(File, u64), ApiError> {
+        Self::open_regular_opt(abs, file_path)?.ok_or_else(|| {
+            // Same text the plain `open` produced before the tolerant variant existed.
+            ApiError::Io(format!(
+                "Failed to read {file_path}: {}",
+                std::io::Error::from_raw_os_error(libc::ENOENT)
+            ))
+        })
+    }
+
+    /// Version of the bytes on disk, or `None` when nothing is there. Hashes
+    /// as it reads so a save never has to hold the whole on-disk file.
+    fn current_version(abs: &Path, file_path: &str) -> Result<Option<String>, ApiError> {
+        let Some((mut file, _)) = Self::open_regular_opt(abs, file_path)? else {
+            return Ok(None);
+        };
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher)
+            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        Ok(Some(hex(hasher.finalize())))
     }
 
     /// Read at most `max_bytes`, rejecting larger files before allocating their contents.
@@ -92,7 +123,7 @@ impl FileService {
         project_path: &Path,
         file_path: &str,
         max_bytes: usize,
-    ) -> Result<String, ApiError> {
+    ) -> Result<FileContent, ApiError> {
         self.validate_path(file_path)?;
         let abs = project_path.join(file_path);
         let (file, size) = Self::open_regular(&abs, file_path)?;
@@ -110,22 +141,46 @@ impl FileService {
                 "File {file_path} exceeds the {max_bytes}-byte read limit"
             )));
         }
-        String::from_utf8(bytes)
-            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))
+        file_content(bytes, file_path)
     }
 
-    /// Write content to a file inside a project.
+    /// Write content to a file inside a project, returning the version of the
+    /// bytes just written so the caller's next write can check against it.
     /// The file must already exist or its parent directory must exist.
+    ///
+    /// `expected_version` is the version the caller last read. Anything other
+    /// than exactly those bytes on disk refuses the write: a different version
+    /// is `ApiError::Conflict`, and a file deleted since the read is
+    /// `ApiError::Deleted` — recreating it would silently undo the deletion,
+    /// so the caller has to ask for that with an unconditional write.
+    /// `None` overwrites, or creates, unconditionally.
     pub fn write(
         &self,
         project_path: &Path,
         file_path: &str,
         content: &str,
-    ) -> Result<(), ApiError> {
+        expected_version: Option<&str>,
+    ) -> Result<String, ApiError> {
         self.validate_path(file_path)?;
         let abs = project_path.join(file_path);
+        if let Some(expected) = expected_version {
+            match Self::current_version(&abs, file_path)? {
+                Some(current) if current == expected => {}
+                Some(current) => {
+                    return Err(ApiError::Conflict {
+                        current_version: current,
+                    })
+                }
+                None => {
+                    return Err(ApiError::Deleted {
+                        path: file_path.to_string(),
+                    })
+                }
+            }
+        }
         std::fs::write(&abs, content)
-            .map_err(|e| ApiError::Io(format!("Failed to write {}: {}", file_path, e)))
+            .map_err(|e| ApiError::Io(format!("Failed to write {}: {}", file_path, e)))?;
+        Ok(version_of(content.as_bytes()))
     }
 
     /// Create a directory (and any missing parents) within a project.
@@ -402,6 +457,32 @@ impl FileService {
         );
         Ok(filter)
     }
+}
+
+/// Pair the bytes' version with their text. Hashing the bytes rather than the
+/// decoded string keeps the version exact for whatever is actually on disk.
+fn file_content(bytes: Vec<u8>, file_path: &str) -> Result<FileContent, ApiError> {
+    let version = version_of(&bytes);
+    let content = String::from_utf8(bytes)
+        .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+    Ok(FileContent { content, version })
+}
+
+/// Hex SHA-256 of a file's bytes.
+fn version_of(bytes: &[u8]) -> String {
+    hex(Sha256::digest(bytes))
+}
+
+/// Lowercase hex of a finished digest.
+fn hex(digest: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = digest.as_ref();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Entry survivors of one directory, before compaction.
@@ -842,6 +923,102 @@ mod tests {
     }
 
     #[test]
+    fn file_write_conflict_detects_external_change() {
+        let dir = unique_test_dir("write-conflict");
+        std::fs::write(dir.join("a.txt"), "original\n").expect("seed file");
+        let service = FileService::new();
+
+        let opened = service.read(&dir, "a.txt").expect("read");
+        assert_eq!(opened.content, "original\n");
+
+        // Someone else (an agent, another editor) rewrites the file.
+        std::fs::write(dir.join("a.txt"), "theirs\n").expect("external write");
+        let stale = service
+            .write(&dir, "a.txt", "mine\n", Some(&opened.version))
+            .expect_err("stale write must be refused");
+        let current_version = match stale {
+            ApiError::Conflict { current_version } => current_version,
+            other => panic!("expected Conflict, got {other:?}"),
+        };
+        assert_eq!(
+            current_version,
+            service.read(&dir, "a.txt").expect("re-read").version
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).expect("unchanged"),
+            "theirs\n"
+        );
+
+        // Explicit overwrite skips the check, and hands back the version of
+        // what it wrote so the next save doesn't conflict with this one.
+        let written = service
+            .write(&dir, "a.txt", "mine\n", None)
+            .expect("overwrite");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).expect("overwritten"),
+            "mine\n"
+        );
+        assert_eq!(
+            written,
+            service.read(&dir, "a.txt").expect("re-read").version
+        );
+
+        service
+            .write(&dir, "a.txt", "mine again\n", Some(&written))
+            .expect("the returned version writes through");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_write_refuses_to_resurrect_a_deleted_file() {
+        let dir = unique_test_dir("write-deleted");
+        std::fs::write(dir.join("a.txt"), "original\n").expect("seed file");
+        let service = FileService::new();
+        let opened = service.read(&dir, "a.txt").expect("read");
+
+        std::fs::remove_file(dir.join("a.txt")).expect("external delete");
+        let refused = service
+            .write(&dir, "a.txt", "mine\n", Some(&opened.version))
+            .expect_err("a stale save must not undo the deletion");
+        assert!(
+            matches!(&refused, ApiError::Deleted { path } if path == "a.txt"),
+            "expected Deleted, got {refused:?}"
+        );
+        assert!(!dir.join("a.txt").exists(), "the file stayed deleted");
+
+        // Recreating it is a deliberate act: an explicit unconditional write.
+        let written = service
+            .write(&dir, "a.txt", "mine\n", None)
+            .expect("explicit overwrite recreates");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).expect("recreated"),
+            "mine\n"
+        );
+        assert_eq!(
+            written,
+            service.read(&dir, "a.txt").expect("re-read").version
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_write_creates_a_new_file_but_not_a_missing_parent() {
+        let dir = unique_test_dir("write-new");
+        let service = FileService::new();
+
+        service
+            .write(&dir, "new.txt", "hello\n", None)
+            .expect("a brand new file needs no version");
+        service
+            .write(&dir, "missing/new.txt", "hello\n", None)
+            .expect_err("a missing parent directory is not created implicitly");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn read_dir_lists_empty_directories() {
         let dir = unique_test_dir("empty-dirs");
         std::fs::create_dir_all(dir.join("empty")).expect("empty dir");
@@ -926,7 +1103,8 @@ mod tests {
         assert!(children.iter().all(|entry| entry.ignored));
 
         // Grandchildren of an ignored directory remain ignored too.
-        let grandchildren = read_dir_with_filter(&dir, "gen/deep", false, &filter).expect("read dir");
+        let grandchildren =
+            read_dir_with_filter(&dir, "gen/deep", false, &filter).expect("read dir");
         assert!(grandchildren[0].ignored);
         std::fs::remove_dir_all(&dir).ok();
     }

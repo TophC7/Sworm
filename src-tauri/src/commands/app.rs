@@ -216,6 +216,10 @@ pub async fn clipboard_copy_files(paths: Vec<String>, op: String) -> Result<(), 
     if paths.is_empty() {
         return Err(ApiError::InvalidArgument("No paths provided".into()));
     }
+    // The system clipboard names files this machine can open.
+    for path in &paths {
+        crate::router::reject_remote("clipboard_copy_files", path)?;
+    }
     if op != "copy" && op != "cut" {
         return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op)));
     }

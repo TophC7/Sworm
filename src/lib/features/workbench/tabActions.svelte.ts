@@ -14,7 +14,8 @@ import { closeTab, getActiveTab, getTabs } from '$lib/features/workbench/state.s
 import {
   clearTextSurfaceDirty,
   discardTextSurfaceBuffer,
-  isTextSurfaceDirty
+  isTextSurfaceDirty,
+  setTextBaseVersion
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
@@ -64,8 +65,12 @@ export async function closeTabWithChecks(tabId: TabId): Promise<boolean> {
     }
   }
 
-  if (tab.kind === 'text' && (textDirty || tab.filePath == null)) {
-    discardTextSurfaceBuffer(tab)
+  if (tab.kind === 'text') {
+    if (textDirty || tab.filePath == null) {
+      discardTextSurfaceBuffer(tab)
+    } else {
+      setTextBaseVersion(tab.folderPath, tab.filePath, null)
+    }
   }
 
   // `closeTab` disposes the session/task manager for the tab.

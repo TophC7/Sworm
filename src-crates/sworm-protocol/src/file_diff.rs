@@ -40,7 +40,7 @@ impl GitStatus {
 /// the service returns *both* paths (staged + unstaged) merged. That
 /// is currently unused by the frontend but keeps the API ergonomic if
 /// we ever want a combined view.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffSource {
     Working {
@@ -59,7 +59,7 @@ pub enum DiffSource {
 /// Single-file diff payload shaped for Monaco. Both sides of the diff
 /// arrive as strings (or `None` for add/delete). The frontend pairs
 /// them into two `ITextModel`s and hands them to a `DiffEditor`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileDiff {
     pub path: String,

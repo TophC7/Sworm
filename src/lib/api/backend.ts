@@ -20,6 +20,7 @@ import type {
   EffectiveSettingsPayload,
   ExplorerDirEntry,
   ExplorerPathList,
+  FileContent,
   FileDiff,
   FilePasteMapping,
   FilePasteCollision,
@@ -516,11 +517,22 @@ export const backend = {
     onChanged(handler: (event: FilesChangedEvent) => void): Promise<UnlistenFn> {
       return listen<FilesChangedEvent>('files-changed', (event) => handler(event.payload))
     },
-    read(projectPath: string, filePath: string): Promise<string> {
-      return invoke<string>('file_read', { projectPath, filePath })
+    /** File text plus the version of the bytes read, for conflict-checked writes. */
+    read(projectPath: string, filePath: string): Promise<FileContent> {
+      return invoke<FileContent>('file_read', { projectPath, filePath })
     },
-    write(projectPath: string, filePath: string, content: string): Promise<void> {
-      return invoke<void>('file_write', { projectPath, filePath, content })
+    /**
+     * `expectedVersion` is the version the caller last read; a mismatch rejects
+     * the write with a `conflict` error carrying the on-disk version. `null`
+     * overwrites whatever is there. Resolves with the written content's version.
+     */
+    write(
+      projectPath: string,
+      filePath: string,
+      content: string,
+      expectedVersion: string | null = null
+    ): Promise<string> {
+      return invoke<string>('file_write', { projectPath, filePath, content, expectedVersion })
     },
     createDir(projectPath: string, dirPath: string): Promise<void> {
       return invoke<void>('file_create_dir', { projectPath, dirPath })
@@ -579,8 +591,10 @@ export const backend = {
   },
 
   settings: {
-    get(): Promise<SettingsPayload> {
-      return invoke<SettingsPayload>('settings_get')
+    // The global layer of the host that runs `folderPath` — the exact layer
+    // the setters below write. Omit it for this desktop.
+    get(folderPath?: string): Promise<SettingsPayload> {
+      return invoke<SettingsPayload>('settings_get', { folderPath: folderPath ?? null })
     },
     getEffective(folderPath?: string): Promise<EffectiveSettingsPayload> {
       return invoke<EffectiveSettingsPayload>('settings_get_effective', {
@@ -590,12 +604,17 @@ export const backend = {
     getGlobalLayer(): Promise<SettingsLayerPayload> {
       return invoke<SettingsLayerPayload>('settings_get_global_layer')
     },
+    // Host sections (nix, formatting, providers, lsp) resolve on the machine
+    // that runs the folder: pass the active folder so a remote workspace's
+    // edits land on its daemon instead of this desktop.
     patchGlobalSection(
-      section: 'general' | 'formatting' | 'providers' | 'lsp',
-      value: unknown
+      section: 'nix' | 'formatting' | 'providers' | 'lsp',
+      value: unknown,
+      folderPath?: string
     ): Promise<SettingsLayerPayload> {
       return invoke<SettingsLayerPayload>('settings_patch_global_section', {
-        input: { section, value }
+        input: { section, value },
+        folderPath: folderPath ?? null
       })
     },
     createGlobalFile(): Promise<SettingsFileResult> {
@@ -618,16 +637,17 @@ export const backend = {
     setTerminal(settings: TerminalSettings): Promise<TerminalSettings> {
       return invoke<TerminalSettings>('settings_set_terminal', { settings })
     },
-    setNix(settings: NixSettings): Promise<NixSettings> {
-      return invoke<NixSettings>('settings_set_nix', { settings })
+    setNix(settings: NixSettings, folderPath?: string): Promise<NixSettings> {
+      return invoke<NixSettings>('settings_set_nix', { settings, folderPath: folderPath ?? null })
     },
-    setFormatting(formatting: FormattingSettings): Promise<FormattingSettings> {
+    setFormatting(formatting: FormattingSettings, folderPath?: string): Promise<FormattingSettings> {
       return invoke<FormattingSettings>('settings_set_formatting', {
-        formatting
+        formatting,
+        folderPath: folderPath ?? null
       })
     },
-    setProviderConfig(config: ProviderConfig): Promise<ProviderConfig> {
-      return invoke<ProviderConfig>('settings_set_provider_config', { config })
+    setProviderConfig(config: ProviderConfig, folderPath?: string): Promise<ProviderConfig> {
+      return invoke<ProviderConfig>('settings_set_provider_config', { config, folderPath: folderPath ?? null })
     }
   },
 
@@ -826,8 +846,11 @@ export const backend = {
         folderPath: folderPath ?? null
       })
     },
-    setServerConfig(config: LspServerConfig): Promise<LspServerConfig> {
-      return invoke<LspServerConfig>('lsp_set_server_config', { config })
+    setServerConfig(config: LspServerConfig, folderPath?: string): Promise<LspServerConfig> {
+      return invoke<LspServerConfig>('lsp_set_server_config', {
+        config,
+        folderPath: folderPath ?? null
+      })
     },
     createEventChannel(onEvent: (event: LspEvent) => void): Channel<LspEvent> {
       const events = new Channel<LspEvent>()

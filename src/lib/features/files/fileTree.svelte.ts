@@ -32,6 +32,11 @@ const inflight = new Map<string, Promise<void>>()
 const watchTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** Last directory set handed to the backend watcher, per folder. */
 const watchedSignatures = new Map<string, string>()
+/** Directories other surfaces need watched — an open editor's own directory,
+ * which the explorer may not render. The backend keys watch requests by window
+ * label, so every requester in this window folds into one set. Refcounted:
+ * two editors in one directory must not unwatch each other. */
+const extraWatchDirs = new Map<string, Map<string, number>>()
 
 /**
  * Read-only view of a folder's tree state. Returns a shared empty record for
@@ -231,15 +236,40 @@ export function releaseFileTree(folderPath: string): void {
   clearTimeout(watchTimers.get(folderPath))
   watchTimers.delete(folderPath)
   watchedSignatures.delete(folderPath)
+  extraWatchDirs.delete(folderPath)
   folders.delete(folderPath)
 }
 
 /**
- * Watch the root, every expanded directory that has a listing, and every
- * directory a compacted row swallowed — exactly what is on screen, plus the
- * hidden links whose contents decide how those rows collapse. Watching
- * recursively instead would spend thousands of inotify watches on trees the
- * user cannot see.
+ * Keep `dir` in this window's watch set until the returned disposer runs, even
+ * when the explorer renders nothing from it. Open editors use this so their
+ * file's directory still reports external changes with the sidebar closed.
+ */
+export function watchFileDir(folderPath: string, dir: string): () => void {
+  const dirs = extraWatchDirs.get(folderPath) ?? new Map<string, number>()
+  extraWatchDirs.set(folderPath, dirs)
+  dirs.set(dir, (dirs.get(dir) ?? 0) + 1)
+  scheduleWatchSync(folderPath)
+
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const count = dirs.get(dir)
+    if (count === undefined) return
+    if (count > 1) dirs.set(dir, count - 1)
+    else dirs.delete(dir)
+    if (dirs.size === 0) extraWatchDirs.delete(folderPath)
+    scheduleWatchSync(folderPath)
+  }
+}
+
+/**
+ * Watch the root, every expanded directory that has a listing, every directory
+ * a compacted row swallowed, and every directory registered by an open editor
+ * — exactly what is on screen, plus the hidden links whose contents decide how
+ * those rows collapse. Watching recursively instead would spend thousands of
+ * inotify watches on trees the user cannot see.
  */
 function scheduleWatchSync(folderPath: string): void {
   clearTimeout(watchTimers.get(folderPath))
@@ -249,8 +279,20 @@ function scheduleWatchSync(folderPath: string): void {
     setTimeout(() => {
       watchTimers.delete(folderPath)
       const tree = folders.get(folderPath)
-      if (!tree) return
-      const dirs = [...['', ...tree.expanded].filter((dir) => tree.children.has(dir)), ...hopOwners(tree).keys()]
+      const extra = extraWatchDirs.get(folderPath)
+      if (!tree && !extra) {
+        // Nothing left to watch, and the folder may already be released —
+        // re-announcing an empty set would only respawn its watcher.
+        watchedSignatures.delete(folderPath)
+        return
+      }
+      const dirs = [
+        ...new Set([
+          ...(tree ? ['', ...tree.expanded].filter((dir) => tree.children.has(dir)) : []),
+          ...(tree ? hopOwners(tree).keys() : []),
+          ...(extra?.keys() ?? [])
+        ])
+      ]
       // A refresh reloads every listing without changing the set, so skip the
       // round trip when the watcher would be told exactly what it holds.
       const signature = dirs.join('\u0000')

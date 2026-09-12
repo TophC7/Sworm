@@ -13,7 +13,11 @@
     attachGitHunkReview,
     type GitHunkReviewHandle
   } from '$lib/features/editor/renderers/monaco/text/gitHunkReview'
-  import { acquireTextModel, type TextModelHandle } from '$lib/features/editor/renderers/monaco/text/modelCache'
+  import {
+    acquireTextModel,
+    textModelUri,
+    type TextModelHandle
+  } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { attachLspModel, detachLspModel } from '$lib/features/editor/lsp/registry'
   import {
     registerMountedTextSurface,
@@ -98,7 +102,7 @@
       if (modelHandle) {
         model = modelHandle.model
       } else {
-        const targetUri = uriPath ? m.Uri.file(uriPath) : null
+        const targetUri = uriPath ? textModelUri(m, uriPath) : null
         // LSP navigation can preload a target model before the editor tab exists.
         model = targetUri
           ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri))

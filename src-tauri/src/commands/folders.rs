@@ -197,6 +197,8 @@ fn folder_key(folder_path: &str) -> Result<PathBuf, ApiError> {
 /// closing Sworm does not nuke the user's shell.
 #[tauri::command]
 pub async fn folder_open_in_terminal(path: String) -> Result<(), ApiError> {
+    // A terminal emulator on this machine cannot cd into another host.
+    crate::router::reject_remote("folder_open_in_terminal", &path)?;
     let folder = resolve_folder(&path)?;
     spawn_terminal(&folder)
 }

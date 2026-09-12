@@ -59,7 +59,7 @@ pub struct NixDetection {
 }
 
 /// Diagnostic from `nix-instantiate --parse` stderr.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NixDiagnostic {
     pub message: String,
     pub line: u32,

@@ -9,7 +9,7 @@ pub async fn formatting_format_biome(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
     state
-        .host
+        .router
         .formatting_format_biome(folder_path, file_path, content)
         .await
 }
@@ -21,7 +21,7 @@ pub async fn formatting_format_nixfmt(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, ApiError> {
     state
-        .host
+        .router
         .formatting_format_nixfmt(folder_path, content)
         .await
 }

@@ -32,6 +32,24 @@ pub enum ApiError {
 
     #[error("Working tree has uncommitted changes")]
     DirtyWorktree { message: String },
+
+    /// A write lost a race: the file changed since the version the caller read.
+    #[error("File changed on disk")]
+    Conflict { current_version: String },
+
+    /// A conditional write found nothing there: the file was deleted after the
+    /// caller read it. Distinct from `Conflict`, which always has a current
+    /// version to report; recreating a deleted file needs an explicit
+    /// unconditional write.
+    #[error("File deleted on disk")]
+    Deleted { path: String },
+
+    /// A start was refused because the session id already has a live server.
+    /// Typed so the caller can decide: the owner of an id may replace its own
+    /// orphan (a reloaded webview leaves one behind), while anyone else must
+    /// not, because stopping is killing.
+    #[error("LSP session {session_id} is already active")]
+    LspAlreadyActive { session_id: String },
 }
 
 impl Serialize for ApiError {
@@ -51,6 +69,27 @@ impl Serialize for ApiError {
             let mut state = serializer.serialize_struct("ApiError", 2)?;
             state.serialize_field("kind", "dirtyWorktree")?;
             state.serialize_field("message", message)?;
+            return state.end();
+        }
+
+        if let ApiError::Conflict { current_version } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "conflict")?;
+            state.serialize_field("currentVersion", current_version)?;
+            return state.end();
+        }
+
+        if let ApiError::Deleted { path } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "deleted")?;
+            state.serialize_field("path", path)?;
+            return state.end();
+        }
+
+        if let ApiError::LspAlreadyActive { session_id } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "lspAlreadyActive")?;
+            state.serialize_field("sessionId", session_id)?;
             return state.end();
         }
 
@@ -74,6 +113,9 @@ impl From<ApiError> for WireError {
                 WireError::BranchUnmerged { branch, message }
             }
             ApiError::DirtyWorktree { message } => WireError::DirtyWorktree { message },
+            ApiError::Conflict { current_version } => WireError::Conflict { current_version },
+            ApiError::Deleted { path } => WireError::Deleted { path },
+            ApiError::LspAlreadyActive { session_id } => WireError::LspAlreadyActive { session_id },
         }
     }
 }
@@ -91,6 +133,9 @@ impl From<WireError> for ApiError {
                 ApiError::BranchUnmerged { branch, message }
             }
             WireError::DirtyWorktree { message } => ApiError::DirtyWorktree { message },
+            WireError::Conflict { current_version } => ApiError::Conflict { current_version },
+            WireError::Deleted { path } => ApiError::Deleted { path },
+            WireError::LspAlreadyActive { session_id } => ApiError::LspAlreadyActive { session_id },
             WireError::Unauthorized { message } => ApiError::Remote(message),
         }
     }
@@ -188,6 +233,36 @@ mod tests {
             json!({
                 "kind": "dirtyWorktree",
                 "message": "commit first",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::Conflict {
+                current_version: "abc123".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "conflict",
+                "currentVersion": "abc123",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::Deleted {
+                path: "src/main.rs".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "deleted",
+                "path": "src/main.rs",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::LspAlreadyActive {
+                session_id: "nil:/w@main".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "lspAlreadyActive",
+                "sessionId": "nil:/w@main",
             })
         );
     }

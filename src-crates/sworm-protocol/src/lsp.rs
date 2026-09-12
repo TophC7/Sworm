@@ -3,13 +3,13 @@ use crate::settings::LspServerConfigRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerSettingsEntry {
     pub server: LspServerStatus,
     pub config: LspServerConfigRecord,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerStatus {
     pub server_definition_id: String,
     pub builtin_id: String,
@@ -43,7 +43,7 @@ pub enum LspTransportTraceDirection {
     Stderr,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LspEvent {
     Started {
@@ -71,7 +71,7 @@ pub enum LspEvent {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveLspServerConfigInput {
     pub server_definition_id: String,
     pub enabled: bool,

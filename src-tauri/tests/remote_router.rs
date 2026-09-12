@@ -196,7 +196,8 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     assert_eq!(
         router
             .file_read(remote_repository.clone(), "hello.txt".into())
-            .await?,
+            .await?
+            .content,
         "sentinel\n"
     );
     assert!(router
@@ -231,7 +232,8 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
                 repository.to_string_lossy().into_owned(),
                 "hello.txt".into(),
             )
-            .await?,
+            .await?
+            .content,
         "sentinel\n"
     );
 
@@ -315,7 +317,8 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     assert_eq!(
         router
             .file_read(remote_repository.clone(), "hello.txt".into())
-            .await?,
+            .await?
+            .content,
         "sentinel\n"
     );
     router

@@ -56,6 +56,23 @@ function isDisposed(model: MonacoModel): boolean {
   return model.isDisposed()
 }
 
+/** A remote workspace keeps its `sworm://<server>` authority in the model URI:
+ * two servers' identical absolute paths must stay distinct models.
+ *
+ * Split by hand rather than parsed: `Uri.parse` reads `#` and `?` in a file
+ * name as a fragment or query and silently truncates the path. */
+export function textModelUri(monaco: Monaco, uriPath: string) {
+  const remote = uriPath.startsWith('sworm://') ? uriPath.slice('sworm://'.length) : null
+  if (remote == null) return monaco.Uri.file(uriPath)
+  const separator = remote.indexOf('/')
+  if (separator <= 0) return monaco.Uri.file(uriPath)
+  return monaco.Uri.from({
+    scheme: 'sworm',
+    authority: remote.slice(0, separator),
+    path: remote.slice(separator)
+  })
+}
+
 function disposeEntry(entry: TextModelEntry): void {
   entries.delete(entry.key)
   if (!isDisposed(entry.model)) entry.model.dispose()
@@ -156,7 +173,7 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
   }
   if (existing) entries.delete(key)
 
-  const uri = uriPath ? monaco.Uri.file(uriPath) : null
+  const uri = uriPath ? textModelUri(monaco, uriPath) : null
   const existingModel = uri ? monaco.editor.getModel(uri) : null
   if (existingModel && existingModel.getValue() !== value) {
     existingModel.setValue(value)
@@ -260,7 +277,7 @@ function createRenamedModel(entry: TextModelEntry, uriPath: string): MonacoModel
 
   const value = entry.model.getValue()
   const language = entry.model.getLanguageId()
-  const uri = monacoRef.Uri.file(uriPath)
+  const uri = textModelUri(monacoRef, uriPath)
   const existing = monacoRef.editor.getModel(uri)
   if (existing) {
     if (existing.getValue() !== value) existing.setValue(value)
@@ -325,7 +342,7 @@ export function importModelTransfer(state: TextModelTransferState, monaco: Monac
 
   const uri =
     state.filePath != null && state.folderPath != null
-      ? monaco.Uri.file(`${state.folderPath.replace(/\/$/, '')}/${state.filePath}`)
+      ? textModelUri(monaco, `${state.folderPath.replace(/\/$/, '')}/${state.filePath}`)
       : null
   const model = uri ? monaco.editor.getModel(uri) : null
   // setValue clears Monaco's local undo/redo stack; cross-realm history is unsupported.

@@ -22,6 +22,9 @@ pub(crate) struct ServerContext {
     pub folders: parking_lot::Mutex<HashMap<PathBuf, usize>>,
     pub host_events: HostEvents,
     pub completed: Arc<CompletedRunStore>,
+    /// Per-connection LSP streams, keyed by session id. A session's stream
+    /// owns its server: closing it kills the process.
+    pub lsp: crate::lsp_stream::LspStreams,
     runs: Mutex<HashMap<String, RunRecord>>,
 }
 
@@ -39,6 +42,7 @@ impl ServerContext {
             folders: parking_lot::Mutex::new(HashMap::new()),
             host_events,
             completed,
+            lsp: crate::lsp_stream::LspStreams::new(),
             runs: Mutex::new(HashMap::new()),
         }
     }
@@ -98,6 +102,101 @@ struct DispatchRuntime<'a> {
     session: &'a Mutex<Session>,
 }
 
+/// One daemon-side method per operation.
+///
+/// Every routed path is claimed here, so a folder the desktop reaches by any
+/// op gets its watchers and its release bookkeeping. Operations whose arm
+/// expands to nothing are written by hand below because they need run,
+/// stream, or pairing state the table cannot express; forgetting one is a
+/// compile error in `dispatch`, never a silently missing claim.
+macro_rules! dispatch_operation {
+    (#[route($route:ident)] FileRead => $($rest:tt)*) => {};
+    (#[route($route:ident)] FileWrite => $($rest:tt)*) => {};
+    (#[route($route:ident)] FolderListEntries => $($rest:tt)*) => {};
+    (#[route($route:ident)] FilesWatchDirs => $($rest:tt)*) => {};
+    (#[route($route:ident)] GitWatch => $($rest:tt)*) => {};
+    (#[route($route:ident)] SessionStart => $($rest:tt)*) => {};
+    (#[route($route:ident)] TasksStart => $($rest:tt)*) => {};
+    (#[route($route:ident)] SessionStop => $($rest:tt)*) => {};
+    (#[route($route:ident)] TasksStop => $($rest:tt)*) => {};
+    (#[route($route:ident)] RunStatus => $($rest:tt)*) => {};
+    (#[route($route:ident)] LspStart => $($rest:tt)*) => {};
+    (#[route($route:ident)] Pair => $($rest:tt)*) => {};
+    (
+        #[route(server)]
+        SettingsPatchGlobalSection => $method:ident(
+            $input:ident: $input_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
+            reject_desktop_section(&$input.section)?;
+            self.host.$method($input).await.map_err(Into::into)
+        }
+    };
+    (
+        #[route(server)]
+        $variant:ident => $method:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        /// The daemon is the server: its own global settings are the target.
+        async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
+            self.host.$method($($argument),*).await.map_err(Into::into)
+        }
+    };
+    // Session-keyed ops answer only to the connection holding that session's
+    // stream lease, which the generated shape cannot check.
+    (#[route(lsp)] $($rest:tt)*) => {};
+    (
+        #[route(opt_folder_path)]
+        $variant:ident => $method:ident(
+            $folder_path:ident: $folder_path_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        async fn $method(&self, $folder_path: $folder_path_type) -> Result<$return_type, WireError> {
+            if let Some(folder) = $folder_path.as_deref() {
+                self.claim(folder, "folder_path").await?;
+            }
+            self.host.$method($folder_path).await.map_err(Into::into)
+        }
+    };
+    (
+        #[route(input_folder_path)]
+        $variant:ident => $method:ident(
+            $input:ident: $input_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
+            if let Some(folder) = $input.folder_path.as_deref() {
+                self.claim(folder, "folder_path").await?;
+            }
+            self.host.$method($input).await.map_err(Into::into)
+        }
+    };
+    (
+        #[route(input_path)]
+        $variant:ident => $method:ident(
+            $input:ident: $input_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
+            self.claim(&$input.folder_path, "folder_path").await?;
+            self.host.$method($input).await.map_err(Into::into)
+        }
+    };
+    (
+        #[route($route:ident)]
+        $variant:ident => $method:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
+            self.claim(&$route, stringify!($route)).await?;
+            self.host.$method($($argument),*).await.map_err(Into::into)
+        }
+    };
+}
+
 macro_rules! define_dispatch {
     (
         $(
@@ -118,6 +217,15 @@ macro_rules! define_dispatch {
                     )*
                 }
             }
+
+            $(
+                dispatch_operation! {
+                    #[route($route)]
+                    $variant => $method(
+                        $($argument: $argument_type),*
+                    ) -> $return_type;
+                }
+            )*
         }
     };
 }
@@ -162,24 +270,11 @@ impl DispatchRuntime<'_> {
             .map_err(|message| WireError::Internal { message })
     }
 
-    async fn files_read_dir(
-        &self,
-        project_path: String,
-        dir_path: String,
-        show_hidden: bool,
-    ) -> Result<Vec<sworm_protocol::files::DirEntry>, WireError> {
-        self.claim(&project_path, "project_path").await?;
-        self.host
-            .files_read_dir(project_path, dir_path, show_hidden)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn file_read(
         &self,
         project_path: String,
         file_path: String,
-    ) -> Result<String, WireError> {
+    ) -> Result<sworm_protocol::files::FileContent, WireError> {
         self.claim(&project_path, "project_path").await?;
         self.host
             .file_read_limited(project_path, file_path, MAX_REMOTE_FILE_BYTES)
@@ -187,20 +282,27 @@ impl DispatchRuntime<'_> {
             .map_err(Into::into)
     }
 
-    async fn git_get_summary(
+    /// Writes mirror the read ceiling: a file too large to read back is not
+    /// one the daemon will store either.
+    async fn file_write(
         &self,
-        path: String,
-    ) -> Result<sworm_protocol::git::GitSummary, WireError> {
-        self.claim(&path, "path").await?;
-        self.host.git_get_summary(path).await.map_err(Into::into)
-    }
-
-    async fn folder_resolve(
-        &self,
-        path: String,
-    ) -> Result<sworm_protocol::folder::FolderInfo, WireError> {
-        self.claim(&path, "path").await?;
-        self.host.folder_resolve(path).await.map_err(Into::into)
+        project_path: String,
+        file_path: String,
+        content: String,
+        expected_version: Option<String>,
+    ) -> Result<String, WireError> {
+        if content.len() > MAX_REMOTE_FILE_BYTES {
+            return Err(WireError::InvalidArgument {
+                message: format!(
+                    "File {file_path} exceeds the {MAX_REMOTE_FILE_BYTES}-byte write limit"
+                ),
+            });
+        }
+        self.claim(&project_path, "project_path").await?;
+        self.host
+            .file_write(project_path, file_path, content, expected_version)
+            .await
+            .map_err(Into::into)
     }
 
     /// Browsing is not ownership: the folder switcher walks directories the
@@ -239,14 +341,6 @@ impl DispatchRuntime<'_> {
             })
             .await
             .map_err(Into::into)
-    }
-
-    async fn tasks_list(
-        &self,
-        folder_path: String,
-    ) -> Result<Vec<sworm_protocol::task::TaskDefinition>, WireError> {
-        self.claim(&folder_path, "folder_path").await?;
-        self.host.tasks_list(folder_path).await.map_err(Into::into)
     }
 
     async fn session_start(
@@ -441,6 +535,57 @@ impl DispatchRuntime<'_> {
         })
     }
 
+    async fn lsp_start(
+        &self,
+        session_id: String,
+        folder_path: String,
+        server_definition_id: String,
+        root_path: String,
+    ) -> Result<(), WireError> {
+        self.claim(&folder_path, "folder_path").await?;
+        require_absolute(&root_path, "root_path")?;
+        // The session's stream owns the server's lifetime, so a start without
+        // one would spawn a process nobody can reach or kill, and only the
+        // connection holding that stream may start it.
+        let owner = self.session.lock().await.subscriber_id.clone();
+        let lease = self.context.lsp.sink(&session_id, &owner).ok_or_else(|| {
+            WireError::InvalidArgument {
+                message: format!("no LSP stream is open for session {session_id}"),
+            }
+        })?;
+        self.host
+            .lsp_start(
+                Some(owner),
+                session_id.clone(),
+                folder_path,
+                server_definition_id,
+                root_path,
+                lease.events,
+            )
+            .await?;
+        // The stream can close while the server is starting; a process whose
+        // lease is gone answers to nobody, so stop it instead of leaking it.
+        if !self.context.lsp.is_current(&session_id, lease.token) {
+            let _ = self.host.lsp_stop(session_id).await;
+            return Err(WireError::InvalidArgument {
+                message: "LSP stream closed before its server started".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn lsp_stop(&self, session_id: String) -> Result<(), WireError> {
+        // The connection holding the session's stream lease is the only one
+        // allowed to stop it; otherwise one desktop could kill another's server.
+        let owner = self.session.lock().await.subscriber_id.clone();
+        if !self.context.lsp.owns(&session_id, &owner) {
+            return Err(WireError::InvalidArgument {
+                message: format!("no LSP stream is open for session {session_id}"),
+            });
+        }
+        self.host.lsp_stop(session_id).await.map_err(Into::into)
+    }
+
     async fn pair(&self, token: String, name: String) -> Result<(), WireError> {
         if self.session.lock().await.authorized {
             return Ok(());
@@ -497,6 +642,18 @@ fn conflicting_run(run_id: &str) -> WireError {
     WireError::InvalidArgument {
         message: format!("run id is already bound to different metadata: {run_id}"),
     }
+}
+
+/// Desktop sections describe the machine a window runs on. A daemon that
+/// accepted them would write settings nothing on its side ever reads, and the
+/// desktop would silently stop owning its own terminal and window prefs.
+fn reject_desktop_section(section: &str) -> Result<(), WireError> {
+    if sworm_protocol::settings::is_desktop_section(section) {
+        return Err(WireError::InvalidArgument {
+            message: format!("{section} settings are desktop-only"),
+        });
+    }
+    Ok(())
 }
 
 fn require_absolute(path: &str, field: &str) -> Result<(), WireError> {

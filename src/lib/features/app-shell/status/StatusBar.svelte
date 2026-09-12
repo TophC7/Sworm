@@ -101,7 +101,9 @@
             <div class="text-xs font-medium text-warning-bright">Settings diagnostics</div>
             {#each settingsDiagnostics.slice(0, 5) as diagnostic}
               <div class="font-mono text-2xs text-muted">
-                {diagnostic.layer}: {diagnostic.path}{diagnostic.pointer ? ` ${diagnostic.pointer}` : ''}
+                {diagnostic.origin === 'host' ? 'host ' : ''}{diagnostic.layer}: {diagnostic.path}{diagnostic.pointer
+                  ? ` ${diagnostic.pointer}`
+                  : ''}
                 <span class="font-sans text-warning-bright">{diagnostic.message}</span>
               </div>
             {/each}

@@ -83,6 +83,7 @@ export function ensureTextFileSyncListeners(): Promise<void> {
           nextRelative = toProjectRelativePath(nextFolder, nextPath)!
         }
         renameTextModelBuffer(tab.folderPath, tab.filePath, nextRelative, nextPath, nextFolder)
+        moveTextBaseVersion(tab.folderPath, tab.filePath, nextRelative, nextFolder ?? tab.folderPath)
         renameTextTab(tab.id, nextRelative, nextFolder ?? tab.folderPath)
       }
     }),
@@ -210,12 +211,43 @@ export function markTextSurfaceSaved(folderPath: string, filePath: string, value
   markTextModelBufferSaved(folderPath, filePath, value)
 }
 
+/**
+ * Disk version behind each buffer's edits, keyed like the model cache so it
+ * outlives the surface unmounting. A dirty tab that remounts after an external
+ * change must still save against the version its edits were based on —
+ * re-reading the file would hand it the current version, and the next save
+ * would replace a change the user never saw without a conflict prompt.
+ */
+const baseVersions = new Map<string, string>()
+
+function baseVersionKey(folderPath: string, filePath: string): string {
+  return `${folderPath}:${filePath}`
+}
+
+export function setTextBaseVersion(folderPath: string, filePath: string, version: string | null): void {
+  const key = baseVersionKey(folderPath, filePath)
+  if (version == null) baseVersions.delete(key)
+  else baseVersions.set(key, version)
+}
+
+export function getTextBaseVersion(folderPath: string, filePath: string): string | null {
+  return baseVersions.get(baseVersionKey(folderPath, filePath)) ?? null
+}
+
+function moveTextBaseVersion(folderPath: string, oldPath: string, newPath: string, newFolderPath: string): void {
+  const key = baseVersionKey(folderPath, oldPath)
+  const version = baseVersions.get(key)
+  baseVersions.delete(key)
+  if (version != null) baseVersions.set(baseVersionKey(newFolderPath, newPath), version)
+}
+
 export function discardTextSurfaceBuffer(tab: Pick<TextTab, 'id' | 'folderPath' | 'filePath' | 'gitRef'>): void {
   if (tab.gitRef) return
   if (tab.filePath == null) {
     discardUntitledTextModelBuffer(tab.folderPath, tab.id)
     return
   }
+  setTextBaseVersion(tab.folderPath, tab.filePath, null)
   discardTextModelBuffer(tab.folderPath, tab.filePath)
 }
 
@@ -227,6 +259,7 @@ export function renameTextPath(folderPath: string, oldPath: string, newPath: str
 
     if (tab.filePath === oldPath) {
       renameTextModelBuffer(folderPath, oldPath, newPath, resolveProjectFile(folderPath, newPath))
+      moveTextBaseVersion(folderPath, oldPath, newPath, folderPath)
       renameTextTab(tab.id, newPath)
       continue
     }
@@ -234,6 +267,7 @@ export function renameTextPath(folderPath: string, oldPath: string, newPath: str
     if (tab.filePath.startsWith(prefix)) {
       const renamedPath = `${newPath}/${tab.filePath.slice(prefix.length)}`
       renameTextModelBuffer(folderPath, tab.filePath, renamedPath, resolveProjectFile(folderPath, renamedPath))
+      moveTextBaseVersion(folderPath, tab.filePath, renamedPath, folderPath)
       renameTextTab(tab.id, renamedPath)
     }
   }

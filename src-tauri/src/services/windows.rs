@@ -1108,6 +1108,12 @@ fn release_window_resources(state: &AppState, label: &str) {
     } else {
         state.host.release_owner(label, &protected);
     }
+    // Remote LSP servers have no local Host entry, so `release_owner` above
+    // cannot see them. Both kills are owner-scoped and LSP session ids are
+    // per window, so a close never reaches a surviving window's servers -
+    // including a window that just adopted a transferred tab. PTY runs are
+    // untouched: they may outlive the window.
+    state.router.release_lsp_owner(label);
     for folder in final_folders {
         release_folder_resources(state, &folder);
     }

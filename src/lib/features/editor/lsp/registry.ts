@@ -5,11 +5,16 @@ import { isFormatterManagedLanguage } from '$lib/features/editor/formatters/conf
 import { filePathToLanguage, isBinaryFile } from '$lib/features/editor/languageMap'
 import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
 import type { LspDocumentSelector, LspEvent, LspServerSettingsEntry } from '$lib/types/backend'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const LSP_MARKER_OWNER = 'sworm-lsp'
+/** Scheme of a remote workspace's model URIs; the authority is the server. */
+const REMOTE_SCHEME = 'sworm'
 const TEXT_DOCUMENT_SYNC_FULL = 1
 const TEXT_DOCUMENT_SYNC_INCREMENTAL = 2
 const LSP_INSTANCE_IDLE_STOP_MS = 30_000
+/** Deadline for a server reply. Generous: `initialize` on a cold index is slow. */
+const LSP_REQUEST_TIMEOUT_MS = 60_000
 let monacoRef: Monaco | null = null
 
 type Monaco = typeof import('monaco-editor')
@@ -22,6 +27,7 @@ type MonacoTextEdit = import('monaco-editor').languages.TextEdit
 type MonacoDisposable = import('monaco-editor').IDisposable
 type MonacoContentChangeEvent = import('monaco-editor').editor.IModelContentChangedEvent
 type MonacoSelectionOrPosition = import('monaco-editor').IRange | import('monaco-editor').IPosition
+type MonacoUri = import('monaco-editor').Uri
 
 type JsonRpcId = number
 
@@ -65,6 +71,10 @@ interface ServerInstance {
   sessionId: string
   folderPath: string
   rootPath: string
+  /** Set when the workspace runs on a daemon: LSP URIs carry no workspace prefix. */
+  remoteServer: string | null
+  /** `rootPath` as the server sees it: always host-absolute. */
+  rootLspPath: string
   order: number
   entry: LspServerSettingsEntry
   status: 'starting' | 'ready' | 'failed'
@@ -74,6 +84,8 @@ interface ServerInstance {
   nextRequestId: number
   documents: Set<string>
   startPromise: Promise<void> | null
+  /** Set once teardown starts: an exit event, an idle timer and a refresh all stop the same instance. */
+  stopPromise: Promise<void> | null
   settings: unknown
   idleStopTimer: ReturnType<typeof setTimeout> | null
 }
@@ -86,6 +98,8 @@ class LspRegistry {
   private serverInstances = new Map<string, ServerInstance>()
   private serverEntriesByFolder = new Map<string, Promise<LspServerSettingsEntry[]>>()
   private knownFolders = new Set<string>()
+  /** Teardown in flight per instance key, awaited by the next start for that key. */
+  private stopsByKey = new Map<string, Promise<void>>()
   private editorOpenerRegistered = false
 
   async ensureMonaco(monaco: Monaco): Promise<void> {
@@ -217,7 +231,7 @@ class LspRegistry {
     if (!document) return null
 
     const params = {
-      textDocument: { uri: model.uri.toString() },
+      textDocument: { uri: lspUriForModel(model) },
       position: toLspPosition(position)
     }
 
@@ -245,26 +259,27 @@ class LspRegistry {
     if (!document) return null
 
     const params = {
-      textDocument: { uri: model.uri.toString() },
+      textDocument: { uri: lspUriForModel(model) },
       position: toLspPosition(position)
     }
 
-    const response = await this.requestPrimary(document, 'textDocument/definition', params, (instance) =>
+    const primary = await this.requestPrimary(document, 'textDocument/definition', params, (instance) =>
       Boolean((instance.capabilities ?? {}).definitionProvider)
     )
+    if (!primary) return null
 
-    return this.materializeLocations(document, toMonacoLocations(response))
+    return this.materializeLocations(document, toMonacoLocations(primary.result, primary.instance))
   }
 
   async provideDocumentFormattingEdits(model: MonacoModel): Promise<MonacoTextEdit[]> {
     const document = await this.getReadyDocument(model)
     if (!document) return []
 
-    const response = await this.requestPrimary(
+    const primary = await this.requestPrimary(
       document,
       'textDocument/formatting',
       {
-        textDocument: { uri: model.uri.toString() },
+        textDocument: { uri: lspUriForModel(model) },
         options: {
           tabSize: model.getOptions().tabSize,
           insertSpaces: model.getOptions().insertSpaces
@@ -273,7 +288,8 @@ class LspRegistry {
       (instance) => Boolean((instance.capabilities ?? {}).documentFormattingProvider)
     )
 
-    return Array.isArray(response) ? response.map(toMonacoTextEdit).filter(isPresent) : []
+    const edits = primary?.result
+    return Array.isArray(edits) ? edits.map(toMonacoTextEdit).filter(isPresent) : []
   }
 
   async provideCompletionItems(model: MonacoModel, position: MonacoPosition): Promise<MonacoCompletionList> {
@@ -281,7 +297,7 @@ class LspRegistry {
     if (!document) return { suggestions: [] }
 
     const params = {
-      textDocument: { uri: model.uri.toString() },
+      textDocument: { uri: lspUriForModel(model) },
       position: toLspPosition(position)
     }
 
@@ -351,7 +367,7 @@ class LspRegistry {
           return true
         }
 
-        const targetPath = fileUriToPath(resource)
+        const targetPath = workspacePathFromUri(resource)
         if (!targetPath || isBinaryFile(targetPath)) return false
 
         const context = this.resolveTargetContext(sourceModel.uri.toString(), targetPath)
@@ -392,12 +408,17 @@ class LspRegistry {
     const existing = this.serverInstances.get(key)
     if (existing) return existing
 
+    const remote = splitRemoteFolder(rootPath)
     const settings = entry.config.settings ?? null
     const instance: ServerInstance = {
       key,
-      sessionId: key,
+      // Per window: two windows on one folder share this key, and the backend
+      // grants a session id to exactly one stream at a time.
+      sessionId: `${key}@${getCurrentWindow().label}`,
       folderPath: context.folderPath,
       rootPath,
+      remoteServer: remote?.server ?? null,
+      rootLspPath: remote?.path ?? rootPath,
       order,
       entry,
       status: 'starting',
@@ -407,36 +428,46 @@ class LspRegistry {
       nextRequestId: 1,
       documents: new Set(),
       startPromise: null,
+      stopPromise: null,
       settings,
       idleStopTimer: null
     }
 
-    instance.startPromise = this.startServer(instance)
     this.serverInstances.set(key, instance)
+    instance.startPromise = this.startServer(instance)
     return instance
   }
 
-  private async startServer(instance: ServerInstance): Promise<void> {
+  private async startServer(instance: ServerInstance, replaceOrphan = true): Promise<void> {
     try {
+      // One lease per session id, and a duplicate start is refused: wait for the
+      // previous instance's stop to release the id before claiming it again.
+      await this.stopsByKey.get(instance.key)
+      // Stopped while waiting: never claim the id back for a dead instance.
+      if (this.serverInstances.get(instance.key) !== instance) {
+        instance.status = 'failed'
+        return
+      }
+
       await backend.lsp.start(
         instance.sessionId,
         instance.folderPath,
         instance.entry.server.server_definition_id,
         instance.rootPath,
-        (event) => this.onServerEvent(instance.key, event)
+        (event) => this.onServerEvent(instance, event)
       )
 
       const initializeResult = (await this.request(instance, 'initialize', {
         processId: null,
         clientInfo: { name: 'Sworm' },
-        rootUri: modelPathToFileUri(instance.rootPath),
-        rootPath: instance.rootPath,
+        rootUri: modelPathToFileUri(instance.rootLspPath),
+        rootPath: instance.rootLspPath,
         initializationOptions: instance.entry.server.initialization_options ?? undefined,
         capabilities: clientCapabilities(),
         workspaceFolders: [
           {
-            uri: modelPathToFileUri(instance.rootPath),
-            name: basename(instance.rootPath)
+            uri: modelPathToFileUri(instance.rootLspPath),
+            name: basename(instance.rootLspPath)
           }
         ]
       })) as { capabilities?: Record<string, unknown> } | null
@@ -459,29 +490,58 @@ class LspRegistry {
         }
       }
     } catch (error) {
+      if (replaceOrphan && isLspAlreadyActive(error)) {
+        // A reloaded webview forgets its instances but leaves the host's
+        // servers running under the same session ids. Session ids are scoped
+        // to this window, so the orphan is ours to replace.
+        try {
+          await backend.lsp.stop(instance.sessionId)
+        } catch (stopError) {
+          console.warn(`Failed to release orphaned LSP session ${instance.sessionId}`, stopError)
+        }
+        return this.startServer(instance, false)
+      }
+      // Drop the key so the next attach retries instead of adopting a
+      // tombstone: `ensureServerInstance` returns whatever holds the key.
+      if (this.serverInstances.get(instance.key) === instance) this.serverInstances.delete(instance.key)
       instance.status = 'failed'
       this.rejectPending(instance, error)
       console.error(`Failed to start LSP server ${instance.entry.server.label}`, error)
     }
   }
 
-  private async stopInstance(instance: ServerInstance): Promise<void> {
+  private stopInstance(instance: ServerInstance): Promise<void> {
     this.cancelIdleStop(instance)
-    this.serverInstances.delete(instance.key)
-    this.rejectPending(instance, new Error(`LSP server stopped: ${instance.key}`))
-    for (const uri of instance.documents) {
-      const document = this.documents.get(uri)
-      if (!document) continue
-      document.attachments.delete(instance.key)
-      document.openBy.delete(instance.key)
-      document.diagnosticsByServer.delete(instance.key)
-      this.applyDiagnostics(document)
-    }
-    try {
-      await backend.lsp.stop(instance.sessionId)
-    } catch (error) {
-      console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)
-    }
+    // Only give up the key while this instance still holds it: a late exit event
+    // or idle timer must never unregister the instance that replaced it.
+    if (this.serverInstances.get(instance.key) === instance) this.serverInstances.delete(instance.key)
+    if (instance.stopPromise) return instance.stopPromise
+
+    const stop = (async () => {
+      this.rejectPending(instance, new Error(`LSP server stopped: ${instance.key}`))
+      for (const uri of instance.documents) {
+        const document = this.documents.get(uri)
+        if (!document) continue
+        document.attachments.delete(instance.key)
+        document.openBy.delete(instance.key)
+        document.diagnosticsByServer.delete(instance.key)
+        this.applyDiagnostics(document)
+      }
+      try {
+        await backend.lsp.stop(instance.sessionId)
+      } catch (error) {
+        console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)
+      }
+    })()
+    instance.stopPromise = stop
+
+    // The session id outlives the instance, so the next start for this key waits
+    // here for the backend to release the lease.
+    this.stopsByKey.set(instance.key, stop)
+    void stop.finally(() => {
+      if (this.stopsByKey.get(instance.key) === stop) this.stopsByKey.delete(instance.key)
+    })
+    return stop
   }
 
   private async attachServerDefinition(document: ManagedDocument, serverDefinitionId: string): Promise<void> {
@@ -539,7 +599,7 @@ class LspRegistry {
       locations.map(async (location) => {
         if (this.monaco?.editor.getModel(location.uri)) return location
 
-        const targetPath = fileUriToPath(location.uri)
+        const targetPath = workspacePathFromUri(location.uri)
         if (!targetPath || isBinaryFile(targetPath)) return null
 
         const context = this.resolveTargetContext(document.model.uri.toString(), targetPath)
@@ -571,14 +631,14 @@ class LspRegistry {
     if (!this.monaco) return false
     if (this.monaco.editor.getModel(resource)) return true
 
-    const targetPath = fileUriToPath(resource)
+    const targetPath = workspacePathFromUri(resource)
     if (!targetPath || isBinaryFile(targetPath)) return false
 
     const relativePath = relativePathFromRoot(context.folderPath, targetPath)
     if (!relativePath) return false
 
     try {
-      const content = await backend.files.read(context.folderPath, relativePath)
+      const { content } = await backend.files.read(context.folderPath, relativePath)
       this.monaco.editor.createModel(content, filePathToLanguage(targetPath), resource)
       return true
     } catch (error) {
@@ -623,10 +683,18 @@ class LspRegistry {
               }))
             : [{ text: document.model.getValue() }]
 
-        await this.notify(instance, 'textDocument/didChange', {
-          textDocument: { uri, version: document.version },
-          contentChanges
-        })
+        try {
+          await this.notify(instance, 'textDocument/didChange', {
+            textDocument: { uri: lspUriForModel(document.model), version: document.version },
+            contentChanges
+          })
+        } catch (error) {
+          // A dropped change desynchronizes an incrementally-synced document
+          // for good: every later edit applies to text the server never saw.
+          // Stop the instance so the next attach starts a server in sync.
+          console.warn(`LSP ${instance.entry.server.label} lost a document change; restarting`, error)
+          void this.stopInstance(instance)
+        }
       })
     )
   }
@@ -636,7 +704,7 @@ class LspRegistry {
     document.openBy.add(instance.key)
     await this.notify(instance, 'textDocument/didOpen', {
       textDocument: {
-        uri: document.model.uri.toString(),
+        uri: lspUriForModel(document.model),
         languageId: document.model.getLanguageId(),
         version: document.version,
         text: document.model.getValue()
@@ -648,29 +716,37 @@ class LspRegistry {
     if (instance.status !== 'ready' || !document.openBy.has(instance.key)) return
     document.openBy.delete(instance.key)
     await this.notify(instance, 'textDocument/didClose', {
-      textDocument: { uri: document.model.uri.toString() }
+      textDocument: { uri: lspUriForModel(document.model) }
     })
   }
 
   private async request(instance: ServerInstance, method: string, params: unknown): Promise<unknown> {
     const id = instance.nextRequestId++
-    return new Promise((resolve, reject) => {
-      instance.pending.set(id, { resolve, reject, method })
-      backend.lsp
-        .send(
-          instance.sessionId,
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id,
-            method,
-            params
-          })
-        )
-        .catch((error) => {
-          instance.pending.delete(id)
-          reject(error)
-        })
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>()
+    // A reply can go missing — a dropped stream frame, a server that simply
+    // never answers — and a pending entry without a deadline wedges whatever
+    // editor feature is waiting on it for the rest of the session.
+    const timer = setTimeout(() => {
+      instance.pending.delete(id)
+      reject(new Error(`LSP request timed out: ${method}`))
+    }, LSP_REQUEST_TIMEOUT_MS)
+    // Every exit from this request clears the deadline, whether the server
+    // answered, the send failed, or the timer fired first.
+    const settle = <T>(finish: (value: T) => void, value: T) => {
+      clearTimeout(timer)
+      instance.pending.delete(id)
+      finish(value)
+    }
+    instance.pending.set(id, {
+      resolve: (value) => settle(resolve, value),
+      reject: (error) => settle(reject, error),
+      method
     })
+
+    backend.lsp
+      .send(instance.sessionId, JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+      .catch((error) => settle(reject, error))
+    return promise
   }
 
   private async notify(instance: ServerInstance, method: string, params: unknown): Promise<void> {
@@ -684,9 +760,10 @@ class LspRegistry {
     )
   }
 
-  private onServerEvent(instanceKey: string, event: LspEvent) {
-    const instance = this.serverInstances.get(instanceKey)
-    if (!instance) return
+  private onServerEvent(instance: ServerInstance, event: LspEvent) {
+    // Late events from a stopped or replaced session share the instance key, so
+    // they must not be applied to whoever holds that key now.
+    if (this.serverInstances.get(instance.key) !== instance) return
 
     switch (event.type) {
       case 'message':
@@ -772,7 +849,7 @@ class LspRegistry {
     if (method === 'textDocument/publishDiagnostics') {
       const uri = (params as { uri?: string } | undefined)?.uri
       if (!uri) return
-      const document = this.documents.get(uri)
+      const document = this.documents.get(modelUriFromLspUri(instance, uri).toString())
       if (!document) return
       const diagnostics = Array.isArray((params as { diagnostics?: unknown[] }).diagnostics)
         ? ((params as { diagnostics: unknown[] }).diagnostics as unknown[])
@@ -828,11 +905,11 @@ class LspRegistry {
     method: string,
     params: unknown,
     capabilityCheck: (instance: ServerInstance) => boolean
-  ): Promise<unknown> {
+  ): Promise<{ instance: ServerInstance; result: unknown } | null> {
     for (const instance of this.readyInstances(document, capabilityCheck)) {
       try {
         const result = await this.request(instance, method, params)
-        if (hasMeaningfulResult(result)) return result
+        if (hasMeaningfulResult(result)) return { instance, result }
       } catch (error) {
         console.warn(`LSP ${method} failed for ${instance.entry.server.label}`, error)
       }
@@ -916,6 +993,19 @@ function normalizeExtension(value: string): string {
   const trimmed = value.trim().toLowerCase()
   if (!trimmed) return ''
   return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
+}
+
+/**
+ * The host refused a start because this session id still has a live server.
+ * Typed by the backend so only the id's owner replaces its own orphan.
+ */
+function isLspAlreadyActive(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'kind' in error &&
+    (error as { kind?: unknown }).kind === 'lspAlreadyActive'
+  )
 }
 
 function isPathWithinRoot(path: string, rootPath: string): boolean {
@@ -1012,8 +1102,35 @@ function modelPathToFileUri(path: string): string {
   return `file://${encodeURI(path).replace(/#/g, '%23')}`
 }
 
-function fileUriToPath(uri: import('monaco-editor').Uri): string | null {
-  return uri.scheme === 'file' ? uri.fsPath : null
+/** The URI a language server sees for one of our models: always `file://` with a
+ * host-absolute path, remote workspace or not. */
+function lspUriForModel(model: MonacoModel): string {
+  return model.uri.scheme === REMOTE_SCHEME ? modelPathToFileUri(model.uri.path) : model.uri.toString()
+}
+
+/** A server's URI translated into this workspace's model space. */
+function modelUriFromLspUri(instance: ServerInstance, uri: string) {
+  const parsed = parseUri(uri)
+  if (!instance.remoteServer || parsed.scheme !== 'file') return parsed
+  if (!monacoRef) {
+    throw new Error('Monaco is not initialized')
+  }
+  return monacoRef.Uri.from({ scheme: REMOTE_SCHEME, authority: instance.remoteServer, path: parsed.path })
+}
+
+/** Workspace-path space: the shape `folderPath` and `openTextFile` speak. */
+function workspacePathFromUri(uri: MonacoUri): string | null {
+  if (uri.scheme === 'file') return uri.fsPath
+  return uri.scheme === REMOTE_SCHEME ? `${REMOTE_SCHEME}://${uri.authority}${uri.path}` : null
+}
+
+/** Split `sworm://<server>/<absolute path>`; `null` for a local folder. */
+function splitRemoteFolder(folderPath: string): { server: string; path: string } | null {
+  if (!folderPath.startsWith(`${REMOTE_SCHEME}://`)) return null
+  const rest = folderPath.slice(REMOTE_SCHEME.length + 3)
+  const separator = rest.indexOf('/')
+  if (separator <= 0) return null
+  return { server: rest.slice(0, separator), path: rest.slice(separator) }
 }
 
 function isRangeSelection(value: MonacoSelectionOrPosition): value is import('monaco-editor').IRange {
@@ -1168,7 +1285,7 @@ function lspCompletionKindToMonaco(kind: number): number {
   return map[kind] ?? 9
 }
 
-function toMonacoLocations(response: unknown): MonacoLocation[] | null {
+function toMonacoLocations(response: unknown, instance: ServerInstance): MonacoLocation[] | null {
   const items = Array.isArray(response) ? response : response ? [response] : []
   const locations = items.flatMap((item) => {
     const uri =
@@ -1182,7 +1299,7 @@ function toMonacoLocations(response: unknown): MonacoLocation[] | null {
     if (!uri) return []
     const monacoRange = fromLspRange(range)
     if (!monacoRange) return []
-    return [{ uri: parseUri(uri), range: monacoRange }]
+    return [{ uri: modelUriFromLspUri(instance, uri), range: monacoRange }]
   })
 
   return locations.length > 0 ? locations : null

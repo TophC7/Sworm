@@ -1,3 +1,4 @@
+use crate::errors::ApiError;
 use crate::events::EventSink;
 use crate::services::builtins::LoadedBuiltinLspServerDefinition;
 use crate::services::env::EnvironmentService;
@@ -85,9 +86,13 @@ impl LspService {
         trace: LspTraceLevel,
         resolved: ResolvedLspCommand,
         events: EventSink<LspEvent>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
+        // Reject instead of clobbering: the lease holder (a daemon LSP stream
+        // or a desktop window) decides when its server dies, so a start for a
+        // live id is the caller's to resolve, never a silent restart of
+        // someone else's session.
         if self.is_alive(&session_id) {
-            let _ = self.kill(&session_id);
+            return Err(already_active(&session_id));
         }
 
         let mut command = Command::new(&resolved.program);
@@ -99,41 +104,55 @@ impl LspService {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Failed to spawn LSP process: {}", error))?;
+        let mut child = command.spawn().map_err(|error| {
+            ApiError::Internal(format!("Failed to spawn LSP process: {}", error))
+        })?;
         let pid = child.id();
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "LSP stdout pipe missing".to_string())?;
+            .ok_or_else(|| ApiError::Internal("LSP stdout pipe missing".to_owned()))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| "LSP stderr pipe missing".to_string())?;
+            .ok_or_else(|| ApiError::Internal("LSP stderr pipe missing".to_owned()))?;
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "LSP stdin pipe missing".to_string())?;
+            .ok_or_else(|| ApiError::Internal("LSP stdin pipe missing".to_owned()))?;
 
         let child = Arc::new(Mutex::new(child));
         let shutdown = Arc::new(AtomicBool::new(false));
         let finalized = Arc::new(AtomicBool::new(false));
         let runtime_id = uuid::Uuid::new_v4().to_string();
 
-        self.sessions.lock().insert(
-            session_id.clone(),
-            LiveLspSession {
-                stdin,
-                child: Arc::clone(&child),
-                shutdown: Arc::clone(&shutdown),
-                finalized: Arc::clone(&finalized),
-                runtime_id: runtime_id.clone(),
-                trace,
-                events: Arc::clone(&events),
-                owner_id,
-            },
-        );
+        {
+            let mut sessions = self.sessions.lock();
+            // Two starts can clear the check above concurrently; the loser
+            // kills the process it just spawned rather than orphaning it.
+            if sessions.contains_key(&session_id) {
+                drop(sessions);
+                let mut loser = child.lock();
+                let _ = loser.kill();
+                // Reap it here: a session that never registered has no wait
+                // thread to collect it.
+                let _ = loser.wait();
+                return Err(already_active(&session_id));
+            }
+            sessions.insert(
+                session_id.clone(),
+                LiveLspSession {
+                    stdin,
+                    child: Arc::clone(&child),
+                    shutdown: Arc::clone(&shutdown),
+                    finalized: Arc::clone(&finalized),
+                    runtime_id: runtime_id.clone(),
+                    trace,
+                    events: Arc::clone(&events),
+                    owner_id,
+                },
+            );
+        }
 
         let _ = (events)(LspEvent::Started {
             session_id: session_id.clone(),
@@ -418,6 +437,12 @@ impl LspService {
                 });
             })
             .expect("failed to spawn LSP wait thread");
+    }
+}
+
+fn already_active(session_id: &str) -> ApiError {
+    ApiError::LspAlreadyActive {
+        session_id: session_id.to_owned(),
     }
 }
 

@@ -1,9 +1,9 @@
-use crate::{config, dispatch, events, pty_stream};
+use crate::{config, dispatch, events, lsp_stream, pty_stream};
 use anyhow::Context;
 use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use sworm_core::{services::completed_runs::CompletedRunStore, Host};
 use sworm_protocol::rpc::{
-    Open, Response, WireError, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
+    Open, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
 };
 use sworm_remote::{
     tls::{peer_fingerprint, server_config},
@@ -287,9 +287,18 @@ async fn process_stream(
     mut recv: quinn::RecvStream,
     shutdown: watch::Receiver<bool>,
 ) {
+    // A paired client may open an RPC with a file body (writes, formatting
+    // text), so the budget is chosen from this connection's auth state before
+    // any body is read: a stranger still cannot make the daemon allocate more
+    // than the intake cap.
+    let limit = if session.lock().await.authorized {
+        MAX_FRAME_BYTES
+    } else {
+        MAX_REQUEST_FRAME_BYTES
+    };
     let open = match timeout(
         STREAM_READ_TIMEOUT,
-        read_frame_with_limit::<Open>(&mut recv, MAX_REQUEST_FRAME_BYTES),
+        read_frame_with_limit::<Open>(&mut recv, limit),
     )
     .await
     {
@@ -354,6 +363,24 @@ async fn process_stream(
                 host, context, run_id, cursor, connection, send, recv, shutdown,
             )
             .await;
+        }
+        Open::Lsp { session_id } => {
+            // The lease an LSP stream claims is bound to this connection, so
+            // the session's owner travels with the stream.
+            let owner = {
+                let session = session.lock().await;
+                session.authorized.then(|| session.subscriber_id.clone())
+            };
+            let Some(owner) = owner else {
+                let response: Response = Err(dispatch::unauthorized(
+                    "client is not paired with this server",
+                ));
+                if write_response(&mut send, &response).await {
+                    close_unauthorized(&connection, &mut send).await;
+                }
+                return;
+            };
+            lsp_stream::run(host, context, session_id, owner, send, recv, shutdown).await;
         }
     }
 }
