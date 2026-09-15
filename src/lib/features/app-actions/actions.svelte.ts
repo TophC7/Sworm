@@ -27,6 +27,7 @@ import {
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
 export async function reloadView(): Promise<void> {
@@ -97,7 +98,7 @@ export async function openFolderSettingsFile(): Promise<void> {
 
 export function revealActiveFolderInFileManager(): void {
   const folderPath = getActiveFolderPath()
-  if (!folderPath) return
+  if (!folderPath || splitRemotePath(folderPath)) return
   void revealItemInDir(folderPath).catch((error) => {
     notify.error('Reveal in file manager failed', getErrorMessage(error))
   })

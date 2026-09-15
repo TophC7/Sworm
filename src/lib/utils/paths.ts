@@ -1,6 +1,22 @@
 function normalizeSlashes(path: string): string {
   return path.replaceAll('\\', '/')
 }
+export interface RemotePath {
+  server: string
+  path: string
+}
+
+/** Split `sworm://<server>/<absolute path>`; `null` for a local or malformed path. */
+export function splitRemotePath(value: string): RemotePath | null {
+  const match = /^sworm:\/\/([^/]+)(\/.*)?$/.exec(normalizeSlashes(value))
+  return match ? { server: match[1], path: match[2] || '/' } : null
+}
+
+function normalizeLocalAbsolutePath(path: string): string {
+  const cleaned = normalizeSlashes(path).replace(/\/+/g, '/')
+  if (cleaned === '/') return cleaned
+  return cleaned.replace(/\/$/, '')
+}
 
 export function normalizeRelativePath(path: string): string {
   const cleaned = normalizeSlashes(path)
@@ -10,9 +26,11 @@ export function normalizeRelativePath(path: string): string {
 }
 
 export function normalizeAbsolutePath(path: string): string {
-  const cleaned = normalizeSlashes(path).replace(/\/+/g, '/')
-  if (cleaned === '/') return cleaned
-  return cleaned.replace(/\/$/, '')
+  const cleaned = normalizeSlashes(path)
+  if (!cleaned.startsWith('sworm://')) return normalizeLocalAbsolutePath(cleaned)
+  const remote = splitRemotePath(cleaned)
+  if (!remote) return normalizeLocalAbsolutePath(cleaned)
+  return `sworm://${remote.server}${normalizeLocalAbsolutePath(remote.path)}`
 }
 
 export function resolveProjectFile(folderPath: string, filePath: string): string {

@@ -4455,6 +4455,7 @@ dependencies = [
  "chrono",
  "jsonc-parser",
  "parking_lot",
+ "percent-encoding",
  "quinn",
  "rusqlite",
  "serde",

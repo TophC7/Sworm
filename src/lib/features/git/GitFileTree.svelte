@@ -40,7 +40,7 @@
   }
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
-  import { join } from '@tauri-apps/api/path'
+  import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
   import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { SvelteSet } from 'svelte/reactivity'
 
@@ -81,6 +81,7 @@
     onPull?: () => void
     onFetch?: () => void
   } = $props()
+  let remoteFolder = $derived(splitRemotePath(folderPath))
 
   type GitTreeTargetType = 'file' | 'directory'
   type GitTreeActionKind = 'stage' | 'unstage' | 'discard'
@@ -294,15 +295,15 @@
   }
 
   async function handleCtxReveal() {
-    if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
+    if (!contextFilePath || remoteFolder) return
+    const absPath = resolveProjectFile(folderPath, contextFilePath)
     await revealItemInDir(absPath)
   }
 
   async function handleCtxCopyPath() {
     if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
-    await copyToClipboard(absPath)
+    const absPath = resolveProjectFile(folderPath, contextFilePath)
+    await copyToClipboard(splitRemotePath(absPath)?.path ?? absPath)
   }
 
   async function handleCtxCopyRelativePath() {
@@ -572,6 +573,7 @@
     targetType={contextTargetType}
     isStaged={contextIsStaged}
     canOpenFile={contextCanOpenFile}
+    canRevealInFileManager={!remoteFolder}
     onOpenChanges={handleCtxOpenChanges}
     onOpenFile={handleCtxOpenFile}
     onOpenFileHead={handleCtxOpenFileHead}

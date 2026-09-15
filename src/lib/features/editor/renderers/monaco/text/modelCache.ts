@@ -1,4 +1,5 @@
 import type { TextModelTransferState } from '$lib/types/backend'
+import { splitRemotePath } from '$lib/utils/paths'
 
 type Monaco = typeof import('monaco-editor')
 type MonacoModel = import('monaco-editor').editor.ITextModel
@@ -62,14 +63,12 @@ function isDisposed(model: MonacoModel): boolean {
  * Split by hand rather than parsed: `Uri.parse` reads `#` and `?` in a file
  * name as a fragment or query and silently truncates the path. */
 export function textModelUri(monaco: Monaco, uriPath: string) {
-  const remote = uriPath.startsWith('sworm://') ? uriPath.slice('sworm://'.length) : null
-  if (remote == null) return monaco.Uri.file(uriPath)
-  const separator = remote.indexOf('/')
-  if (separator <= 0) return monaco.Uri.file(uriPath)
+  const remote = splitRemotePath(uriPath)
+  if (!remote) return monaco.Uri.file(uriPath)
   return monaco.Uri.from({
     scheme: 'sworm',
-    authority: remote.slice(0, separator),
-    path: remote.slice(separator)
+    authority: remote.server,
+    path: remote.path
   })
 }
 

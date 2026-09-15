@@ -1,4 +1,6 @@
 use crate::app_state::AppState;
+use crate::router::Target;
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -204,6 +206,44 @@ pub async fn app_state_delete(
         .map_err(ApiError::Database)
 }
 
+/// Everything a URI path may not carry literally. `/` stays a separator, and
+/// the RFC 3986 unreserved marks need no escape.
+const URI_PATH: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'/')
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn encode_path(path: &str) -> impl std::fmt::Display + '_ {
+    utf8_percent_encode(path, URI_PATH)
+}
+
+/// Clipboard URI to the path or `sworm://` URI Sworm names files by, or `None`
+/// for a scheme naming something no workspace can reach.
+///
+/// Other applications write RFC 3986, so a name holding a space or `#` arrives
+/// percent-encoded and must be decoded before it can be opened.
+#[cfg(target_os = "linux")]
+fn clipboard_uri_to_path(uri: &str) -> Option<String> {
+    if let Some(rest) = uri.strip_prefix("file://") {
+        // `file:///p` has an empty authority; `file://localhost/p` names this host.
+        let path = rest.strip_prefix("localhost").unwrap_or(rest);
+        if !path.starts_with('/') {
+            return None;
+        }
+        return Some(percent_decode_str(path).decode_utf8_lossy().into_owned());
+    }
+    let remote = uri.strip_prefix("sworm://")?;
+    let separator = remote.find('/')?;
+    let (server, path) = remote.split_at(separator);
+    if server.is_empty() {
+        return None;
+    }
+    let path = percent_decode_str(path).decode_utf8_lossy();
+    Some(format!("sworm://{server}{path}"))
+}
+
 /// Copy file paths to the system clipboard in file-manager format.
 ///
 /// Writes both `x-special/gnome-copied-files` (Nautilus/Nemo/Caja/Thunar)
@@ -216,16 +256,17 @@ pub async fn clipboard_copy_files(paths: Vec<String>, op: String) -> Result<(), 
     if paths.is_empty() {
         return Err(ApiError::InvalidArgument("No paths provided".into()));
     }
-    // The system clipboard names files this machine can open.
-    for path in &paths {
-        crate::router::reject_remote("clipboard_copy_files", path)?;
-    }
     if op != "copy" && op != "cut" {
         return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op)));
     }
 
-    let uris: Vec<String> = paths.iter().map(|p| format!("file://{}", p)).collect();
-    // GNOME/Nautilus format; verified against Nautilus 49.
+    let uris = paths
+        .iter()
+        .map(|path| match Target::parse(path)? {
+            Target::Local => Ok(format!("file://{}", encode_path(path))),
+            Target::Remote { server, path } => Ok(format!("sworm://{server}{}", encode_path(path))),
+        })
+        .collect::<Result<Vec<String>, ApiError>>()?;
     // Format: "op\nuri1\nuri2"; NO trailing newline.
     let gnome_data = format!("{}\n{}", op, uris.join("\n"));
     // Drag-and-drop compat; WITH trailing newline per RFC 2483 + Nautilus.
@@ -311,7 +352,7 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
             let paths: Vec<String> = body
                 .lines()
                 .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-                .filter_map(|uri| uri.strip_prefix("file://").map(|p| p.to_string()))
+                .filter_map(|uri| clipboard_uri_to_path(uri.trim()))
                 .collect();
             if !paths.is_empty() {
                 return Ok(Some(ClipboardFiles {
@@ -336,7 +377,7 @@ fn parse_gnome_copied_files(body: &str) -> Option<ClipboardFiles> {
     }
     let paths: Vec<String> = lines
         .filter(|l| !l.trim().is_empty())
-        .filter_map(|uri| uri.strip_prefix("file://").map(|p| p.to_string()))
+        .filter_map(|uri| clipboard_uri_to_path(uri.trim()))
         .collect();
     if paths.is_empty() {
         return None;
@@ -361,6 +402,42 @@ mod tests {
         process_tree_cpu_time_ticks, ProcessStat,
     };
     use std::path::Path;
+
+    /// A name holding a space or `#` survives the file clipboard in both
+    /// directions: other file managers write RFC 3986, and read their own
+    /// spelling back.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clipboard_uris_percent_round_trip() {
+        use super::{clipboard_uri_to_path, encode_path, parse_gnome_copied_files};
+
+        for path in ["/home/toph/my report #1.txt", "/srv/a b/c%d?e.txt"] {
+            let uri = format!("file://{}", encode_path(path));
+            assert!(!uri.contains(' '), "{uri}");
+            assert_eq!(clipboard_uri_to_path(&uri).as_deref(), Some(path));
+        }
+
+        let remote = "sworm://loop/srv/repo/a b.txt";
+        assert_eq!(
+            clipboard_uri_to_path("sworm://loop/srv/repo/a%20b.txt").as_deref(),
+            Some(remote)
+        );
+
+        // What Nautilus puts on the clipboard for a spaced name.
+        let files = parse_gnome_copied_files(
+            "cut\nfile:///home/toph/my%20report%20%231.txt\nsworm://loop/srv/repo/a%20b.txt",
+        )
+        .expect("two files");
+        assert_eq!(files.op, "cut");
+        assert_eq!(
+            files.paths,
+            vec!["/home/toph/my report #1.txt".to_owned(), remote.to_owned()]
+        );
+
+        // Schemes no workspace can reach are dropped, not pasted blindly.
+        assert_eq!(clipboard_uri_to_path("sftp://host/srv/x"), None);
+        assert_eq!(clipboard_uri_to_path("sworm://loop"), None);
+    }
 
     #[test]
     fn launch_path_args_ignores_argv0_and_flags_and_uses_cwd_for_relative_paths() {

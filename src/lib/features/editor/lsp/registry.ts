@@ -1,5 +1,5 @@
 import { backend } from '$lib/api/backend'
-import { basename } from '$lib/utils/paths'
+import { basename, splitRemotePath } from '$lib/utils/paths'
 import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
 import { isFormatterManagedLanguage } from '$lib/features/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/features/editor/languageMap'
@@ -408,7 +408,7 @@ class LspRegistry {
     const existing = this.serverInstances.get(key)
     if (existing) return existing
 
-    const remote = splitRemoteFolder(rootPath)
+    const remote = splitRemotePath(rootPath)
     const settings = entry.config.settings ?? null
     const instance: ServerInstance = {
       key,
@@ -1122,15 +1122,6 @@ function modelUriFromLspUri(instance: ServerInstance, uri: string) {
 function workspacePathFromUri(uri: MonacoUri): string | null {
   if (uri.scheme === 'file') return uri.fsPath
   return uri.scheme === REMOTE_SCHEME ? `${REMOTE_SCHEME}://${uri.authority}${uri.path}` : null
-}
-
-/** Split `sworm://<server>/<absolute path>`; `null` for a local folder. */
-function splitRemoteFolder(folderPath: string): { server: string; path: string } | null {
-  if (!folderPath.startsWith(`${REMOTE_SCHEME}://`)) return null
-  const rest = folderPath.slice(REMOTE_SCHEME.length + 3)
-  const separator = rest.indexOf('/')
-  if (separator <= 0) return null
-  return { server: rest.slice(0, separator), path: rest.slice(separator) }
 }
 
 function isRangeSelection(value: MonacoSelectionOrPosition): value is import('monaco-editor').IRange {

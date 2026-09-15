@@ -10,7 +10,8 @@ import {
   reopenTab,
   revealActiveFolderInFileManager
 } from '$lib/features/app-actions/actions.svelte'
-import { getActiveTabId, hasClosedTabs } from '$lib/features/workbench/state.svelte'
+import { getActiveFolderPath, getActiveTabId, hasClosedTabs } from '$lib/features/workbench/state.svelte'
+import { splitRemotePath } from '$lib/utils/paths'
 
 export interface MenuItem {
   kind: 'item'
@@ -41,7 +42,7 @@ export function buildAppMenu(): MenuEntry[] {
     {
       kind: 'item',
       label: 'Reveal Folder in File Manager',
-      disabled: !hasActive,
+      disabled: !hasActive || Boolean(splitRemotePath(getActiveFolderPath() ?? '')),
       onSelect: revealActiveFolderInFileManager
     },
     {

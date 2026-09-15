@@ -25,6 +25,7 @@
     filePath,
     targetType,
     children,
+    canRevealInFileManager,
     onRevealInFolder,
     onOpenInEditor,
     onOpenDiff,
@@ -44,6 +45,7 @@
     filePath: string | null
     targetType: 'file' | 'directory' | null
     children: Snippet
+    canRevealInFileManager: boolean
     onRevealInFolder: () => void
     onOpenInEditor: () => void
     onOpenDiff: () => void
@@ -71,13 +73,17 @@
   <ContextMenuContent>
     {#if filePath}
       <!-- ── File/folder-targeted menu ── -->
-      <ContextMenuItem onclick={onRevealInFolder}>
-        <FolderOpen size={14} class="shrink-0 text-muted" />
-        <span>Reveal in File Manager</span>
-      </ContextMenuItem>
+      {#if canRevealInFileManager}
+        <ContextMenuItem onclick={onRevealInFolder}>
+          <FolderOpen size={14} class="shrink-0 text-muted" />
+          <span>Reveal in File Manager</span>
+        </ContextMenuItem>
+      {/if}
 
       {#if targetType === 'file'}
-        <ContextMenuSeparator />
+        {#if canRevealInFileManager}
+          <ContextMenuSeparator />
+        {/if}
 
         <ContextMenuItem onclick={onOpenInEditor}>
           <FileCodeIcon size={14} class="shrink-0 text-muted" />
@@ -90,7 +96,9 @@
         </ContextMenuItem>
       {/if}
 
-      <ContextMenuSeparator />
+      {#if canRevealInFileManager || targetType === 'file'}
+        <ContextMenuSeparator />
+      {/if}
 
       <ContextMenuItem onclick={onCut}>
         <ScissorsIcon size={14} class="shrink-0 text-muted" />
@@ -148,10 +156,12 @@
 
       <ContextMenuSeparator />
 
-      <ContextMenuItem onclick={onOpenExternal}>
-        <SquareArrowOutUpRight size={14} class="shrink-0 text-muted" />
-        <span>Reveal in File Manager</span>
-      </ContextMenuItem>
+      {#if canRevealInFileManager}
+        <ContextMenuItem onclick={onOpenExternal}>
+          <SquareArrowOutUpRight size={14} class="shrink-0 text-muted" />
+          <span>Reveal in File Manager</span>
+        </ContextMenuItem>
+      {/if}
       <ContextMenuItem onclick={onCopyFolderPath}>
         <ClipboardIcon size={14} class="shrink-0 text-muted" />
         <span>Copy Path</span>

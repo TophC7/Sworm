@@ -364,7 +364,7 @@ async fn remote_workspaces_route_every_reachable_operation() -> anyhow::Result<(
     let suite = tokio::time::timeout(SUITE_TIMEOUT, async {
         every_routed_workspace_op_reaches_the_daemon(&fixture).await?;
         remote_file_rename_emits_desktop_file_moved(&fixture).await?;
-        remote_paste_refuses_sources_from_another_host(&fixture).await?;
+        remote_paste_stays_on_source_host(&fixture).await?;
         settings_effective_merges_desktop_sections(&fixture).await?;
         anyhow::Ok(())
     })
@@ -703,19 +703,60 @@ async fn remote_file_rename_emits_desktop_file_moved(fixture: &Fixture) -> anyho
     Ok(())
 }
 
-/// A clipboard path from this machine names a file the daemon cannot see. The
-/// daemon must never be handed it: a path that happens to exist there would
-/// paste the wrong file entirely.
-async fn remote_paste_refuses_sources_from_another_host(fixture: &Fixture) -> anyhow::Result<()> {
+/// File clipboard references stay on their owning host: same-host copies and
+/// moves run entirely on the daemon, while local and cross-host paths never
+/// reach it.
+async fn remote_paste_stays_on_source_host(fixture: &Fixture) -> anyhow::Result<()> {
     let workspace = fixture.workspace("paste-repo")?;
     let local_source = workspace
         .path
         .join("hello.txt")
         .to_string_lossy()
         .into_owned();
+    let remote_source = format!("sworm://loop{local_source}");
+    fs::create_dir(workspace.path.join("copies"))?;
+    fs::create_dir(workspace.path.join("moved"))?;
+
+    let copied = bounded(
+        "file_paste copy",
+        workspace.router.file_paste(
+            workspace.remote.clone(),
+            "copies".to_owned(),
+            "copy".to_owned(),
+            vec![remote_source.clone()],
+            "auto_rename".to_owned(),
+            None,
+        ),
+    )
+    .await?;
+    assert_eq!(copied[0].source, remote_source);
+    assert_eq!(copied[0].destination, "copies/hello.txt");
+    assert_eq!(
+        fs::read_to_string(workspace.path.join("copies/hello.txt"))?,
+        "sentinel\n"
+    );
+
+    let moved = bounded(
+        "file_paste cut",
+        workspace.router.file_paste(
+            workspace.remote.clone(),
+            "moved".to_owned(),
+            "cut".to_owned(),
+            vec![remote_source],
+            "auto_rename".to_owned(),
+            None,
+        ),
+    )
+    .await?;
+    assert_eq!(moved[0].destination, "moved/hello.txt");
+    assert!(!workspace.path.join("hello.txt").exists());
+    assert_eq!(
+        fs::read_to_string(workspace.path.join("moved/hello.txt"))?,
+        "sentinel\n"
+    );
 
     let refused = bounded(
-        "file_paste",
+        "file_paste local source",
         workspace.router.file_paste(
             workspace.remote.clone(),
             String::new(),
@@ -730,7 +771,7 @@ async fn remote_paste_refuses_sources_from_another_host(fixture: &Fixture) -> an
     assert!(matches!(refused, ApiError::Remote(_)), "{refused:?}");
 
     let cross_host = bounded(
-        "file_paste_collisions",
+        "file_paste cross-host source",
         workspace.router.file_paste_collisions(
             workspace.remote.clone(),
             String::new(),
@@ -740,6 +781,18 @@ async fn remote_paste_refuses_sources_from_another_host(fixture: &Fixture) -> an
     .await
     .expect_err("a source from another server must not reach this daemon");
     assert!(matches!(cross_host, ApiError::Remote(_)), "{cross_host:?}");
+
+    let into_local = bounded(
+        "file_paste remote source into local workspace",
+        workspace.router.file_paste_collisions(
+            workspace.path.to_string_lossy().into_owned(),
+            String::new(),
+            vec!["sworm://loop/srv/repo/hello.txt".to_owned()],
+        ),
+    )
+    .await
+    .expect_err("a remote clipboard source must not paste into a local workspace");
+    assert!(matches!(into_local, ApiError::Remote(_)), "{into_local:?}");
 
     Ok(())
 }

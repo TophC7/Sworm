@@ -14,6 +14,7 @@ import {
   isIndentRainbowEnabled,
   toggleIndentRainbow
 } from '$lib/features/editor/renderers/monaco/text/indentRainbow.svelte'
+import { splitRemotePath } from '$lib/utils/paths'
 import {
   closeActiveTab,
   createSession,
@@ -219,7 +220,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: SquareArrowOutUpRight,
       keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
-      visible: activeFolderVisible,
+      visible: () => activeFolderVisible() && !splitRemotePath(getActiveFolderPath() ?? ''),
       run: revealActiveFolderInFileManager
     }),
     appCommand({

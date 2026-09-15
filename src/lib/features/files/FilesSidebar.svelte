@@ -48,8 +48,15 @@
     fileTreeDragSource,
     isFileTreeDropActive
   } from '$lib/features/dnd/adapters/file-tree.svelte'
-  import { basename, dirname, isEqualOrParent, normalizeAbsolutePath, toProjectRelativePath } from '$lib/utils/paths'
-  import { join } from '@tauri-apps/api/path'
+  import {
+    basename,
+    dirname,
+    isEqualOrParent,
+    normalizeAbsolutePath,
+    resolveProjectFile,
+    splitRemotePath,
+    toProjectRelativePath
+  } from '$lib/utils/paths'
 
   function errMessage(e: unknown): string {
     return e instanceof Error ? e.message : String(e)
@@ -57,6 +64,7 @@
 
   let { folderPath }: { folderPath: string } = $props()
   let folderName = $derived(basename(normalizeAbsolutePath(folderPath)) || folderPath || 'Files')
+  let remoteFolder = $derived(splitRemotePath(normalizeAbsolutePath(folderPath)))
 
   let filterQuery = $state('')
   let filterActive = $derived(filterQuery.trim().length > 0)
@@ -154,6 +162,7 @@
     const attachment = fileTreeDirectoryDropTarget({
       folderPath,
       directoryPath: node.path,
+      acceptOsFiles: !remoteFolder,
       onHoverExpand: () => expandDir(folderPath, node.path),
       onDrop: (payload) => handleDirectoryDrop(node.path, payload)
     })
@@ -168,6 +177,7 @@
     const attachment = fileTreeDirectoryDropTarget({
       folderPath,
       directoryPath: '.',
+      acceptOsFiles: !remoteFolder,
       onDrop: (payload) => handleDirectoryDrop('.', payload)
     })
     directoryAttachmentCache.set(key, attachment)
@@ -184,7 +194,7 @@
           if (item.folderPath !== folderPath) continue
           if (await moveTreeItemToDirectory(item.path, targetDir)) movedPaths.push(item.path)
           if (pendingTransfer) return
-        } else if (item.kind === 'os-files') {
+        } else if (item.kind === 'os-files' && !remoteFolder) {
           externalSources.push(...item.paths)
         }
       }
@@ -217,7 +227,7 @@
       return false
     }
 
-    const sourceAbs = await join(folderPath, sourcePath)
+    const sourceAbs = resolveProjectFile(folderPath, sourcePath)
     const collisions = await backend.files.pasteCollisions(folderPath, targetDir, [sourceAbs])
     if (collisions.length > 0) {
       await runTransferWithCollisionHandling('cut', targetDir, [sourceAbs])
@@ -259,20 +269,25 @@
   }
 
   async function continuePendingTransfer(): Promise<void> {
-    while (pendingTransfer && pendingTransfer.index < pendingTransfer.sources.length) {
-      const source = pendingTransfer.sources[pendingTransfer.index]
-      const destination = pendingTransfer.collisionDestinations[source]
-      if (destination) {
-        activeCollision = { source, destination }
-        collisionRenameValue = basename(source)
-        return
+    try {
+      while (pendingTransfer && pendingTransfer.index < pendingTransfer.sources.length) {
+        const source = pendingTransfer.sources[pendingTransfer.index]
+        const destination = pendingTransfer.collisionDestinations[source]
+        if (destination) {
+          activeCollision = { source, destination }
+          collisionRenameValue = basename(source)
+          return
+        }
+
+        await transferSourceWithPolicy(source, 'auto_rename')
+        pendingTransfer.index += 1
       }
 
-      await transferSourceWithPolicy(source, 'auto_rename')
-      pendingTransfer.index += 1
+      await finalizePendingTransfer()
+    } catch (error) {
+      notify.error('Transfer failed', errMessage(error))
+      abortPendingTransfer()
     }
-
-    await finalizePendingTransfer()
   }
 
   async function transferSourceWithPolicy(
@@ -422,9 +437,8 @@
   }
 
   async function handleRevealInFolder() {
-    if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
-    await revealItemInDir(absPath)
+    if (!contextFilePath || remoteFolder) return
+    await revealItemInDir(resolveProjectFile(folderPath, contextFilePath))
   }
 
   function handleOpenInEditor() {
@@ -437,24 +451,22 @@
     openWorkingTreeDiff(folderPath, false, contextFilePath, contextFilePath, { temporary: false })
   }
 
-  async function handleCut() {
+  async function writeFileClipboard(op: 'copy' | 'cut') {
     if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
+    const source = resolveProjectFile(folderPath, contextFilePath)
     try {
-      await backend.app.clipboardCopyFiles([absPath], 'cut')
-    } catch (e) {
-      notify.error('Cut failed', errMessage(e))
+      await backend.app.clipboardCopyFiles([source], op)
+    } catch (error) {
+      notify.error(`${op === 'cut' ? 'Cut' : 'Copy'} failed`, errMessage(error))
     }
   }
 
-  async function handleCopy() {
-    if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
-    try {
-      await backend.app.clipboardCopyFiles([absPath], 'copy')
-    } catch (e) {
-      notify.error('Copy failed', errMessage(e))
-    }
+  function handleCut() {
+    return writeFileClipboard('cut')
+  }
+
+  function handleCopy() {
+    return writeFileClipboard('copy')
   }
 
   async function handlePaste() {
@@ -466,15 +478,15 @@
         return
       }
       await runTransferWithCollisionHandling(clip.op, targetDir, clip.paths)
-    } catch (e) {
-      notify.error('Paste failed', errMessage(e))
+    } catch (error) {
+      notify.error('Paste failed', errMessage(error))
     }
   }
 
   async function handleCopyPath() {
     if (!contextFilePath) return
-    const absPath = await join(folderPath, contextFilePath)
-    await copyToClipboard(absPath)
+    const absolutePath = resolveProjectFile(folderPath, contextFilePath)
+    await copyToClipboard(splitRemotePath(absolutePath)?.path ?? absolutePath)
   }
 
   async function handleCopyRelativePath() {
@@ -559,11 +571,12 @@
   }
 
   function handleOpenExternal() {
+    if (remoteFolder) return
     revealItemInDir(folderPath)
   }
 
   async function handleCopyFolderPath() {
-    await copyToClipboard(folderPath)
+    await copyToClipboard(remoteFolder?.path ?? folderPath)
   }
 </script>
 
@@ -593,6 +606,7 @@
       <FileContextMenu
         filePath={contextFilePath}
         targetType={contextTargetType}
+        canRevealInFileManager={!remoteFolder}
         onRevealInFolder={handleRevealInFolder}
         onOpenInEditor={handleOpenInEditor}
         onOpenDiff={handleOpenDiff}

@@ -28,7 +28,7 @@
   } from '$lib/icons/lucideExports'
   import type { FolderEntry } from '$lib/types/backend'
   import { logicalKey } from '$lib/utils/keyboardEvent'
-  import { basename, dirname, pathCrumbs } from '$lib/utils/paths'
+  import { basename, dirname, pathCrumbs, splitRemotePath } from '$lib/utils/paths'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
   import { isFolderSwitcherOpen, setFolderSwitcherOpen } from './switcher.svelte'
   let surfaceRef = $state<HTMLDivElement | null>(null)
@@ -46,21 +46,20 @@
 
   const containerLoad = createTrackedAsyncLoad<string | null>()
   const selectedLoad = createTrackedAsyncLoad<string | null>()
-  function splitRemotePath(path: string): { root: string; path: string } | null {
-    const match = /^(sworm:\/\/[^/]+)(\/.*)?$/.exec(path)
-    return match ? { root: match[1], path: match[2] || '/' } : null
-  }
 
   function folderDirname(path: string): string {
     const remote = splitRemotePath(path)
     if (!remote) return dirname(path) || '/'
-    return `${remote.root}${dirname(remote.path) || '/'}`
+    return `sworm://${remote.server}${dirname(remote.path) || '/'}`
   }
 
   function folderPathCrumbs(path: string): Array<{ label: string; path: string }> {
     const remote = splitRemotePath(path)
     if (!remote) return pathCrumbs(path)
-    return pathCrumbs(remote.path).map((crumb) => ({ ...crumb, path: `${remote.root}${crumb.path}` }))
+    return pathCrumbs(remote.path).map((crumb) => ({
+      ...crumb,
+      path: `sworm://${remote.server}${crumb.path}`
+    }))
   }
 
   let open = $derived(isFolderSwitcherOpen())

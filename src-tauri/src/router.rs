@@ -1055,6 +1055,13 @@ macro_rules! define_router_operation {
                 }
                 return Ok(mappings);
             }
+            for source in &$sources {
+                if let Target::Remote { server, .. } = Target::parse(source)? {
+                    return Err(ApiError::Remote(format!(
+                        "pasting remote files from `{server}` into a local workspace is not supported"
+                    )));
+                }
+            }
             self.inner
                 .host
                 .$method(
@@ -1101,6 +1108,13 @@ macro_rules! define_router_operation {
                     collision.source = Target::remote_uri(server, &collision.source);
                 }
                 return Ok(collisions);
+            }
+            for source in &$sources {
+                if let Target::Remote { server, .. } = Target::parse(source)? {
+                    return Err(ApiError::Remote(format!(
+                        "pasting remote files from `{server}` into a local workspace is not supported"
+                    )));
+                }
             }
             self.inner
                 .host

@@ -17,6 +17,7 @@ interface FileTreeDirectoryTargetArgs {
   directoryPath: string
   onDrop: (payload: DragPayload) => void | Promise<void>
   onHoverExpand?: () => void
+  acceptOsFiles?: boolean
 }
 
 const directoryStore = createHoverStore<true>()
@@ -33,11 +34,11 @@ function clearDirectoryActive(folderPath: string, path: string): void {
   directoryStore.clear(directoryKey(folderPath, path))
 }
 
-function canAcceptDirectoryPayload(payload: DragPayload | null): boolean {
+function canAcceptDirectoryPayload(payload: DragPayload | null, acceptOsFiles: boolean): boolean {
   if (!payload) return false
   return payload.items.some((item) => {
     if (item.kind === 'file') return true
-    if (item.kind === 'os-files') return item.paths.length > 0
+    if (item.kind === 'os-files') return acceptOsFiles && item.paths.length > 0
     return false
   })
 }
@@ -83,6 +84,7 @@ export function fileTreeDragSource(args: FileTreeSourceArgs) {
 }
 
 export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
+  const acceptOsFiles = args.acceptOsFiles ?? true
   const drop = async (payload: DragPayload) => {
     clearDirectoryActive(args.folderPath, args.directoryPath)
     if (payload.items.some((item) => item.kind === 'file' && item.folderPath !== args.folderPath)) {
@@ -94,8 +96,8 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
 
   const observer = dragObserver({
     accept: (payload, types) => {
-      if (payload) return canAcceptDirectoryPayload(payload)
-      return types.includes(DND_MIME.SWORM_FILE) || types.includes(DND_MIME.FILES)
+      if (payload) return canAcceptDirectoryPayload(payload, acceptOsFiles)
+      return types.includes(DND_MIME.SWORM_FILE) || (acceptOsFiles && types.includes(DND_MIME.FILES))
     },
     onOver: () => {
       setDirectoryActive(args.folderPath, args.directoryPath)
@@ -107,7 +109,7 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
   })
 
   const hoverExpand = delayedDragHover(800, () => {
-    if (!canAcceptDirectoryPayload(LocalTransfer.peek())) return
+    if (!canAcceptDirectoryPayload(LocalTransfer.peek(), acceptOsFiles)) return
     args.onHoverExpand?.()
   })
 
@@ -117,7 +119,7 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
     const disposeRegistry = DropRegistry.register({
       id: `file-tree:${args.folderPath}:${args.directoryPath}`,
       element,
-      accept: canAcceptDirectoryPayload,
+      accept: (payload) => canAcceptDirectoryPayload(payload, acceptOsFiles),
       hover: () => {
         setDirectoryActive(args.folderPath, args.directoryPath)
       },

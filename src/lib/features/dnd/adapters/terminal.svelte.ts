@@ -1,4 +1,4 @@
-import { join } from '@tauri-apps/api/path'
+import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 import { backend } from '$lib/api/backend'
 import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
 import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
@@ -25,11 +25,16 @@ function clearHover(tabId: TabId): void {
   hoverStore.clear(tabId)
 }
 
-function canAccept(payload: DragPayload | null): boolean {
+/** A remote workspace's shell runs on the daemon; this desktop's files are unreachable from it. */
+function acceptsOsFiles(folderPath: string): boolean {
+  return !splitRemotePath(folderPath)
+}
+
+function canAccept(payload: DragPayload | null, folderPath: string): boolean {
   if (!payload) return false
   return payload.items.some((item) => {
     if (item.kind === 'file') return !item.isDir
-    if (item.kind === 'os-files') return item.paths.length > 0
+    if (item.kind === 'os-files') return acceptsOsFiles(folderPath) && item.paths.length > 0
     return false
   })
 }
@@ -38,14 +43,18 @@ function canAccept(payload: DragPayload | null): boolean {
  * Absolute paths for the payload, or `null` when a file item belongs
  * to another folder — its path is relative to a different workspace
  * root, so inserting it into this shell would be wrong.
+ *
+ * A remote workspace's shell sees the daemon's filesystem, so it gets the
+ * host-native path rather than the `sworm://` URI that names it here.
  */
-async function collectPathsFromPayload(payload: DragPayload, folderPath: string): Promise<string[] | null> {
+function collectPathsFromPayload(payload: DragPayload, folderPath: string): string[] | null {
   const paths: string[] = []
   for (const item of payload.items) {
     if (item.kind === 'file' && !item.isDir) {
       if (item.folderPath !== folderPath) return null
-      paths.push(await join(folderPath, item.path))
-    } else if (item.kind === 'os-files') {
+      const absolute = resolveProjectFile(folderPath, item.path)
+      paths.push(splitRemotePath(absolute)?.path ?? absolute)
+    } else if (item.kind === 'os-files' && acceptsOsFiles(folderPath)) {
       paths.push(...item.paths)
     }
   }
@@ -73,12 +82,15 @@ async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
 /** Shared drop handler for both the DOM observer and the DropRegistry path. */
 async function insertFromPayload(args: TerminalDropObserverArgs, payload: DragPayload, event?: DragEvent) {
   try {
-    const payloadPaths = await collectPathsFromPayload(payload, args.folderPath)
+    const payloadPaths = collectPathsFromPayload(payload, args.folderPath)
     if (payloadPaths === null) {
       notify.warning('Different folder')
       return
     }
-    const insertPaths = payloadPaths.length > 0 || !event ? payloadPaths : await collectImagePathsFromEvent(event)
+    const insertPaths =
+      payloadPaths.length > 0 || !event || !acceptsOsFiles(args.folderPath)
+        ? payloadPaths
+        : await collectImagePathsFromEvent(event)
     const unique = Array.from(new Set(insertPaths))
     if (unique.length === 0) return
     args.onInsertText(`${unique.map((path) => preparePathForShell(path)).join(' ')} `)
@@ -107,8 +119,12 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
   const observer = dragObserver({
     accept: (payload, types) => {
       if (!dropEnabled(args)) return false
-      if (payload) return canAccept(payload)
-      return types.includes(DND_MIME.SWORM_FILE) || types.includes(DND_MIME.FILES) || types.includes(DND_MIME.TEXT)
+      if (payload) return canAccept(payload, args.folderPath)
+      return (
+        types.includes(DND_MIME.SWORM_FILE) ||
+        (acceptsOsFiles(args.folderPath) && types.includes(DND_MIME.FILES)) ||
+        types.includes(DND_MIME.TEXT)
+      )
     },
     onOver: (_event, frame) => {
       if (!dropEnabled(args) || !isCenterDropFrame(frame)) {
@@ -150,7 +166,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
     const disposeRegistry = DropRegistry.register({
       id: `terminal:${args.tabId}`,
       element,
-      accept: (payload) => dropEnabled(args) && canAccept(payload),
+      accept: (payload) => dropEnabled(args) && canAccept(payload, args.folderPath),
       hitTest: (_payload, clientX, clientY) => isCenterDropPoint(element, clientX, clientY),
       hover: () => {
         setHover(args.tabId)

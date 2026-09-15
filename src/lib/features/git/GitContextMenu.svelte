@@ -27,6 +27,7 @@
     targetType,
     isStaged,
     canOpenFile = true,
+    canRevealInFileManager = true,
     children,
     onOpenChanges,
     onOpenFile,
@@ -49,6 +50,7 @@
     targetType: 'file' | 'directory' | null
     isStaged: boolean
     canOpenFile?: boolean
+    canRevealInFileManager?: boolean
     children: Snippet
     onOpenChanges: () => void
     onOpenFile: () => void
@@ -117,13 +119,14 @@
         <span class="ml-auto text-2xs text-subtle">WIP</span>
       </ContextMenuItem>
 
-      <ContextMenuSeparator />
+      {#if canRevealInFileManager}
+        <ContextMenuSeparator />
 
-      <ContextMenuItem onclick={onRevealInFolder}>
-        <FolderOpen size={14} class="shrink-0 text-muted" />
-        <span>Reveal in File Manager</span>
-      </ContextMenuItem>
-
+        <ContextMenuItem onclick={onRevealInFolder}>
+          <FolderOpen size={14} class="shrink-0 text-muted" />
+          <span>Reveal in File Manager</span>
+        </ContextMenuItem>
+      {/if}
       <ContextMenuSeparator />
 
       <ContextMenuItem onclick={onCopyPath}>
