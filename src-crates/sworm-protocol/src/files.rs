@@ -9,6 +9,14 @@ pub struct FileContent {
     pub version: String,
 }
 
+/// Metadata identity for a later bounded read; `version` is not a content hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileStat {
+    pub size: u64,
+    pub version: String,
+    pub regular: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePasteCollision {
     pub source: String,

@@ -10,6 +10,7 @@ pub mod issues;
 pub mod lsp;
 pub mod nix_env;
 pub mod omp;
+pub mod pairing;
 pub mod provider;
 pub mod pty;
 pub mod rpc;

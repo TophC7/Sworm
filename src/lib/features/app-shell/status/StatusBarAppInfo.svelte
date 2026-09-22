@@ -5,8 +5,8 @@
 
 <script lang="ts">
   import { PopoverContent, PopoverRoot, PopoverTrigger } from '$lib/components/ui/popover'
-  import { IconButton, iconButtonVariants } from '$lib/components/ui/button'
-  import { cn } from '$lib/utils/cn'
+  import { IconButton } from '$lib/components/ui/button'
+  import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { backend } from '$lib/api/backend'
   import githubIconUrl from '$lib/icons/github.svg?url'
   import appIconUrl from '$lib/icons/sworm.svg?url'
@@ -94,13 +94,7 @@
 </script>
 
 <PopoverRoot bind:open>
-  <PopoverTrigger
-    aria-label="App information"
-    class={cn(
-      iconButtonVariants({ size: 'sm' }),
-      'rounded-full border border-edge bg-raised text-accent hover:border-accent/50 hover:bg-raised hover:text-accent-bright'
-    )}
-  >
+  <PopoverTrigger aria-label="App information" class={statusChipVariants({ shape: 'circle', active: open })}>
     <img src={appIconUrl} alt="" class="size-4" />
   </PopoverTrigger>
 

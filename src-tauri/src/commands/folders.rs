@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use sworm_core::errors::ApiError;
-use sworm_core::services::folders::resolve_folder;
-use sworm_protocol::folder::{FolderEntry, FolderInfo};
+use sworm_core::services::folders::{find_path_root, resolve_folder};
+use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
 use tauri::Emitter;
 
 const RECENT_FOLDERS_KEY: &str = "recent_folders";
@@ -145,6 +145,13 @@ pub async fn folder_list_entries(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FolderEntry>, ApiError> {
     state.router.folder_list_entries(path, show_hidden).await
+}
+
+/// Where the folder switcher's path bar starts for a local folder.
+#[tauri::command]
+pub async fn folder_path_root(path: String) -> Result<PathRoot, ApiError> {
+    crate::router::reject_remote("folder_path_root", &path)?;
+    Ok(find_path_root(&resolve_folder(&path)?))
 }
 
 #[tauri::command]

@@ -47,6 +47,17 @@ const mountedControllers = new Map<TabId, MountedTextSurfaceController>()
 
 const dirtyTabs = $state<Set<TabId>>(new Set())
 
+// Keep consent across inactive-tab unmounts without retaining streamed bytes.
+const largeFileApprovals = new Map<TabId, string>()
+
+export function approveLargeTextFile(tabId: TabId, folderPath: string, filePath: string): void {
+  largeFileApprovals.set(tabId, `${folderPath}\0${filePath}`)
+}
+
+export function isLargeTextFileApproved(tabId: TabId, folderPath: string, filePath: string): boolean {
+  return largeFileApprovals.get(tabId) === `${folderPath}\0${filePath}`
+}
+
 function isLiveTextTab(tab: Tab, folderPath: string, filePath: string): tab is TextTab {
   return tab.kind === 'text' && tab.folderPath === folderPath && tab.filePath === filePath && !tab.gitRef
 }
@@ -117,6 +128,7 @@ export function revealTextTab(tabId: TabId, target: TextRevealTarget): void {
 }
 
 function forgetTab(tabId: TabId) {
+  largeFileApprovals.delete(tabId)
   dirtyTabs.delete(tabId)
   pendingReveals.delete(tabId)
   mountedControllers.delete(tabId)

@@ -29,6 +29,104 @@ pub struct FileService {
     filters: Mutex<HashMap<PathBuf, (u64, Arc<ExplorerFilter>)>>,
 }
 
+/// Bounded descriptor-backed read. EOF validates both descriptor and path identity.
+pub struct FileReadStream {
+    file: File,
+    path: PathBuf,
+    identity: StatIdentity,
+    bytes: u64,
+    hash: Sha256,
+}
+
+/// Metadata identity of a file: any replace, truncate, or write moves it.
+/// Compared numerically per chunk; formatted only as a version string.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StatIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl StatIdentity {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            len: metadata.len(),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+impl std::fmt::Display for StatIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}:{}:{}:{}:{}:{}",
+            self.dev, self.ino, self.len, self.mtime.0, self.mtime.1, self.ctime.0, self.ctime.1
+        )
+    }
+}
+
+impl FileReadStream {
+    /// Size the stream was opened at; the identity check pins it.
+    pub fn size(&self) -> u64 {
+        self.identity.len
+    }
+
+    /// Append at most one chunk to `out`, returning how many bytes were read.
+    /// `0` is EOF, returned only once the full opened size was read unchanged.
+    /// Reads into `out`'s spare capacity, so a reused or presized buffer costs
+    /// neither an allocation nor a zero-fill per chunk.
+    pub fn read_chunk(&mut self, out: &mut Vec<u8>) -> Result<usize, ApiError> {
+        use sworm_protocol::rpc::MAX_FILE_CHUNK_BYTES;
+        let size = self.size();
+        // At EOF this still asks for one byte, so growth past `size` is caught.
+        let limit = size
+            .saturating_sub(self.bytes)
+            .clamp(1, MAX_FILE_CHUNK_BYTES as u64);
+        let start = out.len();
+        let count = (&self.file)
+            .take(limit)
+            .read_to_end(out)
+            .map_err(|error| ApiError::Io(error.to_string()))?;
+        self.bytes += count as u64;
+        if self.bytes > size {
+            return Err(ApiError::InvalidArgument(
+                "File grew during read".to_owned(),
+            ));
+        }
+        let current = StatIdentity::of(
+            &self
+                .file
+                .metadata()
+                .map_err(|error| ApiError::Io(error.to_string()))?,
+        );
+        let path_identity = StatIdentity::of(
+            &std::fs::metadata(&self.path).map_err(|error| ApiError::Io(error.to_string()))?,
+        );
+        if current != self.identity
+            || path_identity != self.identity
+            || (count == 0 && self.bytes != size)
+        {
+            return Err(ApiError::Conflict {
+                current_version: path_identity.to_string(),
+            });
+        }
+        self.hash.update(&out[start..]);
+        Ok(count)
+    }
+
+    /// Content hash, meaningful only after `read_chunk` successfully returns EOF.
+    pub fn version(&self) -> String {
+        hex(self.hash.clone().finalize())
+    }
+}
+
 impl FileService {
     pub fn new() -> Self {
         Self {
@@ -57,22 +155,90 @@ impl FileService {
         Ok(())
     }
 
-    /// Read the contents of a file inside a project, with the version of the
-    /// bytes it was read from.
+    pub fn stat(
+        &self,
+        project_path: &Path,
+        file_path: &str,
+    ) -> Result<sworm_protocol::files::FileStat, ApiError> {
+        self.validate_path(file_path)?;
+        let metadata = std::fs::metadata(project_path.join(file_path))
+            .map_err(|error| ApiError::Io(format!("Failed to stat {file_path}: {error}")))?;
+        Ok(sworm_protocol::files::FileStat {
+            size: metadata.len(),
+            version: StatIdentity::of(&metadata).to_string(),
+            regular: metadata.is_file(),
+        })
+    }
+
+    /// Opens for streaming at `version`, the stat identity the caller approved.
+    /// This descriptor check is the one open-time validation: it pins size and
+    /// identity for every later chunk.
+    pub fn open_read_stream(
+        &self,
+        project_path: &Path,
+        file_path: &str,
+        version: &str,
+    ) -> Result<FileReadStream, ApiError> {
+        use sworm_protocol::rpc::MAX_STREAM_FILE_BYTES;
+        self.validate_path(file_path)?;
+        let path = project_path.join(file_path);
+        let (file, metadata) = Self::open_regular(&path, file_path)?;
+        if metadata.len() > MAX_STREAM_FILE_BYTES as u64 {
+            return Err(ApiError::TooLarge {
+                size: metadata.len(),
+                limit: MAX_STREAM_FILE_BYTES as u64,
+            });
+        }
+        let identity = StatIdentity::of(&metadata);
+        let current_version = identity.to_string();
+        if current_version != version {
+            return Err(ApiError::Conflict { current_version });
+        }
+        Ok(FileReadStream {
+            file,
+            path,
+            identity,
+            bytes: 0,
+            hash: Sha256::new(),
+        })
+    }
+
+    /// Read a whole file inside a project, with the version of the bytes it
+    /// was read from. Files over `MAX_WHOLE_FILE_BYTES` are refused with
+    /// `TooLarge` before their contents are allocated; those stream instead.
     pub fn read(&self, project_path: &Path, file_path: &str) -> Result<FileContent, ApiError> {
+        use sworm_protocol::rpc::MAX_WHOLE_FILE_BYTES;
+        let limit = MAX_WHOLE_FILE_BYTES as u64;
         self.validate_path(file_path)?;
         let abs = project_path.join(file_path);
-        let (mut file, size) = Self::open_regular(&abs, file_path)?;
-        let mut bytes = Vec::with_capacity(size as usize);
-        file.read_to_end(&mut bytes)
+        let (file, metadata) = Self::open_regular(&abs, file_path)?;
+        if metadata.len() > limit {
+            return Err(ApiError::TooLarge {
+                size: metadata.len(),
+                limit,
+            });
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        // One byte past the limit is enough to catch a file that grew since the fstat.
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
             .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
+        if bytes.len() as u64 > limit {
+            return Err(ApiError::TooLarge {
+                size: bytes.len() as u64,
+                limit,
+            });
+        }
         file_content(bytes, file_path)
     }
 
     /// Open without blocking on FIFOs/devices, then validate the opened descriptor
     /// so a path swap between check and open cannot hand back a non-regular file.
     /// `Ok(None)` means the path does not exist.
-    fn open_regular_opt(abs: &Path, file_path: &str) -> Result<Option<(File, u64)>, ApiError> {
+    fn open_regular_opt(
+        abs: &Path,
+        file_path: &str,
+    ) -> Result<Option<(File, std::fs::Metadata)>, ApiError> {
         use std::os::unix::fs::OpenOptionsExt;
 
         let file = match OpenOptions::new()
@@ -92,10 +258,10 @@ impl FileService {
                 "{file_path} is not a regular file"
             )));
         }
-        Ok(Some((file, metadata.len())))
+        Ok(Some((file, metadata)))
     }
 
-    fn open_regular(abs: &Path, file_path: &str) -> Result<(File, u64), ApiError> {
+    fn open_regular(abs: &Path, file_path: &str) -> Result<(File, std::fs::Metadata), ApiError> {
         Self::open_regular_opt(abs, file_path)?.ok_or_else(|| {
             // Same text the plain `open` produced before the tolerant variant existed.
             ApiError::Io(format!(
@@ -115,33 +281,6 @@ impl FileService {
         std::io::copy(&mut file, &mut hasher)
             .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
         Ok(Some(hex(hasher.finalize())))
-    }
-
-    /// Read at most `max_bytes`, rejecting larger files before allocating their contents.
-    pub fn read_limited(
-        &self,
-        project_path: &Path,
-        file_path: &str,
-        max_bytes: usize,
-    ) -> Result<FileContent, ApiError> {
-        self.validate_path(file_path)?;
-        let abs = project_path.join(file_path);
-        let (file, size) = Self::open_regular(&abs, file_path)?;
-        if size > max_bytes as u64 {
-            return Err(ApiError::InvalidArgument(format!(
-                "File {file_path} exceeds the {max_bytes}-byte read limit"
-            )));
-        }
-        let mut bytes = Vec::with_capacity(size as usize);
-        file.take(max_bytes as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
-        if bytes.len() > max_bytes {
-            return Err(ApiError::InvalidArgument(format!(
-                "File {file_path} exceeds the {max_bytes}-byte read limit"
-            )));
-        }
-        file_content(bytes, file_path)
     }
 
     /// Write content to a file inside a project, returning the version of the
@@ -920,6 +1059,109 @@ mod tests {
 
     fn names(entries: &[DirEntry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn streaming_reads_to_verified_eof_with_one_buffer() {
+        use sworm_protocol::rpc::MAX_FILE_CHUNK_BYTES;
+        let dir = unique_test_dir("stream-eof");
+        let content: Vec<u8> = (0..MAX_FILE_CHUNK_BYTES + 7).map(|i| i as u8).collect();
+        std::fs::write(dir.join("a.txt"), &content).unwrap();
+        let service = FileService::new();
+        let stat = service.stat(&dir, "a.txt").unwrap();
+        let mut reader = service
+            .open_read_stream(&dir, "a.txt", &stat.version)
+            .unwrap();
+        assert_eq!(reader.size(), content.len() as u64);
+        let mut chunk = Vec::with_capacity(MAX_FILE_CHUNK_BYTES);
+        let mut assembled = Vec::new();
+        loop {
+            chunk.clear();
+            if reader.read_chunk(&mut chunk).unwrap() == 0 {
+                break;
+            }
+            assert!(chunk.len() <= MAX_FILE_CHUNK_BYTES);
+            assembled.extend_from_slice(&chunk);
+        }
+        assert_eq!(assembled, content);
+        assert_eq!(reader.version(), version_of(&content));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn streaming_rejects_stale_identity_and_mid_read_replacement() {
+        use sworm_protocol::rpc::MAX_FILE_CHUNK_BYTES;
+        let dir = unique_test_dir("stream-mutation");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, vec![b'a'; 2 * MAX_FILE_CHUNK_BYTES]).unwrap();
+        let service = FileService::new();
+        let stat = service.stat(&dir, "a.txt").unwrap();
+        let mut reader = service
+            .open_read_stream(&dir, "a.txt", &stat.version)
+            .unwrap();
+        let mut chunk = Vec::new();
+        assert_eq!(reader.read_chunk(&mut chunk).unwrap(), MAX_FILE_CHUNK_BYTES);
+        assert_eq!(chunk, vec![b'a'; MAX_FILE_CHUNK_BYTES]);
+        std::fs::write(dir.join("replacement"), vec![b'b'; stat.size as usize]).unwrap();
+        std::fs::rename(dir.join("replacement"), &path).unwrap();
+        assert!(matches!(
+            reader.read_chunk(&mut chunk),
+            Err(ApiError::Conflict { .. })
+        ));
+        assert!(matches!(
+            service.open_read_stream(&dir, "a.txt", &stat.version),
+            Err(ApiError::Conflict { .. })
+        ));
+        let stat = service.stat(&dir, "a.txt").unwrap();
+        let mut reader = service
+            .open_read_stream(&dir, "a.txt", &stat.version)
+            .unwrap();
+        reader.read_chunk(&mut Vec::new()).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        assert!(matches!(
+            reader.read_chunk(&mut Vec::new()),
+            Err(ApiError::Conflict { .. })
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn whole_file_read_refuses_oversized_and_non_regular_files() {
+        use sworm_protocol::rpc::MAX_WHOLE_FILE_BYTES;
+        let dir = unique_test_dir("read-limits");
+        let limit = MAX_WHOLE_FILE_BYTES as u64;
+        File::create(dir.join("at-limit"))
+            .unwrap()
+            .set_len(limit)
+            .unwrap();
+        File::create(dir.join("over-limit"))
+            .unwrap()
+            .set_len(limit + 1)
+            .unwrap();
+        let service = FileService::new();
+        assert_eq!(
+            service.read(&dir, "at-limit").unwrap().content.len() as u64,
+            limit
+        );
+        assert!(matches!(
+            service.read(&dir, "over-limit"),
+            Err(ApiError::TooLarge { size, limit: reported })
+                if size == limit + 1 && reported == limit
+        ));
+        // A FIFO with no writer would block a plain open forever.
+        let fifo =
+            std::ffi::CString::new(dir.join("fifo").into_os_string().into_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            service.read(&dir, "fifo"),
+            Err(ApiError::InvalidArgument(message)) if message.contains("not a regular file")
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

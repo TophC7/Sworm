@@ -32,6 +32,7 @@
   import { getActiveSessionTabId, requestFocusTab } from '$lib/features/workbench/state.svelte'
   import { initTransferService } from '$lib/features/workbench/transferService.svelte'
   import type { Snippet } from 'svelte'
+  import { initDeepLinks } from '$lib/features/remotes/deepLink.svelte'
 
   let { children }: { children: Snippet } = $props()
 
@@ -68,6 +69,7 @@
   })
 
   onMount(() => {
+    const cleanupDeepLinks = initDeepLinks()
     const appWindow = getCurrentWindow()
     let cleanupTransfer: (() => void) | undefined
     let disposed = false
@@ -145,6 +147,7 @@
 
     return () => {
       disposed = true
+      cleanupDeepLinks()
       cleanupTransfer?.()
       cleanupShortcuts()
       for (const listener of listeners) listener.then((cleanup) => cleanup()).catch(() => {})

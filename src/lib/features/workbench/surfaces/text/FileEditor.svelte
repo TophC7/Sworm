@@ -18,12 +18,15 @@
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
+  import { retainedTextModelBase } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { filePathToLanguage, isBinaryFile, isMarkdownFile, mediaKind } from '$lib/features/editor/languageMap'
   import { basename, dirname } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import MediaViewer from '$lib/features/workbench/surfaces/text/MediaViewer.svelte'
   import { watchFileDir } from '$lib/features/files/fileTree.svelte'
   import {
+    approveLargeTextFile,
+    isLargeTextFileApproved,
     clearTextSurfaceDirtyIfClosed,
     discardTextSurfaceBuffer,
     getTextBaseVersion,
@@ -33,6 +36,8 @@
     setTextSurfaceDirty
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
+  import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
+  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { getGitSummary } from '$lib/features/git/state.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
@@ -58,7 +63,17 @@
     locked?: boolean
   } = $props()
 
-  let isReadonly = $derived(!!gitRef)
+  const WHOLE_FILE_LIMIT = 16 * 1024 * 1024
+  const STREAM_FILE_LIMIT = 256 * 1024 * 1024
+  let streamed = $state(false)
+  let largeFileSize = $state<number | null>(null)
+  let readBlocked = $state(false)
+  let progress = $state<{ bytes: number; total: number } | null>(null)
+  let activeStream: string | null = null
+  // Metadata identity of the last streamed read; a watcher event that leaves it
+  // unchanged (a sibling changed) must not re-stream up to 256 MiB.
+  let streamedStatVersion: string | null = null
+  let isReadonly = $derived(!!gitRef || streamed)
   let isUntitled = $derived(filePath == null)
 
   let content = $state('')
@@ -81,14 +96,14 @@
 
   // Language/markdown detection keys off filePath. For untitled buffers
   // there's no extension yet, so `plaintext` is the honest default.
-  let isMarkdown = $derived(filePath != null && isMarkdownFile(filePath))
+  let isMarkdown = $derived(!streamed && filePath != null && isMarkdownFile(filePath))
   let isBinary = $derived(filePath != null && isBinaryFile(filePath))
   // Git snapshots have no on-disk path for asset:// to fetch, so media
   // preview is gated to live (non-gitRef) files.
   let mediaKindValue = $derived(filePath != null && !gitRef ? mediaKind(filePath) : null)
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
-  let lspUriPath = $derived(filePath != null && !gitRef ? `${folderPath}/${filePath}` : null)
+  let lspUriPath = $derived(filePath != null && !gitRef && !streamed ? `${folderPath}/${filePath}` : null)
   let gitSummary = $derived(getGitSummary(folderPath))
   let gitDiffRevision = $derived(
     filePath == null || gitRef
@@ -189,20 +204,101 @@
   // and must not apply its bytes over whatever replaced it.
   let readToken = 0
 
+  function cancelRead() {
+    ++readToken
+    const requestId = activeStream
+    activeStream = null
+    progress = null
+    if (requestId) void backend.files.cancelReadStream(requestId).catch(() => {})
+  }
+
+  function formatSize(size: number) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MiB (${size.toLocaleString()} bytes)`
+  }
+
+  async function readDisk(token: number, folder: string, target: string, approved = streamed, watchReload = false) {
+    // One trip for the common case: only a file over the whole-file ceiling
+    // pays for the stat that the approval prompt and the stream need.
+    const whole = streamed
+      ? null
+      : await backend.files.read(folder, target).catch((e: unknown) => {
+          if ((e as { kind?: unknown } | null)?.kind !== 'tooLarge') throw e
+          return null
+        })
+    if (token !== readToken) return null
+    if (watchReload && (saving || dirty || retainedDirtyPending || conflict !== null)) return null
+    if (whole) return whole
+    const stat = await backend.files.stat(folder, target)
+    if (token !== readToken) return null
+    if (watchReload && (saving || dirty || retainedDirtyPending || conflict !== null)) return null
+    if (watchReload && streamed && stat.version === streamedStatVersion) return null
+    if (!stat.regular || stat.size > STREAM_FILE_LIMIT) {
+      readBlocked = true
+      throw new Error(
+        !stat.regular ? 'Cannot open a non-regular file.' : `File is ${formatSize(stat.size)}; the maximum is 256 MiB.`
+      )
+    }
+    if (stat.size <= WHOLE_FILE_LIMIT && !streamed) return backend.files.read(folder, target)
+    if (!approved) {
+      largeFileSize = stat.size
+      readBlocked = true
+      return null
+    }
+    const requestId = crypto.randomUUID()
+    activeStream = requestId
+    progress = { bytes: 0, total: stat.size }
+    let stop: (() => void) | undefined
+    try {
+      stop = await backend.files.onReadProgress((event) => {
+        if (
+          token === readToken &&
+          activeStream === requestId &&
+          event.requestId === requestId &&
+          event.folderPath === folder &&
+          event.filePath === target
+        ) {
+          progress = { bytes: event.bytes, total: event.total }
+        }
+      })
+      // Cancellation while the listener is being installed must not start a stream.
+      if (token !== readToken) return null
+      const file = await backend.files.readStream(requestId, folder, target, stat.version, stat.size)
+      if (token !== readToken) return null
+      discardTextSurfaceBuffer({ id: tabId, folderPath: folder, filePath: target })
+      approveLargeTextFile(tabId, folder, target)
+      streamed = true
+      streamedStatVersion = stat.version
+      mode = 'edit'
+      return file
+    } finally {
+      stop?.()
+      if (activeStream === requestId) {
+        activeStream = null
+        progress = null
+      }
+    }
+  }
+
   function applyRead(token: number, value: string, version: string | null) {
     if (token !== readToken) return
+    readBlocked = false
+    error = null
+    largeFileSize = null
     content = value
     editContent = value
     debouncedEdit = value
     diskVersion = version
   }
 
-  async function load() {
-    const token = ++readToken
+  async function load(approved = false) {
+    cancelRead()
+    const token = readToken
     const target = filePath
     loading = true
     error = null
     diskVersion = null
+    readBlocked = false
+    largeFileSize = null
     try {
       if (target == null || isBinaryFile(target)) {
         // Untitled buffer or binary file: nothing to read.
@@ -210,7 +306,13 @@
       } else if (gitRef) {
         applyRead(token, await backend.editor.showFile(folderPath, gitRef, target), null)
       } else {
-        const file = await backend.files.read(folderPath, target)
+        const retainedBaseContent = retainedDirtyPending ? retainedTextModelBase(folderPath, target) : null
+        if (retainedBaseContent !== null) {
+          applyRead(token, retainedBaseContent, getTextBaseVersion(folderPath, target))
+          return
+        }
+        const file = await readDisk(token, folderPath, target, approved || streamed)
+        if (!file || token !== readToken) return
         // A buffer with unsaved edits keeps the version those edits were based
         // on — retained in the Monaco model across an unmount, or still live
         // here after an external rename. Saving them against the version just
@@ -221,7 +323,8 @@
       }
     } catch (e) {
       if (token !== readToken) return
-      error = e instanceof Error ? e.message : String(e)
+      readBlocked = true
+      error = getErrorMessage(e)
     } finally {
       if (token === readToken) loading = false
     }
@@ -262,7 +365,7 @@
         // backend.files.write takes a folder-relative path.
         targetRel = chosen.slice(folderPath.length).replace(/^\/+/, '')
       } catch (e) {
-        error = e instanceof Error ? e.message : String(e)
+        error = getErrorMessage(e)
         saving = false
         return
       }
@@ -282,6 +385,9 @@
   async function persist(targetRel: string, savedContent: string, expectedVersion: string | null) {
     error = null
     try {
+      if (isReadonly) {
+        throw new Error('Cannot write read-only files.')
+      }
       diskVersion = await backend.files.write(folderPath, targetRel, savedContent, expectedVersion)
       setTextBaseVersion(folderPath, targetRel, diskVersion)
       markTextSurfaceSaved(folderPath, targetRel, savedContent)
@@ -307,7 +413,7 @@
         conflict = { targetRel, content: savedContent, kind }
         return
       }
-      error = e instanceof Error ? e.message : String(e)
+      error = getErrorMessage(e)
     } finally {
       saving = false
     }
@@ -329,10 +435,15 @@
     const target = filePath
     const pending = conflict
     if (target == null || pending == null) return
-    const token = ++readToken
+    cancelRead()
+    const token = readToken
     error = null
     try {
-      const file = await backend.files.read(folderPath, target)
+      const file = await readDisk(token, folderPath, target)
+      if (!file) {
+        if (token === readToken && conflict === pending) conflict = null
+        return
+      }
       if (token !== readToken || filePath !== target || conflict !== pending) return
       // Keep Monaco mounted: load() would reattach its retained dirty buffer.
       retainedDirtyPending = false
@@ -342,7 +453,7 @@
       conflict = null
     } catch (e) {
       if (token !== readToken || conflict !== pending) return
-      error = e instanceof Error ? e.message : String(e)
+      error = getErrorMessage(e)
       conflict = null
     }
   }
@@ -368,9 +479,11 @@
     // version; `retainedDirtyPending` means unsaved edits are still parked in
     // the retained Monaco model and have not reached `editContent` yet.
     if (loading || saving || dirty || retainedDirtyPending || conflict !== null) return
-    const token = ++readToken
+    cancelRead()
+    const token = readToken
     try {
-      const file = await backend.files.read(folderPath, target)
+      const file = await readDisk(token, folderPath, target, streamed, true)
+      if (!file) return
       // Our own save is the common case: the version already matches.
       if (token !== readToken || file.version === diskVersion) return
       // Typing during the read wins; its edits are now based on the old bytes,
@@ -379,9 +492,10 @@
       applyRead(token, file.content, file.version)
       setTextBaseVersion(folderPath, target, file.version)
       markTextSurfaceSaved(folderPath, target, file.content)
-    } catch {
-      // Deleted, or briefly unreadable mid-write by another process. The
-      // delete listener owns closing the tab, and the next event re-reads.
+    } catch (e) {
+      // A delete or mid-write replace fails briefly and the next event re-reads;
+      // only a failure that blocked the view needs explaining.
+      if (token === readToken && readBlocked) error = getErrorMessage(e)
     }
   }
 
@@ -484,12 +598,17 @@
   // Re-load when filePath or gitRef changes (including initial mount)
   $effect(() => {
     void filePath
+    void folderPath
     void gitRef
     untrack(() => {
+      streamed = !gitRef && filePath !== null && isLargeTextFileApproved(tabId, folderPath, filePath)
       mode = filePath != null && isMarkdownFile(filePath) ? 'split' : 'edit'
       lintDiagnostics = []
       load()
     })
+    return () => {
+      cancelRead()
+    }
   })
 
   // Mirror local dirty state into the workbench-level registry so the
@@ -600,8 +719,32 @@
   <div class="min-h-0 flex-1">
     {#if mediaKindValue != null && filePath != null}
       <MediaViewer {folderPath} {filePath} kind={mediaKindValue} />
-    {:else if loading}
-      <div class="px-4 py-3 text-sm text-subtle">Loading&hellip;</div>
+    {:else if loading || progress}
+      <div class="flex flex-col items-start gap-2 px-4 py-3 text-sm text-muted">
+        {#if progress}
+          <span role="status">Reading {formatSize(progress.bytes)} of {formatSize(progress.total)}</span>
+          <progress class="w-full accent-accent" value={progress.bytes} max={progress.total}></progress>
+          <Button
+            size="sm"
+            onclick={() => {
+              cancelRead()
+              loading = false
+              readBlocked = true
+              error = 'File read cancelled.'
+              void closeTabWithChecks(tabId)
+            }}>Cancel</Button
+          >
+        {:else}
+          <span>Loading&hellip;</span>
+        {/if}
+      </div>
+    {:else if largeFileSize !== null}
+      <div class="flex flex-col items-start gap-3 px-4 py-3 text-sm text-muted">
+        <p>File is {formatSize(largeFileSize)}. Large files open read-only with language features disabled.</p>
+        <Button size="sm" onclick={() => void load(true)}>Open Anyway (Read-Only)</Button>
+      </div>
+    {:else if readBlocked}
+      <div class="px-4 py-3 text-sm text-muted">File not loaded.</div>
     {:else if isBinary}
       <div class="flex h-full items-center justify-center text-base text-subtle">
         Binary file &mdash; cannot display
@@ -643,6 +786,7 @@
       {#key `${lspUriPath ?? `untitled:${tabId}`}:${language}`}
         <MonacoEditor
           {tabId}
+          largeFile={streamed}
           value={editContent}
           {language}
           readonly={isReadonly}

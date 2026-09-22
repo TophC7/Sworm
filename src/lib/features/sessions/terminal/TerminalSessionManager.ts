@@ -23,6 +23,7 @@ import { openLink } from '$lib/features/workbench/links/openLink'
 import { TerminalLinkProvider } from '$lib/features/sessions/terminal/TerminalLinkProvider'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
+import { splitRemotePath } from '$lib/utils/paths'
 
 const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
@@ -105,6 +106,10 @@ export class TerminalSessionManager {
   private readonly titleParser = new TerminalTitleParser()
   private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
+  private reconnecting = false
+  private readonly reconnectListeners = new Set<(reconnecting: boolean) => void>()
+  private remoteStatusReady: Promise<void> | null = null
+  private stopRemoteStatus: (() => void) | null = null
 
   // Hidden sessions defer xterm parsing until attach/export. Bounded to
   // DEFERRED_BYTES_CAP, dropping oldest; dropped bytes fall outside xterm
@@ -115,6 +120,19 @@ export class TerminalSessionManager {
 
   constructor(tabId: TabId) {
     this.tabId = tabId
+    const folderPath = getTabs().find((tab) => tab.id === tabId)?.folderPath
+    if (folderPath && splitRemotePath(folderPath)) {
+      this.remoteStatusReady = backend.remotes
+        .onRunStatus((event) => {
+          if (this.disposed || event.runId !== this.runId || event.runId !== this.streamRunId) return
+          this.setReconnecting(event.state === 'reconnecting')
+        })
+        .then((stop) => {
+          if (this.disposed) stop()
+          else this.stopRemoteStatus = stop
+        })
+        .catch((error) => console.error('Remote run status listener failed:', error))
+    }
   }
 
   isPtyActive(): boolean {
@@ -162,6 +180,20 @@ export class TerminalSessionManager {
     return () => {
       this.errorListeners.delete(listener)
     }
+  }
+
+  registerReconnectListener(listener: (reconnecting: boolean) => void): () => void {
+    this.reconnectListeners.add(listener)
+    listener(this.reconnecting)
+    return () => {
+      this.reconnectListeners.delete(listener)
+    }
+  }
+
+  private setReconnecting(reconnecting: boolean): void {
+    if (this.reconnecting === reconnecting) return
+    this.reconnecting = reconnecting
+    for (const listener of this.reconnectListeners) listener(reconnecting)
   }
 
   async attach(container: HTMLElement): Promise<void> {
@@ -250,6 +282,7 @@ export class TerminalSessionManager {
     this.textDecoder = new TextDecoder()
     this.titleParser.reset()
     await this.ensureTerminal()
+    await this.remoteStatusReady
     if (this.streamRunId) {
       await this.stopPty()
     } else {
@@ -347,11 +380,13 @@ export class TerminalSessionManager {
     }
     if (event.type === 'started') {
       this.ptyActive = true
+      this.setReconnecting(false)
       this.lastError = null
       setSessionTabStatus(this.tabId, 'running')
       this.barrier.markRendered(sequence)
     } else if (event.type === 'exit') {
       this.ptyActive = false
+      this.setReconnecting(false)
       this.runId = null
       setSessionTabRunId(this.tabId, null)
       this.renderOutput(textEncoder.encode('\r\n\x1b[33m[Process exited]\x1b[0m\r\n'), sequence)
@@ -423,6 +458,7 @@ export class TerminalSessionManager {
     this.barrier.reset()
     this.providerId = state.providerId ?? null
     await this.ensureTerminal()
+    await this.remoteStatusReady
 
     const terminal = this.terminal
     if (!terminal) throw new Error(`Terminal session ${this.tabId} is unavailable`)
@@ -513,6 +549,10 @@ export class TerminalSessionManager {
   }
 
   private disposeSurface(): void {
+    this.stopRemoteStatus?.()
+    this.stopRemoteStatus = null
+    this.setReconnecting(false)
+    this.reconnectListeners.clear()
     this.detach()
     this.inputDisposable?.dispose()
     this.inputDisposable = null
@@ -823,6 +863,7 @@ export class TerminalSessionManager {
   }
 
   private releaseChannels(): void {
+    this.setReconnecting(false)
     this.streamRunId = null
     this.outputChannel = null
     this.eventsChannel = null

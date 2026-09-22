@@ -10,6 +10,7 @@
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
   import type { OpenTarget } from '$lib/types/backend'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
+  import { markDeepLinksReady } from '$lib/features/remotes/deepLink.svelte'
 
   let bootstrapping = $state(true)
   let bootstrapError = $state<string | null>(null)
@@ -33,7 +34,7 @@
 
     void (async () => {
       try {
-        const cleanup = await currentWindow.listen<OpenTarget>('sworm://open-target', ({ payload }) => {
+        const cleanup = await currentWindow.listen<OpenTarget>('open-target', ({ payload }) => {
           void openTarget(payload).catch((error) => logClientError('open target failed', { error, payload }))
         })
         if (disposed) cleanup()
@@ -41,6 +42,7 @@
 
         await Promise.all([loadRecentFolders(), restoreWorkbench(label)])
         await backend.window.ready()
+        if (!disposed) markDeepLinksReady()
         bootstrapping = false
       } catch (error) {
         bootstrapError = describeClientError(error)

@@ -1,45 +1,78 @@
 <script lang="ts">
-  import { getGitSummary } from '$lib/features/git/state.svelte'
   import { getActiveFolderPath, getTabs } from '$lib/features/workbench/state.svelte'
-  import { isProcessLive, type SessionTab } from '$lib/features/workbench/model'
-  import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-  import { Button, IconButton } from '$lib/components/ui/button'
+  import { isProcessLive } from '$lib/features/workbench/model'
+  import { StatusChip, statusChipVariants } from '$lib/components/ui/status-chip'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
   import { isFolderSwitcherOpen, toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
   import StatusBarAppInfo from '$lib/features/app-shell/status/StatusBarAppInfo.svelte'
-  import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
-  import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
-  import { formatShortcut } from '$lib/features/command-palette/shortcuts/spec'
   import {
     ensureSettingsDiagnosticsListener,
     getSettingsDiagnostics,
     refreshSettingsDiagnostics
   } from '$lib/features/settings/state/diagnostics.svelte'
-  import { Circle, AlertTriangle, FolderOpen, GitBranchIcon, Minus, Plus } from '$lib/icons/lucideExports'
-  import { folderCrumbs } from '$lib/utils/paths'
+  import { AlertTriangle, FolderOpen } from '$lib/icons/lucideExports'
+  import { folderCrumbs, splitRemotePath } from '$lib/utils/paths'
+  import { cn } from '$lib/utils/cn'
+  import { backend } from '$lib/api/backend'
+  import { openRemoteManager } from '$lib/features/remotes/state.svelte'
+  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
   let folderPath = $derived(getActiveFolderPath())
-  let folderSessions = $derived(
+  let remote = $derived(folderPath ? splitRemotePath(folderPath) : null)
+  let remoteServer = $derived(remote?.server ?? null)
+  let remoteStatus = $state<Awaited<ReturnType<typeof backend.remotes.status>> | null>(null)
+
+  $effect(() => {
+    const server = remoteServer
+    remoteStatus = null
+    if (!server) return
+    let disposed = false
+    let pending = false
+    let revision = 0
+    let unlisten: (() => void) | undefined
+    async function refresh() {
+      if (pending || disposed) return
+      pending = true
+      const requestedRevision = revision
+      try {
+        const status = await backend.remotes.status(server!)
+        if (!disposed && revision === requestedRevision) remoteStatus = status
+      } catch (error) {
+        if (!disposed && revision === requestedRevision) {
+          remoteStatus = { connected: false, state: 'error', last_error: getErrorMessage(error) }
+        }
+      } finally {
+        pending = false
+      }
+    }
+    void backend.remotes
+      .onStatus((status) => {
+        if (disposed || status.server !== server) return
+        revision++
+        remoteStatus = status
+      })
+      .then((stop) => {
+        if (disposed) stop()
+        else unlisten = stop
+      })
+      .catch((error) => console.error('Remote status listener failed:', error))
+      // Fetch after subscribing so no transition lands between the two.
+      .finally(() => void refresh())
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  })
+  let sharedAgentCount = $derived(
     getTabs().filter(
-      (t): t is SessionTab => t.kind === 'session' && t.folderPath === folderPath && isProcessLive(t.status)
-    )
+      (t) =>
+        t.kind === 'session' && t.folderPath === folderPath && t.providerId !== 'terminal' && isProcessLive(t.status)
+    ).length
   )
-  let liveSessionCount = $derived(folderSessions.length)
-  let sharedAgentCount = $derived(folderSessions.filter((t) => t.providerId !== 'terminal').length)
-  let zoom = $derived(getZoomLevel())
-  let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
-  let branchDirty = $derived((gitSummary?.changes.length ?? 0) > 0)
-  let branchStatus = $derived(
-    branchDirty
-      ? `${gitSummary?.staged_count ?? 0} staged, ${gitSummary?.unstaged_count ?? 0} unstaged, ${gitSummary?.untracked_count ?? 0} untracked`
-      : 'Clean working tree'
-  )
-  let zoomOutShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-out', ['Ctrl+-'])[0]))
-  let zoomResetShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-reset', ['Ctrl+0'])[0]))
-  let zoomInShortcut = $derived(formatShortcut(getEffectiveBindings('zoom-in', ['Ctrl+=', 'Ctrl++'])[0]))
+  let remoteState = $derived(remoteStatus?.state ?? 'checking')
   let settingsDiagnostics = $derived(getSettingsDiagnostics())
 
   $effect(() => {
@@ -53,46 +86,49 @@
 >
   <div class="flex items-center gap-1">
     <StatusBarAppInfo />
+    {#if remoteServer}
+      <StatusChip
+        onclick={openRemoteManager}
+        title={remoteStatus?.last_error ?? `${remoteServer}: ${remoteState}`}
+        aria-label="Manage remote {remoteServer}: {remoteState}"
+      >
+        <span
+          class={cn(
+            'size-1.5 shrink-0 rounded-full',
+            remoteState === 'connected'
+              ? 'bg-success'
+              : remoteState === 'error'
+                ? 'bg-danger'
+                : remoteState === 'reconnecting'
+                  ? 'bg-warning'
+                  : 'bg-muted'
+          )}
+        ></span>
+        <span class="font-mono">{remoteServer}</span>
+      </StatusChip>
+    {/if}
     {#if folderPath}
-      <Button
-        size="xs"
+      <StatusChip
         data-folder-switcher-toggle="true"
         aria-label="Switch folder"
         aria-haspopup="dialog"
         aria-expanded={isFolderSwitcherOpen()}
         title={folderPath}
         onclick={toggleFolderSwitcher}
-        class="max-w-[min(32rem,40vw)] gap-1 rounded-full text-muted hover:border-accent/50 hover:text-fg"
+        class="max-w-[min(32rem,40vw)]"
       >
         <FolderOpen size={10} class="shrink-0" />
-        <span class="truncate">{folderCrumbs(folderPath)}</span>
-      </Button>
-    {/if}
-    {#if gitSummary?.branch && folderPath}
-      <StatusBarBranchPopover {folderPath}>
-        {#snippet children()}
-          <span
-            class="flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono transition-colors {branchDirty
-              ? 'border-warning/40 bg-warning/10 text-warning-bright hover:bg-warning/20'
-              : 'border-success/40 bg-success/10 text-success hover:bg-success/20'}"
-            title={branchStatus}
-          >
-            <GitBranchIcon size={10} />
-            {gitSummary.branch}
-            <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} size="xs" twoColor />
-          </span>
-        {/snippet}
-      </StatusBarBranchPopover>
-    {/if}
-    {#if folderPath}
+        <span class="truncate">{folderCrumbs(remote?.path ?? folderPath)}</span>
+      </StatusChip>
+      <StatusBarBranchPopover {folderPath} />
       <NixEnvIndicator {folderPath} />
     {/if}
   </div>
 
-  <div class="flex items-center gap-2.5">
+  <div class="flex items-center gap-1">
     {#if settingsDiagnostics.length > 0}
       <TooltipRoot>
-        <TooltipTrigger class="flex items-center gap-1 text-warning transition-colors hover:text-warning-bright">
+        <TooltipTrigger class={statusChipVariants({ tone: 'warning' })}>
           <AlertTriangle size={10} />
           {settingsDiagnostics.length} settings
         </TooltipTrigger>
@@ -115,41 +151,14 @@
       </TooltipRoot>
     {/if}
 
-    {#if liveSessionCount > 0}
-      <span class="flex items-center gap-1 text-success">
-        <Circle size={6} fill="currentColor" />
-        {liveSessionCount} live
-      </span>
-    {/if}
     {#if sharedAgentCount > 1}
-      <span class="flex items-center gap-1 text-warning" title="Multiple agents share this folder's working tree">
-        <AlertTriangle size={10} /> shared
-      </span>
-    {/if}
-
-    <div class="flex items-center gap-0.5 text-muted">
-      <IconButton tooltip="Zoom out" shortcut={zoomOutShortcut} onclick={zoomOut}>
-        <Minus size={10} />
-      </IconButton>
       <TooltipRoot>
-        <TooltipTrigger
-          class="min-w-6 cursor-pointer border-none bg-transparent px-0.5 text-center text-2xs text-muted transition-colors hover:text-fg"
-          onclick={zoomReset}
-        >
-          {Math.round(zoom * 100)}%
+        <TooltipTrigger class={statusChipVariants({ tone: 'warning' })}>
+          <AlertTriangle size={10} /> shared
         </TooltipTrigger>
-        <TooltipContent>
-          Reset zoom
-          {#if zoomResetShortcut}
-            <kbd class="ml-2 font-mono text-xs text-subtle">{zoomResetShortcut}</kbd>
-          {/if}
-        </TooltipContent>
+        <TooltipContent>Multiple agents share this folder's working tree</TooltipContent>
       </TooltipRoot>
-      <IconButton tooltip="Zoom in" shortcut={zoomInShortcut} onclick={zoomIn}>
-        <Plus size={10} />
-      </IconButton>
-    </div>
-
+    {/if}
     <NotificationsButton />
   </div>
 </footer>

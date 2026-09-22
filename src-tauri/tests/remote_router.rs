@@ -189,6 +189,66 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         Arc::clone(&host_events),
     )?);
     let router = WorkspaceRouter::with_events(Arc::clone(&host), host_events);
+
+    // Pairing has its own daemon: this desktop is already authorized on `loop`.
+    let pairing_config = temporary.path().join("pairing-config");
+    let pairing_server = serve(ServeOptions {
+        config_dir: pairing_config.clone(),
+        data_dir: temporary.path().join("pairing-data"),
+        listen: Some("127.0.0.1:0".parse()?),
+    })
+    .await?;
+    let token = sworm_server::auth::write_pairing_token(&pairing_config)?;
+    let pair_link = format!(
+        "sworm-pair://{}/{}/{}",
+        pairing_server.local_addr, pairing_server.fingerprint, token
+    );
+    let before_pair = fs::read(&settings_path)?;
+    let wrong_link = format!(
+        "sworm-pair://{}/{}/wrong-token",
+        pairing_server.local_addr, pairing_server.fingerprint
+    );
+    assert!(router
+        .pair_remote(&wrong_link, "paired", false)
+        .await
+        .is_err());
+    assert_eq!(fs::read(&settings_path)?, before_pair);
+    let paired = router.pair_remote(&pair_link, "paired", false).await?;
+    assert_eq!(paired.fingerprint, pairing_server.fingerprint.to_string());
+    let after_pair = fs::read(&settings_path)?;
+    assert!(router
+        .pair_remote(&pair_link, "paired", false)
+        .await
+        .is_err());
+    assert_eq!(fs::read(&settings_path)?, after_pair);
+    let wrong_pin = format!(
+        "sworm-pair://{}/SHA256:{}/{}",
+        pairing_server.local_addr,
+        "00".repeat(32),
+        token
+    );
+    assert!(router
+        .pair_remote(&wrong_pin, "paired", true)
+        .await
+        .is_err());
+    assert_eq!(fs::read(&settings_path)?, after_pair);
+    let paired_repository = Target::remote_uri("paired", &repository.to_string_lossy());
+    router
+        .file_read(paired_repository, "hello.txt".into())
+        .await?;
+    assert!(router.remote_status("paired").await?.connected);
+    pairing_server.shutdown().await;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let status = router.remote_status("paired").await.unwrap();
+            if !status.connected {
+                assert!(status.last_error.is_some());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
     let remote_repository = format!("sworm://loop{}", repository.display());
     let canonical_repository = fs::canonicalize(&repository)?;
     let canonical_uri = Target::remote_uri("loop", &canonical_repository.to_string_lossy());
@@ -200,6 +260,107 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             .content,
         "sentinel\n"
     );
+    {
+        use sha2::{Digest, Sha256};
+        let body = vec![b'x'; 20 * 1024 * 1024];
+        fs::write(repository.join("large.txt"), &body)?;
+        let expected_hash = format!("{:x}", Sha256::digest(&body));
+        for (index, folder) in [
+            remote_repository.clone(),
+            repository.to_string_lossy().into_owned(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let stat = router.file_stat(folder.clone(), "large.txt".into()).await?;
+            let streamed = router
+                .read_file_stream(
+                    "stream-test",
+                    &format!("large-{index}"),
+                    folder.clone(),
+                    "large.txt".into(),
+                    stat.version,
+                    stat.size,
+                    |_, _| {},
+                )
+                .await?;
+            assert_eq!(streamed.content.as_bytes(), body);
+            assert_eq!(streamed.version, expected_hash);
+            let stat = router.file_stat(folder.clone(), "large.txt".into()).await?;
+            let chunks = std::sync::atomic::AtomicUsize::new(0);
+            let interrupted = router
+                .read_file_stream(
+                    "stream-test",
+                    "in-flight",
+                    folder,
+                    "large.txt".into(),
+                    stat.version,
+                    stat.size,
+                    |bytes, total| {
+                        if bytes > 0 {
+                            assert!(bytes < total, "cancel while the file is still being read");
+                            assert_eq!(
+                                chunks.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                0,
+                                "no further chunks should be delivered after cancellation"
+                            );
+                            router.cancel_file_read("stream-test", "in-flight");
+                        }
+                    },
+                )
+                .await;
+            assert!(interrupted.is_err());
+            assert_eq!(chunks.load(std::sync::atomic::Ordering::Relaxed), 1);
+        }
+        let huge = fs::File::create(repository.join("huge.txt"))?;
+        huge.set_len(300 * 1024 * 1024)?;
+        let stat = router
+            .file_stat(remote_repository.clone(), "huge.txt".into())
+            .await?;
+        assert!(router
+            .read_file_stream(
+                "stream-test",
+                "huge",
+                remote_repository.clone(),
+                "huge.txt".into(),
+                stat.version,
+                stat.size,
+                |_, _| {}
+            )
+            .await
+            .is_err());
+        router.cancel_file_read("stream-test", "cancel-first");
+        let stat = router
+            .file_stat(remote_repository.clone(), "large.txt".into())
+            .await?;
+        assert!(router
+            .read_file_stream(
+                "stream-test",
+                "cancel-first",
+                remote_repository.clone(),
+                "large.txt".into(),
+                stat.version.clone(),
+                stat.size,
+                |_, _| {}
+            )
+            .await
+            .is_err());
+        let other_owner = router
+            .read_file_stream(
+                "other-window",
+                "cancel-first",
+                remote_repository.clone(),
+                "large.txt".into(),
+                stat.version,
+                stat.size,
+                |_, _| {},
+            )
+            .await?;
+        assert_eq!(other_owner.version, expected_hash);
+        router.release_file_reads("stream-test");
+        fs::remove_file(repository.join("large.txt"))?;
+        fs::remove_file(repository.join("huge.txt"))?;
+    }
     assert!(router
         .files_read_dir(remote_repository.clone(), String::new(), false)
         .await?
@@ -696,9 +857,11 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         router.session_stop("orphan-run".into()).await.is_err(),
         "an unreachable daemon must fail the stop"
     );
-    assert_eq!(router.pending_stops_for_test(), 1);
+    assert_eq!(router.pending_stops_for_test().len(), 1);
     assert_eq!(
-        WorkspaceRouter::new(Arc::clone(&host)).pending_stops_for_test(),
+        WorkspaceRouter::new(Arc::clone(&host))
+            .pending_stops_for_test()
+            .len(),
         1,
         "a pending stop must survive a desktop restart"
     );
@@ -708,7 +871,7 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     })
     .await?;
     timeout(Duration::from_secs(60), async {
-        while router.pending_stops_for_test() > 0 {
+        while !router.pending_stops_for_test().is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })

@@ -23,6 +23,7 @@
     KeyboardIcon,
     LoaderCircle,
     PackageIcon,
+    ServerIcon,
     SettingsIcon,
     X
   } from '$lib/icons/lucideExports'
@@ -38,6 +39,8 @@
   import NixView from '$lib/features/settings/views/NixView.svelte'
   import ProvidersView from '$lib/features/settings/views/ProvidersView.svelte'
   import WindowView from '$lib/features/settings/views/WindowView.svelte'
+  import RemoteServersView from '$lib/features/settings/views/RemoteServersView.svelte'
+  import { getSettingsPage, setSettingsPage } from './state.svelte'
 
   // SemVer metadata carries commit identity; the numeric prefix only orders packages.
   const versionPromise: Promise<string | null> = getVersion()
@@ -56,7 +59,8 @@
     { id: 'appearance', label: 'Appearance', icon: { kind: 'lucide', icon: PaintbrushIcon } },
     { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: { kind: 'lucide', icon: KeyboardIcon } },
     { id: 'providers', label: 'Providers', icon: { kind: 'lucide', icon: PackageIcon } },
-    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow } }
+    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow } },
+    { id: 'remote-servers', label: 'Remote Servers', icon: { kind: 'lucide', icon: ServerIcon } }
   ]
   let languagePages = $state<BuiltinSettingsPage[]>(getBuiltinSettingsPages())
 
@@ -73,7 +77,7 @@
   ])
   let FLAT_NAV = $derived(NAV_SECTIONS.flatMap((section) => section.items))
 
-  let active = $state<View>('appearance')
+  let active = $derived(getSettingsPage())
   let activeItem = $derived(FLAT_NAV.find((item) => item.id === active) ?? FLAT_NAV[0])
   let activeLabel = $derived(activeItem.label)
   let activeLanguagePage = $derived(languagePages.find((definition) => definition.id === active) ?? null)
@@ -165,7 +169,7 @@
               <button
                 type="button"
                 onclick={() => {
-                  active = item.id
+                  setSettingsPage(item.id)
                 }}
                 class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-left
                        {active === item.id ? 'bg-accent/15 text-bright' : 'text-muted hover:bg-surface hover:text-fg'}"
@@ -218,6 +222,8 @@
             {/key}
           {:else if active === 'window'}
             <WindowView />
+          {:else if active === 'remote-servers'}
+            <RemoteServersView />
           {:else if activeLanguagePage}
             {#key `${hostKey}/${activeLanguagePage.id}`}
               {#if activeLanguagePage.kind === 'nix'}

@@ -72,6 +72,12 @@ export interface FolderInfo {
   name: string
 }
 
+export interface PathRoot {
+  kind: 'home' | 'volume'
+  label: string
+  path: string
+}
+
 export interface FolderEntry {
   name: string
   path: string
@@ -204,6 +210,35 @@ export interface ProviderSettings {
 export interface RemoteSettings {
   address: string
   fingerprint: string
+}
+
+export interface RemoteStatus {
+  connected: boolean
+  last_error: string | null
+  state: 'disconnected' | 'reconnecting' | 'connected' | 'error'
+}
+
+export interface RemoteStatusEvent extends RemoteStatus {
+  server: string
+}
+
+export interface RemoteRunStatusEvent {
+  runId: string
+  state: 'reconnecting' | 'connected' | 'disconnected'
+}
+
+export interface FileStat {
+  size: number
+  version: string
+  regular: boolean
+}
+
+export interface FileReadProgress {
+  requestId: string
+  folderPath: string
+  filePath: string
+  bytes: number
+  total: number
 }
 
 export interface EffectiveLspServerSettings {

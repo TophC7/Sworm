@@ -204,7 +204,7 @@ Sworm is flat by default. Rounding exists only where a surface visibly _floats_ 
 | `rounded-md`   | 6px    | Kbd chips, code blocks, secondary buttons.                                                                      |
 | `rounded-lg`   | 8px    | Default buttons, primary CTAs, dialog content, dropdown content, context menu content. Floating surfaces.       |
 | `rounded-xl`   | 12px   | Command palette, provider cards, markdown-rendered `kbd`. The largest used anywhere in chrome.                  |
-| `rounded-full` | 9999px | Status dots and avatars only. Never on buttons or pills.                                                        |
+| `rounded-full` | 9999px | Status dots, avatars, and status-bar chips (§11.15). Never on other buttons or pills.                          |
 
 **Rule.** Chrome (title bar, sidebars, tabs, status bar) is square. Only things that _detach from_ the chrome — buttons, dialogs, menus, tooltips, the command palette, the command pill — carry rounding. Status dots are circles because they are dots.
 
@@ -518,6 +518,14 @@ Use `shadow-popover` + surface `bg-overlay`. Enter with `toastIn` (fade + slight
 ```
 
 Variants: `info` (use `accent`), `success`, `warning`, `danger`. Leading icon uses the strong color (`[&>svg]:text-{semantic}`). Alerts are inline — no shadow.
+
+### 11.15 StatusChip
+
+Every status-bar control is a `StatusChip` (`ui/status-chip`): `h-5 rounded-full border bg-raised text-xs`, spaced `gap-1` on both sides of the bar. No bare-text items. Bits UI triggers take `statusChipVariants(…)` as their class.
+
+`shape`: `pill` (`gap-1 px-2`, labelled — folder, branch, nix, remote) | `circle` (`w-5`, icon-only — app info, notifications).
+`tone`: `default` (`border-edge text-muted`, hover `border-accent/50 text-fg`) | `success` | `warning` (tinted `/10` fill, `/40` border).
+`active`: pinned open state — `border-accent/50 text-bright`.
 
 ---
 

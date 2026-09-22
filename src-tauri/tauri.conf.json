@@ -8,6 +8,13 @@
     "frontendDist": "../build",
     "devUrl": "http://127.0.0.1:1420"
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["sworm-pair", "sworm"]
+      }
+    }
+  },
   "app": {
     "windows": [],
     "security": {

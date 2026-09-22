@@ -1,5 +1,6 @@
 mod app_state;
 mod commands;
+mod deep_links;
 mod host_events;
 mod remote_lsp;
 mod remote_runs;
@@ -26,10 +27,35 @@ pub fn run() {
     tracing::info!("Sworm starting up");
 
     let app = tauri::Builder::default()
-        // Route warm launches through the same coordinator used by IPC and
-        // cold-start restoration.
+        // Keep this first: it forwards URL launches to the deep-link plugin,
+        // which routes them before this callback runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let state = app.state::<AppState>();
+            if let Some(url) = deep_link_arg(&argv) {
+                // Reuse the last active workbench; pairing must not spawn a
+                // blank window or interfere with normal multi-window launches.
+                // Workspace links already picked their window via the
+                // folder-open setting; refocusing here would undo that.
+                if url.scheme() != "sworm-pair" {
+                    return;
+                }
+                if let Some(window) = state
+                    .windows
+                    .get_focused_window_label()
+                    .and_then(|label| app.get_webview_window(&label))
+                {
+                    if let Err(error) = window
+                        .unminimize()
+                        .and_then(|_| window.show())
+                        .and_then(|_| window.set_focus())
+                    {
+                        tracing::warn!("Failed to focus window for deep link: {error}");
+                    }
+                } else if let Err(error) = state.windows.create_workbench_window(app, None) {
+                    tracing::error!("Failed to create window for deep link: {error}");
+                }
+                return;
+            }
             let paths = launch_path_args(&argv, Some(Path::new(&cwd)));
             if paths.is_empty() {
                 if let Err(error) = state.windows.create_workbench_window(app, None) {
@@ -41,9 +67,11 @@ pub fn run() {
                 }
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(deep_links::DeepLinks::default())
         .setup(|app| {
             let state = AppState::new(app.handle())?;
             let windows = Arc::clone(&state.windows);
@@ -64,10 +92,16 @@ pub fn run() {
 
             let argv: Vec<String> = std::env::args().collect();
             let cwd = std::env::current_dir().ok();
-            for path in launch_path_args(&argv, cwd.as_deref()) {
-                windows.route_open_path(app.handle(), &path);
-                tracing::info!("First-launch argv opened path: {path}");
+            // The deep-link plugin owns lone URL launches; argv routing here
+            // would open the same workspace twice.
+            if deep_link_arg(&argv).is_none() {
+                for path in launch_path_args(&argv, cwd.as_deref()) {
+                    windows.route_open_path(app.handle(), &path);
+                    tracing::info!("First-launch argv opened path: {path}");
+                }
             }
+            // Before the blank-window fallback: a workspace link opens its own.
+            deep_links::init(app.handle()).map_err(std::io::Error::other)?;
 
             // Routing creates windows for argv targets; only fall back to a
             // blank window when neither restore nor argv produced one.
@@ -82,6 +116,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            deep_links::deep_link_take,
+            router::pair_remote,
+            router::repair_remote,
+            router::remote_status,
+            router::rename_remote,
+            router::remove_remote,
+            router::file_read_stream,
+            router::file_read_stream_cancel,
             // Activity map commands
             commands::activity_map::activity_map_get,
             commands::activity_map::activity_map_refresh,
@@ -137,6 +179,7 @@ pub fn run() {
             commands::folders::folder_select_directory,
             commands::folders::folder_resolve,
             commands::folders::folder_list_entries,
+            commands::folders::folder_path_root,
             commands::folders::folder_open_in_terminal,
             commands::folders::recent_folders_list,
             commands::folders::recent_folders_touch,
@@ -181,6 +224,7 @@ pub fn run() {
             commands::nix::provider_list_for_folder,
             // File commands
             commands::files::file_read,
+            commands::files::file_stat,
             commands::files::file_write,
             commands::files::file_create_dir,
             commands::files::file_rename,
@@ -277,6 +321,15 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+/// The lone URL argument the deep-link plugin claims (it ignores URLs mixed
+/// with other arguments).
+fn deep_link_arg(argv: &[String]) -> Option<tauri::Url> {
+    let [_, arg] = argv else { return None };
+    tauri::Url::parse(arg)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "sworm-pair" | "sworm"))
 }
 
 /// Prefer native Wayland while preserving an explicit backend override.

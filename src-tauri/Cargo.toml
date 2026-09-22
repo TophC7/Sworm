@@ -22,9 +22,11 @@ sworm-protocol = { path = "../src-crates/sworm-protocol" }
 sworm-remote = { path = "../src-crates/sworm-remote" }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
@@ -36,7 +38,7 @@ parking_lot.workspace = true
 quinn.workspace = true
 percent-encoding = "2.3"
 tauri-plugin-clipboard-manager = "2.3.2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 wl-clipboard-rs = "0.9.3"
 
 [dev-dependencies]

@@ -152,6 +152,12 @@ function reconcileWithDisk(entry: TextModelEntry, diskValue: string): void {
   entry.savedValue = diskValue
 }
 
+/** Reopen dirty buffers without reading a potentially much larger replacement. */
+export function retainedTextModelBase(folderPath: string, filePath: string): string | null {
+  const entry = entries.get(fileKey(folderPath, filePath))
+  return entry && !isDisposed(entry.model) ? entry.savedValue : null
+}
+
 export function acquireTextModel(options: AcquireTextModelOptions): TextModelHandle | null {
   const { monaco, folderPath, tabId, filePath, uriPath, value, language } = options
   if (!folderPath) return null

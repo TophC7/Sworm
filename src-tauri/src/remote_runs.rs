@@ -289,6 +289,7 @@ async fn run_stream(
         let Some(router_now) = router.upgrade() else {
             break;
         };
+        router_now.run_status(&run_id, "reconnecting");
         let client = match router_now.client(&server).await {
             Ok(client) => client,
             Err(error) => {
@@ -317,6 +318,9 @@ async fn run_stream(
                 continue;
             }
         };
+        if let Some(router) = router.upgrade() {
+            router.run_status(&run_id, "connected");
+        }
         reconnect_delay = INITIAL_RECONNECT_DELAY;
         if let Some(message) = pending.take() {
             if send_upstream(&mut send, &message).await.is_err() {
@@ -420,9 +424,15 @@ async fn run_stream(
         if exited || stopping.load(Ordering::Acquire) {
             break;
         }
+        if let Some(router) = router.upgrade() {
+            router.run_status(&run_id, "reconnecting");
+        }
         evict_failed(&router, &server, &client).await;
         sleep(reconnect_delay).await;
         reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+    }
+    if let Some(router) = router.upgrade() {
+        router.run_status(&run_id, "disconnected");
     }
 }
 async fn send_upstream(

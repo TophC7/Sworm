@@ -46,6 +46,7 @@
   import { getSurfaceKind } from '$lib/features/workbench/surfaces'
   import { getSettings } from '$lib/features/settings/state/settings.svelte'
   import { getPathColor } from '$lib/utils/pathColor'
+  import { splitRemotePath } from '$lib/utils/paths'
   import NewTabMenu from './NewTabMenu.svelte'
 
   let tabs = $derived(getTabs())
@@ -235,6 +236,7 @@
         {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
         {@const transferring = isTabTransferring(tab.id)}
         {@const tabColor = getPathColor(tab.folderPath)}
+        {@const remote = splitRemotePath(tab.folderPath)}
         <ContextMenuRoot>
           <ContextMenuTrigger
             class="contents"
@@ -292,6 +294,14 @@
                   <Lock size={11} class="shrink-0 text-muted" />
                 {/if}
               {/snippet}
+              {#if remote}
+                <span
+                  class="max-w-24 truncate rounded-sm bg-edge px-1 py-0.5 font-mono text-2xs text-muted"
+                  title="Remote: {remote.server}"
+                >
+                  {remote.server}
+                </span>
+              {/if}
               <span class="max-w-[120px] truncate {presentation.preview ? 'italic' : ''}">
                 {presentation.title}
               </span>

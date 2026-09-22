@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Protocol version selected during the QUIC TLS handshake.
-///
-/// Version 2 adds the frame tag byte. It intentionally does not negotiate
-/// with version 1 because the two frame headers are not wire-compatible.
-pub const ALPN: &[u8] = b"sworm/2";
+/// Protocol version selected during the QUIC TLS handshake. Bump on any
+/// wire-incompatible change once released; there is no negotiation.
+pub const ALPN: &[u8] = b"sworm/1";
 pub const DEFAULT_SERVER_PORT: u16 = 7420;
 /// Maximum encoded `Open` frame body accepted before a connection is paired,
 /// and the ceiling every non-RPC open is written with: pairing metadata,
@@ -13,8 +11,11 @@ pub const DEFAULT_SERVER_PORT: u16 = 7420;
 pub const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
 /// Maximum JSON or raw frame body.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
-/// Bound whole-file reads well below the response frame ceiling.
-pub const MAX_REMOTE_FILE_BYTES: usize = 16 * 1024 * 1024;
+/// Whole-file read/write ceiling, local and remote alike, well below the
+/// response frame ceiling; larger files stream in chunks after approval.
+pub const MAX_WHOLE_FILE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_STREAM_FILE_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_FILE_CHUNK_BYTES: usize = 1024 * 1024;
 /// One events stream, PTY streams, and concurrent RPC streams.
 pub const MAX_STREAMS_PER_CONNECTION: u32 = 256;
 
@@ -76,6 +77,11 @@ macro_rules! sworm_rpc_ops {
                 project_path: String,
                 file_path: String,
             ) -> $crate::files::FileContent;
+            #[route(project_path)]
+            FileStat => file_stat(
+                project_path: String,
+                file_path: String,
+            ) -> $crate::files::FileStat;
             #[route(project_path)]
             FileWrite => file_write(
                 project_path: String,
@@ -677,8 +683,26 @@ pub type Response = Result<Reply, WireError>;
 pub enum Open {
     Rpc(Request),
     Events,
-    Pty { run_id: String, cursor: PtyCursor },
-    Lsp { session_id: String },
+    Pty {
+        run_id: String,
+        cursor: PtyCursor,
+    },
+    Lsp {
+        session_id: String,
+    },
+    FileRead {
+        project_path: String,
+        file_path: String,
+        version: String,
+    },
+}
+
+/// Raw file chunks precede exactly one terminal JSON frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileReadDown {
+    Complete { version: String },
+    Error { error: WireError },
 }
 
 /// `Open::Rpc` without owning the request.
@@ -820,6 +844,12 @@ pub enum WireError {
     /// the host. Typed so only the id's owner replaces its own orphan.
     LspAlreadyActive {
         session_id: String,
+    },
+    /// A file exceeds a read ceiling. Typed so the editor can offer the
+    /// streamed path instead of matching on message text.
+    TooLarge {
+        size: u64,
+        limit: u64,
     },
 }
 

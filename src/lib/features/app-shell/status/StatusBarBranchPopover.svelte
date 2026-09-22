@@ -1,6 +1,6 @@
 <!--
   @component
-  StatusBarBranchPopover: quick-switch popover for the active folder branch.
+  StatusBarBranchPopover: current-branch status chip with a quick-switch popover.
 -->
 
 <script lang="ts">
@@ -11,6 +11,7 @@
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
   import { SearchInput } from '$lib/components/ui/input'
+  import { statusChipVariants } from '$lib/components/ui/status-chip'
   import {
     requestGitBranchesFocus,
     setSidebarCollapsed,
@@ -19,19 +20,20 @@
   import { GitBranchIcon } from '$lib/icons/lucideExports'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
+  import { getGitSummary } from '$lib/features/git/state.svelte'
   import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
   import type { BranchSummary, GitSummary } from '$lib/types/backend'
   import { timeAgo } from '$lib/utils/date'
 
-  let {
-    folderPath,
-    children
-  }: {
-    folderPath: string
-    /** Snippet that renders the chunk visuals; passed in so the
-     * trigger surface matches the existing branch chunk byte-for-byte. */
-    children: import('svelte').Snippet
-  } = $props()
+  let { folderPath }: { folderPath: string } = $props()
+
+  let gitSummary = $derived(getGitSummary(folderPath))
+  let branchDirty = $derived((gitSummary?.changes.length ?? 0) > 0)
+  let branchStatus = $derived(
+    branchDirty
+      ? `${gitSummary?.staged_count ?? 0} staged, ${gitSummary?.unstaged_count ?? 0} unstaged, ${gitSummary?.untracked_count ?? 0} untracked`
+      : 'Clean working tree'
+  )
 
   let open = $state(false)
   let search = $state('')
@@ -124,42 +126,50 @@
   }
 </script>
 
-<DropdownMenuRoot bind:open>
-  <DropdownMenuTrigger
-    class="cursor-pointer border-none bg-transparent p-0 text-left transition-colors hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
-  >
-    {@render children()}
-  </DropdownMenuTrigger>
+{#if gitSummary?.branch}
+  <DropdownMenuRoot bind:open>
+    <DropdownMenuTrigger
+      class={statusChipVariants({ tone: branchDirty ? 'warning' : 'success', class: 'font-mono' })}
+      title={branchStatus}
+    >
+      <GitBranchIcon size={10} />
+      {gitSummary.branch}
+      <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} size="xs" twoColor />
+    </DropdownMenuTrigger>
 
-  <DropdownMenuContent class="w-72 p-0" sideOffset={8} align="start">
-    <div class="border-b border-edge p-2">
-      <SearchInput bind:value={search} placeholder="Switch to branch…" class="text-sm" spellcheck={false} autofocus />
-    </div>
+    <DropdownMenuContent class="w-72 p-0" sideOffset={8} align="start">
+      <div class="border-b border-edge p-2">
+        <SearchInput bind:value={search} placeholder="Switch to branch…" class="text-sm" spellcheck={false} autofocus />
+      </div>
 
-    <div class="max-h-72 overflow-y-auto py-1">
-      {#if !entry}
-        <div class="px-3 py-2 text-sm text-subtle">Loading…</div>
-      {:else if visible.length === 0}
-        <div class="px-3 py-2 text-sm text-subtle">No matches.</div>
-      {:else}
-        {#each visible as branch (branch.name)}
-          <DropdownMenuItem class="flex items-center gap-2 py-1 text-sm" onclick={() => void selectBranch(branch.name)}>
-            <GitBranchIcon size={12} class="shrink-0 text-muted" />
-            <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
-            <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" twoColor />
-            <span class="shrink-0 text-2xs text-subtle">{timeAgo(branch.tip.date)}</span>
-          </DropdownMenuItem>
-        {/each}
-      {/if}
-    </div>
+      <div class="max-h-72 overflow-y-auto py-1">
+        {#if !entry}
+          <div class="px-3 py-2 text-sm text-subtle">Loading…</div>
+        {:else if visible.length === 0}
+          <div class="px-3 py-2 text-sm text-subtle">No matches.</div>
+        {:else}
+          {#each visible as branch (branch.name)}
+            <DropdownMenuItem
+              class="flex items-center gap-2 py-1 text-sm"
+              onclick={() => void selectBranch(branch.name)}
+            >
+              <GitBranchIcon size={12} class="shrink-0 text-muted" />
+              <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
+              <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" twoColor />
+              <span class="shrink-0 text-2xs text-subtle">{timeAgo(branch.tip.date)}</span>
+            </DropdownMenuItem>
+          {/each}
+        {/if}
+      </div>
 
-    <div class="border-t border-edge p-1">
-      <DropdownMenuItem class="px-2 py-1 text-sm text-muted" onclick={viewAllBranches}>
-        View all branches…
-      </DropdownMenuItem>
-    </div>
-  </DropdownMenuContent>
-</DropdownMenuRoot>
+      <div class="border-t border-edge p-1">
+        <DropdownMenuItem class="px-2 py-1 text-sm text-muted" onclick={viewAllBranches}>
+          View all branches…
+        </DropdownMenuItem>
+      </div>
+    </DropdownMenuContent>
+  </DropdownMenuRoot>
+{/if}
 
 {#if checkoutOpen}
   <CheckoutDialog bind:open={checkoutOpen} branchName={checkoutTarget} summary={checkoutSummary} {folderPath} />

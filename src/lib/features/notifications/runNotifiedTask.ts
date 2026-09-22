@@ -18,7 +18,10 @@ export interface RunNotifiedTaskOptions<T> {
 }
 
 export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  if (error instanceof Error) return error.message
+  // Structured backend errors (conflict, tooLarge) arrive as plain objects.
+  const message = (error as { message?: unknown } | null)?.message
+  return typeof message === 'string' ? message : String(error)
 }
 
 function resolveMessage<T>(message: MessageResolver<T> | undefined, value: T): string | undefined {

@@ -1,11 +1,16 @@
+use parking_lot::{Mutex, MutexGuard};
 use serde_json::{json, Value};
 use std::{
     ffi::OsString,
+    io::Write,
     path::{Path, PathBuf},
 };
 use sworm_protocol::settings;
 
 pub struct SettingsService;
+
+// All in-process settings read/modify/write operations share this lock.
+static SETTINGS_MUTATION: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsJsoncLayer {
@@ -15,6 +20,44 @@ pub struct SettingsJsoncLayer {
 }
 
 impl SettingsService {
+    // ponytail: one lock for all settings paths; split per path if contention matters.
+    pub(crate) fn mutation_lock() -> MutexGuard<'static, ()> {
+        SETTINGS_MUTATION.lock()
+    }
+
+    /// Rename is the commit point; failures before it leave the destination intact.
+    pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
+        // Replace a symlink's target, not the link: home-manager and dotfiles
+        // setups own the link. A missing file has nothing to resolve.
+        let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let temporary = path.with_file_name(format!(".settings-{}.tmp", uuid::Uuid::new_v4()));
+        let mut created = false;
+        let result = (|| -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            created = true;
+            file.write_all(contents.as_bytes())?;
+            match std::fs::metadata(path) {
+                Ok(metadata) => file.set_permissions(metadata.permissions())?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temporary, path)
+        })();
+        if result.is_err() && created {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result.map_err(|error| format!("Failed to write settings file {}: {error}", path.display()))
+    }
+
     pub fn global_config_dir() -> Result<PathBuf, String> {
         Self::global_config_dir_from_env_vars(
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -169,6 +212,61 @@ mod tests {
 
     fn temp_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("sworm-settings-{name}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn failed_atomic_replace_keeps_destination_and_removes_temporary() {
+        let root = temp_root("atomic-failure");
+        let path = root.join("settings.jsonc");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("original"), "untouched").unwrap();
+        assert!(SettingsService::write_atomic(&path, "replacement").is_err());
+        assert_eq!(
+            std::fs::read_to_string(path.join("original")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replace_preserves_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_root("atomic-permissions");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.jsonc");
+        SettingsService::write_atomic(&path, "initial").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        SettingsService::write_atomic(&path, "replacement").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_replace_writes_through_symlink() {
+        let root = temp_root("atomic-symlink");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("managed.jsonc");
+        let link = root.join("settings.jsonc");
+        std::fs::write(&target, "initial").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        SettingsService::write_atomic(&link, "replacement").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "replacement");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

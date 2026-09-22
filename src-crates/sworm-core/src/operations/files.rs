@@ -10,6 +10,31 @@ use sworm_protocol::files::{
 
 /// Read the contents of a file inside a project.
 impl Host {
+    pub async fn file_stat(
+        &self,
+        project_path: String,
+        file_path: String,
+    ) -> Result<sworm_protocol::files::FileStat, ApiError> {
+        let files = std::sync::Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || files.stat(Path::new(&project_path), &file_path))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
+    }
+
+    pub async fn file_open_read_stream(
+        &self,
+        project_path: String,
+        file_path: String,
+        version: String,
+    ) -> Result<crate::services::files::FileReadStream, ApiError> {
+        let files = std::sync::Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || {
+            files.open_read_stream(Path::new(&project_path), &file_path, &version)
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    }
+
     pub async fn file_read(
         &self,
         project_path: String,
@@ -19,20 +44,6 @@ impl Host {
         tokio::task::spawn_blocking(move || files.read(Path::new(&project_path), &file_path))
             .await
             .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    pub async fn file_read_limited(
-        &self,
-        project_path: String,
-        file_path: String,
-        max_bytes: usize,
-    ) -> Result<FileContent, ApiError> {
-        let files = std::sync::Arc::clone(&self.files);
-        tokio::task::spawn_blocking(move || {
-            files.read_limited(Path::new(&project_path), &file_path, max_bytes)
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     /// Write content to a file inside a project, returning the new version.

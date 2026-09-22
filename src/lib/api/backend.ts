@@ -21,6 +21,12 @@ import type {
   ExplorerDirEntry,
   ExplorerPathList,
   FileContent,
+  FileStat,
+  FileReadProgress,
+  RemoteSettings,
+  RemoteStatus,
+  RemoteStatusEvent,
+  RemoteRunStatusEvent,
   FileDiff,
   FilePasteMapping,
   FilePasteCollision,
@@ -59,6 +65,7 @@ import type {
   NixEnvRecord,
   FolderEntry,
   FolderInfo,
+  PathRoot,
   ProviderConfig,
   ProviderStatus,
   PtyEvent,
@@ -78,6 +85,37 @@ import type {
 } from '$lib/types/backend'
 
 export const backend = {
+  remotes: {
+    pair(link: string, name: string): Promise<RemoteSettings> {
+      return invoke<RemoteSettings>('pair_remote', { link, name })
+    },
+    repair(link: string, name: string): Promise<RemoteSettings> {
+      return invoke<RemoteSettings>('repair_remote', { link, name })
+    },
+    status(server: string): Promise<RemoteStatus> {
+      return invoke<RemoteStatus>('remote_status', { server })
+    },
+    rename(server: string, name: string): Promise<void> {
+      return invoke<void>('rename_remote', { server, name })
+    },
+    remove(server: string): Promise<void> {
+      return invoke<void>('remove_remote', { server })
+    },
+    onStatus(handler: (event: RemoteStatusEvent) => void): Promise<UnlistenFn> {
+      return listen<RemoteStatusEvent>('remote-status', (event) => handler(event.payload))
+    },
+    onRunStatus(handler: (event: RemoteRunStatusEvent) => void): Promise<UnlistenFn> {
+      return listen<RemoteRunStatusEvent>('remote-run-status', (event) => handler(event.payload))
+    }
+  },
+  deepLinks: {
+    take(): Promise<string[]> {
+      return invoke<string[]>('deep_link_take')
+    },
+    onOpen(handler: () => void): Promise<UnlistenFn> {
+      return listen('deep-link-open', handler)
+    }
+  },
   activityMap: {
     get(): Promise<DiscoveredProject[]> {
       return invoke<DiscoveredProject[]>('activity_map_get')
@@ -141,16 +179,16 @@ export const backend = {
       return invoke<void>('window_transfer_abort', { transferId, reason })
     },
     onFilePathChanged(handler: (event: FilePathChangedPayload) => void): Promise<UnlistenFn> {
-      return listen<FilePathChangedPayload>('sworm://file-path-changed', (event) => handler(event.payload))
+      return listen<FilePathChangedPayload>('file-path-changed', (event) => handler(event.payload))
     },
     onFileDeleted(handler: (event: { filePath: string }) => void): Promise<UnlistenFn> {
-      return listen<{ filePath: string }>('sworm://file-deleted', (event) => handler(event.payload))
+      return listen<{ filePath: string }>('file-deleted', (event) => handler(event.payload))
     },
     onFocusTab(handler: (event: FocusTabPayload) => void): Promise<UnlistenFn> {
-      return listen<FocusTabPayload>('sworm://focus-tab', (event) => handler(event.payload))
+      return listen<FocusTabPayload>('focus-tab', (event) => handler(event.payload))
     },
     onTransferAborted(handler: (event: TabTransferAbortedPayload) => void): Promise<UnlistenFn> {
-      return listen<TabTransferAbortedPayload>('sworm://tab-transfer-aborted', (event) => handler(event.payload))
+      return listen<TabTransferAbortedPayload>('tab-transfer-aborted', (event) => handler(event.payload))
     },
     close(): Promise<void> {
       return invoke<void>('window_close')
@@ -191,6 +229,10 @@ export const backend = {
     },
     listEntries(path: string, showHidden: boolean): Promise<FolderEntry[]> {
       return invoke<FolderEntry[]>('folder_list_entries', { path, showHidden })
+    },
+    /** Where the folder switcher's path bar starts for a local folder. */
+    pathRoot(path: string): Promise<PathRoot> {
+      return invoke<PathRoot>('folder_path_root', { path })
     },
     openInTerminal(path: string): Promise<void> {
       return invoke<void>('folder_open_in_terminal', { path })
@@ -502,6 +544,25 @@ export const backend = {
   },
 
   files: {
+    stat(folderPath: string, filePath: string): Promise<FileStat> {
+      return invoke<FileStat>('file_stat', { projectPath: folderPath, filePath })
+    },
+    /** `version` and `size` are the approved stat; the open re-checks that identity once. */
+    readStream(
+      requestId: string,
+      folderPath: string,
+      filePath: string,
+      version: string,
+      size: number
+    ): Promise<FileContent> {
+      return invoke<FileContent>('file_read_stream', { requestId, projectPath: folderPath, filePath, version, size })
+    },
+    cancelReadStream(requestId: string): Promise<void> {
+      return invoke<void>('file_read_stream_cancel', { requestId })
+    },
+    onReadProgress(handler: (event: FileReadProgress) => void): Promise<UnlistenFn> {
+      return listen<FileReadProgress>('file-read-progress', (event) => handler(event.payload))
+    },
     /** One directory as the explorer renders it. `dirPath` '' is the project root. */
     readDir(projectPath: string, dirPath: string, showHidden: boolean): Promise<ExplorerDirEntry[]> {
       return invoke<ExplorerDirEntry[]>('files_read_dir', { projectPath, dirPath, showHidden })
@@ -517,7 +578,10 @@ export const backend = {
     onChanged(handler: (event: FilesChangedEvent) => void): Promise<UnlistenFn> {
       return listen<FilesChangedEvent>('files-changed', (event) => handler(event.payload))
     },
-    /** File text plus the version of the bytes read, for conflict-checked writes. */
+    /**
+     * File text plus the version of the bytes read, for conflict-checked writes.
+     * Files over 16 MiB reject with `{ kind: 'tooLarge', size, limit }`; those stream.
+     */
     read(projectPath: string, filePath: string): Promise<FileContent> {
       return invoke<FileContent>('file_read', { projectPath, filePath })
     },

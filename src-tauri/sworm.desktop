@@ -1,12 +1,12 @@
 [Desktop Entry]
 Name=Sworm
 Comment=Agentic Development Environment
-Exec=sworm %F
+Exec=sworm %U
 Icon=sworm
 Terminal=false
 Type=Application
 Categories=Development;IDE;
-MimeType=inode/directory;
+MimeType=inode/directory;x-scheme-handler/sworm-pair;x-scheme-handler/sworm;
 Actions=open-folder;
 
 [Desktop Action open-folder]

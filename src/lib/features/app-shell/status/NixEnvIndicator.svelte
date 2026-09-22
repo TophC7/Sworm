@@ -15,6 +15,7 @@
     DropdownMenuItem,
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
+  import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -123,9 +124,7 @@
 
 {#if hasNixFiles}
   <DropdownMenuRoot>
-    <DropdownMenuTrigger
-      class="flex cursor-pointer items-center gap-1 rounded-full border border-edge bg-raised px-2 py-0.5 text-xs {statusColor()} transition-colors hover:border-accent/50 hover:text-bright"
-    >
+    <DropdownMenuTrigger class={statusChipVariants({ class: statusColor() })}>
       {#if evaluatingNow}
         <LoaderCircle size={10} class="animate-spin" />
       {:else}

@@ -344,6 +344,8 @@ impl WindowCoordinatorService {
                         .abort_transfers_for_window(&event_app, &event_label);
                     let discard_snapshot = state.windows.destroy_discards_snapshot();
                     release_window_resources(&state, &event_label);
+                    state.router.release_file_reads(&event_label);
+                    crate::deep_links::window_closed(&event_app, &event_label);
                     if !discard_snapshot {
                         return;
                     }
@@ -391,9 +393,10 @@ impl WindowCoordinatorService {
             .ok_or_else(|| format!("window not found: {label}"))?;
         for target in &targets {
             window
-                .emit_to(window.label(), "sworm://open-target", target)
+                .emit_to(window.label(), "open-target", target)
                 .map_err(|error| format!("failed to emit open target to {label}: {error}"))?;
         }
+        crate::deep_links::notify(app);
         Ok(targets)
     }
 
@@ -411,7 +414,7 @@ impl WindowCoordinatorService {
         };
         if ready {
             if let Some(window) = app.get_webview_window(label) {
-                if let Err(error) = window.emit_to(window.label(), "sworm://open-target", &target) {
+                if let Err(error) = window.emit_to(window.label(), "open-target", &target) {
                     tracing::error!("Failed to emit open target to {label}: {error}");
                 }
             }
@@ -462,7 +465,7 @@ impl WindowCoordinatorService {
             window
                 .emit_to(
                     window.label(),
-                    "sworm://focus-tab",
+                    "focus-tab",
                     serde_json::json!({ "tabId": owner_tab_id, "reveal": reveal }),
                 )
                 .map_err(|error| {
@@ -607,7 +610,7 @@ impl WindowCoordinatorService {
         if let Err(error) = app
             .emit_to(
                 &params.source_window,
-                "sworm://tab-transfer-request",
+                "tab-transfer-request",
                 serde_json::json!({
                     "transferId": &transfer_id,
                     "tabId": &params.tab_id,
@@ -688,7 +691,7 @@ impl WindowCoordinatorService {
 
         app.emit_to(
             &transfer.target_window,
-            "sworm://tab-transfer-import",
+            "tab-transfer-import",
             serde_json::json!({
                 "transferId": &payload.transfer_id,
                 "exportPayload": payload,
@@ -748,7 +751,7 @@ impl WindowCoordinatorService {
         self.emit_transfer_event(
             app,
             &transfer.source_window,
-            "sworm://tab-transfer-committed",
+            "tab-transfer-committed",
             serde_json::json!({
                 "transferId": &transfer.id,
                 "tabId": &transfer.tab_id,
@@ -757,7 +760,7 @@ impl WindowCoordinatorService {
         self.emit_transfer_event(
             app,
             &transfer.target_window,
-            "sworm://tab-transfer-finalized",
+            "tab-transfer-finalized",
             serde_json::json!({ "transferId": &transfer.id }),
         );
         Ok(())
@@ -789,13 +792,13 @@ impl WindowCoordinatorService {
             self.emit_transfer_event(
                 app,
                 &transfer.source_window,
-                "sworm://tab-transfer-aborted",
+                "tab-transfer-aborted",
                 payload.clone(),
             );
             self.emit_transfer_event(
                 app,
                 &transfer.target_window,
-                "sworm://tab-transfer-aborted",
+                "tab-transfer-aborted",
                 payload,
             );
         }
@@ -995,6 +998,17 @@ impl WindowCoordinatorService {
             .values()
             .max_by_key(|record| record.focus_order)
             .map(|record| record.label.clone())
+    }
+
+    pub fn remote_claimed(&self, server: &str) -> bool {
+        let prefix = crate::router::Target::remote_uri(server, "");
+        self.records.lock().values().any(|record| {
+            record
+                .folder_claims
+                .iter()
+                .chain(record.file_claims.keys())
+                .any(|path| path.to_string_lossy().starts_with(&prefix))
+        })
     }
 
     fn record_focus(&self, label: &str) {
@@ -1213,11 +1227,11 @@ mod tests {
     ) -> Receiver<&'static str> {
         let (sender, receiver) = channel();
         for event in [
-            "sworm://tab-transfer-request",
-            "sworm://tab-transfer-import",
-            "sworm://tab-transfer-committed",
-            "sworm://tab-transfer-finalized",
-            "sworm://tab-transfer-aborted",
+            "tab-transfer-request",
+            "tab-transfer-import",
+            "tab-transfer-committed",
+            "tab-transfer-finalized",
+            "tab-transfer-aborted",
         ] {
             let sender = sender.clone();
             window.listen(event, move |_| {
@@ -1267,7 +1281,7 @@ mod tests {
                 },
             )
             .expect("initiate transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-request");
+        assert_next_event(&source_events, "tab-transfer-request");
         assert_no_event(&target_events);
 
         service
@@ -1281,14 +1295,14 @@ mod tests {
                 },
             )
             .expect("stage export");
-        assert_next_event(&target_events, "sworm://tab-transfer-import");
+        assert_next_event(&target_events, "tab-transfer-import");
         assert_no_event(&source_events);
 
         service
             .target_stage_ready(app.handle(), &transfer_id)
             .expect("commit transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-committed");
-        assert_next_event(&target_events, "sworm://tab-transfer-finalized");
+        assert_next_event(&source_events, "tab-transfer-committed");
+        assert_next_event(&target_events, "tab-transfer-finalized");
         assert_no_event(&source_events);
         assert_no_event(&target_events);
 
@@ -1303,12 +1317,12 @@ mod tests {
                 },
             )
             .expect("initiate aborted transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-request");
+        assert_next_event(&source_events, "tab-transfer-request");
         assert_no_event(&target_events);
 
         service.abort_tab_transfer(app.handle(), &aborted_id, "test");
-        assert_next_event(&source_events, "sworm://tab-transfer-aborted");
-        assert_next_event(&target_events, "sworm://tab-transfer-aborted");
+        assert_next_event(&source_events, "tab-transfer-aborted");
+        assert_next_event(&target_events, "tab-transfer-aborted");
         assert_no_event(&source_events);
         assert_no_event(&target_events);
     }
@@ -1340,10 +1354,10 @@ mod tests {
                 },
             )
             .expect("initiate target-close transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-request");
+        assert_next_event(&source_events, "tab-transfer-request");
         service.abort_transfers_for_window(app.handle(), target.label());
-        assert_next_event(&source_events, "sworm://tab-transfer-aborted");
-        assert_next_event(&target_events, "sworm://tab-transfer-aborted");
+        assert_next_event(&source_events, "tab-transfer-aborted");
+        assert_next_event(&target_events, "tab-transfer-aborted");
         assert!(!service
             .active_transfers
             .lock()
@@ -1360,10 +1374,10 @@ mod tests {
                 },
             )
             .expect("initiate source-close transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-request");
+        assert_next_event(&source_events, "tab-transfer-request");
         service.abort_transfers_for_window(app.handle(), source.label());
-        assert_next_event(&source_events, "sworm://tab-transfer-aborted");
-        assert_next_event(&target_events, "sworm://tab-transfer-aborted");
+        assert_next_event(&source_events, "tab-transfer-aborted");
+        assert_next_event(&target_events, "tab-transfer-aborted");
         assert!(!service
             .active_transfers
             .lock()
@@ -1385,7 +1399,7 @@ mod tests {
                 },
             )
             .expect("initiate exported transfer");
-        assert_next_event(&source_events, "sworm://tab-transfer-request");
+        assert_next_event(&source_events, "tab-transfer-request");
         service
             .source_export_ready(
                 app.handle(),
@@ -1397,7 +1411,7 @@ mod tests {
                 },
             )
             .expect("export transfer");
-        assert_next_event(&target_events, "sworm://tab-transfer-import");
+        assert_next_event(&target_events, "tab-transfer-import");
 
         service.abort_transfers_for_window(app.handle(), source.label());
         assert!(service.active_transfers.lock().contains_key(&exported_id));
@@ -1408,8 +1422,8 @@ mod tests {
         service
             .target_stage_ready(app.handle(), &exported_id)
             .expect("commit transfer after source close");
-        assert_next_event(&source_events, "sworm://tab-transfer-committed");
-        assert_next_event(&target_events, "sworm://tab-transfer-finalized");
+        assert_next_event(&source_events, "tab-transfer-committed");
+        assert_next_event(&target_events, "tab-transfer-finalized");
         let target_claim = service
             .records
             .lock()

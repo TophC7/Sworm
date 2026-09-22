@@ -24,4 +24,14 @@ pub enum HostEvent {
         replace_destination: bool,
     },
     FileDeleted(PathBuf),
+    RemoteStatus {
+        server: String,
+        connected: bool,
+        last_error: Option<String>,
+        state: String,
+    },
+    RemoteRunStatus {
+        run_id: String,
+        state: String,
+    },
 }

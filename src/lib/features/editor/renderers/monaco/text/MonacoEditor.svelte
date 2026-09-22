@@ -36,6 +36,7 @@
     language = 'plaintext',
     readonly = false,
     locked = false,
+    largeFile = false,
     wordWrap = false,
     onchange,
     uriPath = null,
@@ -50,6 +51,7 @@
     language?: string
     readonly?: boolean
     locked?: boolean
+    largeFile?: boolean
     wordWrap?: boolean
     onchange?: (value: string) => void
     uriPath?: string | null
@@ -87,33 +89,39 @@
       await initMonaco(m)
       if (disposed || !containerEl) return
 
-      modelHandle = readonly
-        ? null
-        : acquireTextModel({
-            monaco: m,
-            folderPath,
-            tabId,
-            filePath,
-            uriPath,
-            value,
-            language
-          })
+      modelHandle =
+        readonly || largeFile
+          ? null
+          : acquireTextModel({
+              monaco: m,
+              folderPath,
+              tabId,
+              filePath,
+              uriPath,
+              value,
+              language
+            })
 
       if (modelHandle) {
         model = modelHandle.model
       } else {
-        const targetUri = uriPath ? textModelUri(m, uriPath) : null
+        const targetUri = uriPath && !largeFile ? textModelUri(m, uriPath) : null
         // LSP navigation can preload a target model before the editor tab exists.
         model = targetUri
           ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri))
-          : m.editor.createModel(value, language)
+          : m.editor.createModel(value, largeFile ? 'plaintext' : language)
       }
 
       editor = m.editor.create(containerEl, {
         model,
         theme: SWORM_THEME_NAME,
-        readOnly: readonly || locked,
+        readOnly: readonly || locked || largeFile,
         minimap: { enabled: false },
+        folding: !largeFile,
+        codeLens: !largeFile,
+        detectIndentation: !largeFile,
+        maxTokenizationLineLength: largeFile ? 0 : 20000,
+        renderValidationDecorations: largeFile ? 'off' : 'editable',
         fontSize: 13,
         lineHeight: 20,
         fontFamily: MONO_FONT_FAMILY,
@@ -121,7 +129,7 @@
         lineNumbers: 'on',
         renderWhitespace: 'all',
         scrollBeyondLastLine: false,
-        wordWrap: wordWrap ? 'on' : 'off',
+        wordWrap: wordWrap && !largeFile ? 'on' : 'off',
         tabSize: 2,
         insertSpaces: true,
         automaticLayout: false,
@@ -155,7 +163,7 @@
       const retainedViewState = modelHandle?.restoreViewState()
       if (retainedViewState) editor.restoreViewState(retainedViewState)
 
-      if (lspEnabled && model && folderPath) {
+      if (lspEnabled && !largeFile && model && folderPath) {
         void attachLspModel(model, { folderPath })
       }
 
@@ -188,13 +196,13 @@
         }
       }
 
-      lastReportedValue = model.getValue()
+      lastReportedValue = largeFile ? value : model.getValue()
       if (lastReportedValue !== value && onchange) {
         pendingAdoptedValue = lastReportedValue
         onchange(lastReportedValue)
       }
       editor.onDidChangeModelContent(() => {
-        if (editor && onchange) {
+        if (editor && onchange && !largeFile) {
           lastReportedValue = editor.getValue()
           onchange(lastReportedValue)
         }
@@ -204,7 +212,7 @@
       editor.onDidFocusEditorText(() => onTextEditorFocus(editor!))
       editor.onDidBlurEditorText(() => onTextEditorBlur())
 
-      indentRainbow = attachIndentRainbow(editor)
+      if (!largeFile) indentRainbow = attachIndentRainbow(editor)
       disposeReady = onready?.(editor)
 
       // Observe after creation so the first layout() is correct
@@ -241,7 +249,8 @@
           modelHandle.detachEditor()
           modelHandle.saveViewState(editor.saveViewState())
         }
-        const shouldDetachLsp = model != null && lspEnabled && (modelHandle ? modelHandle.refCount <= 1 : true)
+        const shouldDetachLsp =
+          model != null && lspEnabled && !largeFile && (modelHandle ? modelHandle.refCount <= 1 : true)
         if (shouldDetachLsp && model) detachLspModel(model)
         if (mountedController) unregisterMountedTextSurface(tabId, mountedController)
         editor.dispose()
@@ -267,7 +276,7 @@
       else return
     }
     if (value === lastReportedValue) return
-    if (value !== editor.getValue()) {
+    if (largeFile || value !== editor.getValue()) {
       lastReportedValue = value
       editor.setValue(value)
     }
@@ -276,20 +285,20 @@
   $effect(() => {
     if (!editor || !monaco) return
     const model = editor.getModel()
-    if (model) monaco.editor.setModelLanguage(model, language)
+    if (model) monaco.editor.setModelLanguage(model, largeFile ? 'plaintext' : language)
   })
 
   $effect(() => {
-    editor?.updateOptions({ readOnly: readonly || locked })
+    editor?.updateOptions({ readOnly: readonly || locked || largeFile })
   })
 
   $effect(() => {
-    editor?.updateOptions({ wordWrap: wordWrap ? 'on' : 'off' })
+    editor?.updateOptions({ wordWrap: wordWrap && !largeFile ? 'on' : 'off' })
   })
 
   $effect(() => {
     const revision = gitDiffRevision
-    if (!editor || !monaco || !model || readonly || !folderPath || !filePath) {
+    if (!editor || !monaco || !model || readonly || largeFile || !folderPath || !filePath) {
       gitHunkReview?.dispose()
       gitHunkReview = null
       return

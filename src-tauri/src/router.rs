@@ -37,7 +37,122 @@ const ADDRESS_STAGGER: Duration = Duration::from_millis(250);
 pub(crate) const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const PENDING_STOPS_KEY: &str = "remote:pendingStops";
+/// Each streamed assembly holds up to 256 MiB; more than this queue.
+const MAX_FILE_STREAMS: usize = 2;
 
+fn validate_server_name(name: &str) -> Result<(), ApiError> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ApiError::InvalidArgument(
+            "Server name must match [A-Za-z0-9_-]+".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn remote_entries(
+    value: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, ApiError> {
+    match value {
+        serde_json::Value::Null => Ok(serde_json::Map::new()),
+        serde_json::Value::Object(entries) => Ok(entries),
+        _ => Err(ApiError::InvalidArgument(
+            "remotes settings must be an object".into(),
+        )),
+    }
+}
+
+fn append_file_chunk(bytes: &mut Vec<u8>, chunk: &[u8], total: u64) -> Result<(), ApiError> {
+    let cap = sworm_protocol::rpc::MAX_STREAM_FILE_BYTES;
+    if chunk.len() > cap.saturating_sub(bytes.len())
+        || bytes.len() as u64 + chunk.len() as u64 > total
+    {
+        return Err(ApiError::InvalidArgument(
+            "File stream exceeds size limit".into(),
+        ));
+    }
+    bytes.extend_from_slice(chunk);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pair_remote(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    link: String,
+    name: String,
+) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+    state.router.pair_remote(&link, &name, false).await
+}
+
+#[tauri::command]
+pub async fn repair_remote(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    link: String,
+    name: String,
+) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+    state.router.pair_remote(&link, &name, true).await
+}
+
+#[tauri::command]
+pub async fn remote_status(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    server: String,
+) -> Result<RemoteStatus, ApiError> {
+    state.router.remote_status(&server).await
+}
+
+#[tauri::command]
+pub async fn rename_remote(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    server: String,
+    name: String,
+) -> Result<(), ApiError> {
+    state
+        .router
+        .change_remote(&server, Some(&name), &state.windows)
+        .await
+}
+
+#[tauri::command]
+pub async fn remove_remote(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    server: String,
+) -> Result<(), ApiError> {
+    state
+        .router
+        .change_remote(&server, None, &state.windows)
+        .await
+}
+
+#[tauri::command]
+pub async fn file_read_stream(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    request_id: String,
+    project_path: String,
+    file_path: String,
+    version: String,
+    size: u64,
+) -> Result<sworm_protocol::files::FileContent, ApiError> {
+    use tauri::Emitter;
+    state.router.read_file_stream(window.label(), &request_id, project_path.clone(), file_path.clone(), version, size, |bytes, total| {
+        let _ = window.emit("file-read-progress", serde_json::json!({
+            "requestId": request_id, "folderPath": project_path, "filePath": file_path, "bytes": bytes, "total": total,
+        }));
+    }).await
+}
+
+#[tauri::command]
+pub fn file_read_stream_cancel(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    request_id: String,
+) {
+    state.router.cancel_file_read(window.label(), &request_id);
+}
 pub enum Target<'a> {
     Local,
     Remote { server: &'a str, path: &'a str },
@@ -82,6 +197,23 @@ struct CachedRemote {
     client: Arc<RemoteClient>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct RemoteStatus {
+    pub connected: bool,
+    pub last_error: Option<String>,
+    pub state: String,
+}
+
+impl Default for RemoteStatus {
+    fn default() -> Self {
+        Self {
+            connected: false,
+            last_error: None,
+            state: "disconnected".into(),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct FolderClaim {
     dirs: Option<Vec<String>>,
@@ -92,6 +224,7 @@ struct RemoteSlot {
     cached: AsyncMutex<Option<CachedRemote>>,
     claims: Mutex<HashMap<String, FolderClaim>>,
     events: Mutex<Option<JoinHandle<()>>>,
+    status: Mutex<RemoteStatus>,
 }
 
 impl RemoteSlot {
@@ -100,6 +233,7 @@ impl RemoteSlot {
             cached: AsyncMutex::new(None),
             claims: Mutex::new(HashMap::new()),
             events: Mutex::new(None),
+            status: Mutex::new(RemoteStatus::default()),
         }
     }
 
@@ -112,6 +246,9 @@ impl RemoteSlot {
 
 impl Drop for RemoteSlot {
     fn drop(&mut self) {
+        if let Some(cached) = self.cached.get_mut().take() {
+            cached.client.close();
+        }
         if let Some(task) = self.events.get_mut().take() {
             task.abort();
         }
@@ -145,6 +282,9 @@ pub(crate) struct RouterInner {
     pub(crate) remote_lsp: crate::remote_lsp::RemoteLspService,
     pending_stops: Mutex<HashMap<String, PendingStop>>,
     pending_stop_running: AtomicBool,
+    remote_management: AsyncMutex<()>,
+    file_reads: Mutex<HashMap<(String, String), tokio::sync::watch::Sender<bool>>>,
+    file_stream_permits: tokio::sync::Semaphore,
 }
 
 #[derive(Clone)]
@@ -155,6 +295,377 @@ pub struct WorkspaceRouter {
 impl WorkspaceRouter {
     pub fn new(host: Arc<Host>) -> Self {
         Self::with_events(host, Arc::new(|_| Ok(())))
+    }
+    pub async fn remote_status(&self, server: &str) -> Result<RemoteStatus, ApiError> {
+        self.inner.refresh_settings().await?;
+        if !self
+            .inner
+            .settings
+            .lock()
+            .await
+            .remotes
+            .contains_key(server)
+        {
+            return Err(ApiError::NotFound(format!(
+                "Unknown remote server `{server}`"
+            )));
+        }
+        let slot = self.inner.slot(server);
+        let cached = slot.cached.lock().await;
+        if let Some(cached) = cached.as_ref() {
+            if let Some(error) = cached.client.connection().close_reason() {
+                self.inner.set_status(
+                    server,
+                    RemoteStatus {
+                        connected: false,
+                        last_error: Some(error.to_string()),
+                        state: "error".into(),
+                    },
+                );
+            }
+        }
+        let status = slot.status.lock().clone();
+        Ok(status)
+    }
+
+    pub async fn pair_remote(
+        &self,
+        link: &str,
+        name: &str,
+        replace: bool,
+    ) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+        validate_server_name(name)?;
+        let link: sworm_protocol::pairing::PairLink = link
+            .parse()
+            .map_err(|error| ApiError::InvalidArgument(format!("{error}")))?;
+        let _guard = self.inner.remote_management.lock().await;
+        let remotes = resolve_effective_settings_for_folder_path(None)
+            .map_err(ApiError::Internal)?
+            .settings
+            .remotes;
+        if remotes.contains_key(name) != replace {
+            return Err(ApiError::InvalidArgument(if replace {
+                format!("Remote `{name}` no longer exists; use Pair instead")
+            } else {
+                format!("Remote `{name}` already exists; use Re-pair instead")
+            }));
+        }
+        let identity = self
+            .inner
+            .identity
+            .get_or_try_init(|| async {
+                tokio::task::spawn_blocking(|| {
+                    let dir = SettingsService::global_config_dir().map_err(ApiError::Internal)?;
+                    Identity::load_or_generate(&dir, "client")
+                        .map(Arc::new)
+                        .map_err(|error| ApiError::Remote(error.to_string()))
+                })
+                .await
+                .map_err(|error| ApiError::Internal(error.to_string()))?
+            })
+            .await?;
+        let addresses = tokio::net::lookup_host(link.address())
+            .await
+            .map_err(|error| ApiError::Remote(error.to_string()))?
+            .collect();
+        let fingerprint = Fingerprint::from_str(&link.fingerprint)
+            .map_err(|error| ApiError::InvalidArgument(error.to_string()))?;
+        let client = connect_happy(
+            &self.inner.endpoint,
+            interleave_addresses(addresses),
+            Arc::clone(identity),
+            fingerprint,
+        )
+        .await
+        .map_err(|error| remote_error(name, error))?;
+        if let Err(error) = client.pair(&link.token, name).await {
+            client.close();
+            return Err(remote_error(name, error));
+        }
+        let entry = sworm_protocol::settings::RemoteSettings {
+            address: link.address(),
+            fingerprint: link.fingerprint,
+        };
+        let expected = remotes
+            .get(name)
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let persisted = self
+            .inner
+            .host
+            .settings_update_global_section("remotes", |value| {
+                let mut entries = remote_entries(value)?;
+                if entries.get(name) != expected.as_ref() {
+                    return Err(ApiError::InvalidArgument(
+                        "Remote settings changed during pairing; retry".into(),
+                    ));
+                }
+                entries.insert(
+                    name.into(),
+                    serde_json::to_value(&entry)
+                        .map_err(|error| ApiError::Internal(error.to_string()))?,
+                );
+                Ok(serde_json::Value::Object(entries))
+            });
+        if let Err(error) = persisted {
+            client.close();
+            return Err(error);
+        }
+        let config = RemoteConfig {
+            address: entry.address.clone(),
+            fingerprint: entry.fingerprint.clone(),
+        };
+        self.inner
+            .settings
+            .lock()
+            .await
+            .remotes
+            .insert(name.into(), config.clone());
+        let slot = self.inner.slot(name);
+        let client = Arc::new(client);
+        let mut cached = slot.cached.lock().await;
+        if let Some(old) = cached.replace(CachedRemote {
+            config,
+            client: Arc::clone(&client),
+        }) {
+            old.client.close();
+        }
+        self.inner.observe_client(name, &slot, &client);
+        Ok(entry)
+    }
+
+    async fn change_remote(
+        &self,
+        server: &str,
+        name: Option<&str>,
+        windows: &crate::services::windows::WindowCoordinatorService,
+    ) -> Result<(), ApiError> {
+        if let Some(name) = name {
+            validate_server_name(name)?;
+        }
+        let _guard = self.inner.remote_management.lock().await;
+        if windows.remote_claimed(server) {
+            return Err(ApiError::InvalidArgument(
+                "Close all tabs for this remote before renaming or removing it".into(),
+            ));
+        }
+        {
+            // Held across the settings write: the retry loop resolves a stop's
+            // server by name, and an unknown name reads as "run gone".
+            let mut pending = self.inner.pending_stops.lock();
+            if name.is_none() && pending.values().any(|stop| stop.server == server) {
+                return Err(ApiError::InvalidArgument(
+                    "Reconnect this remote so its pending stops land before removing it".into(),
+                ));
+            }
+            self.inner
+                .host
+                .settings_update_global_section("remotes", |value| {
+                    let mut entries = remote_entries(value)?;
+                    if name.is_some_and(|name| entries.contains_key(name)) {
+                        return Err(ApiError::InvalidArgument(
+                            "Remote name already exists".into(),
+                        ));
+                    }
+                    let entry = entries.remove(server).ok_or_else(|| {
+                        ApiError::NotFound(format!("Unknown remote server `{server}`"))
+                    })?;
+                    if let Some(name) = name {
+                        entries.insert(name.into(), entry);
+                    }
+                    Ok(serde_json::Value::Object(entries))
+                })?;
+            if let Some(name) = name {
+                let mut moved = false;
+                for stop in pending.values_mut().filter(|stop| stop.server == server) {
+                    stop.server = name.to_owned();
+                    moved = true;
+                }
+                if moved {
+                    self.inner.persist_pending_stops(&pending);
+                }
+            }
+        }
+        self.inner.refresh_settings().await
+    }
+
+    pub fn release_file_reads(&self, owner: &str) {
+        self.inner.file_reads.lock().retain(|(window, _), cancel| {
+            if window != owner {
+                return true;
+            }
+            let _ = cancel.send(true);
+            false
+        });
+    }
+
+    pub fn cancel_file_read(&self, owner: &str, request_id: &str) {
+        let key = (owner.to_owned(), request_id.to_owned());
+        let mut reads = self.inner.file_reads.lock();
+        // Keep a cancelled tombstone: cancellation may arrive before invocation.
+        let cancel = reads
+            .entry(key)
+            .or_insert_with(|| tokio::sync::watch::channel(false).0);
+        cancel.send_replace(true);
+    }
+
+    pub async fn read_file_stream(
+        &self,
+        owner: &str,
+        request_id: &str,
+        project_path: String,
+        file_path: String,
+        version: String,
+        size: u64,
+        progress: impl Fn(u64, u64) + Send,
+    ) -> Result<sworm_protocol::files::FileContent, ApiError> {
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err(ApiError::InvalidArgument(
+                "Invalid file-read request id".into(),
+            ));
+        }
+        let key = (owner.to_owned(), request_id.to_owned());
+        let mut cancelled = {
+            let mut reads = self.inner.file_reads.lock();
+            if let Some(existing) = reads.get(&key) {
+                let cancelled = *existing.borrow();
+                if cancelled {
+                    reads.remove(&key);
+                    return Err(ApiError::InvalidArgument("File read cancelled".into()));
+                }
+                return Err(ApiError::InvalidArgument(
+                    "File-read request id already in use".into(),
+                ));
+            }
+            let (send, recv) = tokio::sync::watch::channel(false);
+            reads.insert(key.clone(), send);
+            recv
+        };
+        struct ReadGuard<'a>(&'a RouterInner, (String, String));
+        impl Drop for ReadGuard<'_> {
+            fn drop(&mut self) {
+                self.0.file_reads.lock().remove(&self.1);
+            }
+        }
+        let _guard = ReadGuard(&self.inner, key);
+        let cancellation = cancelled.clone();
+        let progress = move |bytes, total| {
+            progress(bytes, total);
+            // Buffered frames can complete in one poll, before select! polls
+            // its cancellation branch again. Stop at each chunk boundary too.
+            if *cancellation.borrow() {
+                return Err(ApiError::InvalidArgument("File read cancelled".into()));
+            }
+            Ok(())
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled.changed() => Err(ApiError::InvalidArgument("File read cancelled".into())),
+            result = self.assemble_file_stream(project_path, file_path, version, size, progress) => {
+                if *cancelled.borrow() {
+                    Err(ApiError::InvalidArgument("File read cancelled".into()))
+                } else {
+                    result
+                }
+            },
+        }
+    }
+
+    /// `version` and `size` are the caller's approved stat. The open on the
+    /// side holding the file checks that identity once and pins it for every
+    /// chunk, so nothing here stats again.
+    async fn assemble_file_stream(
+        &self,
+        project_path: String,
+        file_path: String,
+        version: String,
+        size: u64,
+        progress: impl Fn(u64, u64) -> Result<(), ApiError> + Send,
+    ) -> Result<sworm_protocol::files::FileContent, ApiError> {
+        use sha2::{Digest, Sha256};
+        use sworm_protocol::rpc::{FileReadDown, MAX_FILE_CHUNK_BYTES, MAX_STREAM_FILE_BYTES};
+        use sworm_remote::wire::{read_tagged_frame_with_limit, Frame};
+        if size > MAX_STREAM_FILE_BYTES as u64 {
+            return Err(ApiError::TooLarge {
+                size,
+                limit: MAX_STREAM_FILE_BYTES as u64,
+            });
+        }
+        // Held until this future ends by any path; waiting here stays
+        // cancellable because the caller selects on cancellation.
+        let _permit = self
+            .inner
+            .file_stream_permits
+            .acquire()
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let mut bytes = Vec::with_capacity(size as usize);
+        progress(0, size)?;
+        let final_version = if let Target::Remote { server, path } = Target::parse(&project_path)? {
+            let client = self.inner.client(server).await?;
+            let (mut send, mut recv) = client
+                .open_stream(Open::FileRead {
+                    project_path: path.into(),
+                    file_path,
+                    version,
+                })
+                .await
+                .map_err(|error| remote_error(server, error))?;
+            let _ = send.finish();
+            let mut hash = Sha256::new();
+            loop {
+                match read_tagged_frame_with_limit::<FileReadDown>(&mut recv, MAX_FILE_CHUNK_BYTES)
+                    .await
+                    .map_err(|error| remote_error(server, error))?
+                {
+                    Frame::Raw(chunk) => {
+                        append_file_chunk(&mut bytes, &chunk, size)?;
+                        hash.update(&chunk);
+                        progress(bytes.len() as u64, size)?;
+                    }
+                    // The daemon's version is trusted only once our own hash agrees.
+                    Frame::Json(FileReadDown::Complete { version }) => {
+                        if format!("{:x}", hash.finalize()) != version {
+                            return Err(ApiError::Remote("File stream hash mismatch".into()));
+                        }
+                        break version;
+                    }
+                    Frame::Json(FileReadDown::Error { error }) => return Err(error.into()),
+                }
+            }
+        } else {
+            let mut reader = self
+                .inner
+                .host
+                .file_open_read_stream(project_path, file_path, version)
+                .await?;
+            // Chunks land straight in the presized buffer; the reader hashes
+            // exactly the bytes it appends, so its version is this content's.
+            loop {
+                let (next_reader, next_bytes, count) = tokio::task::spawn_blocking(move || {
+                    let count = reader.read_chunk(&mut bytes);
+                    (reader, bytes, count)
+                })
+                .await
+                .map_err(|error| ApiError::Internal(error.to_string()))?;
+                reader = next_reader;
+                bytes = next_bytes;
+                if count? == 0 {
+                    break reader.version();
+                }
+                progress(bytes.len() as u64, size)?;
+            }
+        };
+        if bytes.len() as u64 != size {
+            return Err(ApiError::Remote("File stream size mismatch".into()));
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|_| ApiError::InvalidArgument("File is not valid UTF-8".into()))?;
+        Ok(sworm_protocol::files::FileContent {
+            content,
+            version: final_version,
+        })
     }
 
     pub fn with_events(host: Arc<Host>, events: EventSink<HostEvent>) -> Self {
@@ -174,6 +685,9 @@ impl WorkspaceRouter {
                 remote_lsp: crate::remote_lsp::RemoteLspService::new(),
                 pending_stops: Mutex::new(pending_stops),
                 pending_stop_running: AtomicBool::new(false),
+                remote_management: AsyncMutex::new(()),
+                file_reads: Mutex::new(HashMap::new()),
+                file_stream_permits: tokio::sync::Semaphore::new(MAX_FILE_STREAMS),
             }),
         }
     }
@@ -240,8 +754,34 @@ impl WorkspaceRouter {
 
     /// Stops still waiting for their daemon to acknowledge them.
     #[doc(hidden)]
-    pub fn pending_stops_for_test(&self) -> usize {
-        self.inner.pending_stops.lock().len()
+    pub fn pending_stops_for_test(&self) -> HashMap<String, String> {
+        self.inner
+            .pending_stops
+            .lock()
+            .values()
+            .map(|stop| (stop.run_id.clone(), stop.server.clone()))
+            .collect()
+    }
+
+    /// Queue a stop as if `server` had been unreachable when it was sent.
+    #[doc(hidden)]
+    pub fn queue_stop_for_test(&self, server: &str, run_id: &str) {
+        self.inner.remember_failed_stop(
+            server,
+            run_id,
+            RemoteRunKind::Session,
+            &ApiError::Remote("unreachable".into()),
+        );
+    }
+
+    #[doc(hidden)]
+    pub async fn change_remote_for_test(
+        &self,
+        server: &str,
+        name: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let windows = crate::services::windows::WindowCoordinatorService::new();
+        self.change_remote(server, name, &windows).await
     }
 
     /// Drop a folder's remote claim once its last owner released it, so a
@@ -322,6 +862,28 @@ impl WorkspaceRouter {
 }
 
 impl RouterInner {
+    pub(crate) fn run_status(&self, run_id: &str, state: &str) {
+        let _ = (self.events)(HostEvent::RemoteRunStatus {
+            run_id: run_id.into(),
+            state: state.into(),
+        });
+    }
+
+    fn set_status(&self, server: &str, status: RemoteStatus) {
+        let slot = self.slot(server);
+        let mut current = slot.status.lock();
+        if *current == status {
+            return;
+        }
+        *current = status.clone();
+        drop(current);
+        let _ = (self.events)(HostEvent::RemoteStatus {
+            server: server.into(),
+            connected: status.connected,
+            last_error: status.last_error,
+            state: status.state,
+        });
+    }
     fn slot(&self, server: &str) -> Arc<RemoteSlot> {
         Arc::clone(
             self.remotes
@@ -402,9 +964,15 @@ impl RouterInner {
         self.drain_pending_stops();
     }
 
-    fn forget_pending_stop(&self, run_id: &str) {
+    /// Forget `stop` unless a rename re-pointed it at another server while it
+    /// was in flight: the old name failing says nothing about the run.
+    fn forget_pending_stop(&self, stop: &PendingStop) {
         let mut pending = self.pending_stops.lock();
-        if pending.remove(run_id).is_some() {
+        if pending
+            .get(&stop.run_id)
+            .is_some_and(|current| current.server == stop.server)
+        {
+            pending.remove(&stop.run_id);
             self.persist_pending_stops(&pending);
         }
     }
@@ -439,6 +1007,21 @@ impl RouterInner {
     }
 
     pub(crate) async fn client(&self, server: &str) -> Result<Arc<RemoteClient>, ApiError> {
+        let result = self.connect_client(server).await;
+        if let Err(error) = &result {
+            self.set_status(
+                server,
+                RemoteStatus {
+                    connected: false,
+                    last_error: Some(error.to_string()),
+                    state: "error".into(),
+                },
+            );
+        }
+        result
+    }
+
+    async fn connect_client(&self, server: &str) -> Result<Arc<RemoteClient>, ApiError> {
         self.refresh_settings().await?;
         let config = {
             let settings = self.settings.lock().await;
@@ -458,6 +1041,14 @@ impl RouterInner {
         if let Some(stale) = cached.take() {
             stale.client.close();
         }
+        self.set_status(
+            server,
+            RemoteStatus {
+                connected: false,
+                last_error: None,
+                state: "reconnecting".into(),
+            },
+        );
 
         let addresses: Vec<_> = tokio::net::lookup_host(config.address.as_str())
             .await
@@ -500,7 +1091,48 @@ impl RouterInner {
             config,
             client: Arc::clone(&client),
         });
+        self.observe_client(server, &slot, &client);
         Ok(client)
+    }
+
+    fn observe_client(&self, server: &str, slot: &Arc<RemoteSlot>, client: &Arc<RemoteClient>) {
+        self.set_status(
+            server,
+            RemoteStatus {
+                connected: true,
+                last_error: None,
+                state: "connected".into(),
+            },
+        );
+        let observed = Arc::clone(&client);
+        let weak_slot = Arc::downgrade(&slot);
+        let events = Arc::clone(&self.events);
+        let server = server.to_owned();
+        tokio::spawn(async move {
+            let reason = observed.closed().await.to_string();
+            let Some(slot) = weak_slot.upgrade() else {
+                return;
+            };
+            let cached = slot.cached.lock().await;
+            if !cached
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(&cached.client, &observed))
+            {
+                return;
+            }
+            let status = RemoteStatus {
+                connected: false,
+                last_error: Some(reason),
+                state: "error".into(),
+            };
+            *slot.status.lock() = status.clone();
+            let _ = events(HostEvent::RemoteStatus {
+                server,
+                connected: false,
+                last_error: status.last_error,
+                state: status.state,
+            });
+        });
     }
 
     async fn refresh_settings(&self) -> Result<(), ApiError> {
@@ -535,6 +1167,9 @@ impl RouterInner {
             {
                 if let Some(stale) = cached.take() {
                     stale.client.close();
+                    if expected.is_some() {
+                        self.set_status(&server, RemoteStatus::default());
+                    }
                 }
             }
         }
@@ -553,6 +1188,14 @@ impl RouterInner {
         {
             if let Some(stale) = cached.take() {
                 stale.client.close();
+                self.set_status(
+                    server,
+                    RemoteStatus {
+                        connected: false,
+                        last_error: Some("Remote connection lost".into()),
+                        state: "reconnecting".into(),
+                    },
+                );
             }
         }
     }
@@ -1421,7 +2064,7 @@ async fn retry_pending_stops(router: Weak<RouterInner>) {
                 .await
             {
                 // A daemon that no longer knows the run has nothing left to kill.
-                Ok(()) | Err(ApiError::NotFound(_)) => inner.forget_pending_stop(&entry.run_id),
+                Ok(()) | Err(ApiError::NotFound(_)) => inner.forget_pending_stop(&entry),
                 Err(error) => tracing::warn!(
                     server = entry.server,
                     run_id = entry.run_id,

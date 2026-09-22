@@ -7,16 +7,24 @@ use std::path::{Path, PathBuf};
 use sworm_core::errors::ApiError;
 
 /// Resolve existing launch paths lexically, preserving symlink path forms.
-/// `sworm://` remote workspaces pass through: they name no local file.
+/// `sworm://` remote workspaces name no local file; they are only decoded.
 pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
     argv.iter()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))
         .filter_map(|arg| {
             if arg.starts_with("sworm://") {
-                return Some(arg.clone());
+                return parse_workspace_link(arg);
             }
-            let path = PathBuf::from(arg);
+            let path = match tauri::Url::parse(arg) {
+                Ok(url) if url.scheme() == "file" => {
+                    if url.query().is_some() || url.fragment().is_some() {
+                        return None;
+                    }
+                    url.to_file_path().ok()?
+                }
+                _ => PathBuf::from(arg),
+            };
             let path = if path.is_absolute() {
                 path
             } else {
@@ -26,6 +34,41 @@ pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
             (path.is_file() || path.is_dir()).then(|| path.to_string_lossy().into_owned())
         })
         .collect()
+}
+
+/// Decode an external `sworm://server/path` link exactly once into the opaque
+/// internal workspace path; downstream code never decodes it again.
+pub fn parse_workspace_link(link: &str) -> Option<String> {
+    let rest = link.strip_prefix("sworm://")?;
+    let server = &rest[..rest.find('/').unwrap_or(rest.len())];
+    // Only a bare server id: userinfo, ports, queries, and fragments would make
+    // the target ambiguous.
+    if server.is_empty()
+        || !server
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        || rest
+            .bytes()
+            .any(|b| b <= b' ' || matches!(b, 0x7f | b'?' | b'#'))
+    {
+        return None;
+    }
+    let url = tauri::Url::parse(link).ok()?;
+    let encoded = if url.path().is_empty() {
+        "/"
+    } else {
+        url.path()
+    };
+    // percent_decode_str passes malformed escapes through; reject them instead.
+    if encoded.split('%').skip(1).any(|escape| {
+        !escape
+            .get(..2)
+            .is_some_and(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    }) {
+        return None;
+    }
+    let path = percent_decode_str(encoded).decode_utf8().ok()?;
+    (!path.contains('\0')).then(|| format!("sworm://{server}{path}"))
 }
 
 #[derive(Serialize)]
@@ -399,7 +442,7 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
 mod tests {
     use super::{
         launch_path_args, parse_proc_status_value, parse_process_stat, parse_system_cpu_time_ticks,
-        process_tree_cpu_time_ticks, ProcessStat,
+        parse_workspace_link, process_tree_cpu_time_ticks, ProcessStat,
     };
     use std::path::Path;
 
@@ -462,11 +505,82 @@ mod tests {
         assert!(launch_path_args(&argv, None).is_empty());
     }
 
+    /// A lone URL argument belongs to the deep-link plugin; several arguments
+    /// reach argv routing, which must decode remote workspaces the same way.
     #[test]
-    fn launch_path_args_keeps_remote_workspace_uris() {
-        let uri = "sworm://homelab/home/me/project".to_owned();
-        let argv = vec!["sworm".into(), uri.clone()];
-        assert_eq!(launch_path_args(&argv, None), vec![uri]);
+    fn launch_path_args_decodes_remote_workspace_uris() {
+        let argv = vec![
+            "sworm".into(),
+            "sworm://homelab/home/me/my%20project".into(),
+            "sworm://homelab/home/me/%ZZ".into(),
+        ];
+        assert_eq!(
+            launch_path_args(&argv, None),
+            vec!["sworm://homelab/home/me/my project".to_owned()]
+        );
+    }
+
+    #[test]
+    fn workspace_links_decode_once_and_reject_ambiguous_forms() {
+        for (link, expected) in [
+            (
+                "sworm://BuildBox/my%20repo/%E6%96%87%E4%BB%B6",
+                "sworm://BuildBox/my repo/文件",
+            ),
+            (
+                "sworm://BuildBox/literal%2520name",
+                "sworm://BuildBox/literal%20name",
+            ),
+            ("sworm://BuildBox/a%23b%3Fc", "sworm://BuildBox/a#b?c"),
+            ("sworm://BuildBox", "sworm://BuildBox/"),
+        ] {
+            assert_eq!(
+                parse_workspace_link(link).as_deref(),
+                Some(expected),
+                "{link}"
+            );
+        }
+        for link in [
+            "sworm://user@host/repo",
+            "sworm://host:7420/repo",
+            "sworm:///repo",
+            "sworm://host/repo?query",
+            "sworm://host/repo#fragment",
+            "sworm://host/repo?",
+            "sworm://host/repo#",
+            "sworm://host/%ZZ",
+            "sworm://host/%C0%AF",
+            "sworm://host/%00",
+            "sworm://host/repo\n",
+            "sworm://host/my repo",
+        ] {
+            assert_eq!(parse_workspace_link(link), None, "{link:?}");
+        }
+    }
+
+    #[test]
+    fn launch_path_args_decodes_local_file_uris_and_rejects_remote_hosts() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project #1 %");
+        std::fs::create_dir(&project).unwrap();
+        let uri = tauri::Url::from_directory_path(&project).unwrap();
+        let expected = project.to_string_lossy().into_owned();
+        for uri in [
+            uri.to_string(),
+            uri.as_str().replacen("file:///", "file://localhost/", 1),
+        ] {
+            assert_eq!(
+                launch_path_args(&["sworm".into(), uri], None),
+                vec![expected.clone()]
+            );
+        }
+        for uri in [
+            uri.as_str().replacen("file:///", "file://remote/", 1),
+            format!("{uri}?query"),
+            format!("{uri}#fragment"),
+        ] {
+            assert!(launch_path_args(&["sworm".into(), uri], None).is_empty());
+        }
     }
 
     #[cfg(unix)]

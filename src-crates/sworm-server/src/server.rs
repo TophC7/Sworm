@@ -314,6 +314,25 @@ async fn process_stream(
     };
 
     match open {
+        Open::FileRead {
+            project_path,
+            file_path,
+            version,
+        } => {
+            let response =
+                dispatch::claim_file_read(&host, &context, &session, &project_path).await;
+            if let Err(error) = response {
+                let unauthorized = matches!(error, WireError::Unauthorized { .. });
+                let frame = sworm_protocol::rpc::FileReadDown::Error { error };
+                let _ = timeout(STREAM_WRITE_TIMEOUT, write_frame(&mut send, &frame)).await;
+                let _ = send.finish();
+                if unauthorized {
+                    close_unauthorized(&connection, &mut send).await;
+                }
+                return;
+            }
+            crate::file_stream::run(host, project_path, file_path, version, send, shutdown).await;
+        }
         Open::Rpc(request) => {
             // Bound RPC execution only. Stream intake and response backpressure hold no permit.
             let response = {

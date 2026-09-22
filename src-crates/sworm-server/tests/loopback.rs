@@ -13,8 +13,8 @@ use sworm_protocol::{
     pty::PtyEvent,
     rpc::{
         HostEventFrame, HostEventWire, LspDown, LspUp, Open, PtyCursor, PtyDown, Request, Response,
-        RunStatus, WireError, MAX_REMOTE_FILE_BYTES, MAX_REQUEST_FRAME_BYTES,
-        MAX_STREAMS_PER_CONNECTION,
+        RunStatus, WireError, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
+        MAX_WHOLE_FILE_BYTES,
     },
 };
 use sworm_remote::{
@@ -488,7 +488,7 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     assert!(!contents.version.is_empty());
 
     let oversized_path = fixture.repo.path().join("oversized.txt");
-    fs::File::create(&oversized_path)?.set_len(MAX_REMOTE_FILE_BYTES as u64 + 1)?;
+    fs::File::create(&oversized_path)?.set_len(MAX_WHOLE_FILE_BYTES as u64 + 1)?;
     let oversized = client
         .call(&Request::FileRead {
             project_path: project_path.clone(),
@@ -497,8 +497,8 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
         .await;
     assert!(matches!(
         oversized,
-        Err(RemoteError::Wire(WireError::InvalidArgument { message }))
-            if message.contains("exceeds") && message.contains("read limit")
+        Err(RemoteError::Wire(WireError::TooLarge { size, limit }))
+            if size == MAX_WHOLE_FILE_BYTES as u64 + 1 && limit == MAX_WHOLE_FILE_BYTES as u64
     ));
     fs::remove_file(oversized_path)?;
 
@@ -567,6 +567,111 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
 
     client.close();
     pairing_client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn file_read_stream_assembles_and_caps() -> Result<()> {
+    use sha2::Digest;
+    use sworm_protocol::rpc::{FileReadDown, MAX_FILE_CHUNK_BYTES};
+    use sworm_remote::wire::read_tagged_frame_with_limit;
+
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let path = fixture.repo.path().join("large.txt");
+    let contents = vec![b'x'; 20 * 1024 * 1024];
+    fs::write(&path, &contents)?;
+    let expected_version = format!("{:x}", sha2::Sha256::digest(&contents));
+    let stat = client
+        .call(&Request::FileStat {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+        })
+        .await?
+        .file_stat()
+        .map_err(RemoteError::Wire)?;
+    assert_eq!(stat.size, contents.len() as u64);
+    assert!(stat.regular);
+    let (_send, mut recv) = client
+        .open_stream(Open::FileRead {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+            version: stat.version,
+        })
+        .await?;
+    let mut assembled = Vec::new();
+    loop {
+        match timeout(
+            OUTPUT_TIMEOUT,
+            read_tagged_frame_with_limit::<FileReadDown>(&mut recv, MAX_FILE_CHUNK_BYTES),
+        )
+        .await??
+        {
+            Frame::Raw(chunk) => assembled.extend_from_slice(&chunk),
+            Frame::Json(FileReadDown::Complete { version }) => {
+                assert_eq!(version, expected_version);
+                break;
+            }
+            Frame::Json(FileReadDown::Error { error }) => {
+                bail!("unexpected stream error: {error:?}")
+            }
+        }
+    }
+    assert_eq!(assembled, contents);
+    let stat = client
+        .call(&Request::FileStat {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+        })
+        .await?
+        .file_stat()
+        .map_err(RemoteError::Wire)?;
+    fs::write(&path, b"changed")?;
+    let (_send, mut recv) = client
+        .open_stream(Open::FileRead {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+            version: stat.version,
+        })
+        .await?;
+    assert!(matches!(
+        timeout(
+            SHORT_TIMEOUT,
+            read_tagged_frame_with_limit::<FileReadDown>(&mut recv, MAX_FILE_CHUNK_BYTES)
+        )
+        .await??,
+        Frame::Json(FileReadDown::Error {
+            error: WireError::Conflict { .. }
+        })
+    ));
+    fs::File::create(&path)?.set_len(300 * 1024 * 1024)?;
+    let stat = client
+        .call(&Request::FileStat {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+        })
+        .await?
+        .file_stat()
+        .map_err(RemoteError::Wire)?;
+    let (_send, mut recv) = client
+        .open_stream(Open::FileRead {
+            project_path: fixture.repo_path(),
+            file_path: "large.txt".to_owned(),
+            version: stat.version,
+        })
+        .await?;
+    assert!(matches!(
+        timeout(
+            SHORT_TIMEOUT,
+            read_tagged_frame_with_limit::<FileReadDown>(&mut recv, MAX_FILE_CHUNK_BYTES)
+        )
+        .await??,
+        Frame::Json(FileReadDown::Error {
+            error: WireError::TooLarge { .. }
+        })
+    ));
+    client.close();
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -784,7 +889,7 @@ async fn paired_client_writes_a_large_file_and_still_loses_a_stale_write() -> Re
             &client,
             &project_path,
             "big.txt",
-            &"a".repeat(MAX_REMOTE_FILE_BYTES + 1),
+            &"a".repeat(MAX_WHOLE_FILE_BYTES + 1),
             Some(version.clone()),
         ),
     )

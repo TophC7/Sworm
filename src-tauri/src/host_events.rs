@@ -23,6 +23,10 @@ pub fn host_event_sink(
 ) -> EventSink<HostEvent> {
     Arc::new(move |event| {
         let result = match event {
+            HostEvent::RemoteStatus { server, connected, last_error, state } =>
+                app.emit("remote-status", json!({ "server": server, "connected": connected, "last_error": last_error, "state": state })),
+            HostEvent::RemoteRunStatus { run_id, state } =>
+                app.emit("remote-run-status", json!({ "runId": run_id, "state": state })),
             HostEvent::FilesChanged(payload) => app.emit(FILES_CHANGED_EVENT, payload),
             HostEvent::GitChanged(payload) => app.emit(GIT_CHANGED_EVENT, payload),
             HostEvent::SettingsChanged(payload) => app.emit(SETTINGS_CHANGED_EVENT, payload),
@@ -41,13 +45,13 @@ pub fn host_event_sink(
             } => {
                 if replace_destination && windows.release_claims_under(&new_path) > 0 {
                     let _ = app.emit(
-                        "sworm://file-deleted",
+                        "file-deleted",
                         json!({ "filePath": new_path.to_string_lossy() }),
                     );
                 }
                 windows.rename_claims_under(&old_path, &new_path);
                 app.emit(
-                    "sworm://file-path-changed",
+                    "file-path-changed",
                     json!({
                         "oldPath": old_path.to_string_lossy(),
                         "newPath": new_path.to_string_lossy(),
@@ -58,7 +62,7 @@ pub fn host_event_sink(
             HostEvent::FileDeleted(path) => {
                 windows.release_claims_under(&path);
                 app.emit(
-                    "sworm://file-deleted",
+                    "file-deleted",
                     json!({ "filePath": path.to_string_lossy() }),
                 )
             }

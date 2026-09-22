@@ -9,7 +9,7 @@ use sworm_core::{
     Host,
 };
 use sworm_protocol::{
-    rpc::{Reply, Request, Response, RunStatus, WireError, MAX_REMOTE_FILE_BYTES},
+    rpc::{Reply, Request, Response, RunStatus, WireError, MAX_WHOLE_FILE_BYTES},
     session::SessionStartInfo,
 };
 use sworm_remote::Fingerprint;
@@ -110,7 +110,6 @@ struct DispatchRuntime<'a> {
 /// stream, or pairing state the table cannot express; forgetting one is a
 /// compile error in `dispatch`, never a silently missing claim.
 macro_rules! dispatch_operation {
-    (#[route($route:ident)] FileRead => $($rest:tt)*) => {};
     (#[route($route:ident)] FileWrite => $($rest:tt)*) => {};
     (#[route($route:ident)] FolderListEntries => $($rest:tt)*) => {};
     (#[route($route:ident)] FilesWatchDirs => $($rest:tt)*) => {};
@@ -250,6 +249,27 @@ pub(crate) async fn handle(
     .await
 }
 
+/// The auth and folder claim a `FileRead` stream needs, without the stat a
+/// dispatched request would run: the stream's open validates the version.
+pub(crate) async fn claim_file_read(
+    host: &Host,
+    context: &Arc<ServerContext>,
+    session: &Mutex<Session>,
+    project_path: &str,
+) -> Result<(), WireError> {
+    if !session.lock().await.authorized {
+        return Err(unauthorized("client is not paired with this server"));
+    }
+    DispatchRuntime {
+        host,
+        context,
+        session,
+    }
+    .claim(project_path, "project_path")
+    .await
+    .map(drop)
+}
+
 impl DispatchRuntime<'_> {
     async fn claim(&self, path: &str, field: &str) -> Result<PathBuf, WireError> {
         require_absolute(path, field)?;
@@ -270,18 +290,6 @@ impl DispatchRuntime<'_> {
             .map_err(|message| WireError::Internal { message })
     }
 
-    async fn file_read(
-        &self,
-        project_path: String,
-        file_path: String,
-    ) -> Result<sworm_protocol::files::FileContent, WireError> {
-        self.claim(&project_path, "project_path").await?;
-        self.host
-            .file_read_limited(project_path, file_path, MAX_REMOTE_FILE_BYTES)
-            .await
-            .map_err(Into::into)
-    }
-
     /// Writes mirror the read ceiling: a file too large to read back is not
     /// one the daemon will store either.
     async fn file_write(
@@ -291,10 +299,10 @@ impl DispatchRuntime<'_> {
         content: String,
         expected_version: Option<String>,
     ) -> Result<String, WireError> {
-        if content.len() > MAX_REMOTE_FILE_BYTES {
+        if content.len() > MAX_WHOLE_FILE_BYTES {
             return Err(WireError::InvalidArgument {
                 message: format!(
-                    "File {file_path} exceeds the {MAX_REMOTE_FILE_BYTES}-byte write limit"
+                    "File {file_path} exceeds the {MAX_WHOLE_FILE_BYTES}-byte write limit"
                 ),
             });
         }

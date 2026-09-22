@@ -50,6 +50,11 @@ pub enum ApiError {
     /// not, because stopping is killing.
     #[error("LSP session {session_id} is already active")]
     LspAlreadyActive { session_id: String },
+
+    /// A file exceeds a read ceiling. Typed so the editor can offer the
+    /// streamed path instead of matching on message text.
+    #[error("File is {size} bytes; the read limit is {limit} bytes")]
+    TooLarge { size: u64, limit: u64 },
 }
 
 impl Serialize for ApiError {
@@ -93,6 +98,15 @@ impl Serialize for ApiError {
             return state.end();
         }
 
+        if let ApiError::TooLarge { size, limit } = self {
+            let mut state = serializer.serialize_struct("ApiError", 4)?;
+            state.serialize_field("kind", "tooLarge")?;
+            state.serialize_field("size", size)?;
+            state.serialize_field("limit", limit)?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
         // Keep legacy command errors as readable strings. Only typed
         // branches that frontend code matches directly serialize as objects.
         serializer.serialize_str(&self.to_string())
@@ -116,6 +130,7 @@ impl From<ApiError> for WireError {
             ApiError::Conflict { current_version } => WireError::Conflict { current_version },
             ApiError::Deleted { path } => WireError::Deleted { path },
             ApiError::LspAlreadyActive { session_id } => WireError::LspAlreadyActive { session_id },
+            ApiError::TooLarge { size, limit } => WireError::TooLarge { size, limit },
         }
     }
 }
@@ -136,6 +151,7 @@ impl From<WireError> for ApiError {
             WireError::Conflict { current_version } => ApiError::Conflict { current_version },
             WireError::Deleted { path } => ApiError::Deleted { path },
             WireError::LspAlreadyActive { session_id } => ApiError::LspAlreadyActive { session_id },
+            WireError::TooLarge { size, limit } => ApiError::TooLarge { size, limit },
             WireError::Unauthorized { message } => ApiError::Remote(message),
         }
     }
@@ -263,6 +279,19 @@ mod tests {
             json!({
                 "kind": "lspAlreadyActive",
                 "sessionId": "nil:/w@main",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::TooLarge {
+                size: 20,
+                limit: 16
+            })
+            .unwrap(),
+            json!({
+                "kind": "tooLarge",
+                "size": 20,
+                "limit": 16,
+                "message": "File is 20 bytes; the read limit is 16 bytes",
             })
         );
     }

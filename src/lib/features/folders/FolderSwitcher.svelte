@@ -1,38 +1,27 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte'
   import { backend } from '$lib/api/backend'
-  import {
-    BreadcrumbItem,
-    BreadcrumbLink,
-    BreadcrumbList,
-    BreadcrumbPage,
-    BreadcrumbRoot,
-    BreadcrumbSeparator
-  } from '$lib/components/ui/breadcrumb'
-  import { Button, IconButton } from '$lib/components/ui/button'
-  import { Input } from '$lib/components/ui/input'
+  import { IconButton } from '$lib/components/ui/button'
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import { getRecentFolders } from '$lib/features/folders/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { getActiveFolderPath, openFolder } from '$lib/features/workbench/state.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
-  import {
-    ArrowDown,
-    ArrowLeft,
-    ArrowRight,
-    ArrowUp,
-    ChevronRight,
-    Eye,
-    EyeOff,
-    FolderOpen
-  } from '$lib/icons/lucideExports'
+  import FolderPathBar from './FolderPathBar.svelte'
+  import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronRight, Eye, EyeOff } from '$lib/icons/lucideExports'
   import type { FolderEntry } from '$lib/types/backend'
   import { logicalKey } from '$lib/utils/keyboardEvent'
-  import { basename, dirname, pathCrumbs, splitRemotePath } from '$lib/utils/paths'
+  import { basename, dirname, normalizeAbsolutePath, splitRemotePath } from '$lib/utils/paths'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
   import { isFolderSwitcherOpen, setFolderSwitcherOpen } from './switcher.svelte'
   let surfaceRef = $state<HTMLDivElement | null>(null)
-  let inputRef = $state<HTMLInputElement | null>(null)
+  let pathInput = $state<HTMLInputElement | null>(null)
+  let editing = $state(false)
+  let draft = $state('')
+  let pathError = $state<string | null>(null)
+  // Folder the draft last asked to list; canonical redirects must not re-trigger it.
+  let typedDir: string | null = null
+  let beforeEdit: { containerPath: string; selectedPath: string | null } | null = null
   let containerPath = $state('/')
   let selectedPath = $state<string | null>(null)
   let showHidden = $state(false)
@@ -53,32 +42,27 @@
     return `sworm://${remote.server}${dirname(remote.path) || '/'}`
   }
 
-  function folderPathCrumbs(path: string): Array<{ label: string; path: string }> {
-    const remote = splitRemotePath(path)
-    if (!remote) return pathCrumbs(path)
-    return pathCrumbs(remote.path).map((crumb) => ({
-      ...crumb,
-      path: `sworm://${remote.server}${crumb.path}`
-    }))
-  }
-
   let open = $derived(isFolderSwitcherOpen())
   let leftRows = $derived(
     containerEntriesPath === containerPath ? containerEntries.filter((entry) => entry.is_dir) : []
   )
   let previewEntries = $derived(selectedEntriesPath === selectedPath ? selectedEntries : [])
   let q = $derived(filterQuery.trim().toLowerCase())
-  let crumbs = $derived(folderPathCrumbs(containerPath))
-  let recents = $derived(getRecentFolders().slice(0, 6))
-  // A typed absolute path or sworm:// URI is a destination, not a filter.
-  let typedLocation = $derived.by(() => {
-    const value = filterQuery.trim()
-    if (value.startsWith('sworm://')) return splitRemotePath(value) ? value : null
-    return value.startsWith('/') ? value : null
-  })
+  let locationPath = $derived(selectedPath ?? containerPath)
 
   function isMatch(entry: FolderEntry): boolean {
     return q.length === 0 || entry.name.toLowerCase().includes(q)
+  }
+
+  /** Exact name, then prefix, then substring: what the typed name most likely means. */
+  function bestMatch(entries: FolderEntry[]): FolderEntry | undefined {
+    if (!q) return undefined
+    const name = (entry: FolderEntry) => entry.name.toLowerCase()
+    return (
+      entries.find((entry) => name(entry) === q) ??
+      entries.find((entry) => name(entry).startsWith(q)) ??
+      entries.find(isMatch)
+    )
   }
 
   function drillInto(path: string): void {
@@ -108,18 +92,142 @@
     filterQuery = ''
   }
 
-  function selectCrumb(event: MouseEvent, index: number): void {
-    event.preventDefault()
-    const nextCrumb = crumbs[index + 1]
-    containerPath = crumbs[index].path
-    selectedPath = nextCrumb?.path ?? null
+  function navigateTo(path: string): void {
+    if (basename(path).startsWith('.')) showHidden = true
+    const parent = folderDirname(path)
+    // A root has no parent row to select, so it opens as the container.
+    if (parent === path) drillInto(path)
+    else {
+      containerPath = parent
+      selectedPath = path
+      filterQuery = ''
+    }
+    focusSelectedFolder(true)
+  }
+
+  /**
+   * Read the typed location as `<folder to list>/<name being typed>`:
+   * `…/rust/hypr` lists `rust` filtered by `hypr`; `…/hyprmin/` lists
+   * `hyprmin`. A bare name filters the current folder (`dir: null`).
+   * `null` means an incomplete or unusable location (`sworm://de`, `a/b`).
+   */
+  function parseDraft(value: string): { dir: string | null; leaf: string } | null {
+    const remote = /^sworm:\/\/([^/]+)(\/.*)$/.exec(value)
+    const path = remote ? remote[2] : value
+    if (!path.startsWith('/')) {
+      return path.includes('/') || value.startsWith('sworm:') || value.startsWith('~')
+        ? null
+        : { dir: null, leaf: value }
+    }
+    const slash = path.lastIndexOf('/')
+    const prefix = remote ? `sworm://${remote[1]}` : ''
+    return { dir: normalizeAbsolutePath(prefix + (path.slice(0, slash) || '/')), leaf: path.slice(slash + 1) }
+  }
+
+  async function startEdit(text: string, selectAll: boolean): Promise<void> {
+    if (!editing) beforeEdit = { containerPath, selectedPath }
+    editing = true
+    draft = text
+    pathError = null
+    typedDir = null
+    await tick()
+    pathInput?.focus()
+    if (selectAll) pathInput?.select()
+    else pathInput?.setSelectionRange(text.length, text.length)
+  }
+
+  /** `restore` (Escape) returns to where browsing was before typing began. */
+  function endEdit(restore: boolean): void {
+    if (restore && beforeEdit) {
+      containerPath = beforeEdit.containerPath
+      selectedPath = beforeEdit.selectedPath
+    }
+    beforeEdit = null
+    editing = false
     filterQuery = ''
+    pathError = null
+  }
+
+  function applyDraft(): void {
+    pathError = null
+    const parsed = parseDraft(draft)
+    filterQuery = parsed?.leaf ?? ''
+    if (parsed?.leaf.startsWith('.')) showHidden = true
+    if (parsed?.dir && parsed.dir !== typedDir) {
+      typedDir = parsed.dir
+      if (parsed.dir !== containerPath) {
+        containerPath = parsed.dir
+        selectedPath = null
+      }
+    }
+    // A new container selects its best match once listed.
+    const match = bestMatch(leftRows)
+    if (match) selectedPath = match.path
+  }
+
+  /** Tab: complete the typed name to the selected folder and step inside it. */
+  function completeDraft(): boolean {
+    const selected = leftRows.find((entry) => entry.path === selectedPath)
+    const parsed = parseDraft(draft)
+    if (!q || !parsed || !selected || !isMatch(selected)) return false
+    draft = parsed.dir ? `${draft.slice(0, draft.lastIndexOf('/') + 1)}${selected.name}/` : `${selected.path}/`
+    applyDraft()
+    return true
+  }
+
+  function submitDraft(): void {
+    const parsed = parseDraft(draft)
+    if (!parsed) {
+      pathError = 'Type a folder name, an absolute path, or a sworm://server/path location.'
+      return
+    }
+    if (containerEntriesPath !== containerPath) {
+      pathError = containerError ?? 'Still loading this folder.'
+      return
+    }
+    // A trailing slash names the listed folder itself.
+    if (parsed.dir && !parsed.leaf) {
+      void enterFolder(containerPath)
+      return
+    }
+    const selected = leftRows.find((entry) => entry.path === selectedPath)
+    if (!selected || !isMatch(selected)) {
+      pathError = `No folder matches “${parsed.leaf}”.`
+      return
+    }
+    void enterFolder(selected.path)
+  }
+
+  function handlePathKeyDown(event: KeyboardEvent): void {
+    const key = logicalKey(event)
+    if (key === 'Tab') {
+      if (event.shiftKey || !completeDraft()) return
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    // Every other key stays in the entry; only these reach the list.
+    event.stopPropagation()
+    if (key === 'Enter') {
+      event.preventDefault()
+      submitDraft()
+    } else if (key === 'Escape') {
+      event.preventDefault()
+      endEdit(true)
+      focusSelectedFolder(true)
+    } else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      event.preventDefault()
+      moveSelection(key === 'ArrowDown' ? 1 : -1)
+    } else if (event.ctrlKey && key.toLowerCase() === 'l') {
+      event.preventDefault()
+      pathInput?.select()
+    }
   }
 
   function focusSelectedFolder(force = false): void {
     void tick().then(() => {
       if (!isFolderSwitcherOpen()) return
-      if (!force && document.activeElement === inputRef) return
+      if (!force && document.activeElement === pathInput) return
       const selectedIndex = leftRows.findIndex((entry) => entry.path === selectedPath)
       const index = selectedIndex >= 0 ? selectedIndex : 0
       const row = surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${index}"]`)
@@ -128,16 +236,17 @@
     })
   }
 
+  /** Steps through matching rows only; focus stays in the entry while typing. */
   function moveSelection(delta: number): void {
-    if (leftRows.length === 0) return
-    const currentIndex = leftRows.findIndex((entry) => entry.path === selectedPath)
-    const base = currentIndex >= 0 ? currentIndex : 0
-    const nextIndex = Math.max(0, Math.min(leftRows.length - 1, base + delta))
-    selectedPath = leftRows[nextIndex].path
+    const rows = q ? leftRows.filter(isMatch) : leftRows
+    if (rows.length === 0) return
+    const currentIndex = rows.findIndex((entry) => entry.path === selectedPath)
+    const next = rows[Math.max(0, Math.min(rows.length - 1, Math.max(currentIndex, 0) + delta))]
+    selectedPath = next.path
     void tick().then(() => {
-      const row = surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${nextIndex}"]`)
+      const row = surfaceRef?.querySelector<HTMLElement>(`[data-left-index="${leftRows.indexOf(next)}"]`)
       row?.scrollIntoView({ block: 'nearest' })
-      row?.querySelector<HTMLButtonElement>('button')?.focus()
+      if (!editing) row?.querySelector<HTMLButtonElement>('button')?.focus()
     })
   }
 
@@ -165,23 +274,25 @@
       return
     }
 
-    if (
-      key === '/' &&
-      !(
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      )
-    ) {
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && key.toLowerCase() === 'l') {
       event.preventDefault()
-      inputRef?.focus()
+      void startEdit(locationPath, true)
+      return
+    }
+
+    // Type-ahead: any printable key starts typing a location in the listed
+    // folder; `/` starts an absolute path.
+    if (key.length === 1 && key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault()
+      void startEdit(key === '/' ? '/' : `${containerPath.replace(/\/$/, '')}/${key}`, false)
+      applyDraft()
       return
     }
 
     if (
       key === 'Enter' &&
       target instanceof Element &&
-      (target.closest('a[href]') || target.closest('[data-recent-chip]'))
+      (target.closest('a[href]') || target.closest('button:not([tabindex="-1"])'))
     ) {
       return
     }
@@ -192,9 +303,8 @@
       return
     }
 
-    const filterIsEditing = target === inputRef && filterQuery.length > 0
     if (key === 'ArrowRight') {
-      if (filterIsEditing || !selectedPath) return
+      if (!selectedPath) return
       const targetPath = selectedPath
       if (selectedEntriesPath === targetPath) {
         if (selectedEntries.some((entry) => entry.is_dir)) {
@@ -217,23 +327,20 @@
       return
     }
     if (key === 'ArrowLeft') {
-      if (filterIsEditing) return
       event.preventDefault()
       goUp()
       return
     }
     if (key === 'Enter') {
-      const target = typedLocation ?? selectedPath
-      if (!target) return
+      if (!selectedPath) return
       event.preventDefault()
-      void enterFolder(target)
+      void enterFolder(selectedPath)
       return
     }
     if (key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
-      if (filterQuery.length > 0) filterQuery = ''
-      else setFolderSwitcherOpen(false)
+      setFolderSwitcherOpen(false)
     }
   }
 
@@ -248,9 +355,10 @@
       }
       containerPath = initialPath ? folderDirname(initialPath) : '/'
       selectedPath = initialPath
-      filterQuery = ''
+      endEdit(false)
+      // The surface takes keys (type-ahead, arrows) before the list loads.
       void tick().then(() => {
-        if (isFolderSwitcherOpen()) inputRef?.focus()
+        if (isFolderSwitcherOpen()) surfaceRef?.focus()
       })
       return () => {
         void tick().then(() => {
@@ -294,9 +402,7 @@
         containerEntriesPath = resolved.path
         const folders = entries.filter((entry) => entry.is_dir)
         const selected = folders.find((entry) => entry.path === selectedPath)
-        if (!selected || !isMatch(selected)) {
-          selectedPath = folders.find(isMatch)?.path ?? selected?.path ?? folders[0]?.path ?? null
-        }
+        selectedPath = (bestMatch(folders) ?? selected ?? folders[0])?.path ?? null
         focusSelectedFolder()
       } catch (cause) {
         if (!isCurrent()) return
@@ -324,16 +430,6 @@
       } catch (cause) {
         if (!isCurrent()) return
         selectedError = getErrorMessage(cause)
-      }
-    })
-  })
-
-  $effect(() => {
-    void q
-    untrack(() => {
-      const selected = leftRows.find((entry) => entry.path === selectedPath)
-      if (selected && !isMatch(selected)) {
-        selectedPath = leftRows.find(isMatch)?.path ?? selectedPath
       }
     })
   })
@@ -416,23 +512,23 @@
       onkeydown={handleKeyDown}
     >
       <div class="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-2">
-        <BreadcrumbRoot class="flex-1 overflow-hidden font-mono text-sm">
-          <BreadcrumbList>
-            {#each crumbs as crumb, index (crumb.path)}
-              <BreadcrumbItem>
-                {#if index === crumbs.length - 1}
-                  <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
-                {:else}
-                  <BreadcrumbLink href={crumb.path} onclick={(event) => selectCrumb(event, index)}>
-                    {crumb.label}
-                  </BreadcrumbLink>
-                {/if}
-              </BreadcrumbItem>
-              {#if index < crumbs.length - 1}<BreadcrumbSeparator />{/if}
-            {/each}
-          </BreadcrumbList>
-        </BreadcrumbRoot>
+        <FolderPathBar
+          path={locationPath}
+          {editing}
+          bind:draft
+          bind:input={pathInput}
+          error={pathError}
+          onnavigate={navigateTo}
+          onedit={() => void startEdit(locationPath, true)}
+          oninput={applyDraft}
+          onkeydown={handlePathKeyDown}
+          onblur={() => {
+            // Leaving the window keeps the draft; clicking elsewhere in the switcher ends it.
+            if (document.hasFocus()) endEdit(false)
+          }}
+        />
         <IconButton
+          size="md"
           tooltip={showHidden ? 'Hide hidden folders' : 'Show hidden folders'}
           active={showHidden}
           onclick={() => {
@@ -444,35 +540,13 @@
         </IconButton>
       </div>
 
-      {#if recents.length > 0}
-        <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-edge bg-surface px-3 py-1.5">
-          <span class="text-xs font-semibold tracking-wide text-muted uppercase">Recent</span>
-          {#each recents as path (path)}
-            <Button variant="outline" size="xs" data-recent-chip title={path} onclick={() => void enterFolder(path)}>
-              <FolderOpen size={10} />
-              {basename(path) || '/'}
-            </Button>
-          {/each}
-        </div>
-      {/if}
-
       <div class="grid h-72 min-h-0 shrink grid-cols-2">
         <section class="flex min-h-0 flex-col border-r border-edge bg-surface" aria-label="Folders">
           <div class="section-label shrink-0 font-mono normal-case">
             {containerPath === '/' ? '/' : `${basename(containerPath)}/`}
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto py-1" aria-live="polite">
-            {#if typedLocation}
-              <button
-                type="button"
-                class="flex w-full items-center gap-1.5 border-none bg-transparent py-0.5 pr-2 pl-2.5 text-left text-sm text-muted hover:bg-surface focus-visible:shadow-focus-ring focus-visible:outline-none"
-                style:height="22px"
-                onclick={() => void enterFolder(typedLocation)}
-              >
-                <FolderOpen size={12} class="shrink-0 text-accent" />
-                <span class="truncate font-mono text-fg">{typedLocation}</span>
-              </button>
-            {:else if containerLoad.loading && leftRows.length === 0}
+            {#if containerLoad.loading && leftRows.length === 0}
               <div class="px-3 py-2 text-sm text-subtle">Loading…</div>
             {:else if containerError}
               <div class="px-3 py-2 text-sm text-danger">{containerError}</div>
@@ -483,15 +557,6 @@
                 {@render entryRow(entry, 'left', index)}
               {/each}
             {/if}
-          </div>
-          <div class="shrink-0 border-t border-edge px-2 py-1.5">
-            <Input
-              bind:ref={inputRef}
-              bind:value={filterQuery}
-              placeholder="Filter folders, or type a path"
-              aria-label="Filter folders or open a path"
-              class="h-7 py-1 text-sm"
-            />
           </div>
         </section>
 
@@ -535,6 +600,8 @@
           Navigate
         </span>
         <span class="flex items-center gap-1.5"><Kbd class="h-5 px-1">Enter</Kbd> Open Folder</span>
+        <span class="flex items-center gap-1.5"><Kbd class="h-5 px-1">Ctrl+L</Kbd> Type Path</span>
+        <span class="flex items-center gap-1.5"><Kbd class="h-5 px-1">Tab</Kbd> Complete</span>
         <span class="flex items-center gap-1.5"><Kbd class="h-5 px-1">Esc</Kbd> Close</span>
       </div>
     </div>

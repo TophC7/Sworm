@@ -1,21 +1,21 @@
 <script lang="ts">
-  import { iconButtonVariants } from '$lib/components/ui/button'
+  import { StatusChip } from '$lib/components/ui/status-chip'
   import { BellIcon } from '$lib/icons/lucideExports'
   import {
     getNotifications,
     isNotificationCenterOpen,
     toggleNotificationCenter
   } from '$lib/features/notifications/state.svelte'
-  import { cn } from '$lib/utils/cn'
 
   let notifications = $derived(getNotifications())
   let expanded = $derived(isNotificationCenterOpen())
   let hasNotifications = $derived(notifications.length > 0)
 </script>
 
-<button
-  type="button"
-  class={cn(iconButtonVariants({ size: 'sm', active: expanded }), 'relative')}
+<StatusChip
+  shape="circle"
+  active={expanded}
+  class="relative"
   aria-label={expanded ? 'Hide notifications' : 'Show notifications'}
   aria-controls="notifications-surface"
   aria-expanded={expanded}
@@ -24,6 +24,6 @@
 >
   <BellIcon size={11} />
   {#if hasNotifications}
-    <span class="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent"></span>
+    <span class="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-accent"></span>
   {/if}
-</button>
+</StatusChip>

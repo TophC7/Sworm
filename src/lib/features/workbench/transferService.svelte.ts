@@ -234,24 +234,11 @@ function handleTransferAborted({ transferId, reason, ptyLost }: TransferAbortedE
 async function setupListeners(): Promise<UnlistenFn[]> {
   const window = getCurrentWindow()
   return Promise.all([
-    window.listen<TransferRequestEvent>(
-      'sworm://tab-transfer-request',
-      (event) => void handleTransferRequest(event.payload)
-    ),
-    window.listen<TransferImportEvent>(
-      'sworm://tab-transfer-import',
-      (event) => void handleTransferImport(event.payload)
-    ),
-    window.listen<TransferCommittedEvent>('sworm://tab-transfer-committed', (event) =>
-      handleTransferCommitted(event.payload)
-    ),
-    window.listen<TransferFinalizedEvent>('sworm://tab-transfer-finalized', (event) =>
-      handleTransferFinalized(event.payload)
-    ),
-    window.listen<TransferAbortedEvent>(
-      'sworm://tab-transfer-aborted',
-      (event) => void handleTransferAborted(event.payload)
-    )
+    window.listen<TransferRequestEvent>('tab-transfer-request', (event) => void handleTransferRequest(event.payload)),
+    window.listen<TransferImportEvent>('tab-transfer-import', (event) => void handleTransferImport(event.payload)),
+    window.listen<TransferCommittedEvent>('tab-transfer-committed', (event) => handleTransferCommitted(event.payload)),
+    window.listen<TransferFinalizedEvent>('tab-transfer-finalized', (event) => handleTransferFinalized(event.payload)),
+    window.listen<TransferAbortedEvent>('tab-transfer-aborted', (event) => void handleTransferAborted(event.payload))
   ])
 }
 

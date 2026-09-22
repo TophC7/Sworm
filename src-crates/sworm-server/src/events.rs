@@ -15,7 +15,10 @@ pub(crate) fn to_wire(event: HostEvent) -> Option<HostEventWire> {
         HostEvent::TasksChanged(folder) => Some(HostEventWire::TasksChanged(folder)),
         HostEvent::NixChanged(folder) => Some(HostEventWire::NixChanged(folder)),
         HostEvent::IssuesChanged(folder) => Some(HostEventWire::IssuesChanged(folder)),
-        HostEvent::FileMoved { .. } | HostEvent::FileDeleted(_) => None,
+        HostEvent::FileMoved { .. }
+        | HostEvent::FileDeleted(_)
+        | HostEvent::RemoteStatus { .. }
+        | HostEvent::RemoteRunStatus { .. } => None,
     }
 }
 

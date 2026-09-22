@@ -20,6 +20,7 @@
   let containerEl: HTMLDivElement | undefined = $state(undefined)
   let manager: TerminalSessionManager | null = $state(null)
   let error = $state<string | null>(null)
+  let reconnecting = $state(false)
   let ended = $derived(tab.status === 'exited' || tab.status === 'failed')
   let canAcceptDrop = $derived(!tab.locked && tab.status === 'running')
   let dropActive = $derived(canAcceptDrop && isTerminalDropActive(tab.id))
@@ -32,12 +33,16 @@
   let startTimer: ReturnType<typeof setTimeout> | null = null
   let cleanupEventListener: (() => void) | null = null
   let cleanupErrorListener: (() => void) | null = null
+  let cleanupReconnectListener: (() => void) | null = null
 
   function clearManagerListeners() {
     cleanupEventListener?.()
     cleanupEventListener = null
     cleanupErrorListener?.()
     cleanupErrorListener = null
+    cleanupReconnectListener?.()
+    cleanupReconnectListener = null
+    reconnecting = false
   }
 
   function cancelStartTimer() {
@@ -57,6 +62,9 @@
     })
     cleanupErrorListener = nextManager.registerErrorListener((message) => {
       error = message
+    })
+    cleanupReconnectListener = nextManager.registerReconnectListener((value) => {
+      reconnecting = value
     })
   }
 
@@ -146,7 +154,16 @@
   }
 </script>
 
-<div class="flex min-h-0 flex-1 flex-col bg-ground">
+<div class="relative flex min-h-0 flex-1 flex-col bg-ground">
+  {#if reconnecting}
+    <div
+      role="status"
+      class="pointer-events-none absolute top-2 right-2 z-20 flex items-center gap-1.5 rounded border border-edge bg-raised px-2 py-1 text-xs text-muted"
+    >
+      <span class="h-1.5 w-1.5 rounded-full bg-warning"></span>
+      Reconnecting…
+    </div>
+  {/if}
   {#if error}
     <div class="border-b border-danger-border bg-danger-bg px-2.5 py-1.5 text-base text-danger">
       {error}

@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use std::collections::HashMap;
 use sworm_core::errors::ApiError;
 use sworm_protocol::files::{
-    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, PathList,
+    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, FileStat, PathList,
 };
 
 #[tauri::command]
@@ -12,6 +12,15 @@ pub async fn file_read(
     state: tauri::State<'_, AppState>,
 ) -> Result<FileContent, ApiError> {
     state.router.file_read(project_path, file_path).await
+}
+
+#[tauri::command]
+pub async fn file_stat(
+    project_path: String,
+    file_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FileStat, ApiError> {
+    state.router.file_stat(project_path, file_path).await
 }
 
 #[tauri::command]
