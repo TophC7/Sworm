@@ -825,9 +825,8 @@ impl WorkspaceRouter {
                 RemoteRunKind::Task => self.inner.host.tasks_stop(run_id).await,
             };
         };
-        if let Some(stopping) = &info.stopping {
-            stopping.store(true, std::sync::atomic::Ordering::Release);
-        }
+        info.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
         let (remote_result, local_result) =
             tokio::join!(self.inner.stop_backend(&run_id, info.kind), async {
                 match info.kind {

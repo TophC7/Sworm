@@ -49,20 +49,18 @@ struct RemoteRun {
     server: String,
     kind: RemoteRunKind,
     generation: u64,
-    // Completion and detach retain only routing metadata for later status/stop.
-    stream: Option<RemoteRunStream>,
-}
-
-struct RemoteRunStream {
+    // Outlives the stream: a killed run stays unstartable until its daemon
+    // stop settles and `cancel` removes the entry.
     stopping: Arc<AtomicBool>,
-    task: JoinHandle<()>,
+    // Completion and detach retain only routing metadata for later status/stop.
+    stream: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct RemoteRunInfo {
     pub server: String,
     pub kind: RemoteRunKind,
     pub generation: u64,
-    pub stopping: Option<Arc<AtomicBool>>,
+    pub stopping: Arc<AtomicBool>,
 }
 
 pub(crate) struct RemoteRunService {
@@ -83,8 +81,7 @@ impl RemoteRunService {
             .runs
             .lock()
             .get(run_id)
-            .and_then(|run| run.stream.as_ref())
-            .is_some_and(|stream| stream.stopping.load(Ordering::Acquire))
+            .is_some_and(|run| run.stopping.load(Ordering::Acquire))
         {
             return Err(ApiError::Pty(format!(
                 "remote PTY session is stopping: {run_id}"
@@ -112,8 +109,8 @@ impl RemoteRunService {
         }
         self.ensure_startable(&run_id)?;
         let stale = self.runs.lock().remove(&run_id);
-        if let Some(stream) = stale.and_then(|run| run.stream) {
-            stream.task.abort();
+        if let Some(task) = stale.and_then(|run| run.stream) {
+            task.abort();
         }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -159,7 +156,8 @@ impl RemoteRunService {
                 server: server.to_string(),
                 kind,
                 generation,
-                stream: Some(RemoteRunStream { stopping, task }),
+                stopping,
+                stream: Some(task),
             },
         );
         debug_assert!(_old.is_none(), "host adoption rejected duplicate run ids");
@@ -172,10 +170,7 @@ impl RemoteRunService {
             server: run.server.clone(),
             kind: run.kind,
             generation: run.generation,
-            stopping: run
-                .stream
-                .as_ref()
-                .map(|stream| Arc::clone(&stream.stopping)),
+            stopping: Arc::clone(&run.stopping),
         })
     }
 
@@ -194,8 +189,8 @@ impl RemoteRunService {
             }
             runs.remove(run_id)
         };
-        if let Some(stream) = run.and_then(|run| run.stream) {
-            stream.task.abort();
+        if let Some(task) = run.and_then(|run| run.stream) {
+            task.abort();
         }
     }
 
@@ -213,8 +208,8 @@ impl RemoteRunService {
 impl Drop for RemoteRunService {
     fn drop(&mut self) {
         for (_, run) in self.runs.get_mut().drain() {
-            if let Some(stream) = run.stream {
-                stream.task.abort();
+            if let Some(task) = run.stream {
+                task.abort();
             }
         }
     }

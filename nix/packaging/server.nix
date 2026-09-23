@@ -121,8 +121,8 @@ let
       EOF
 
             mkdir -p "$pkgdir/usr/lib/sworm-server/bin" "$pkgdir/usr/lib/sworm-server/lib" "$pkgdir/usr/bin"
-            cp -r "${bundle}/bin/"* "$pkgdir/usr/lib/sworm-server/bin/"
-            cp -r "${bundle}/lib/"* "$pkgdir/usr/lib/sworm-server/lib/"
+            cp -r "${bundle}/bin/." "$pkgdir/usr/lib/sworm-server/bin/"
+            cp -r "${bundle}/lib/." "$pkgdir/usr/lib/sworm-server/lib/"
 
             cat > "$pkgdir/usr/bin/sworm-server" <<'EOF'
       #!/bin/sh
@@ -169,8 +169,8 @@ let
       LIB_DIR="$PREFIX/lib/sworm-server"
 
       mkdir -p "$BIN_DIR" "$LIB_DIR/bin" "$LIB_DIR/lib"
-      cp -r "$SCRIPT_DIR/bin/"* "$LIB_DIR/bin/"
-      cp -r "$SCRIPT_DIR/lib/"* "$LIB_DIR/lib/"
+      cp -r "$SCRIPT_DIR/bin/." "$LIB_DIR/bin/"
+      cp -r "$SCRIPT_DIR/lib/." "$LIB_DIR/lib/"
 
       cat > "$BIN_DIR/sworm-server" <<INNER
       #!/bin/sh
