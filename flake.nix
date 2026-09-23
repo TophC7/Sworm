@@ -106,6 +106,10 @@
       });
 
       nixosModules.sworm-server = import ./nix/modules/sworm-server.nix { inherit self; };
+      homeManagerModules = rec {
+        sworm = import ./nix/modules/sworm-home.nix { inherit self; };
+        default = sworm;
+      };
 
       devShells = forAllSystems (
         system:
