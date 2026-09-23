@@ -1,0 +1,37 @@
+{
+  "id": "dev.sworm.pyright",
+  "label": "Python",
+  "contributes": {
+    "languages": [
+      {
+        "id": "python",
+        "label": "Python",
+        "aliases": ["py"],
+        "extensions": [".py", ".pyi"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "pyright",
+        "label": "Pyright",
+        "applies_to_languages": ["python"],
+        "runtime": {
+          "kind": "host_binary",
+          "command": "pyright-langserver"
+        },
+        "args": ["--stdio"],
+        "install_hint": "Install `pyright` and ensure `pyright-langserver` is on PATH.",
+        "document_selectors": [
+          {
+            "language": "python",
+            "extensions": [".py", ".pyi"]
+          }
+        ],
+        "settings": {
+          "section": "python",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}

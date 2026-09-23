@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pyright Language Server Settings",
+  "description": "Settings forwarded to pyright-langserver under the `python` and `pyright` sections. See https://microsoft.github.io/pyright/#/settings for the upstream reference. Only commonly tuned keys are defined here; additional properties are allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "python": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pythonPath": {
+          "type": "string",
+          "description": "Path to the Python interpreter used to resolve installed packages."
+        },
+        "venvPath": {
+          "type": "string",
+          "description": "Directory containing virtual environments; combine with `venv` in pyrightconfig.json."
+        },
+        "analysis": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "typeCheckingMode": {
+              "type": "string",
+              "enum": ["off", "basic", "standard", "strict"],
+              "default": "standard"
+            },
+            "diagnosticMode": {
+              "type": "string",
+              "enum": ["openFilesOnly", "workspace"],
+              "default": "openFilesOnly"
+            },
+            "autoSearchPaths": { "type": "boolean", "default": true },
+            "useLibraryCodeForTypes": { "type": "boolean", "default": true },
+            "extraPaths": {
+              "type": "array",
+              "description": "Additional import search paths.",
+              "items": { "type": "string" }
+            },
+            "stubPath": {
+              "type": "string",
+              "description": "Directory containing custom type stubs.",
+              "default": "typings"
+            },
+            "exclude": {
+              "type": "array",
+              "description": "Paths or globs excluded from analysis.",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "pyright": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "disableOrganizeImports": { "type": "boolean", "default": false },
+        "disableTaggedHints": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

@@ -40,11 +40,32 @@ const BUILTIN_ASSETS: &[BuiltinAsset] = &[
         )],
     },
     BuiltinAsset {
+        id: "dev.sworm.fish",
+        manifest: include_str!("../../builtins/dev.sworm.fish/builtin.json"),
+        resources: &[],
+    },
+    BuiltinAsset {
         id: "dev.sworm.nix",
         manifest: include_str!("../../builtins/dev.sworm.nix/builtin.json"),
         resources: &[(
             "settings.schema.json",
             include_str!("../../builtins/dev.sworm.nix/settings.schema.json"),
+        )],
+    },
+    BuiltinAsset {
+        id: "dev.sworm.pyright",
+        manifest: include_str!("../../builtins/dev.sworm.pyright/builtin.json"),
+        resources: &[(
+            "settings.schema.json",
+            include_str!("../../builtins/dev.sworm.pyright/settings.schema.json"),
+        )],
+    },
+    BuiltinAsset {
+        id: "dev.sworm.rust",
+        manifest: include_str!("../../builtins/dev.sworm.rust/builtin.json"),
+        resources: &[(
+            "settings.schema.json",
+            include_str!("../../builtins/dev.sworm.rust/settings.schema.json"),
         )],
     },
     BuiltinAsset {
@@ -523,20 +544,16 @@ fn build_settings_pages(
         });
     }
 
-    let mut auto_languages = languages
+    for language in languages
         .iter()
         .filter(|language| !claimed_language_ids.contains(language.id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    auto_languages.sort_by(|left, right| left.label.cmp(&right.label).then(left.id.cmp(&right.id)));
-
-    for language in auto_languages {
+    {
         let language_ids = vec![language.id.clone()];
         pages.push(BuiltinSettingsPage {
             id: format!("language:{}", language.id),
             kind: BuiltinSettingsPageKind::Language,
             label: language.label.clone(),
-            icon_filename: icon_filename_for_language(&language),
+            icon_filename: icon_filename_for_language(language),
             server_definition_ids: server_definition_ids_for_languages(
                 server_definitions,
                 &language_ids,
@@ -546,6 +563,13 @@ fn build_settings_pages(
         });
     }
 
+    // Overlay and auto pages share one nav list; order it by label so
+    // overlays don't float to the top in declaration order.
+    pages.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     pages
 }
 
@@ -724,19 +748,32 @@ mod tests {
     #[test]
     fn builds_expected_settings_pages() {
         let catalog = load_catalog().expect("catalog should load");
-        let page_ids = catalog
-            .catalog
-            .settings
-            .pages
+        let pages = &catalog.catalog.settings.pages;
+        let page_ids = pages
             .iter()
             .map(|page| page.id.as_str())
             .collect::<Vec<_>>();
 
-        assert!(page_ids.contains(&"language:javascript-typescript"));
-        assert!(page_ids.contains(&"language:json"));
-        assert!(page_ids.contains(&"language:css"));
-        assert!(page_ids.contains(&"language:svelte"));
-        assert!(page_ids.contains(&"language:html"));
-        assert!(page_ids.contains(&"language:nix"));
+        for expected in [
+            "language:javascript-typescript",
+            "language:json",
+            "language:css",
+            "language:svelte",
+            "language:html",
+            "language:nix",
+            "language:python",
+            "language:fish",
+            "language:rust",
+        ] {
+            assert!(page_ids.contains(&expected), "missing page {expected}");
+        }
+        assert!(
+            pages.windows(2).all(|pair| pair[0].label <= pair[1].label),
+            "pages not sorted by label: {:?}",
+            pages
+                .iter()
+                .map(|page| page.label.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 }

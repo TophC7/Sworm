@@ -1,0 +1,37 @@
+{
+  "id": "dev.sworm.rust",
+  "label": "Rust",
+  "contributes": {
+    "languages": [
+      {
+        "id": "rust",
+        "label": "Rust",
+        "aliases": ["rs"],
+        "extensions": [".rs"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "rust-analyzer",
+        "label": "rust-analyzer",
+        "applies_to_languages": ["rust"],
+        "runtime": {
+          "kind": "host_binary",
+          "command": "rust-analyzer"
+        },
+        "args": [],
+        "install_hint": "Install `rust-analyzer` and ensure `rust-analyzer` and `cargo` are on PATH.",
+        "document_selectors": [
+          {
+            "language": "rust",
+            "extensions": [".rs"]
+          }
+        ],
+        "settings": {
+          "section": "rust-analyzer",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}

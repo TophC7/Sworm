@@ -24,12 +24,14 @@ pkgs.mkShell {
     pkgs.forgejo-mcp
     pkgs.git
     pkgs.fish
+    pkgs.fish-lsp
     pkgs.gsettings-desktop-schemas
     pkgs.jq
     pkgs.biome
     pkgs.nixfmt
     pkgs.nil
     pkgs.openssl
+    pkgs.pyright
     pkgs.ripgrep
     pkgs.rust-analyzer
     pkgs.rustc

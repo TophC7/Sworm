@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rust-analyzer Settings",
+  "description": "Settings forwarded under the `rust-analyzer` section. See https://rust-analyzer.github.io/book/configuration.html for the upstream reference. Only commonly tuned keys are defined here; additional properties are allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "rust-analyzer": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "cargo": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "features": {
+              "description": "Cargo features to activate: \"all\" or a list of feature names.",
+              "oneOf": [
+                { "type": "string", "enum": ["all"] },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            },
+            "allTargets": { "type": "boolean", "default": true },
+            "buildScripts": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "enable": { "type": "boolean", "default": true }
+              }
+            }
+          }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Cargo subcommand run on save (e.g. \"check\" or \"clippy\").",
+              "default": "check"
+            },
+            "extraArgs": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "checkOnSave": { "type": "boolean", "default": true },
+        "procMacro": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enable": { "type": "boolean", "default": true }
+          }
+        },
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "disabled": {
+              "type": "array",
+              "description": "rust-analyzer diagnostic codes to suppress.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "rustfmt": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "extraArgs": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "linkedProjects": {
+          "type": "array",
+          "description": "Paths to Cargo.toml or rust-project.json files to load when not discovered automatically.",
+          "items": { "type": ["string", "object"] }
+        }
+      }
+    }
+  }
+}
