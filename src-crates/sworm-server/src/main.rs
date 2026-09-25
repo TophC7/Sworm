@@ -63,6 +63,13 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
             tracing::info!("listening on {}", handle.local_addr);
+            if let Some(addr) = handle.web_addr {
+                tracing::warn!(%addr, "web has no authentication and grants the server OS user's filesystem and process authority");
+                if !addr.ip().is_loopback() {
+                    tracing::warn!(%addr, "web is exposed on a non-loopback address without authentication");
+                }
+                tracing::info!("web listening on http://{addr}");
+            }
             tracing::info!("fingerprint {}", handle.fingerprint);
             let signal_result = wait_for_shutdown().await;
             handle.shutdown().await;

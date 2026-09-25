@@ -1,4 +1,8 @@
-use crate::{config, dispatch, events, lsp_stream, pty_stream};
+use crate::{
+    config, dispatch, events, lsp_stream, pty_stream,
+    stream::{StreamReader, StreamWriter},
+    web,
+};
 use anyhow::Context;
 use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use sworm_core::{services::completed_runs::CompletedRunStore, Host};
@@ -36,6 +40,7 @@ pub struct ServeOptions {
 
 pub struct ServerHandle {
     pub local_addr: SocketAddr,
+    pub web_addr: Option<SocketAddr>,
     pub fingerprint: Fingerprint,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
@@ -52,6 +57,15 @@ impl ServerHandle {
 
 pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let loaded = config::load(&options.config_dir)?;
+    let web = if let Some(config) = &loaded.web {
+        let assets = config.resolve_assets(&options.config_dir)?;
+        let listener = tokio::net::TcpListener::bind(config.bind)
+            .await
+            .with_context(|| format!("bind web server to {}", config.bind))?;
+        Some((listener, assets))
+    } else {
+        None
+    };
     let listen = options.listen.unwrap_or(loaded.listen);
     let identity = Identity::load_or_generate(&options.config_dir, "server")?;
     let fingerprint = identity.fingerprint();
@@ -100,25 +114,94 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
         loaded.auth_token,
         host_events,
     ));
+    let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let request_permits = Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS));
+    let web_addr = web
+        .as_ref()
+        .map(|(listener, _)| listener.local_addr())
+        .transpose()?;
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(run_server(endpoint, host, context, shutdown_rx));
+    let task = tokio::spawn(supervise(
+        endpoint,
+        web,
+        host,
+        context,
+        permits,
+        request_permits,
+        shutdown.clone(),
+        shutdown_rx,
+    ));
 
     Ok(ServerHandle {
         local_addr,
+        web_addr,
         fingerprint,
         shutdown,
         task,
     })
 }
 
+async fn supervise(
+    endpoint: quinn::Endpoint,
+    web_listener: Option<(tokio::net::TcpListener, PathBuf)>,
+    host: Arc<Host>,
+    context: Arc<dispatch::ServerContext>,
+    permits: Arc<Semaphore>,
+    request_permits: Arc<Semaphore>,
+    stop: watch::Sender<bool>,
+    shutdown: watch::Receiver<bool>,
+) {
+    let mut quic = tokio::spawn(run_server(
+        endpoint,
+        Arc::clone(&host),
+        Arc::clone(&context),
+        Arc::clone(&permits),
+        Arc::clone(&request_permits),
+        stop.clone(),
+        shutdown.clone(),
+    ));
+    if let Some((listener, assets)) = web_listener {
+        let mut web = tokio::spawn(web::run(
+            listener,
+            assets,
+            web::WebState::new(
+                Arc::clone(&host),
+                Arc::clone(&context),
+                permits,
+                request_permits,
+            ),
+            stop.clone(),
+            shutdown,
+        ));
+        tokio::select! {
+            result = &mut quic => {
+                if let Err(error) = result { tracing::error!(%error, "QUIC listener failed"); }
+                let _ = stop.send(true);
+                if let Err(error) = web.await { tracing::error!(%error, "web listener failed"); }
+            }
+            result = &mut web => {
+                if let Err(error) = result { tracing::error!(%error, "web listener failed"); }
+                let _ = stop.send(true);
+                if let Err(error) = quic.await { tracing::error!(%error, "QUIC listener failed"); }
+            }
+        }
+    } else if let Err(error) = quic.await {
+        tracing::error!(%error, "QUIC listener failed");
+    }
+    if let Err(error) = tokio::task::spawn_blocking(move || host.shutdown()).await {
+        tracing::error!(%error, "host shutdown task failed");
+    }
+}
+
 async fn run_server(
     endpoint: quinn::Endpoint,
     host: Arc<Host>,
     context: Arc<dispatch::ServerContext>,
+    permits: Arc<Semaphore>,
+    request_permits: Arc<Semaphore>,
+    stop: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let request_permits = Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS));
     let mut connections = JoinSet::new();
 
     loop {
@@ -129,7 +212,10 @@ async fn run_server(
                 }
             }
             incoming = endpoint.accept() => {
-                let Some(incoming) = incoming else { break };
+                let Some(incoming) = incoming else {
+                    let _ = stop.send(true);
+                    break;
+                };
                 let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
                     incoming.refuse();
                     continue;
@@ -173,9 +259,7 @@ async fn run_server(
         }
     }
     endpoint.wait_idle().await;
-    if let Err(error) = tokio::task::spawn_blocking(move || host.shutdown()).await {
-        tracing::error!(%error, "host shutdown task failed");
-    }
+    // Host shutdown belongs to the combined supervisor, after both listeners drain.
 }
 
 async fn run_connection(
@@ -202,7 +286,7 @@ async fn run_connection(
         }
     };
     let session = Arc::new(Mutex::new(dispatch::Session {
-        fingerprint,
+        fingerprint: Some(fingerprint),
         authorized,
         subscriber_id: uuid::Uuid::new_v4().to_string(),
         folders: HashSet::new(),
@@ -255,6 +339,14 @@ async fn run_connection(
         }
     }
 
+    cleanup_session(&host, &context, &session).await;
+}
+
+pub(crate) async fn cleanup_session(
+    host: &Arc<Host>,
+    context: &Arc<dispatch::ServerContext>,
+    session: &Arc<Mutex<dispatch::Session>>,
+) {
     let (folders, subscriber_id) = {
         let mut session = session.lock().await;
         if let Some((_, stop)) = session.events.take() {
@@ -267,12 +359,13 @@ async fn run_connection(
     };
     for folder in folders {
         if let Err(error) = context
-            .release_folder(&host, folder, subscriber_id.clone())
+            .release_folder(host, folder, subscriber_id.clone())
             .await
         {
             tracing::error!(?error, "connection folder release failed");
         }
     }
+    let host = Arc::clone(host);
     if let Err(error) = tokio::task::spawn_blocking(move || {
         host.file_watchers.release_subscriber(&subscriber_id);
     })
@@ -336,7 +429,16 @@ async fn process_stream(
                 }
                 return;
             }
-            crate::file_stream::run(host, project_path, file_path, version, send, shutdown).await;
+            crate::file_stream::run(
+                host,
+                project_path,
+                file_path,
+                version,
+                StreamWriter::quic(send, Some(connection)),
+                StreamReader::quic(recv),
+                shutdown,
+            )
+            .await;
         }
         Open::Rpc(request) => {
             // Bound RPC execution only. Stream intake and response backpressure hold no permit.
@@ -384,7 +486,13 @@ async fn process_stream(
                 return;
             }
             pty_stream::run(
-                host, context, run_id, cursor, connection, send, recv, shutdown,
+                host,
+                context,
+                run_id,
+                cursor,
+                StreamWriter::quic(send, Some(connection)),
+                StreamReader::quic(recv),
+                shutdown,
             )
             .await;
         }
@@ -404,7 +512,16 @@ async fn process_stream(
                 }
                 return;
             };
-            lsp_stream::run(host, context, session_id, owner, send, recv, shutdown).await;
+            lsp_stream::run(
+                host,
+                context,
+                session_id,
+                owner,
+                StreamWriter::quic(send, Some(connection)),
+                StreamReader::quic(recv),
+                shutdown,
+            )
+            .await;
         }
     }
 }

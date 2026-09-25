@@ -5,6 +5,7 @@
   version,
   workspaceSourceFilter,
   src,
+  webFrontend,
 }:
 let
   serverArgs = {
@@ -38,11 +39,16 @@ let
         .package.version;
     }
   );
+  unwrapped = craneLib.buildPackage (
+    serverArgs
+    // {
+      cargoArtifacts = serverCargoArtifacts;
+    }
+  );
 in
-craneLib.buildPackage (
-  serverArgs
-  // {
-    cargoArtifacts = serverCargoArtifacts;
+pkgs.runCommand "sworm-server-${version}"
+  {
+    passthru = { inherit unwrapped; };
     meta = {
       description = "Headless Sworm daemon for remote workspaces";
       license = lib.licenses.agpl3Plus;
@@ -50,4 +56,14 @@ craneLib.buildPackage (
       mainProgram = "sworm-server";
     };
   }
-)
+  ''
+    mkdir -p "$out/bin"
+    cat > "$out/bin/sworm-server" <<'EOF'
+    #!${pkgs.runtimeShell}
+    if [ -z "''${SWORM_WEB_ASSETS_DIR+x}" ]; then
+      export SWORM_WEB_ASSETS_DIR="${webFrontend}"
+    fi
+    exec "${unwrapped}/bin/sworm-server" "$@"
+    EOF
+    chmod +x "$out/bin/sworm-server"
+  ''

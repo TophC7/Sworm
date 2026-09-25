@@ -57,6 +57,12 @@
             src = ./.;
           };
 
+          webFrontend = pkgs.callPackage ./nix/pkgs/frontend.nix {
+            inherit b2n;
+            src = ./.;
+            target = "web";
+          };
+
           sworm = pkgs.callPackage ./nix/pkgs/sworm.nix {
             inherit
               craneLib
@@ -69,7 +75,7 @@
           };
 
           sworm-server = pkgs.callPackage ./nix/pkgs/sworm-server.nix {
-            inherit craneLib version;
+            inherit craneLib version webFrontend;
             workspaceSourceFilter = common.workspaceSourceFilter;
             src = ./.;
           };
@@ -80,7 +86,7 @@
           };
 
           serverPackaging = pkgs.callPackage ./nix/packaging/server.nix {
-            inherit sworm-server version;
+            inherit sworm-server version webFrontend;
             src = ./.;
           };
         in
@@ -90,6 +96,7 @@
             sworm
             sworm-server
             ;
+          frontend-web = webFrontend;
           deb = desktopPackaging.deb;
           generate-aur = desktopPackaging.generate-aur;
           server-deb = serverPackaging.deb;

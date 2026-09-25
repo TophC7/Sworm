@@ -216,15 +216,19 @@ class LspRegistry {
     await Promise.all(instances.map((instance) => this.stopInstance(instance)))
   }
 
-  async restartServerDefinition(serverDefinitionId: string): Promise<void> {
+  async restartServerDefinition(serverDefinitionId: string, isActive: () => boolean): Promise<void> {
+    if (!isActive()) return
     const matchingInstances = [...this.serverInstances.values()].filter(
       (instance) => instance.entry.server.server_definition_id === serverDefinitionId
     )
 
     await Promise.all(matchingInstances.map((instance) => this.stopInstance(instance)))
+    if (!isActive()) return
 
     await Promise.all(
-      [...this.documents.values()].map((document) => this.attachServerDefinition(document, serverDefinitionId))
+      [...this.documents.values()].map((document) =>
+        this.attachMatchingServers(document, (entry) => entry.server.server_definition_id === serverDefinitionId)
+      )
     )
   }
 
@@ -557,15 +561,16 @@ class LspRegistry {
     return stop
   }
 
-  private async attachServerDefinition(document: ManagedDocument, serverDefinitionId: string): Promise<void> {
-    await this.attachMatchingServers(document, (entry) => entry.server.server_definition_id === serverDefinitionId)
-  }
-
   private async attachMatchingServers(
     document: ManagedDocument,
     entryFilter: (entry: LspServerSettingsEntry) => boolean = () => true
   ): Promise<void> {
     const entries = await this.getFolderServerEntries(document.context.folderPath)
+    if (
+      this.documents.get(document.model.uri.toString()) !== document ||
+      !this.knownFolders.has(document.context.folderPath)
+    )
+      return
     const matches = entries
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => entryFilter(entry))
@@ -961,8 +966,8 @@ export function invalidateLspServerEntries(folderPath?: string) {
   registry.invalidateServerEntries(folderPath)
 }
 
-export function restartLspServerDefinition(serverDefinitionId: string) {
-  return registry.restartServerDefinition(serverDefinitionId)
+export function restartLspServerDefinition(serverDefinitionId: string, isActive: () => boolean = () => true) {
+  return registry.restartServerDefinition(serverDefinitionId, isActive)
 }
 
 export function refreshLspFolderEnvironment(folderPath: string) {

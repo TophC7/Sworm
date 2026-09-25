@@ -41,12 +41,12 @@ export async function refreshProviders() {
 }
 
 /** Detect providers inside the folder's environment. On failure the entry stays absent and the global list applies. */
-export async function loadProvidersForFolder(folderPath: string) {
+export async function loadProvidersForFolder(folderPath: string, isActive: () => boolean = () => true) {
   const generation = folderGenerations.get(folderPath) ?? 0
   loading = true
   try {
     const nextProviders = await backend.providers.listForFolder(folderPath)
-    if ((folderGenerations.get(folderPath) ?? 0) !== generation) return
+    if (!isActive() || (folderGenerations.get(folderPath) ?? 0) !== generation) return
     folderProviders.set(folderPath, { providers: nextProviders })
   } catch (e) {
     console.warn(`Failed to load providers for ${folderPath}:`, e)

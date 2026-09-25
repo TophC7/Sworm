@@ -1,4 +1,7 @@
-use crate::dispatch::ServerContext;
+use crate::{
+    dispatch::ServerContext,
+    stream::{StreamReader, StreamWriter},
+};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -13,7 +16,6 @@ use sworm_protocol::{
     lsp::LspEvent,
     rpc::{LspDown, LspUp},
 };
-use sworm_remote::wire::{read_frame, write_frame};
 use tokio::{
     sync::{mpsc, watch},
     task::AbortHandle,
@@ -195,8 +197,8 @@ pub(crate) async fn run(
     context: Arc<ServerContext>,
     session_id: String,
     owner: String,
-    mut send: quinn::SendStream,
-    recv: quinn::RecvStream,
+    mut send: StreamWriter,
+    recv: StreamReader,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let (sender, mut events) = mpsc::channel(EVENT_QUEUE_CAPACITY);
@@ -218,7 +220,7 @@ pub(crate) async fn run(
 
     // Announcing readiness only after the lease is held keeps `lsp_start` from
     // racing the registration it depends on.
-    if write_frame(&mut send, &LspDown::Ready).await.is_err() {
+    if send.write_json(&LspDown::Ready).await.is_err() {
         return;
     }
 
@@ -233,8 +235,8 @@ pub(crate) async fn run(
     lease.owns_input(input.abort_handle());
 
     loop {
-        // Writes happen after the select so `stopped()` and `write_frame` never
-        // borrow the send stream at the same time.
+        // Writes happen after select so stopped() and write_json() never
+        // borrow the writer at the same time.
         let received = tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -254,10 +256,7 @@ pub(crate) async fn run(
         }
         let Some(event) = received else { break };
         let exited = matches!(&event, LspEvent::Exit { .. });
-        if write_frame(&mut send, &LspDown::Event { event })
-            .await
-            .is_err()
-        {
+        if send.write_json(&LspDown::Event { event }).await.is_err() {
             break;
         }
         // The server is gone; the desktop starts a new session if it needs one.
@@ -266,22 +265,26 @@ pub(crate) async fn run(
         }
     }
 
-    // Dropping the lease aborts the reader task, kills this session's server
-    // and releases the session id, in that order.
+    // Dropping the lease aborts the reader, kills only this session's server,
+    // then releases its fenced session id.
+    let pending_input = !input.is_finished();
     drop(lease);
+    if pending_input {
+        let _ = input.await;
+    }
+    let _ = send.finish().await;
 }
 
-/// Turn away a stream whose session id is already leased. A dropped QUIC send
-/// stream resets, so the explanation is finished and given a moment to be read
-/// — otherwise the desktop would only see a dead stream.
-async fn refuse(send: &mut quinn::SendStream, session_id: &str) {
+/// Turn away a stream whose session id is already leased. Finish the refusal
+/// and briefly allow its peer to read the explanation before dropping it.
+async fn refuse(send: &mut StreamWriter, session_id: &str) {
     let refusal = LspDown::Event {
         event: LspEvent::Error {
             session_id: session_id.to_owned(),
             message: format!("LSP session {session_id} already has an open stream"),
         },
     };
-    if write_frame(send, &refusal).await.is_err() || send.finish().is_err() {
+    if send.write_json(&refusal).await.is_err() || send.finish().await.is_err() {
         return;
     }
     let _ = timeout(REFUSAL_ACK_TIMEOUT, send.stopped()).await;
@@ -291,11 +294,11 @@ async fn refuse(send: &mut quinn::SendStream, session_id: &str) {
 async fn read_input(
     host: Arc<Host>,
     session_id: String,
-    mut recv: quinn::RecvStream,
+    mut recv: StreamReader,
     events: mpsc::Sender<LspEvent>,
 ) {
     loop {
-        match read_frame::<LspUp>(&mut recv).await {
+        match recv.read_json::<LspUp>().await {
             Ok(LspUp::Message { payload_json }) => {
                 if let Err(error) = host.lsp_send(session_id.clone(), payload_json).await {
                     // stdin is gone: report it once and let the stream end.

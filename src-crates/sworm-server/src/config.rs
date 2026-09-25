@@ -13,6 +13,64 @@ pub(crate) struct ServerConfig {
     pub listen: SocketAddr,
     pub auth_token: Option<String>,
     auth_token_file: Option<PathBuf>,
+    pub web: Option<WebConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct WebConfig {
+    pub bind: SocketAddr,
+    pub assets_dir: Option<PathBuf>,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 7421)),
+            assets_dir: None,
+        }
+    }
+}
+
+impl WebConfig {
+    pub fn resolve_assets(&self, config_dir: &Path) -> anyhow::Result<PathBuf> {
+        let path = if let Some(path) = &self.assets_dir {
+            anyhow::ensure!(
+                !path.as_os_str().is_empty(),
+                "web assets directory is invalid: {}",
+                path.display()
+            );
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                config_dir.join(path)
+            }
+        } else if let Some(path) = std::env::var_os("SWORM_WEB_ASSETS_DIR") {
+            let path = PathBuf::from(path);
+            anyhow::ensure!(
+                path.is_absolute() && !path.as_os_str().is_empty(),
+                "SWORM_WEB_ASSETS_DIR must be a nonempty absolute path: {}",
+                path.display()
+            );
+            path
+        } else {
+            anyhow::bail!("web.assets_dir or SWORM_WEB_ASSETS_DIR is required");
+        };
+        anyhow::ensure!(
+            path.is_dir(),
+            "web assets directory is invalid: {}",
+            path.display()
+        );
+        let index = path.join("index.html");
+        anyhow::ensure!(
+            index.is_file(),
+            "web index.html is not a file: {}",
+            index.display()
+        );
+        fs::File::open(&index)
+            .with_context(|| format!("read web index.html at {}", index.display()))?;
+        Ok(path)
+    }
 }
 
 impl Default for ServerConfig {
@@ -21,6 +79,7 @@ impl Default for ServerConfig {
             listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT)),
             auth_token: None,
             auth_token_file: None,
+            web: None,
         }
     }
 }

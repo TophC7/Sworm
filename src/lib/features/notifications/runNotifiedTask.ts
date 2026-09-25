@@ -19,9 +19,12 @@ export interface RunNotifiedTaskOptions<T> {
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
-  // Structured backend errors (conflict, tooLarge) arrive as plain objects.
-  const message = (error as { message?: unknown } | null)?.message
-  return typeof message === 'string' ? message : String(error)
+  // Structured backend errors arrive as plain objects; file races have no message field.
+  const structured = error as { message?: unknown; kind?: unknown } | null
+  if (typeof structured?.message === 'string') return structured.message
+  if (structured?.kind === 'conflict') return 'File changed on disk'
+  if (structured?.kind === 'deleted') return 'File deleted on disk'
+  return String(error)
 }
 
 function resolveMessage<T>(message: MessageResolver<T> | undefined, value: T): string | undefined {

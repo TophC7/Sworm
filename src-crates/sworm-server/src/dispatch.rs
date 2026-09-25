@@ -218,7 +218,7 @@ fn folder_operation_join(error: tokio::task::JoinError) -> WireError {
 }
 
 pub(crate) struct Session {
-    pub fingerprint: Fingerprint,
+    pub fingerprint: Option<Fingerprint>,
     pub authorized: bool,
     pub subscriber_id: String,
     pub folders: HashSet<PathBuf>,
@@ -751,15 +751,21 @@ impl DispatchRuntime<'_> {
     }
 
     async fn pair(&self, token: String, name: String) -> Result<(), WireError> {
-        if self.session.lock().await.authorized {
+        let session = self.session.lock().await;
+        let fingerprint = session
+            .fingerprint
+            .ok_or_else(|| WireError::InvalidArgument {
+                message: "pairing is unavailable over web".to_owned(),
+            })?;
+        if session.authorized {
             return Ok(());
         }
+        drop(session);
 
         let _pairing = self.context.pairing.lock().await;
         if self.session.lock().await.authorized {
             return Ok(());
         }
-        let fingerprint = self.session.lock().await.fingerprint;
         let config_dir = self.context.config_dir.clone();
         let static_token = self.context.auth_token.clone();
         let persisted = tokio::task::spawn_blocking(move || -> Result<bool, WireError> {
@@ -908,7 +914,7 @@ mod tests {
     }
     fn paired_session(id: &str) -> Mutex<Session> {
         Mutex::new(Session {
-            fingerprint: Fingerprint([0; 32]),
+            fingerprint: Some(Fingerprint([0; 32])),
             authorized: true,
             subscriber_id: id.into(),
             folders: HashSet::new(),

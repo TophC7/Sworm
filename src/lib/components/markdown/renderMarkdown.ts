@@ -11,6 +11,7 @@ import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import rehypeStringify from 'rehype-stringify'
 import { visit } from 'unist-util-visit'
 import { getHighlighter, SHIKI_THEME_NAME } from '$lib/utils/shiki'
+import { platform } from '$lib/platform'
 import { markdownImageSrc } from '$lib/utils/mediaAssets'
 
 const markdownSchema: Options = {
@@ -46,7 +47,18 @@ const markdownSchema: Options = {
   }
 }
 
+const webMarkdownSchema: Options = {
+  ...markdownSchema,
+  protocols: {
+    ...markdownSchema.protocols,
+    src: [...(markdownSchema.protocols?.src ?? []), 'file']
+  }
+}
+
 export async function renderMarkdown(source: string, folderPath?: string, filePath?: string | null): Promise<string> {
+  // Web admits file: image URLs only to replace them with text; desktop retains its original sanitizer.
+  const localAssetUrls = platform.capabilities.localAssetUrls
+  const schema = localAssetUrls ? markdownSchema : webMarkdownSchema
   const processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
@@ -56,7 +68,7 @@ export async function renderMarkdown(source: string, folderPath?: string, filePa
     .use(rehypeRaw)
     .use(rehypeSlug)
     // Sanitize raw HTML and generated IDs before trusted asset/Shiki transforms.
-    .use(rehypeSanitize, markdownSchema)
+    .use(rehypeSanitize, schema)
     .use(() => async (tree: Root, file) => {
       let needsHighlighting = false
       visit(tree, 'element', (node) => {
@@ -65,7 +77,15 @@ export async function renderMarkdown(source: string, folderPath?: string, filePa
           if (/^data:/i.test(src.replace(/[\t\n\r]/g, '')) && !/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(src)) {
             delete node.properties.src
           } else {
-            node.properties.src = markdownImageSrc(src, folderPath, filePath)
+            const imageSrc = markdownImageSrc(src, folderPath, filePath)
+            if (imageSrc === null) {
+              const alt = typeof node.properties.alt === 'string' ? node.properties.alt : ''
+              node.tagName = 'span'
+              node.properties = { className: ['text-muted'] }
+              node.children = [{ type: 'text', value: `Local image unavailable${alt ? `: ${alt}` : ''}` }]
+            } else {
+              node.properties.src = imageSrc
+            }
           }
         }
         if (node.tagName === 'pre') {

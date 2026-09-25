@@ -1,4 +1,7 @@
-use crate::dispatch::ServerContext;
+use crate::{
+    dispatch::ServerContext,
+    stream::{Frame, StreamReader, StreamWriter},
+};
 use parking_lot::Mutex;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -10,7 +13,6 @@ use sworm_core::{
     Host,
 };
 use sworm_protocol::rpc::{PtyCursor, PtyDown, PtyUp, WireError};
-use sworm_remote::wire::{read_tagged_frame, write_frame, write_raw_frame, Frame};
 use tokio::sync::{mpsc, watch};
 
 const STREAM_QUEUE_CAPACITY: usize = 4096;
@@ -144,9 +146,8 @@ pub(crate) async fn run(
     context: Arc<ServerContext>,
     run_id: String,
     cursor: PtyCursor,
-    connection: quinn::Connection,
-    mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut send: StreamWriter,
+    mut recv: StreamReader,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let fanout = context.run_fanout(&run_id);
@@ -283,10 +284,6 @@ pub(crate) async fn run(
             let _ = local_stop.send(true);
             let _ = writer.await;
         }
-        _ = connection.closed() => {
-            let _ = local_stop.send(true);
-            let _ = writer.await;
-        }
     }
 
     if let Err(error) =
@@ -302,7 +299,7 @@ async fn write_loop(
     run_id: String,
     generation: u64,
     mut cursor: PtyCursor,
-    mut send: quinn::SendStream,
+    mut send: StreamWriter,
     mut replaced: watch::Receiver<bool>,
     mut stopped: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -382,8 +379,8 @@ async fn write_loop(
             AttachOutcome::Gone | AttachOutcome::Replaced => break,
         }
     }
-
     send.finish()
+        .await
         .map_err(|error| format!("finish PTY stream: {error}"))
 }
 
@@ -397,7 +394,7 @@ fn frame_bytes(frame: &PtyReplay) -> usize {
 /// Replay a finished run from its stored transcript. Same frames a live
 /// window replay produces, so the desktop cannot tell the two apart.
 async fn replay_completed(
-    send: &mut quinn::SendStream,
+    send: &mut StreamWriter,
     completed: CompletedRun,
     mut cursor: PtyCursor,
 ) -> Result<(), String> {
@@ -424,32 +421,27 @@ async fn replay_completed(
             write_delivery(send, PtyReplay::Event { sequence, event }, &mut cursor).await?;
         }
     }
-    write_frame(
-        send,
-        &PtyDown::Event {
+    send.write_json(&PtyDown::Event {
+        sequence: cursor.event_sequence,
+        event: sworm_protocol::pty::PtyEvent::Synced {
+            run_id: completed.run_id,
             sequence: cursor.event_sequence,
-            event: sworm_protocol::pty::PtyEvent::Synced {
-                run_id: completed.run_id,
-                sequence: cursor.event_sequence,
-            },
         },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    })
+    .await?;
     send.finish()
+        .await
         .map_err(|error| format!("finish PTY stream: {error}"))
 }
 
 async fn write_delivery(
-    send: &mut quinn::SendStream,
+    send: &mut StreamWriter,
     frame: PtyReplay,
     cursor: &mut PtyCursor,
 ) -> Result<(), String> {
     match frame {
         PtyReplay::Gap { lost_bytes } => {
-            write_frame(send, &PtyDown::Gap { lost_bytes })
-                .await
-                .map_err(|error| error.to_string())?;
+            send.write_json(&PtyDown::Gap { lost_bytes }).await?;
             cursor.output_offset = cursor
                 .output_offset
                 .checked_add(lost_bytes)
@@ -468,18 +460,12 @@ async fn write_delivery(
             let end_offset = start_offset
                 .checked_add(bytes.len() as u64)
                 .ok_or_else(|| "PTY output cursor overflow".to_owned())?;
-            let mut body = Vec::with_capacity(8 + bytes.len());
-            body.extend_from_slice(&start_offset.to_be_bytes());
-            body.extend_from_slice(&bytes);
-            write_raw_frame(send, &body)
-                .await
-                .map_err(|error| error.to_string())?;
+            send.write_raw_parts(&start_offset.to_be_bytes(), &bytes)
+                .await?;
             cursor.output_offset = end_offset;
         }
         PtyReplay::Event { sequence, event } => {
-            write_frame(send, &PtyDown::Event { sequence, event })
-                .await
-                .map_err(|error| error.to_string())?;
+            send.write_json(&PtyDown::Event { sequence, event }).await?;
             cursor.event_sequence = sequence;
         }
     }
@@ -491,13 +477,11 @@ async fn read_input(
     fanout: Arc<RunFanout>,
     run_id: String,
     generation: u64,
-    recv: &mut quinn::RecvStream,
+    recv: &mut StreamReader,
 ) -> Result<(), String> {
     let run_id: Arc<str> = Arc::from(run_id);
     loop {
-        let input = read_tagged_frame::<PtyUp>(recv)
-            .await
-            .map_err(|error| error.to_string())?;
+        let input = recv.read_tagged::<PtyUp>().await?;
         let host = Arc::clone(&host);
         let fanout = Arc::clone(&fanout);
         let id = Arc::clone(&run_id);
@@ -512,10 +496,10 @@ async fn read_input(
     }
 }
 
-async fn write_stream_error(send: &mut quinn::SendStream, error: WireError) {
-    if let Err(write_error) = write_frame(send, &PtyDown::Closed { error }).await {
+async fn write_stream_error(send: &mut StreamWriter, error: WireError) {
+    if let Err(write_error) = send.write_json(&PtyDown::Closed { error }).await {
         tracing::debug!(%write_error, "failed to write PTY stream error");
         return;
     }
-    let _ = send.finish();
+    let _ = send.finish().await;
 }

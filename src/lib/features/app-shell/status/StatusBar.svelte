@@ -6,6 +6,7 @@
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
+  import { notify } from '$lib/features/notifications/state.svelte'
   import { isFolderSwitcherOpen, toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
   import StatusBarAppInfo from '$lib/features/app-shell/status/StatusBarAppInfo.svelte'
   import {
@@ -78,7 +79,16 @@
 
   $effect(() => {
     ensureSettingsDiagnosticsListener()
-    void refreshSettingsDiagnostics(folderPath ?? undefined)
+    const requestedFolderPath = folderPath
+    let disposed = false
+    void refreshSettingsDiagnostics(requestedFolderPath ?? undefined).catch((error) => {
+      if (!disposed && requestedFolderPath === getActiveFolderPath()) {
+        notify.error('Failed to load settings diagnostics', getErrorMessage(error))
+      }
+    })
+    return () => {
+      disposed = true
+    }
   })
 </script>
 

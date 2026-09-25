@@ -245,8 +245,6 @@
       return null
     }
     const requestId = crypto.randomUUID()
-    activeStream = requestId
-    progress = { bytes: 0, total: stat.size }
     let stop: (() => void) | undefined
     try {
       stop = await backend.files.onReadProgress((event) => {
@@ -262,6 +260,8 @@
       })
       // Cancellation while the listener is being installed must not start a stream.
       if (token !== readToken) return null
+      activeStream = requestId
+      progress = { bytes: 0, total: stat.size }
       const file = await backend.files.readStream(requestId, folder, target, stat.version, stat.size)
       if (token !== readToken) return null
       discardTextSurfaceBuffer({ id: tabId, folderPath: folder, filePath: target })

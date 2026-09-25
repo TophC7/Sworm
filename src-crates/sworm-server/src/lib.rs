@@ -7,5 +7,7 @@ mod lsp_stream;
 pub mod paths;
 mod pty_stream;
 mod server;
+mod stream;
+mod web;
 
 pub use server::{serve, ServeOptions, ServerHandle};

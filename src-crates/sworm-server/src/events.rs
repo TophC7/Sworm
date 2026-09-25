@@ -95,7 +95,7 @@ pub(crate) async fn run(
     let _ = send.finish();
 }
 
-async fn claimed(session: &Mutex<Session>, event: &HostEventWire) -> bool {
+pub(crate) async fn claimed(session: &Mutex<Session>, event: &HostEventWire) -> bool {
     let folder = match event {
         HostEventWire::RecentFoldersChanged(_) => return true,
         HostEventWire::FilesChanged(event) => Some(event.folder_path.as_str()),

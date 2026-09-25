@@ -3,6 +3,8 @@
 import { backend } from '$lib/api/backend'
 import { refreshLspFolderEnvironment } from '$lib/features/editor/lsp/registry'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
+import { notify } from '$lib/features/notifications/state.svelte'
+import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import type { NixDetection, NixEnvRecord } from '$lib/types/backend'
 
 const detections = createFolderKeyedStore<NixDetection>()
@@ -26,7 +28,12 @@ export async function detectNix(folderPath: string): Promise<NixDetection> {
 
 export function refreshNixForFolder(folderPath: string): void {
   if (detections.get(folderPath) != null) {
-    void detectNix(folderPath)
+    const generation = folderGenerations.get(folderPath) ?? 0
+    void detectNix(folderPath).catch((error) => {
+      if ((folderGenerations.get(folderPath) ?? 0) === generation) {
+        notify.error('Nix detection failed', getErrorMessage(error))
+      }
+    })
   }
 }
 

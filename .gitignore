@@ -58,6 +58,9 @@ src/lib/paraglide
 
 # Sworm
 !.sworm/*.json*
+!.sworm/scripts/
+!.sworm/*.fish
+!.sworm/**/*.fish
 
 # Tauri / Rust
 /target/

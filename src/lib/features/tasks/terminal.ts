@@ -7,6 +7,7 @@ import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
+import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import { requireNative } from '$lib/platform'
 import type { PtyEvent, TerminalTransferState } from '$lib/types/backend'
 import type { TaskRunStatus } from '$lib/features/workbench/model'
@@ -168,6 +169,7 @@ export class TaskTerminal {
     const runId = this.runId
     this.streamRunId = runId
     const { cols, rows } = this.term
+    let reportedError = false
     const stream = backend.tasks.start(
       runId,
       this.folderPath,
@@ -178,7 +180,10 @@ export class TaskTerminal {
       this.attachOnly,
       {
         onOutput: (data) => this.handleOutput(runId, data),
-        onEvent: (event) => this.handlePtyEvent(runId, event)
+        onEvent: (event) => {
+          if (event.run_id === runId && event.type === 'error') reportedError = true
+          this.handlePtyEvent(runId, event)
+        }
       }
     )
     this.stream = stream
@@ -186,9 +191,12 @@ export class TaskTerminal {
       try {
         await stream.ready
       } catch (error) {
-        if (!this.disposed) {
-          this.status = 'failed'
-          this.onStatusChange?.('failed', null)
+        if (!reportedError) {
+          this.handlePtyEvent(runId, {
+            type: 'error',
+            run_id: runId,
+            message: getErrorMessage(error)
+          })
         }
         if (this.stream === stream) this.releaseStream()
         throw error

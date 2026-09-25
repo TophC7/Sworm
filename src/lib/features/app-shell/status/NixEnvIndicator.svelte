@@ -17,7 +17,7 @@
   } from '$lib/components/ui/dropdown-menu'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
-  import { notify } from '$lib/features/notifications/state.svelte'
+  import { notify, dismissNotification } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 
   let { folderPath }: { folderPath: string } = $props()
@@ -25,35 +25,57 @@
   let evaluatingNow = $derived(isNixEvaluating(folderPath))
   let hasNixFiles = $derived(detection && detection.detected_files.length > 0)
 
-  // Detect once per active folder and refresh provider availability when
-  // an evaluated Nix environment contributes commands to PATH.
+  // Fence detection and its follow-on work when the active folder changes or closes.
+  let folderGeneration = 0
   $effect(() => {
-    void detectNix(folderPath).then((result) => {
-      if (result.selected?.status === 'ready') {
-        void loadProvidersForFolder(folderPath)
-      } else if (result.selected?.status === 'pending') {
-        void handleEvaluate()
-      }
-    })
+    const path = folderPath
+    const generation = ++folderGeneration
+    void detectNix(path)
+      .then((result) => {
+        if (generation !== folderGeneration) return
+        if (result.selected?.status === 'ready') {
+          void loadProvidersForFolder(path)
+        } else if (result.selected?.status === 'pending') {
+          void handleEvaluate()
+        }
+      })
+      .catch((error) => {
+        if (generation === folderGeneration) notify.error('Nix detection failed', getErrorMessage(error))
+      })
+    return () => {
+      folderGeneration++
+    }
   })
 
   async function handleSelect(nixFile: string) {
     if (evaluatingNow) return
+    const path = folderPath
+    const generation = folderGeneration
     try {
       if (detection?.selected?.nix_file !== nixFile) {
-        await selectNixFile(folderPath, nixFile)
+        await selectNixFile(path, nixFile)
       }
+      if (generation !== folderGeneration) return
       await handleEvaluate()
     } catch (error) {
-      notify.error('Select Nix file failed', getErrorMessage(error))
+      if (generation === folderGeneration) notify.error('Select Nix file failed', getErrorMessage(error))
     }
   }
-
   async function handleEvaluate() {
+    const path = folderPath
+    const generation = folderGeneration
     const notificationId = notify.loading('Evaluating Nix environment')
     try {
-      const record = await evaluateNix(folderPath)
-      await loadProvidersForFolder(folderPath)
+      const record = await evaluateNix(path)
+      if (generation !== folderGeneration) {
+        dismissNotification(notificationId)
+        return
+      }
+      await loadProvidersForFolder(path, () => generation === folderGeneration)
+      if (generation !== folderGeneration) {
+        dismissNotification(notificationId)
+        return
+      }
       if (record.status === 'ready') {
         notify.update(notificationId, {
           title: 'Nix environment ready',
@@ -70,6 +92,10 @@
         loading: false
       })
     } catch (error) {
+      if (generation !== folderGeneration) {
+        dismissNotification(notificationId)
+        return
+      }
       notify.update(notificationId, {
         title: 'Nix evaluation failed',
         description: getErrorMessage(error),
@@ -80,12 +106,17 @@
   }
 
   async function handleClear() {
+    const path = folderPath
+    const generation = folderGeneration
     try {
-      await clearNix(folderPath)
-      await loadProvidersForFolder(folderPath)
-      notify.success('Disabled Nix environment')
+      await clearNix(path)
+      if (generation !== folderGeneration) return
+      await loadProvidersForFolder(path, () => generation === folderGeneration)
+      if (generation === folderGeneration) notify.success('Disabled Nix environment')
     } catch (error) {
-      notify.error('Disable Nix environment failed', getErrorMessage(error))
+      if (generation === folderGeneration) {
+        notify.error('Disable Nix environment failed', getErrorMessage(error))
+      }
     }
   }
 

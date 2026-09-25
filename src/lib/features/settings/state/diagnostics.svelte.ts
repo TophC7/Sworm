@@ -7,13 +7,17 @@ import type { SettingsDiagnostic } from '$lib/types/backend'
 let diagnostics = $state<SettingsDiagnostic[]>([])
 let listenerBooted = false
 let lastDiagnosticKeys = new Set<string>()
+let refreshRevision = 0
 
 export function getSettingsDiagnostics(): SettingsDiagnostic[] {
   return diagnostics
 }
 
 export async function refreshSettingsDiagnostics(folderPath?: string): Promise<void> {
+  const requestedRevision = ++refreshRevision
   const payload = await backend.settings.getEffective(folderPath)
+  // A closed folder's response must not replace diagnostics for the current view.
+  if (requestedRevision !== refreshRevision || (folderPath ?? null) !== getActiveFolderPath()) return
   setDiagnostics(payload.diagnostics)
 }
 
@@ -24,6 +28,7 @@ export function ensureSettingsDiagnosticsListener(): void {
     .onChanged((event) => {
       // Folder-layer changes only matter for the folder currently in view.
       if (event.folder_path != null && event.folder_path !== getActiveFolderPath()) return
+      refreshRevision++
       setDiagnostics(event.diagnostics)
       void refreshAllLspFolderEnvironments()
     })

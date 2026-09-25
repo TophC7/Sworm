@@ -3,12 +3,18 @@
   pkgs,
   b2n,
   src,
+  target ? "desktop",
 }:
+assert lib.assertMsg (builtins.elem target [
+  "desktop"
+  "web"
+]) "sworm frontend target must be desktop or web";
 let
   fs = pkgs.lib.fileset;
+  output = if target == "desktop" then "build" else "build-web";
 in
 pkgs.stdenv.mkDerivation {
-  name = "sworm-frontend";
+  name = if target == "desktop" then "sworm-frontend" else "sworm-frontend-web";
 
   src = fs.toSource {
     root = src;
@@ -40,14 +46,14 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     export HOME="$TMPDIR"
-    bun run build
+    bun run ${if target == "desktop" then "build" else "build:web"}
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
     mkdir -p $out
-    cp -r build/* $out/
+    cp -r ${output}/* $out/
     runHook postInstall
   '';
 

@@ -2,6 +2,7 @@
   lib,
   pkgs,
   sworm-server,
+  webFrontend,
   version,
   src,
   maintainer ? "Chris Toph <toph@ryot.foo>",
@@ -38,13 +39,16 @@ let
     buildPhase = ''
             runHook preBuild
 
-            mkdir -p "$out/bin" "$out/lib" "$out/share/systemd/user" "$out/share/doc/sworm-server"
+            mkdir -p "$out/bin" "$out/lib" "$out/share/systemd/user" "$out/share/doc/sworm-server" "$out/share/sworm/web"
 
             # 1. Stripped raw binary
-            cp "${sworm-server}/bin/sworm-server" "$out/bin/.sworm-server-bin"
+            cp "${sworm-server.unwrapped}/bin/sworm-server" "$out/bin/.sworm-server-bin"
             chmod +w "$out/bin/.sworm-server-bin"
             ${pkgs.stdenv.cc.targetPrefix}strip "$out/bin/.sworm-server-bin"
             patchelf --set-rpath '$ORIGIN/../lib' "$out/bin/.sworm-server-bin"
+
+            # Assets compose with the binary here, without a Rust build dependency.
+            cp -r "${webFrontend}/." "$out/share/sworm/web/"
 
             # 2. Gather dynamic runtime libraries (glibc and libgcc)
             for lib in $(patchelf --print-needed "$out/bin/.sworm-server-bin"); do
@@ -63,6 +67,9 @@ let
       BIN_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
       BASE_DIR="\$(cd "\$BIN_DIR/.." && pwd)"
       LIB_DIR="\$BASE_DIR/lib"
+      if [ -z "\''${SWORM_WEB_ASSETS_DIR+x}" ]; then
+        export SWORM_WEB_ASSETS_DIR="\$BASE_DIR/share/sworm/web"
+      fi
       exec "\$LIB_DIR/$ldSoName" --inhibit-cache --library-path "\$LIB_DIR" --argv0 sworm-server "\$BIN_DIR/.sworm-server-bin" "\$@"
       EOF
             chmod +x "$out/bin/sworm-server"
@@ -123,6 +130,8 @@ let
             mkdir -p "$pkgdir/usr/lib/sworm-server/bin" "$pkgdir/usr/lib/sworm-server/lib" "$pkgdir/usr/bin"
             cp -r "${bundle}/bin/." "$pkgdir/usr/lib/sworm-server/bin/"
             cp -r "${bundle}/lib/." "$pkgdir/usr/lib/sworm-server/lib/"
+            mkdir -p "$pkgdir/usr/lib/sworm-server/share/sworm/web"
+            cp -r "${bundle}/share/sworm/web/." "$pkgdir/usr/lib/sworm-server/share/sworm/web/"
 
             cat > "$pkgdir/usr/bin/sworm-server" <<'EOF'
       #!/bin/sh
@@ -171,6 +180,8 @@ let
       mkdir -p "$BIN_DIR" "$LIB_DIR/bin" "$LIB_DIR/lib"
       cp -r "$SCRIPT_DIR/bin/." "$LIB_DIR/bin/"
       cp -r "$SCRIPT_DIR/lib/." "$LIB_DIR/lib/"
+      mkdir -p "$LIB_DIR/share/sworm/web"
+      cp -r "$SCRIPT_DIR/share/sworm/web/." "$LIB_DIR/share/sworm/web/"
 
       cat > "$BIN_DIR/sworm-server" <<INNER
       #!/bin/sh

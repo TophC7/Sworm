@@ -12,10 +12,15 @@ export function markdownImageSrc(
   href: string | null | undefined,
   folderPath?: string,
   markdownPath?: string | null
-): string {
+): string | null {
   if (!href) return ''
   const trimmed = href.trim()
-  if (!trimmed || URL_SCHEME_RE.test(trimmed) || trimmed.startsWith('//')) return trimmed
+  if (!trimmed || trimmed.startsWith('//')) return trimmed
+  if (URL_SCHEME_RE.test(trimmed)) {
+    if (/^file:/i.test(trimmed) && !platform.capabilities.localAssetUrls) return null
+    return trimmed
+  }
+  if (!platform.capabilities.localAssetUrls) return null
   if (!folderPath || !markdownPath) return trimmed
 
   const localPath = resolveMarkdownLocalPath(markdownPath, trimmed)
