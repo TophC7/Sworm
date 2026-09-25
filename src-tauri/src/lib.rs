@@ -306,12 +306,14 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } => {
             let state = app_handle.state::<AppState>();
             state.windows.set_exit_requested(true);
+            state.windows.wait_for_cleanup();
             if let Err(error) = state.windows.save_manifest(app_handle) {
                 tracing::error!("Failed to save window manifest on exit: {error}");
             }
         }
         tauri::RunEvent::Exit => {
             let state = app_handle.state::<AppState>();
+            state.windows.wait_for_cleanup();
             let (cleaned, lsp_cleaned) = state.host.shutdown();
             tracing::info!(
                 "App exit cleanup finished, killed {} PTY sessions and {} LSP sessions",

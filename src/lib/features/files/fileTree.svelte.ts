@@ -2,7 +2,7 @@ import { backend } from '$lib/api/backend'
 import type { ExplorerDirEntry } from '$lib/types/backend'
 import type { FileTreeNode } from '$lib/utils/fileTree'
 import { isEqualOrParent } from '$lib/utils/paths'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { platform } from '$lib/platform'
 import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 import { markProjectFilesStale } from '$lib/features/files/projectFiles.svelte'
 
@@ -325,7 +325,7 @@ export function ensureFileTreeListeners(): void {
 
   // Safety net for the file events Linux watchers miss, mirroring VS Code's
   // refresh on window focus.
-  void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  void platform.focus.onChanged((focused) => {
     if (!focused) return
     for (const folderPath of [...folders.keys()]) void refreshFolderTree(folderPath)
   })

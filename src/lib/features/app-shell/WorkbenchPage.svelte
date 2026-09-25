@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { backend } from '$lib/api/backend'
+  import { platform } from '$lib/platform'
   import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
   import WorkbenchView from '$lib/features/app-shell/WorkbenchView.svelte'
   import { loadRecentFolders } from '$lib/features/folders/state.svelte'
   import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
-  import { openFolder, restoreWorkbench, setWindowLabel } from '$lib/features/workbench/state.svelte'
+  import { getTabs, openFolder, restoreWorkbench } from '$lib/features/workbench/state.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
   import type { OpenTarget } from '$lib/types/backend'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
@@ -21,9 +20,7 @@
   }
 
   onMount(() => {
-    const currentWindow = getCurrentWindow()
-    const label = currentWindow.label
-    setWindowLabel(label)
+    const workbenchId = platform.workbench.id
     let disposed = false
     let unlisten: (() => void) | undefined
 
@@ -34,27 +31,32 @@
 
     void (async () => {
       try {
-        const cleanup = await currentWindow.listen<OpenTarget>('open-target', ({ payload }) => {
-          void openTarget(payload).catch((error) => logClientError('open target failed', { error, payload }))
-        })
-        if (disposed) cleanup()
-        else unlisten = cleanup
+        if (platform.native) {
+          const cleanup = await platform.native.window.onOpenTarget((payload) => {
+            void openTarget(payload).catch((error) => logClientError('open target failed', { error, payload }))
+          })
+          if (disposed) cleanup()
+          else unlisten = cleanup
+        }
 
-        await Promise.all([loadRecentFolders(), restoreWorkbench(label)])
-        await backend.window.ready()
-        if (!disposed) markDeepLinksReady()
+        await Promise.all([loadRecentFolders(), restoreWorkbench(workbenchId)])
+        if (platform.native) {
+          await platform.native.window.ready(getTabs().flatMap((tab) => (tab.kind === 'task' ? [tab.runId] : [])))
+        }
+        if (!disposed && platform.capabilities.deepLinks) markDeepLinksReady()
+        if (disposed) return
         bootstrapping = false
       } catch (error) {
+        if (disposed) return
         bootstrapError = describeClientError(error)
         bootstrapping = false
         logClientError('startup bootstrap failed', {
-          phase: '+page onMount',
+          phase: 'WorkbenchPage onMount',
           error,
           detail: bootstrapError
         })
       }
     })()
-
     return () => {
       disposed = true
       unlisten?.()

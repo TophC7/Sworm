@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import { platform, requireNative } from '$lib/platform'
   import type { TabId } from '$lib/features/workbench/model'
   import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
@@ -41,7 +42,6 @@
   import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
-  import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import { SvelteSet } from 'svelte/reactivity'
 
   let {
@@ -295,9 +295,9 @@
   }
 
   async function handleCtxReveal() {
-    if (!contextFilePath || remoteFolder) return
+    if (!contextFilePath || remoteFolder || !platform.capabilities.revealInFileManager) return
     const absPath = resolveProjectFile(folderPath, contextFilePath)
-    await revealItemInDir(absPath)
+    await requireNative().files.reveal(absPath)
   }
 
   async function handleCtxCopyPath() {
@@ -573,7 +573,7 @@
     targetType={contextTargetType}
     isStaged={contextIsStaged}
     canOpenFile={contextCanOpenFile}
-    canRevealInFileManager={!remoteFolder}
+    canRevealInFileManager={!remoteFolder && platform.capabilities.revealInFileManager}
     onOpenChanges={handleCtxOpenChanges}
     onOpenFile={handleCtxOpenFile}
     onOpenFileHead={handleCtxOpenFileHead}

@@ -1,3 +1,4 @@
+import { backend } from '$lib/api/backend'
 import { notify } from '$lib/features/notifications/state.svelte'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import type { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
@@ -5,6 +6,8 @@ import type { SessionTab, TabId } from '$lib/features/workbench/model'
 import {
   addSessionTab,
   clearSessionTabResumeToken,
+  getTabs,
+  setSessionTabRunId,
   setSessionTabResumeToken,
   setSessionTabStatus
 } from '$lib/features/workbench/state.svelte'
@@ -41,7 +44,13 @@ export async function startSessionProcess(manager: TerminalSessionManager, tab: 
   }
 }
 
-/** Stop a session tab's process. No manager means no run: nothing to stop. */
+/** Stop a mounted session or its saved, currently unmounted run. */
 export async function stopSessionProcess(tabId: TabId): Promise<void> {
-  await sessionRegistry.get(tabId)?.stopPty()
+  const manager = sessionRegistry.get(tabId)
+  if (manager) return manager.stopPty()
+  const tab = getTabs().find((candidate) => candidate.id === tabId)
+  if (tab?.kind !== 'session' || !tab.runId) return
+  await backend.sessions.stop(tab.runId)
+  setSessionTabRunId(tabId, null)
+  setSessionTabStatus(tabId, 'exited')
 }

@@ -6,12 +6,9 @@
 // empty list so the palette and menus stay responsive when the file
 // is missing or malformed.
 
-import { listen } from '@tauri-apps/api/event'
 import { backend } from '$lib/api/backend'
 import { notify } from '$lib/features/notifications/state.svelte'
 import type { TaskDefinition } from '$lib/types/backend'
-
-const TASKS_CHANGED_EVENT = 'tasks-changed'
 
 let tasksByFolder = $state<Map<string, TaskDefinition[]>>(new Map())
 const loadedFolders = new Set<string>()
@@ -23,8 +20,7 @@ async function ensureListener(): Promise<void> {
   listenerBooted = true
   try {
     // Payload is the canonical folder path whose tasks file changed.
-    await listen<string>(TASKS_CHANGED_EVENT, (event) => {
-      const folderPath = event.payload
+    await backend.tasks.onChanged((folderPath) => {
       if (loadedFolders.has(folderPath)) {
         void refreshTasks(folderPath)
       }

@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import { platform, requireNative } from '$lib/platform'
 import {
   discardTextModelBuffer,
   discardUntitledTextModelBuffer,
@@ -79,7 +80,7 @@ export function ensureTextFileSyncListeners(): Promise<void> {
   if (fileSyncListeners) return fileSyncListeners
 
   fileSyncListeners = Promise.all([
-    backend.window.onFilePathChanged(({ oldPath, newPath, folderPath }) => {
+    backend.files.onPathChanged(({ oldPath, newPath, folderPath }) => {
       const oldRoot = normalizeAbsolutePath(oldPath)
       const newRoot = normalizeAbsolutePath(newPath)
       for (const tab of getTabs()) {
@@ -98,7 +99,7 @@ export function ensureTextFileSyncListeners(): Promise<void> {
         renameTextTab(tab.id, nextRelative, nextFolder ?? tab.folderPath)
       }
     }),
-    backend.window.onFileDeleted(({ filePath }) => {
+    backend.files.onDeleted(({ filePath }) => {
       const deletedRoot = normalizeAbsolutePath(filePath)
       for (const tab of getTabs()) {
         if (!isLiveTextTabUnderAbsolutePath(tab, deletedRoot)) continue
@@ -165,9 +166,11 @@ export async function openTextFile(
   const temporary = options.temporary ?? true
   const replaced = temporary ? getTabs().find((tab): tab is TextTab => tab.kind === 'text' && tab.temporary) : undefined
   const tabId = replaced?.id ?? generateTabId()
-  const absolutePath = resolveProjectFile(folderPath, filePath)
-  const result = await backend.window.claimFile(absolutePath, tabId, options.reveal ?? null)
-  if (result.status === 'redirect') return result.tab_id as TabId
+  if (platform.capabilities.fileClaims) {
+    const absolutePath = resolveProjectFile(folderPath, filePath)
+    const result = await requireNative().files.claimFile(absolutePath, tabId, options.reveal ?? null)
+    if (result.status === 'redirect') return result.tab_id as TabId
+  }
 
   addTextTab(folderPath, filePath, temporary, tabId)
   if (options.reveal) revealTextTab(tabId, options.reveal)

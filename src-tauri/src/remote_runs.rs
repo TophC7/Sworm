@@ -10,7 +10,7 @@ use std::{
 use sworm_core::{
     errors::ApiError,
     events::EventSink,
-    services::pty::{PtyEventSink, RunBackend},
+    services::pty::{PtyEventSink, PtySubscriber, RunBackend},
     Host,
 };
 use sworm_protocol::{
@@ -76,18 +76,15 @@ impl RemoteRunService {
         }
     }
 
-    pub fn ensure_startable(&self, run_id: &str) -> Result<(), ApiError> {
-        if self
-            .runs
-            .lock()
-            .get(run_id)
-            .is_some_and(|run| run.stopping.load(Ordering::Acquire))
-        {
-            return Err(ApiError::Pty(format!(
-                "remote PTY session is stopping: {run_id}"
-            )));
-        }
-        Ok(())
+    pub fn validate_start(
+        &self,
+        host: &Host,
+        run_id: &str,
+        server: &str,
+        kind: RemoteRunKind,
+        owner_id: Option<&str>,
+    ) -> Result<(), ApiError> {
+        validate_start(&self.runs.lock(), host, run_id, server, kind, owner_id)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -102,14 +99,16 @@ impl RemoteRunService {
         events: EventSink<PtyEvent>,
         owner_id: Option<String>,
     ) -> Result<(), ApiError> {
+        let mut runs = self.runs.lock();
+        validate_start(&runs, host, &run_id, &server, kind, owner_id.as_deref())?;
         if host.pty.run_state(&run_id).is_some() {
-            return Err(ApiError::Pty(format!(
-                "remote PTY session already exists: {run_id}"
-            )));
+            // Daemon owns replay. Retire old proxy and its stream, then attach
+            // a fresh one from cursor zero rather than starting another run.
+            host.pty
+                .detach_adopted(&run_id, owner_id.as_deref())
+                .map_err(ApiError::Pty)?;
         }
-        self.ensure_startable(&run_id)?;
-        let stale = self.runs.lock().remove(&run_id);
-        if let Some(task) = stale.and_then(|run| run.stream) {
+        if let Some(task) = runs.remove(&run_id).and_then(|run| run.stream) {
             task.abort();
         }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -126,7 +125,12 @@ impl RemoteRunService {
         };
         let sink = host
             .pty
-            .adopt(run_id.clone(), Box::new(backend), output, events, owner_id)
+            .adopt(
+                run_id.clone(),
+                Box::new(backend),
+                Some(PtySubscriber { output, events }),
+                owner_id,
+            )
             .map_err(ApiError::Pty)?;
 
         let (start_tx, start_rx) = tokio::sync::oneshot::channel();
@@ -150,17 +154,21 @@ impl RemoteRunService {
             .await;
         });
 
-        let _old = self.runs.lock().insert(
-            run_id.to_string(),
+        let previous = runs.insert(
+            run_id,
             RemoteRun {
-                server: server.to_string(),
+                server,
                 kind,
                 generation,
                 stopping,
                 stream: Some(task),
             },
         );
-        debug_assert!(_old.is_none(), "host adoption rejected duplicate run ids");
+        debug_assert!(
+            previous.is_none(),
+            "previous proxy was retired before adoption"
+        );
+        drop(runs);
         let _ = start_tx.send(());
         Ok(())
     }
@@ -202,6 +210,33 @@ impl RemoteRunService {
                 .and_then(|run| run.stream.take())
         };
         drop(stream);
+    }
+}
+
+fn validate_start(
+    runs: &HashMap<String, RemoteRun>,
+    host: &Host,
+    run_id: &str,
+    server: &str,
+    kind: RemoteRunKind,
+    owner_id: Option<&str>,
+) -> Result<(), ApiError> {
+    match runs.get(run_id) {
+        Some(run) if run.stopping.load(Ordering::Acquire) => Err(ApiError::Pty(format!(
+            "remote PTY session is stopping: {run_id}"
+        ))),
+        Some(run) if run.server != server || run.kind != kind => Err(ApiError::InvalidArgument(
+            format!("run id is already bound to different metadata: {run_id}"),
+        )),
+        Some(_) if host.pty.run_state(run_id).is_some() => host
+            .pty
+            .ensure_owner(run_id, owner_id)
+            .map_err(ApiError::Pty),
+        Some(_) => Ok(()),
+        None if host.pty.run_state(run_id).is_some() => Err(ApiError::InvalidArgument(format!(
+            "run id is already bound to a local PTY: {run_id}"
+        ))),
+        None => Ok(()),
     }
 }
 

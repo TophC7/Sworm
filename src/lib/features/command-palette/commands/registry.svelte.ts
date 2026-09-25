@@ -1,4 +1,5 @@
 import type { Component } from 'svelte'
+import { platform, type PlatformCapabilities } from '$lib/platform'
 import {
   clearAllNotifications,
   getNotifications,
@@ -83,6 +84,7 @@ export interface AppCommandDefinition {
   dangerous?: boolean
   terminalPolicy?: TerminalPolicy
   showInPalette?: boolean
+  capability?: keyof PlatformCapabilities
   visible?: () => boolean
   subtitle?: () => string | undefined
   run: () => void | Promise<unknown>
@@ -157,6 +159,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: FilePlusIcon,
       keywords: ['new', 'empty', 'untitled', 'file', 'create'],
+      capability: 'saveAsDialog',
       defaultKeybindings: ['Ctrl+N'],
       visible: activeFolderVisible,
       run: newEmptyFile
@@ -166,6 +169,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       label: 'New Window',
       group: 'File',
       keywords: ['new', 'window', 'workbench'],
+      capability: 'nativeWindowControls',
       defaultKeybindings: ['Ctrl+Shift+N'],
       terminalPolicy: 'skip-shell',
       run: newWindow
@@ -176,6 +180,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: FolderOpenIcon,
       keywords: ['open', 'folder', 'directory'],
+      capability: 'nativeDirectoryPicker',
       defaultKeybindings: ['Ctrl+O'],
       run: openFolderPicker
     }),
@@ -203,6 +208,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'General',
       icon: SettingsIcon,
       keywords: ['settings', 'preferences', 'jsonc', 'global', 'user'],
+      capability: 'externalFileOpen',
       run: openGlobalSettingsFile
     }),
     appCommand({
@@ -220,6 +226,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: SquareArrowOutUpRight,
       keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
+      capability: 'revealInFileManager',
       visible: () => activeFolderVisible() && !splitRemotePath(getActiveFolderPath() ?? ''),
       run: revealActiveFolderInFileManager
     }),
@@ -229,6 +236,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: TerminalIcon,
       keywords: ['terminal', 'shell', 'external', 'launch', 'kitty', 'alacritty', 'wezterm', 'gnome', 'konsole'],
+      capability: 'openInTerminal',
       visible: activeFolderVisible,
       run: openActiveFolderInExternalTerminal
     }),
@@ -329,6 +337,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: ZoomInIcon,
       keywords: ['zoom', 'larger', 'bigger', 'magnify'],
+      capability: 'zoom',
       defaultKeybindings: ['Ctrl+=', 'Ctrl++'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomIn
@@ -339,6 +348,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: ZoomOutIcon,
       keywords: ['zoom', 'smaller', 'shrink'],
+      capability: 'zoom',
       defaultKeybindings: ['Ctrl+-'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomOut
@@ -349,6 +359,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: RotateCcwIcon,
       keywords: ['zoom', 'reset', 'default', '100%'],
+      capability: 'zoom',
       defaultKeybindings: ['Ctrl+0'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomReset
@@ -432,7 +443,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
         if (folderPath) addNotificationToolTab(folderPath)
       }
     })
-  ]
+  ].filter((definition) => !definition.capability || platform.capabilities[definition.capability])
 }
 
 export function getAppShortcutCommands(): ShortcutCommandDefinition[] {

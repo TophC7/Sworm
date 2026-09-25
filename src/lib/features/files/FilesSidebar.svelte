@@ -11,6 +11,7 @@
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { backend } from '$lib/api/backend'
+  import { platform, requireNative } from '$lib/platform'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import {
@@ -38,9 +39,8 @@
   import type { TabId } from '$lib/features/workbench/model'
   import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { getActiveTab, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
-  import { revealItemInDir } from '@tauri-apps/plugin-opener'
-  import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/features/notifications/state.svelte'
+  import { copyToClipboard } from '$lib/utils/clipboard'
   import type { DragPayload } from '$lib/features/dnd/payload'
   import type { FilePasteCollision, FilePasteMapping } from '$lib/types/backend'
   import {
@@ -437,8 +437,8 @@
   }
 
   async function handleRevealInFolder() {
-    if (!contextFilePath || remoteFolder) return
-    await revealItemInDir(resolveProjectFile(folderPath, contextFilePath))
+    if (!contextFilePath || remoteFolder || !platform.capabilities.revealInFileManager) return
+    await requireNative().files.reveal(resolveProjectFile(folderPath, contextFilePath))
   }
 
   function handleOpenInEditor() {
@@ -455,7 +455,7 @@
     if (!contextFilePath) return
     const source = resolveProjectFile(folderPath, contextFilePath)
     try {
-      await backend.app.clipboardCopyFiles([source], op)
+      await requireNative().files.clipboardCopyFiles([source], op)
     } catch (error) {
       notify.error(`${op === 'cut' ? 'Cut' : 'Copy'} failed`, errMessage(error))
     }
@@ -472,7 +472,7 @@
   async function handlePaste() {
     const targetDir = contextTargetType === 'directory' && contextFilePath ? contextFilePath : '.'
     try {
-      const clip = await backend.app.clipboardReadFiles()
+      const clip = await requireNative().files.clipboardReadFiles()
       if (!clip || clip.paths.length === 0) {
         notify.info('Nothing to paste', 'No files on the clipboard.')
         return
@@ -571,8 +571,8 @@
   }
 
   function handleOpenExternal() {
-    if (remoteFolder) return
-    revealItemInDir(folderPath)
+    if (remoteFolder || !platform.capabilities.revealInFileManager) return
+    void requireNative().files.reveal(folderPath)
   }
 
   async function handleCopyFolderPath() {
@@ -606,7 +606,8 @@
       <FileContextMenu
         filePath={contextFilePath}
         targetType={contextTargetType}
-        canRevealInFileManager={!remoteFolder}
+        canRevealInFileManager={!remoteFolder && platform.capabilities.revealInFileManager}
+        canNativeFileClipboard={platform.capabilities.nativeFileClipboard && !remoteFolder}
         onRevealInFolder={handleRevealInFolder}
         onOpenInEditor={handleOpenInEditor}
         onOpenDiff={handleOpenDiff}

@@ -28,7 +28,6 @@ struct StreamOwner {
 
 pub(crate) struct RunFanout {
     owner: Mutex<StreamOwner>,
-    resume_token: Arc<Mutex<Option<String>>>,
 }
 
 impl RunFanout {
@@ -40,31 +39,7 @@ impl RunFanout {
                 stop: None,
                 active: true,
             }),
-            resume_token: Arc::new(Mutex::new(None)),
         }
-    }
-
-    pub(crate) fn sinks(&self) -> (EventSink<Vec<u8>>, EventSink<sworm_protocol::pty::PtyEvent>) {
-        let resume_token = Arc::clone(&self.resume_token);
-        (
-            Arc::new(|_| Ok(())),
-            Arc::new(move |event| {
-                if let sworm_protocol::pty::PtyEvent::ResumeTokenBound { token, .. } = event {
-                    *resume_token.lock() = Some(token);
-                }
-                Ok(())
-            }),
-        )
-    }
-
-    pub(crate) fn set_resume_token(&self, token: Option<String>) {
-        if let Some(token) = token {
-            *self.resume_token.lock() = Some(token);
-        }
-    }
-
-    pub(crate) fn resume_token(&self) -> Option<String> {
-        self.resume_token.lock().clone()
     }
 
     fn begin(&self) -> Option<(u64, watch::Receiver<bool>)> {
@@ -125,6 +100,24 @@ impl RunFanout {
         owner.stop = None;
     }
 
+    fn input(
+        &self,
+        host: &Host,
+        run_id: &str,
+        generation: u64,
+        input: Frame<PtyUp>,
+    ) -> Result<(), String> {
+        let owner = self.owner.lock();
+        if !owner.active || owner.generation != generation {
+            return Ok(());
+        }
+        // Old stream input cannot reach the replacement incarnation.
+        match input {
+            Frame::Raw(bytes) => host.pty.write(run_id, &bytes),
+            Frame::Json(PtyUp::Resize { cols, rows }) => host.pty.resize(run_id, cols, rows),
+        }
+    }
+
     pub(crate) fn cancel(&self) {
         let mut owner = self.owner.lock();
         owner.active = false;
@@ -156,13 +149,47 @@ pub(crate) async fn run(
     mut recv: quinn::RecvStream,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let live = match context.run_fanout(&run_id).await {
-        Some(fanout) => host.pty.cursor(&run_id).map(|end| (fanout, end)),
-        None => None,
+    let fanout = context.run_fanout(&run_id);
+    let live = if let Some(fanout) = fanout {
+        let host = Arc::clone(&host);
+        let id = run_id.clone();
+        match tokio::task::spawn_blocking(move || host.pty.cursor(&id)).await {
+            Ok(end) => end.map(|end| (fanout, end)),
+            Err(error) => {
+                write_stream_error(
+                    &mut send,
+                    WireError::Internal {
+                        message: format!("PTY cursor task failed: {error}"),
+                    },
+                )
+                .await;
+                return;
+            }
+        }
+    } else {
+        None
     };
     let Some((fanout, end)) = live else {
         // The process is gone from memory; its transcript may still be on disk.
-        match context.completed.get(&run_id) {
+        let archived_host = Arc::clone(&host);
+        let archived_id = run_id.clone();
+        let archived =
+            match tokio::task::spawn_blocking(move || archived_host.completed_run(&archived_id))
+                .await
+            {
+                Ok(archived) => archived,
+                Err(error) => {
+                    write_stream_error(
+                        &mut send,
+                        WireError::Internal {
+                            message: format!("PTY archive task failed: {error}"),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            };
+        match archived {
             Ok(Some(completed)) => {
                 if let Err(error) = replay_completed(&mut send, completed, cursor).await {
                     tracing::debug!(%error, run_id, "stored PTY replay failed");
@@ -178,7 +205,7 @@ pub(crate) async fn run(
                 .await;
             }
             Err(error) => {
-                write_stream_error(&mut send, WireError::Internal { message: error }).await;
+                write_stream_error(&mut send, error.into()).await;
             }
         }
         return;
@@ -194,7 +221,21 @@ pub(crate) async fn run(
         return;
     }
 
-    let Some((generation, replaced)) = fanout.begin() else {
+    let opening = Arc::clone(&fanout);
+    let opened = match tokio::task::spawn_blocking(move || opening.begin()).await {
+        Ok(opened) => opened,
+        Err(error) => {
+            write_stream_error(
+                &mut send,
+                WireError::Internal {
+                    message: format!("PTY lease task failed: {error}"),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+    let Some((generation, replaced)) = opened else {
         write_stream_error(
             &mut send,
             WireError::NotFound {
@@ -230,7 +271,7 @@ pub(crate) async fn run(
                 Err(error) => tracing::warn!(%error, run_id, "PTY writer task failed"),
             }
         }
-        result = read_input(&host, &run_id, &mut recv) => {
+        result = read_input(Arc::clone(&host), Arc::clone(&fanout), run_id.clone(), generation, &mut recv) => {
             if let Err(error) = result {
                 tracing::debug!(%error, run_id, "PTY reader stopped");
             }
@@ -248,7 +289,11 @@ pub(crate) async fn run(
         }
     }
 
-    fanout.finish(&host, &run_id, generation);
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || fanout.finish(&host, &run_id, generation)).await
+    {
+        tracing::warn!(%error, "PTY lease detachment task failed");
+    }
 }
 
 async fn write_loop(
@@ -279,8 +324,14 @@ async fn write_loop(
                 format!("PTY stream queue full or closed: {error}")
             })
         });
-        let outcome = fanout.attach(&host, &run_id, generation, Arc::clone(&sink), cursor);
-        drop(sink);
+        let attaching = Arc::clone(&fanout);
+        let attach_host = Arc::clone(&host);
+        let attach_id = run_id.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            attaching.attach(&attach_host, &attach_id, generation, sink, cursor)
+        })
+        .await
+        .map_err(|error| format!("PTY replay task failed: {error}"))?;
         let mut wrote = false;
 
         loop {
@@ -308,7 +359,14 @@ async fn write_loop(
 
         match outcome {
             AttachOutcome::Attached => {
-                if host.pty.run_state(&run_id).is_none() {
+                let state_host = Arc::clone(&host);
+                let state_id = run_id.clone();
+                let gone = tokio::task::spawn_blocking(move || {
+                    state_host.pty.run_state(&state_id).is_none()
+                })
+                .await
+                .map_err(|error| format!("PTY state task failed: {error}"))?;
+                if gone {
                     break;
                 }
                 continue 'reattach;
@@ -428,19 +486,28 @@ async fn write_delivery(
     Ok(())
 }
 
-async fn read_input(host: &Host, run_id: &str, recv: &mut quinn::RecvStream) -> Result<(), String> {
+async fn read_input(
+    host: Arc<Host>,
+    fanout: Arc<RunFanout>,
+    run_id: String,
+    generation: u64,
+    recv: &mut quinn::RecvStream,
+) -> Result<(), String> {
+    let run_id: Arc<str> = Arc::from(run_id);
     loop {
-        // A rejected write or resize (exited run, replay tail) is not a stream
-        // fault: tearing the stream down would only trigger a reattach loop.
-        let result = match read_tagged_frame::<PtyUp>(recv)
+        let input = read_tagged_frame::<PtyUp>(recv)
             .await
-            .map_err(|error| error.to_string())?
-        {
-            Frame::Raw(bytes) => host.pty.write(run_id, &bytes),
-            Frame::Json(PtyUp::Resize { cols, rows }) => host.pty.resize(run_id, cols, rows),
-        };
+            .map_err(|error| error.to_string())?;
+        let host = Arc::clone(&host);
+        let fanout = Arc::clone(&fanout);
+        let id = Arc::clone(&run_id);
+        // PTY I/O may block. Do not pin QUIC workers to this run's backend.
+        let result =
+            tokio::task::spawn_blocking(move || fanout.input(&host, &id, generation, input))
+                .await
+                .map_err(|error| format!("PTY input task failed: {error}"))?;
         if let Err(error) = result {
-            tracing::debug!(%error, run_id, "PTY input rejected");
+            tracing::debug!(%error, run_id = %run_id, "PTY input rejected");
         }
     }
 }

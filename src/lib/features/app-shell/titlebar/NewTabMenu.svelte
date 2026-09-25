@@ -6,6 +6,7 @@
 -->
 
 <script lang="ts">
+  import { platform } from '$lib/platform'
   import { IconButton, iconButtonVariants } from '$lib/components/ui/button'
   import {
     DropdownMenuContent,
@@ -55,10 +56,12 @@
           <TerminalIcon size={14} class="shrink-0 text-muted" />
           <span>Terminal</span>
         </DropdownMenuItem>
-        <DropdownMenuItem onclick={() => createUntitledTextSurface(folder)}>
-          <FilePlusIcon size={14} class="shrink-0 text-muted" />
-          <span>New File</span>
-        </DropdownMenuItem>
+        {#if platform.capabilities.saveAsDialog}
+          <DropdownMenuItem onclick={() => createUntitledTextSurface(folder)}>
+            <FilePlusIcon size={14} class="shrink-0 text-muted" />
+            <span>New File</span>
+          </DropdownMenuItem>
+        {/if}
         {#if connectedAgents.length > 0}
           <DropdownMenuSeparator />
           {#each connectedAgents as provider (provider.id)}
@@ -68,13 +71,17 @@
             </DropdownMenuItem>
           {/each}
         {/if}
-        <DropdownMenuSeparator />
+        {#if platform.capabilities.nativeDirectoryPicker || recentFolders.length > 0}
+          <DropdownMenuSeparator />
+        {/if}
       {/if}
 
-      <DropdownMenuItem onclick={() => void openFolderPicker()}>
-        <FolderOpen size={14} class="shrink-0 text-muted" />
-        <span>Open Folder…</span>
-      </DropdownMenuItem>
+      {#if platform.capabilities.nativeDirectoryPicker}
+        <DropdownMenuItem onclick={() => void openFolderPicker()}>
+          <FolderOpen size={14} class="shrink-0 text-muted" />
+          <span>Open Folder…</span>
+        </DropdownMenuItem>
+      {/if}
       {#if recentFolders.length > 0}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -92,7 +99,7 @@
       {/if}
     </DropdownMenuContent>
   </DropdownMenuRoot>
-{:else}
+{:else if platform.capabilities.nativeDirectoryPicker}
   <IconButton size="md" tooltip="Open folder" class={buttonClass} onclick={() => void openFolderPicker()}>
     <Plus size={14} />
   </IconButton>

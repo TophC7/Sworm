@@ -1,4 +1,4 @@
-import { readText as readClipboardText, writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager'
+import { platform } from '$lib/platform'
 import { StandaloneServices } from 'monaco-editor/esm/vs/editor/standalone/browser/standaloneServices.js'
 
 type EditorOverrides = import('monaco-editor').editor.IEditorOverrideServices
@@ -23,12 +23,12 @@ const clipboardService = {
       typedText.set(type, text)
       return
     }
-    await writeClipboardText(text)
+    await platform.clipboard.writeText(text)
   },
 
   async readText(type?: string): Promise<string> {
     if (type) return typedText.get(type) ?? ''
-    return (await readClipboardText()) ?? ''
+    return (await platform.clipboard.readText()) ?? ''
   },
 
   async readFindText(): Promise<string> {
@@ -53,7 +53,7 @@ const clipboardService = {
 }
 
 export function initializeMonacoEditorServices(): void {
-  // Monaco's default service primes WebKit clipboard writes on every click/keydown. WKWebView
-  // leaves the canceled payload rejection unhandled; Tauri clipboard needs no gesture priming.
+  // Monaco's default service primes clipboard writes on every click/keydown.
+  // Platform clipboard access does not need Monaco's gesture priming.
   editorServices.initialize({ clipboardService })
 }

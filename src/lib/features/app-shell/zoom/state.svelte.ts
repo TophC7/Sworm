@@ -1,24 +1,19 @@
-import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { requireNative } from '$lib/platform'
 
 let zoomLevel = $state(1.0)
 let zoomTimer: ReturnType<typeof setTimeout> | undefined
-
-function applyZoom() {
-  clearTimeout(zoomTimer)
-  zoomTimer = setTimeout(() => {
-    getCurrentWebview()
-      .setZoom(zoomLevel)
-      .catch(() => {})
-  }, 80)
-}
 
 export function getZoomLevel(): number {
   return zoomLevel
 }
 
 export function setZoomLevel(level: number) {
+  const zoom = requireNative().zoom
   zoomLevel = Math.round(Math.max(0.5, Math.min(2.0, level)) * 10) / 10
-  applyZoom()
+  clearTimeout(zoomTimer)
+  zoomTimer = setTimeout(() => {
+    void zoom.setZoom(zoomLevel).catch(() => {})
+  }, 80)
 }
 
 export function zoomIn() {

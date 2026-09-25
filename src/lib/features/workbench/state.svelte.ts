@@ -7,6 +7,7 @@
 
 import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
+import { platform, requireNative } from '$lib/platform'
 import { releaseFolder } from '$lib/features/folders/lifecycle'
 import { filterExistingFolders, getRecentFolders, pushRecentFolder } from '$lib/features/folders/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
@@ -69,14 +70,14 @@ export { canLockTab }
 
 // MODULE STATE //
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
-let windowLabel = 'main'
+let workbenchId = 'main'
 
-export function setWindowLabel(label: string): void {
-  windowLabel = label
+export function setWorkbenchId(id: string): void {
+  workbenchId = id
 }
 
-export function getWindowLabel(): string {
-  return windowLabel
+export function getWorkbenchId(): string {
+  return workbenchId
 }
 
 // LIFO stack of recently closed tabs for Ctrl+Shift+T. In-memory only: a
@@ -186,7 +187,7 @@ function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist
 
 export function persistWorkbench(): void {
   if (restored)
-    schedulePersistWorkbench(windowLabel, () => {
+    schedulePersistWorkbench(workbenchId, () => {
       const tabs = workbench.tabs.filter((tab) => !stagedTabIds.has(tab.id))
       const activeTabId = workbench.activeTabId
       return serializeWorkbench({
@@ -371,10 +372,10 @@ export async function openFolder(path: string): Promise<void> {
  * Hydrate the persisted tab list. Tabs whose folder no longer resolves are
  * dropped; session tabs come back dormant and start on first activation.
  */
-export async function restoreWorkbench(label: string): Promise<void> {
+export async function restoreWorkbench(workbenchId: string): Promise<void> {
   try {
     await ensureTextFileSyncListeners()
-    const persisted = await loadPersistedWorkbench(label)
+    const persisted = await loadPersistedWorkbench(workbenchId)
     if (persisted) {
       const folders = await filterExistingFolders([...new Set(persisted.tabs.map((t) => t.folderPath))])
       const alive = new Set(folders)
@@ -390,11 +391,12 @@ export async function restoreWorkbench(label: string): Promise<void> {
         candidates.map(async (c) => ({
           c,
           redirect:
+            platform.capabilities.fileClaims &&
             c.tab.kind === 'text' &&
             c.tab.filePath != null &&
             !c.tab.gitRef &&
-            (await backend.window.claimFile(resolveProjectFile(c.tab.folderPath, c.tab.filePath), c.tab.id)).status ===
-              'redirect'
+            (await requireNative().files.claimFile(resolveProjectFile(c.tab.folderPath, c.tab.filePath), c.tab.id))
+              .status === 'redirect'
         }))
       )
       const survivors = results
@@ -461,7 +463,7 @@ export function setSessionTabRunId(tabId: TabId, runId: string | null): void {
  */
 export async function persistSessionTabRunId(tabId: TabId, runId: string): Promise<void> {
   setSessionTabRunId(tabId, runId)
-  await flushWorkbench(windowLabel).catch((error) => console.warn('Failed to persist session run id:', error))
+  await flushWorkbench(workbenchId).catch((error) => console.warn('Failed to persist session run id:', error))
 }
 
 export function setSessionTabResumeToken(tabId: TabId, resumeToken: string | null): void {
@@ -493,6 +495,7 @@ export function addTaskTab(folderPath: string, init: TaskTabInit): TabId {
     id: generateTabId(),
     folderPath,
     runId: init.runId,
+    attachOnly: false,
     taskId: init.taskId,
     activeFilePath: init.activeFilePath,
     label: init.label,
@@ -505,7 +508,9 @@ export function addTaskTab(folderPath: string, init: TaskTabInit): TabId {
 }
 
 export function setTaskTabStatus(tabId: TabId, status: TaskRunStatus, exitCode: number | null = null): void {
-  updateTab(tabId, (t) => (t.kind === 'task' ? { ...t, status, exitCode } : t))
+  updateTab(tabId, (t) =>
+    t.kind === 'task' && (t.status !== status || t.exitCode !== exitCode) ? { ...t, status, exitCode } : t
+  )
 }
 
 /**
@@ -528,6 +533,7 @@ export function resetTaskTabForRestart(
       ? {
           ...t,
           runId: nextRunId,
+          attachOnly: false,
           activeFilePath: latest.activeFilePath,
           label: latest.label,
           icon: latest.icon,
@@ -591,7 +597,8 @@ function addContentTab(
           newTab.filePath !== existingTemp.filePath ||
           newTab.gitRef)
       ) {
-        void backend.window.releaseFile(resolveProjectFile(existingTemp.folderPath, existingTemp.filePath))
+        if (platform.capabilities.fileClaims)
+          void requireNative().files.releaseFile(resolveProjectFile(existingTemp.folderPath, existingTemp.filePath))
       }
       // Skip mutation when tab data hasn't changed (second click of a
       // double-click on the same file).
@@ -888,8 +895,8 @@ export function closeTab(tabId: TabId): void {
   const tab = workbench.tabs[index]
   if (tab.locked) return
 
-  // Remote tasks are persisted across window teardown, but explicit tab
-  // close still kills them and intentionally does not enter reopen history.
+  // Active local and remote tasks survive view teardown. Explicit close
+  // stops them and intentionally omits them from reopen history.
   const snapshot = tab.kind === 'task' ? null : tabToPersisted(tab)
   if (snapshot) pushClosedTab(snapshot)
 
@@ -898,8 +905,8 @@ export function closeTab(tabId: TabId): void {
   } else if (tab.kind === 'task') {
     taskRegistry.dispose(tab.runId)
   }
-  if (tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
-    void backend.window.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
+  if (platform.capabilities.fileClaims && tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
+    void requireNative().files.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
   }
 
   const tabs = workbench.tabs.filter((t) => t.id !== tabId)

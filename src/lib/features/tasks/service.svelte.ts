@@ -4,7 +4,10 @@
 // behavior layer: opening task tabs, handling singleton semantics,
 // showing the confirm prompt, and rebinding singleton tabs on restart.
 
+import { backend } from '$lib/api/backend'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
+import { notify } from '$lib/features/notifications/state.svelte'
+import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import type { TaskDefinition } from '$lib/types/backend'
 import type { TabId } from '$lib/features/workbench/model'
 import {
@@ -15,6 +18,13 @@ import {
 } from '$lib/features/workbench/state.svelte'
 import { findTask } from '$lib/features/tasks/state.svelte'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
+
+/** Stop an attached task after startup settles, or stop a restored inactive run directly. */
+export async function stopTaskProcess(runId: string): Promise<void> {
+  const terminal = taskRegistry.get(runId)
+  if (terminal) return terminal.stopProcess()
+  await backend.tasks.stop(runId)
+}
 
 // Tracks the most recently launched task per folder so "Re-run Last
 // Task" in the palette can fire without re-prompting the user to pick.
@@ -81,8 +91,14 @@ export async function openTaskTab(
     const existing = findTaskTabByTaskId(folderPath, task.id)
     if (existing) {
       const activeFilePath = activeFilePathFor(folderPath) ?? options.activeFilePath ?? existing.activeFilePath
-      const nextRunId = newRunId()
+      try {
+        await stopTaskProcess(existing.runId)
+      } catch (error) {
+        notify.error('Stop task failed', getErrorMessage(error))
+        throw error
+      }
       taskRegistry.dispose(existing.runId)
+      const nextRunId = newRunId()
       resetTaskTabForRestart(existing.id, nextRunId, {
         activeFilePath,
         label: task.label,

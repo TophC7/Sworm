@@ -43,6 +43,7 @@
     const terminal = taskRegistry.attach(
       {
         runId,
+        attachOnly: tab.attachOnly,
         folderPath,
         taskId: tab.taskId,
         activeFilePath: tab.activeFilePath,

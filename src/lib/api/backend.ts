@@ -1,18 +1,12 @@
-// Typed frontend/backend bridge.
-//
-// Every Tauri invoke call goes through this module. Pages and
-// components must NOT import invoke() directly.
+// Typed host API. Desktop and future web transports provide the same calls.
 
-import { Channel, invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
+import { getHostTransport, type PtySinks, type StreamHandle, type Unsubscribe } from './transport'
 import type {
   AppRuntimeInfo,
   BranchOpState,
   BranchSummary,
   BuiltinCatalog,
   CommitDetail,
-  ClaimFileResult,
   ConfigSchemaEntry,
   DiffFileContent,
   DiffSource,
@@ -23,15 +17,10 @@ import type {
   FileContent,
   FileStat,
   FileReadProgress,
-  RemoteSettings,
-  RemoteStatus,
-  RemoteStatusEvent,
-  RemoteRunStatusEvent,
   FileDiff,
   FilePasteMapping,
   FilePasteCollision,
   FilePathChangedPayload,
-  FocusTabPayload,
   FilesChangedEvent,
   FormattingSettings,
   NixSettings,
@@ -68,7 +57,6 @@ import type {
   PathRoot,
   ProviderConfig,
   ProviderStatus,
-  PtyEvent,
   SessionSpec,
   SessionStartInfo,
   SettingsChangedEvent,
@@ -78,44 +66,15 @@ import type {
   ShortcutsFilePayload,
   ShortcutsFileResult,
   StashEntry,
-  TabTransferAbortedPayload,
-  TabTransferExportPayload,
-  TabTransferInitiateParams,
   TaskDefinition
 } from '$lib/types/backend'
 
+// Keep the command names and argument shapes at the host facade boundary.
+function invoke<T>(method: string, params: object = {}): Promise<T> {
+  return getHostTransport().call<T>(method, params)
+}
+
 export const backend = {
-  remotes: {
-    pair(link: string, name: string): Promise<RemoteSettings> {
-      return invoke<RemoteSettings>('pair_remote', { link, name })
-    },
-    repair(link: string, name: string): Promise<RemoteSettings> {
-      return invoke<RemoteSettings>('repair_remote', { link, name })
-    },
-    status(server: string): Promise<RemoteStatus> {
-      return invoke<RemoteStatus>('remote_status', { server })
-    },
-    rename(server: string, name: string): Promise<void> {
-      return invoke<void>('rename_remote', { server, name })
-    },
-    remove(server: string): Promise<void> {
-      return invoke<void>('remove_remote', { server })
-    },
-    onStatus(handler: (event: RemoteStatusEvent) => void): Promise<UnlistenFn> {
-      return listen<RemoteStatusEvent>('remote-status', (event) => handler(event.payload))
-    },
-    onRunStatus(handler: (event: RemoteRunStatusEvent) => void): Promise<UnlistenFn> {
-      return listen<RemoteRunStatusEvent>('remote-run-status', (event) => handler(event.payload))
-    }
-  },
-  deepLinks: {
-    take(): Promise<string[]> {
-      return invoke<string[]>('deep_link_take')
-    },
-    onOpen(handler: () => void): Promise<UnlistenFn> {
-      return listen('deep-link-open', handler)
-    }
-  },
   activityMap: {
     get(): Promise<DiscoveredProject[]> {
       return invoke<DiscoveredProject[]>('activity_map_get')
@@ -137,70 +96,6 @@ export const backend = {
     },
     stateDelete(key: string): Promise<void> {
       return invoke<void>('app_state_delete', { key })
-    },
-    /** Copy file paths to the system clipboard in file-manager format. */
-    clipboardCopyFiles(paths: string[], op: 'copy' | 'cut'): Promise<void> {
-      return invoke<void>('clipboard_copy_files', { paths, op })
-    },
-    /** Read file URIs from the system clipboard. Returns null if none. */
-    clipboardReadFiles(): Promise<{
-      op: 'copy' | 'cut'
-      paths: string[]
-    } | null> {
-      return invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files')
-    }
-  },
-  window: {
-    create(): Promise<string> {
-      return invoke<string>('window_create')
-    },
-    ready(): Promise<void> {
-      return invoke<void>('window_ready')
-    },
-    getLabel(): Promise<string> {
-      return invoke<string>('window_get_label')
-    },
-    claimFile(filePath: string, tabId: string, reveal: TextRevealTarget | null = null): Promise<ClaimFileResult> {
-      return invoke<ClaimFileResult>('window_claim_file', { filePath, tabId, reveal })
-    },
-    releaseFile(filePath: string): Promise<void> {
-      return invoke<void>('window_release_file', { filePath })
-    },
-    transferInitiate(params: TabTransferInitiateParams): Promise<string> {
-      return invoke<string>('window_transfer_initiate', { params })
-    },
-    transferSourceExported(payload: TabTransferExportPayload): Promise<void> {
-      return invoke<void>('window_transfer_source_exported', { payload })
-    },
-    transferTargetStaged(transferId: string): Promise<void> {
-      return invoke<void>('window_transfer_target_staged', { transferId })
-    },
-    transferAbort(transferId: string, reason: string): Promise<void> {
-      return invoke<void>('window_transfer_abort', { transferId, reason })
-    },
-    onFilePathChanged(handler: (event: FilePathChangedPayload) => void): Promise<UnlistenFn> {
-      return listen<FilePathChangedPayload>('file-path-changed', (event) => handler(event.payload))
-    },
-    onFileDeleted(handler: (event: { filePath: string }) => void): Promise<UnlistenFn> {
-      return listen<{ filePath: string }>('file-deleted', (event) => handler(event.payload))
-    },
-    onFocusTab(handler: (event: FocusTabPayload) => void): Promise<UnlistenFn> {
-      return listen<FocusTabPayload>('focus-tab', (event) => handler(event.payload))
-    },
-    onTransferAborted(handler: (event: TabTransferAbortedPayload) => void): Promise<UnlistenFn> {
-      return listen<TabTransferAbortedPayload>('tab-transfer-aborted', (event) => handler(event.payload))
-    },
-    close(): Promise<void> {
-      return invoke<void>('window_close')
-    }
-  },
-
-  dnd: {
-    saveDroppedBytes(bytes: Uint8Array, suggestedName: string): Promise<string> {
-      return invoke<string>('dnd_save_dropped_bytes', {
-        bytes: Array.from(bytes),
-        suggestedName
-      })
     }
   },
 
@@ -214,11 +109,8 @@ export const backend = {
     recentRemove(paths: string[]): Promise<string[]> {
       return invoke<string[]>('recent_folders_remove', { paths })
     },
-    onRecentFoldersChanged(handler: (folders: string[]) => void): Promise<UnlistenFn> {
-      return listen<string[]>('recent-folders-changed', (event) => handler(event.payload))
-    },
-    selectDirectory(): Promise<string | null> {
-      return invoke<string | null>('folder_select_directory')
+    onRecentFoldersChanged(handler: (folders: string[]) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('recent-folders-changed', handler)
     },
     claim(folderPath: string): Promise<void> {
       return invoke<void>('folder_claim', { folderPath })
@@ -233,9 +125,6 @@ export const backend = {
     /** Where the folder switcher's path bar starts for a local folder. */
     pathRoot(path: string): Promise<PathRoot> {
       return invoke<PathRoot>('folder_path_root', { path })
-    },
-    openInTerminal(path: string): Promise<void> {
-      return invoke<void>('folder_open_in_terminal', { path })
     },
     /** Drop backend resources scoped to a folder that no longer has any open tab. */
     release(folderPath: string): Promise<void> {
@@ -252,50 +141,10 @@ export const backend = {
     }
   },
 
-  pty: {
-    pause(runId: string): Promise<number> {
-      return invoke<number>('pty_pause', { runId })
-    },
-    attach(runId: string, transferId: string, output: Channel<Uint8Array>, events: Channel<PtyEvent>): Promise<number> {
-      return invoke<number>('pty_attach', { runId, transferId, output, events })
-    }
-  },
-
   sessions: {
-    createOutputChannel(onOutput: (data: Uint8Array) => void): Channel<Uint8Array> {
-      const output = new Channel<Uint8Array>()
-      output.onmessage = (data) => onOutput(new Uint8Array(data))
-      return output
-    },
-    createEventChannel(onEvent: (event: PtyEvent) => void): Channel<PtyEvent> {
-      const events = new Channel<PtyEvent>()
-      events.onmessage = onEvent
-      return events
-    },
-    /**
-     * Spawn the provider process for a session tab under a fresh `runId`.
-     * `resumeToken` is the provider conversation identity known from a
-     * previous run; the backend validates it and reports `resumed` plus
-     * the token the launched process owns at spawn time (null until
-     * discovery binds one).
-     */
-    start(
-      spec: SessionSpec,
-      cols: number,
-      rows: number,
-      output: Channel<Uint8Array>,
-      events: Channel<PtyEvent>
-    ): Promise<SessionStartInfo> {
-      return invoke<SessionStartInfo>('session_start', {
-        runId: spec.runId,
-        folderPath: spec.folderPath,
-        providerId: spec.providerId,
-        resumeToken: spec.resumeToken,
-        cols,
-        rows,
-        output,
-        events
-      })
+    /** Reattach a matching retained run, or start a new run using provider resume policy. */
+    start(spec: SessionSpec, cols: number, rows: number, sinks: PtySinks): StreamHandle<SessionStartInfo> {
+      return getHostTransport().openStream({ method: 'session_start', params: { ...spec, cols, rows } }, sinks)
     },
     write(runId: string, data: Uint8Array): Promise<void> {
       return invoke<void>('session_write', {
@@ -322,8 +171,8 @@ export const backend = {
     watch(projectPath: string): Promise<void> {
       return invoke<void>('git_watch', { projectPath })
     },
-    onChanged(handler: (event: GitChangedEvent) => void): Promise<UnlistenFn> {
-      return listen<GitChangedEvent>('git-changed', (event) => handler(event.payload))
+    onChanged(handler: (event: GitChangedEvent) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('git-changed', handler)
     },
     getGraph(path: string, limit = 100): Promise<GraphCommit[]> {
       return invoke<GraphCommit[]>('git_get_graph', { path, limit })
@@ -560,8 +409,8 @@ export const backend = {
     cancelReadStream(requestId: string): Promise<void> {
       return invoke<void>('file_read_stream_cancel', { requestId })
     },
-    onReadProgress(handler: (event: FileReadProgress) => void): Promise<UnlistenFn> {
-      return listen<FileReadProgress>('file-read-progress', (event) => handler(event.payload))
+    onReadProgress(handler: (event: FileReadProgress) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('file-read-progress', handler)
     },
     /** One directory as the explorer renders it. `dirPath` '' is the project root. */
     readDir(projectPath: string, dirPath: string, showHidden: boolean): Promise<ExplorerDirEntry[]> {
@@ -575,8 +424,14 @@ export const backend = {
     watchDirs(projectPath: string, dirs: string[]): Promise<void> {
       return invoke<void>('files_watch_dirs', { projectPath, dirs })
     },
-    onChanged(handler: (event: FilesChangedEvent) => void): Promise<UnlistenFn> {
-      return listen<FilesChangedEvent>('files-changed', (event) => handler(event.payload))
+    onChanged(handler: (event: FilesChangedEvent) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('files-changed', handler)
+    },
+    onPathChanged(handler: (event: FilePathChangedPayload) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('file-path-changed', handler)
+    },
+    onDeleted(handler: (event: { filePath: string }) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('file-deleted', handler)
     },
     /**
      * File text plus the version of the bytes read, for conflict-checked writes.
@@ -634,8 +489,8 @@ export const backend = {
   },
 
   nix: {
-    onChanged(handler: (event: { folderPath: string }) => void): Promise<UnlistenFn> {
-      return listen<{ folderPath: string }>('nix-changed', (event) => handler(event.payload))
+    onChanged(handler: (event: { folderPath: string }) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('nix-changed', handler)
     },
     detect(folderPath: string): Promise<NixDetection> {
       return invoke<NixDetection>('nix_detect', { folderPath })
@@ -684,16 +539,13 @@ export const backend = {
     createGlobalFile(): Promise<SettingsFileResult> {
       return invoke<SettingsFileResult>('settings_create_global_file')
     },
-    openGlobalFile(): Promise<SettingsFileResult> {
-      return invoke<SettingsFileResult>('settings_open_global_file')
-    },
     openFolderFile(folderPath: string): Promise<SettingsFileResult> {
       return invoke<SettingsFileResult>('settings_open_folder_file', {
         input: { folder_path: folderPath }
       })
     },
-    onChanged(handler: (event: SettingsChangedEvent) => void): Promise<UnlistenFn> {
-      return listen<SettingsChangedEvent>('settings-changed', (event) => handler(event.payload))
+    onChanged(handler: (event: SettingsChangedEvent) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('settings-changed', handler)
     },
     setWindow(settings: WindowSettings): Promise<WindowSettings> {
       return invoke<WindowSettings>('settings_set_window', { settings })
@@ -724,9 +576,6 @@ export const backend = {
     },
     createGlobalFile(): Promise<ShortcutsFileResult> {
       return invoke<ShortcutsFileResult>('shortcuts_create_global_file')
-    },
-    openGlobalFile(): Promise<ShortcutsFileResult> {
-      return invoke<ShortcutsFileResult>('shortcuts_open_global_file')
     }
   },
 
@@ -743,8 +592,8 @@ export const backend = {
   },
 
   issues: {
-    onChanged(handler: (event: { folderPath: string }) => void): Promise<UnlistenFn> {
-      return listen<{ folderPath: string }>('issues-changed', (event) => handler(event.payload))
+    onChanged(handler: (event: { folderPath: string }) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('issues-changed', handler)
     },
     list(folderPath: string, filters: IssueListFilters = {}): Promise<Issue[]> {
       return invoke<Issue[]>('issues_list', { folderPath, filters })
@@ -841,21 +690,16 @@ export const backend = {
   },
 
   tasks: {
+    onChanged(handler: (folderPath: string) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('tasks-changed', handler)
+    },
     /** Return the parsed task list for a folder. Empty array when no `.sworm/tasks.jsonc` exists. */
     list(folderPath: string): Promise<TaskDefinition[]> {
       return invoke<TaskDefinition[]>('tasks_list', { folderPath })
     },
-    createOutputChannel(onOutput: (data: Uint8Array) => void): Channel<Uint8Array> {
-      return backend.sessions.createOutputChannel(onOutput)
-    },
-    createEventChannel(onEvent: (event: PtyEvent) => void): Channel<PtyEvent> {
-      const events = new Channel<PtyEvent>()
-      events.onmessage = onEvent
-      return events
-    },
     /**
-     * Spawn a task in a PTY. `runId` is a frontend-generated UUID used
-     * as the PTY key for subsequent write/resize/stop calls.
+     * Start or attach a task PTY. `attachOnly` rejects unknown IDs instead of
+     * executing again; `runId` identifies write/resize/stop calls.
      */
     start(
       runId: string,
@@ -864,21 +708,16 @@ export const backend = {
       activeFilePath: string | null,
       cols: number,
       rows: number,
-      onOutput: (data: Uint8Array) => void,
-      onEvent: (event: PtyEvent) => void
-    ): Promise<void> {
-      const output = backend.tasks.createOutputChannel(onOutput)
-      const events = backend.tasks.createEventChannel(onEvent)
-      return invoke<void>('tasks_start', {
-        runId,
-        folderPath,
-        taskId,
-        activeFilePath,
-        cols,
-        rows,
-        output,
-        events
-      })
+      attachOnly: boolean,
+      sinks: PtySinks
+    ): StreamHandle<void> {
+      return getHostTransport().openStream(
+        {
+          method: 'tasks_start',
+          params: { runId, folderPath, taskId, activeFilePath, cols, rows, attachOnly }
+        },
+        sinks
+      )
     },
     write(runId: string, data: Uint8Array): Promise<void> {
       return invoke<void>('tasks_write', { runId, data: Array.from(data) })
@@ -916,26 +755,20 @@ export const backend = {
         folderPath: folderPath ?? null
       })
     },
-    createEventChannel(onEvent: (event: LspEvent) => void): Channel<LspEvent> {
-      const events = new Channel<LspEvent>()
-      events.onmessage = onEvent
-      return events
-    },
     start(
       sessionId: string,
       folderPath: string,
       serverDefinitionId: string,
       rootPath: string,
-      onEvent: (event: LspEvent) => void
-    ): Promise<void> {
-      const events = backend.lsp.createEventChannel(onEvent)
-      return invoke<void>('lsp_start', {
-        sessionId,
-        folderPath,
-        serverDefinitionId,
-        rootPath,
-        events
-      })
+      sinks: { onEvent: (event: LspEvent) => void }
+    ): StreamHandle<void> {
+      return getHostTransport().openStream(
+        {
+          method: 'lsp_start',
+          params: { sessionId, folderPath, serverDefinitionId, rootPath }
+        },
+        sinks
+      )
     },
     send(sessionId: string, messageJson: string): Promise<void> {
       return invoke<void>('lsp_send', { sessionId, messageJson })

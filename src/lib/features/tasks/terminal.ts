@@ -4,11 +4,13 @@
 // provider-specific behavior.
 
 import { backend } from '$lib/api/backend'
-import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
+import type { StreamHandle } from '$lib/api/transport'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
+import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
+import { requireNative } from '$lib/platform'
 import type { PtyEvent, TerminalTransferState } from '$lib/types/backend'
 import type { TaskRunStatus } from '$lib/features/workbench/model'
-import type { Channel } from '@tauri-apps/api/core'
+import { splitRemotePath } from '$lib/utils/paths'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -51,6 +53,7 @@ const textEncoder = new TextEncoder()
 
 export interface TaskTerminalInit {
   runId: string
+  attachOnly: boolean
   folderPath: string
   taskId: string
   activeFilePath: string | null
@@ -67,23 +70,25 @@ export class TaskTerminal {
   private resizeObserver: ResizeObserver | null = null
   private container: HTMLElement | null = null
   private runId: string
+  private streamRunId: string | null = null
   private readonly folderPath: string
   private readonly taskId: string
+  private readonly attachOnly: boolean
   private readonly activeFilePath: string | null
   private readonly onStatusChange?: (status: TaskRunStatus, exitCode: number | null) => void
   private disposed = false
-  private disposalMode: 'stop' | 'detach' | null = null
-  private startInFlight = false
+  private startPromise: Promise<void> | null = null
+  private stopPromise: Promise<void> | null = null
+  private released = false
   private spawned = false
-  private streamRunId: string | null = null
   private status: TaskRunStatus | 'idle' = 'idle'
-  private outputChannel: Channel<Uint8Array> | null = null
-  private eventsChannel: Channel<PtyEvent> | null = null
+  private stream: StreamHandle<void | number> | null = null
   private readonly barrier = new RenderBarrier()
 
   constructor(init: TaskTerminalInit) {
     this.runId = init.runId
     this.folderPath = init.folderPath
+    this.attachOnly = init.attachOnly
     this.taskId = init.taskId
     this.activeFilePath = init.activeFilePath
     this.onStatusChange = init.onStatusChange
@@ -154,45 +159,42 @@ export class TaskTerminal {
     return this.spawned
   }
 
-  /** Start the PTY. Resolves when the spawn command returns; output
-   *  and events then flow over the channels. */
-  async start(): Promise<void> {
-    if (this.spawned || this.disposed) return
+  /** Start or reattach the PTY once. Stop waits for this request to settle. */
+  start(): Promise<void> {
+    if (this.spawned || this.disposed) return this.startPromise ?? Promise.resolve()
     this.spawned = true
     this.status = 'starting'
     this.barrier.reset()
-
     const runId = this.runId
     this.streamRunId = runId
     const { cols, rows } = this.term
-    this.startInFlight = true
-    try {
-      await backend.tasks.start(
-        runId,
-        this.folderPath,
-        this.taskId,
-        this.activeFilePath,
-        cols,
-        rows,
-        (data) => this.handleOutput(runId, data),
-        (event) => this.handlePtyEvent(runId, event)
-      )
-      // Explicit tab disposal owns process cleanup. Window teardown does
-      // not: Rust decides whether a detached local/remote run survives.
-      if (this.disposalMode === 'stop') {
-        void backend.tasks.stop(runId).catch(() => {})
+    const stream = backend.tasks.start(
+      runId,
+      this.folderPath,
+      this.taskId,
+      this.activeFilePath,
+      cols,
+      rows,
+      this.attachOnly,
+      {
+        onOutput: (data) => this.handleOutput(runId, data),
+        onEvent: (event) => this.handlePtyEvent(runId, event)
       }
-    } catch (error) {
-      if (this.disposalMode === 'stop') {
-        void backend.tasks.stop(runId).catch(() => {})
-      } else if (!this.disposed) {
-        this.status = 'failed'
-        this.onStatusChange?.('failed', null)
+    )
+    this.stream = stream
+    this.startPromise = (async () => {
+      try {
+        await stream.ready
+      } catch (error) {
+        if (!this.disposed) {
+          this.status = 'failed'
+          this.onStatusChange?.('failed', null)
+        }
+        if (this.stream === stream) this.releaseStream()
+        throw error
       }
-      throw error
-    } finally {
-      this.startInFlight = false
-    }
+    })()
+    return this.startPromise
   }
 
   private handleOutput(runId: string, data: Uint8Array): void {
@@ -231,13 +233,15 @@ export class TaskTerminal {
   }
 
   async exportTransferState(): Promise<TerminalTransferState> {
+    const transfers = requireNative().transfers
     const inert = this.status === 'exited' || this.status === 'failed'
-    const targetSequence = inert ? 0 : await backend.pty.pause(this.runId)
-    if (!inert) await this.barrier.waitFor(targetSequence)
+    const runId = inert && splitRemotePath(this.folderPath) ? null : this.streamRunId
+    const targetSequence = runId ? await transfers.pause(runId) : 0
+    if (runId) await this.barrier.waitFor(targetSequence)
     await this.writeAndWait('')
     const buffer = this.term.buffer.active
     return {
-      runId: inert ? null : this.runId,
+      runId,
       serializedBuffer: this.serializeAddon.serialize(),
       cols: this.term.cols,
       rows: this.term.rows,
@@ -249,6 +253,7 @@ export class TaskTerminal {
 
   async importTransferState(state: TerminalTransferState, transferId: string): Promise<void> {
     if (this.disposed) throw new Error(`Task terminal ${this.runId} has been disposed`)
+    const transfers = requireNative().transfers
     this.barrier.reset()
     this.status =
       state.status === 'starting' ||
@@ -267,17 +272,20 @@ export class TaskTerminal {
     const runId = state.runId
     this.streamRunId = runId
 
-    const output = backend.tasks.createOutputChannel((data) => this.handleOutput(runId, data))
-    const events = backend.tasks.createEventChannel((event) => this.handlePtyEvent(runId, event))
-    this.outputChannel = output
-    this.eventsChannel = events
-
+    const stream = transfers.attach(runId, transferId, {
+      onOutput: (data) => this.handleOutput(runId, data),
+      onEvent: (event) => this.handlePtyEvent(runId, event)
+    })
+    this.stream = stream
+    this.startPromise = stream.ready.then(
+      () => {},
+      () => {}
+    )
     try {
-      const seq = await backend.pty.attach(runId, transferId, output, events)
-      this.barrier.seed(seq)
+      const seq = await stream.ready
+      if (!this.disposed && this.stream === stream) this.barrier.seed(seq)
     } catch (error) {
-      this.outputChannel = null
-      this.eventsChannel = null
+      if (this.stream === stream) this.releaseStream()
       throw error
     }
   }
@@ -301,38 +309,44 @@ export class TaskTerminal {
 
   /** Stop the PTY without tearing down xterm — allows the user to
    *  keep reading output after the process exits. */
-  async stopProcess(): Promise<void> {
-    if (this.status !== 'starting' && this.status !== 'running') return
-    await backend.tasks.stop(this.runId).catch(() => {})
-    this.status = 'exited'
-    this.onStatusChange?.('exited', null)
+  stopProcess(): Promise<void> {
+    if (this.released) return Promise.resolve()
+    if (this.stopPromise) return this.stopPromise
+    this.stopPromise = (async () => {
+      // Even a rejected start may have registered the run before failing.
+      await this.startPromise?.catch(() => {})
+      await backend.tasks.stop(this.runId)
+      this.released = true
+      this.releaseStream()
+      if (!this.disposed) {
+        this.status = 'exited'
+        this.onStatusChange?.('exited', null)
+      }
+    })().finally(() => {
+      this.stopPromise = null
+    })
+    return this.stopPromise
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.disposalMode = 'stop'
-    // A fresh start is stopped after its RPC resolves; stopping before
-    // registration can race and leak the newly-created run. Every other
-    // spawned run, including a completed one, retains daemon state until stop.
-    if (this.spawned && !this.startInFlight) {
-      void backend.tasks.stop(this.runId).catch(() => {})
-    }
-    this.releaseChannels()
+    if (this.spawned) void this.stopProcess().catch(() => {})
+    this.releaseStream()
     this.disposeSurface()
   }
 
   private disposeDetached(): void {
     if (this.disposed) return
     this.disposed = true
-    this.disposalMode = 'detach'
-    this.releaseChannels()
+    this.releaseStream()
     this.disposeSurface()
   }
 
-  private releaseChannels(): void {
-    this.outputChannel = null
-    this.eventsChannel = null
+  private releaseStream(): void {
+    this.stream?.dispose()
+    this.stream = null
+    this.streamRunId = null
   }
 
   private disposeSurface(): void {

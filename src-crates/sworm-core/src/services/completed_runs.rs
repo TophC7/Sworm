@@ -1,9 +1,9 @@
-//! Durable transcripts of window runs that already exited.
+//! Durable transcripts of daemon runs that already exited.
 //!
 //! A daemon outlives its desktop, so a run can finish while nobody is
-//! attached. Keeping the retained window in memory for that case leaks a run's
-//! worth of output per finished run and loses everything on daemon restart, so
-//! the transcript is written here at exit and the memory is freed.
+//! attached. Keeping each retained transcript in memory leaks a run's worth
+//! of output and loses it on daemon restart; the daemon opts into this store
+//! while desktop Hosts retain completed runs in memory for their own lifetime.
 
 use crate::services::db::DatabaseService;
 use chrono::{DateTime, Duration, Utc};
@@ -48,7 +48,8 @@ impl CompletedRunStore {
         Self { db, keep, max_age }
     }
 
-    pub fn put(&self, run: &CompletedRun) -> Result<(), String> {
+    /// Publish metadata while the archive write lock still excludes newer completions.
+    pub fn put(&self, run: &CompletedRun, published: impl FnOnce(&[String])) -> Result<(), String> {
         let events = serde_json::to_string(&run.events)
             .map_err(|error| format!("encode completed run events: {error}"))?;
         let db = self.db.write();
@@ -73,7 +74,9 @@ impl CompletedRunStore {
                 ],
             )
             .map_err(|error| format!("store completed run: {error}"))?;
-        self.prune(db.conn())
+        let pruned = self.prune(db.conn())?;
+        published(&pruned);
+        Ok(())
     }
 
     pub fn get(&self, run_id: &str) -> Result<Option<CompletedRun>, String> {
@@ -109,6 +112,21 @@ impl CompletedRunStore {
         }))
     }
 
+    /// Read only the exit marker for status/identity checks, without copying
+    /// the (up to 8 MiB) retained transcript.
+    pub fn exit_status(&self, run_id: &str) -> Result<Option<Option<i32>>, String> {
+        self.db
+            .read()
+            .conn()
+            .query_row(
+                "SELECT exit_code FROM completed_runs WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| row.get::<_, Option<i32>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("read completed run status: {error}"))
+    }
+
     /// Drop a transcript whose run was explicitly stopped.
     pub fn delete(&self, run_id: &str) {
         let db = self.db.write();
@@ -120,21 +138,25 @@ impl CompletedRunStore {
         }
     }
 
-    fn prune(&self, conn: &Connection) -> Result<(), String> {
+    fn prune(&self, conn: &Connection) -> Result<Vec<String>, String> {
         let cutoff: DateTime<Utc> = Utc::now() - self.max_age;
-        conn.execute(
-            "DELETE FROM completed_runs WHERE finished_at < ?1",
-            rusqlite::params![cutoff.to_rfc3339()],
-        )
-        .map_err(|error| format!("prune completed runs by age: {error}"))?;
-        conn.execute(
-            "DELETE FROM completed_runs WHERE run_id NOT IN (
-               SELECT run_id FROM completed_runs ORDER BY finished_at DESC LIMIT ?1
-             )",
-            rusqlite::params![self.keep as i64],
-        )
-        .map_err(|error| format!("prune completed runs by count: {error}"))?;
-        Ok(())
+        let mut statement = conn
+            .prepare(
+                "DELETE FROM completed_runs
+             WHERE finished_at < ?1 OR run_id NOT IN (
+               SELECT run_id FROM completed_runs ORDER BY finished_at DESC LIMIT ?2
+             ) RETURNING run_id",
+            )
+            .map_err(|error| format!("prepare completed run pruning: {error}"))?;
+        let pruned = statement
+            .query_map(
+                rusqlite::params![cutoff.to_rfc3339(), self.keep as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| format!("prune completed runs: {error}"))?;
+        pruned
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read pruned completed runs: {error}"))
     }
 }
 
@@ -178,7 +200,7 @@ mod tests {
     #[test]
     fn stores_and_reads_a_transcript() {
         let (_dir, store) = store(8, Duration::days(7));
-        store.put(&run("one")).expect("put");
+        store.put(&run("one"), |_| {}).expect("put");
 
         let stored = store.get("one").expect("get").expect("stored run");
         assert_eq!(stored.exit_code, Some(7));
@@ -195,7 +217,7 @@ mod tests {
     fn keeps_only_the_newest_transcripts() {
         let (_dir, store) = store(2, Duration::days(7));
         for run_id in ["one", "two", "three"] {
-            store.put(&run(run_id)).expect("put");
+            store.put(&run(run_id), |_| {}).expect("put");
             // finished_at has second resolution at RFC3339 formatting edges.
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
@@ -208,7 +230,7 @@ mod tests {
     #[test]
     fn drops_transcripts_past_their_age() {
         let (_dir, store) = store(8, Duration::zero());
-        store.put(&run("stale")).expect("put");
+        store.put(&run("stale"), |_| {}).expect("put");
         assert!(store.get("stale").expect("get").is_none());
     }
 }

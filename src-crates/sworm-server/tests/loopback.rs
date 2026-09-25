@@ -1,9 +1,11 @@
 use anyhow::{bail, Context, Result};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
+    sync::mpsc,
     time::Duration,
 };
 use sworm_protocol::{
@@ -246,6 +248,27 @@ async fn start_terminal(client: &RemoteClient, run_id: &str, folder_path: &str) 
         .session_start()
         .map_err(RemoteError::Wire)?
         .resumed)
+}
+
+async fn start_task(
+    client: &RemoteClient,
+    run_id: &str,
+    folder_path: &str,
+    attach_only: bool,
+) -> Result<(), RemoteError> {
+    client
+        .call(&Request::TasksStart {
+            run_id: run_id.to_owned(),
+            folder_path: folder_path.to_owned(),
+            task_id: "once".to_owned(),
+            active_file_path: None,
+            cols: 80,
+            rows: 24,
+            attach_only,
+        })
+        .await?
+        .tasks_start()
+        .map_err(RemoteError::Wire)
 }
 
 async fn stop_session(client: &RemoteClient, run_id: &str) -> Result<()> {
@@ -1091,6 +1114,15 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
     );
     assert!(start_terminal(&client, run_id, &project_path).await?);
 
+    let concurrent_id = "loopback-concurrent-session";
+    let (first, second) = tokio::join!(
+        start_terminal(&client, concurrent_id, &project_path),
+        start_terminal(&client, concurrent_id, &project_path),
+    );
+    assert_ne!(first?, second?, "only one concurrent start can spawn");
+    assert!(run_status(&client, concurrent_id).await?.live);
+    stop_session(&client, concurrent_id).await?;
+
     let other = tempfile::tempdir()?;
     let conflicting = client
         .call(&Request::SessionStart {
@@ -1107,6 +1139,22 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
         Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
     ));
 
+    let wrong_kind = client
+        .call(&Request::TasksStart {
+            run_id: run_id.to_owned(),
+            folder_path: project_path.clone(),
+            task_id: "unconfigured-task".to_owned(),
+            active_file_path: None,
+            cols: 80,
+            rows: 24,
+            attach_only: false,
+        })
+        .await;
+    assert!(matches!(
+        wrong_kind,
+        Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
+    ));
+    assert!(run_status(&client, run_id).await?.live);
     let (mut send, mut recv) = client
         .open_stream(Open::Pty {
             run_id: run_id.to_owned(),
@@ -1138,7 +1186,298 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
         }
     );
 
+    // A canceled lease cannot operate on a new incarnation with the same ID.
+    assert!(!start_terminal(&client, run_id, &project_path).await?);
+    let (mut fresh_send, mut fresh_recv) = client
+        .open_stream(Open::Pty {
+            run_id: run_id.to_owned(),
+            cursor: PtyCursor::default(),
+        })
+        .await?;
+    let mut fresh_cursor = PtyCursor::default();
+    prepare_shell(&mut fresh_send, &mut fresh_recv, &mut fresh_cursor).await?;
+    let _ = write_raw_frame(&mut send, b"touch stale-incarnation-command\n").await;
+    write_raw_frame(
+        &mut fresh_send,
+        b"printf '%s\\n' 'FRESH-INCARNATION-2e51'\n",
+    )
+    .await?;
+    read_until_occurrences(
+        &mut fresh_recv,
+        &mut fresh_cursor,
+        b"FRESH-INCARNATION-2e51",
+        1,
+    )
+    .await?;
+    assert!(!fixture
+        .repo
+        .path()
+        .join("stale-incarnation-command")
+        .exists());
+    stop_session(&client, run_id).await?;
+
     client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restored_task_never_executes_unknown_run_and_reuses_existing_one() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let folder = fixture.repo_path();
+    fs::write(
+        fixture.repo.path().join(".sworm/tasks.jsonc"),
+        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> task-counter; sleep 30","singleton":true}]}"#,
+    )?;
+    let client = fixture.paired_client().await?;
+    let run_id = "loopback-restored-task";
+    let counter = fixture.repo.path().join("task-counter");
+
+    assert!(matches!(
+        start_task(&client, run_id, &folder, true).await,
+        Err(RemoteError::Wire(WireError::NotFound { .. }))
+    ));
+    assert!(
+        !counter.exists(),
+        "missing restored run must not execute task"
+    );
+    assert!(!run_status(&client, run_id).await?.live);
+
+    start_task(&client, run_id, &folder, false).await?;
+    timeout(SHORT_TIMEOUT, async {
+        loop {
+            if fs::read(&counter).is_ok_and(|bytes| bytes == b"x") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("fresh task did not execute")?;
+    start_task(&client, run_id, &folder, true).await?;
+    assert!(run_status(&client, run_id).await?.live);
+    assert_eq!(fs::read(&counter)?, b"x", "restoration restarted task");
+
+    client
+        .call(&Request::TasksStop {
+            run_id: run_id.into(),
+        })
+        .await?
+        .tasks_stop()
+        .map_err(RemoteError::Wire)?;
+    assert!(matches!(
+        start_task(&client, run_id, &folder, true).await,
+        Err(RemoteError::Wire(WireError::NotFound { .. }))
+    ));
+    assert_eq!(
+        fs::read(&counter)?,
+        b"x",
+        "stopped task restarted on restore"
+    );
+    start_task(&client, run_id, &folder, false).await?;
+    timeout(SHORT_TIMEOUT, async {
+        loop {
+            if fs::read(&counter).is_ok_and(|bytes| bytes == b"xx") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("explicit restart did not execute task")?;
+    client
+        .call(&Request::TasksStop {
+            run_id: run_id.into(),
+        })
+        .await?
+        .tasks_stop()
+        .map_err(RemoteError::Wire)?;
+    client.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+/// A task definition read blocks after opening the FIFO until release. The
+/// writer reports the open, not merely its attempt, so tests know the daemon
+/// reached its synchronous startup path before probing another RPC.
+struct StalledTaskFile {
+    path: PathBuf,
+    release: Option<mpsc::Sender<()>>,
+    writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+}
+
+impl StalledTaskFile {
+    fn new(path: PathBuf) -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
+        let status = Command::new("mkfifo").arg(&path).status()?;
+        if !status.success() {
+            bail!("mkfifo failed with {status}");
+        }
+        let (opened, reached) = tokio::sync::oneshot::channel();
+        let (release, resume) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut fifo = OpenOptions::new().write(true).open(&writer_path)?;
+            let _ = opened.send(());
+            let _ = resume.recv();
+            fifo.write_all(br#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> task-counter; sleep 30","singleton":true}]}"#)?;
+            Ok(())
+        });
+        Ok((
+            Self {
+                path,
+                release: Some(release),
+                writer: Some(writer),
+            },
+            reached,
+        ))
+    }
+
+    fn unblock(&mut self) -> Result<()> {
+        self.release.take();
+        let writer = self.writer.take().expect("FIFO writer already joined");
+        writer.join().expect("FIFO writer panicked")?;
+        Ok(())
+    }
+}
+
+impl Drop for StalledTaskFile {
+    fn drop(&mut self) {
+        self.release.take();
+        if let Some(writer) = self.writer.take() {
+            // Linux FIFO RDWR opens without a peer. Unblock the writer even
+            // when an assertion fails before the daemon reaches its read.
+            let _ = OpenOptions::new().read(true).write(true).open(&self.path);
+            let _ = writer.join();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()> {
+    const MARKER: &[u8] = b"INDEPENDENT-PTY-4b29";
+    let fixture = Fixture::start(None).await?;
+    let first = fixture.paired_client().await?;
+    let other = fixture.client().await?;
+    let folder = fixture.repo_path();
+    let run_id = "loopback-blocked-task-start";
+    let (mut stalled, reached) =
+        StalledTaskFile::new(fixture.repo.path().join(".sworm/tasks.jsonc"))?;
+    let first_folder = folder.clone();
+    let pending =
+        tokio::spawn(async move { start_task(&first, run_id, &first_folder, false).await });
+    timeout(SHORT_TIMEOUT, reached)
+        .await
+        .context("task start never opened the FIFO")??;
+
+    // Host start A is blocked reading its task definition. B must start,
+    // stream bidirectional shell data, and stop before A's FIFO is released.
+    let b = "loopback-independent-pty";
+    timeout(SHORT_TIMEOUT, start_terminal(&other, b, &folder))
+        .await
+        .context("unrelated start waited on blocked run")??;
+    let (mut send, mut recv) = other
+        .open_stream(Open::Pty {
+            run_id: b.to_owned(),
+            cursor: PtyCursor::default(),
+        })
+        .await?;
+    let mut cursor = PtyCursor::default();
+    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    write_frame(
+        &mut send,
+        &sworm_protocol::rpc::PtyUp::Resize { cols: 81, rows: 25 },
+    )
+    .await?;
+    write_raw_frame(&mut send, b"printf '%s%s\\n' 'INDEPENDENT-PTY-' '4b29'\n").await?;
+    read_until_occurrences(&mut recv, &mut cursor, MARKER, 1).await?;
+    timeout(SHORT_TIMEOUT, stop_session(&other, b))
+        .await
+        .context("unrelated stop waited on blocked run")??;
+    assert!(!fixture.repo.path().join("task-counter").exists());
+
+    // Same-ID fresh requests must not spawn twice once A is released.
+    let repeated = fixture.client().await?;
+    let repeated_folder = folder.clone();
+    let second =
+        tokio::spawn(async move { start_task(&repeated, run_id, &repeated_folder, false).await });
+
+    stalled.unblock()?;
+    pending.await??;
+    second.await??;
+    let counter = fixture.repo.path().join("task-counter");
+    timeout(SHORT_TIMEOUT, async {
+        loop {
+            if fs::read(&counter).is_ok_and(|bytes| bytes == b"x") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("stalled task failed to execute once")?;
+    start_task(&other, run_id, &folder, true).await?;
+    assert_eq!(
+        fs::read(counter)?,
+        b"x",
+        "reattachment executed the task again"
+    );
+    other
+        .call(&Request::TasksStop {
+            run_id: run_id.into(),
+        })
+        .await?
+        .tasks_stop()
+        .map_err(RemoteError::Wire)?;
+    other.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_during_stalled_start_invalidates_the_published_run() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let starter = fixture.paired_client().await?;
+    let stopper = fixture.client().await?;
+    let folder = fixture.repo_path();
+    let run_id = "loopback-stalled-stop";
+    let (mut stalled, reached) =
+        StalledTaskFile::new(fixture.repo.path().join(".sworm/tasks.jsonc"))?;
+    let started_folder = folder.clone();
+    let pending =
+        tokio::spawn(async move { start_task(&starter, run_id, &started_folder, false).await });
+    timeout(SHORT_TIMEOUT, reached)
+        .await
+        .context("start did not enter task read")??;
+
+    // Send Stop while startup is stalled. The gate unit test establishes
+    // queued ordering; QUIC only proves the external post-stop outcome here.
+    let (mut stop_send, mut stop_recv) = stopper
+        .open_stream(Open::Rpc(Request::TasksStop {
+            run_id: run_id.to_owned(),
+        }))
+        .await?;
+    stop_send.finish()?;
+    let b = "loopback-stop-barrier";
+    timeout(SHORT_TIMEOUT, start_terminal(&stopper, b, &folder))
+        .await
+        .context("unrelated start blocked behind pending stop")??;
+    stop_session(&stopper, b).await?;
+    stalled.unblock()?;
+    pending.await??;
+    timeout(SHORT_TIMEOUT, read_frame::<Response>(&mut stop_recv))
+        .await
+        .context("stop remained blocked after startup")??
+        .and_then(|reply| reply.tasks_stop())
+        .map_err(RemoteError::Wire)?;
+    assert!(
+        !run_status(&stopper, run_id).await?.live,
+        "stop left a live process"
+    );
+    assert!(matches!(
+        start_task(&stopper, run_id, &folder, true).await,
+        Err(RemoteError::Wire(WireError::NotFound { .. }))
+    ));
+    stopper.close();
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -1287,12 +1626,16 @@ async fn pty_stream_reopen_replaces_previous_stream() -> Result<()> {
         .await?;
 
     wait_for_stream_end(&mut first_recv).await?;
+    // The old send side may reject this frame immediately; if it accepts it,
+    // generation fencing must still keep it off the replacement process.
+    let _ = write_raw_frame(&mut first_send, b"touch stale-stream-command\n").await;
     write_raw_frame(
         &mut replacement_send,
         b"printf '%s%s\\n' 'REPLACEMENT-LIVE-' 'd17b39'\n",
     )
     .await?;
     read_until_occurrences(&mut replacement_recv, &mut cursor, LIVE, 1).await?;
+    assert!(!fixture.repo.path().join("stale-stream-command").exists());
     assert!(run_status(&client, run_id).await?.live);
 
     stop_session(&client, run_id).await?;

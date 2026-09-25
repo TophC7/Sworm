@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import type { editor } from 'monaco-editor'
-  import { save as saveDialog } from '@tauri-apps/plugin-dialog'
+  import { platform, requireNative } from '$lib/platform'
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
@@ -338,6 +338,10 @@
     // updates and could flip `dirty` back to true against stale state.
     if (saving) return
     if (!dirty || isReadonly) return
+    if (filePath == null && !platform.capabilities.saveAsDialog) {
+      error = 'Save As is unavailable on this platform.'
+      return
+    }
 
     // Untitled buffers: prompt for a path via the OS save dialog before
     // writing. On success we rebind the tab to the chosen path — the
@@ -348,7 +352,7 @@
     if (filePath == null) {
       saving = true
       try {
-        const chosen = await saveDialog({ title: 'Save file', defaultPath: folderPath })
+        const chosen = await requireNative().dialogs.saveAs({ title: 'Save file', defaultPath: folderPath })
         if (!chosen) {
           saving = false
           return
@@ -684,7 +688,7 @@
         >
       {/if}
 
-      {#if dirty}
+      {#if dirty && (!isUntitled || platform.capabilities.saveAsDialog)}
         {#if isMarkdown && !isReadonly}
           <Separator orientation="vertical" class="mx-0.5 h-4" />
         {/if}

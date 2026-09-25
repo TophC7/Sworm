@@ -20,6 +20,7 @@ pub mod omp;
 pub mod providers;
 pub mod pty;
 pub mod resume_discovery;
+pub(crate) mod runs;
 pub mod settings;
 pub mod settings_patch;
 pub mod settings_resolution;

@@ -26,6 +26,7 @@
     targetType,
     children,
     canRevealInFileManager,
+    canNativeFileClipboard,
     onRevealInFolder,
     onOpenInEditor,
     onOpenDiff,
@@ -46,6 +47,7 @@
     targetType: 'file' | 'directory' | null
     children: Snippet
     canRevealInFileManager: boolean
+    canNativeFileClipboard: boolean
     onRevealInFolder: () => void
     onOpenInEditor: () => void
     onOpenDiff: () => void
@@ -96,26 +98,28 @@
         </ContextMenuItem>
       {/if}
 
-      {#if canRevealInFileManager || targetType === 'file'}
+      {#if (canRevealInFileManager || targetType === 'file') && canNativeFileClipboard}
         <ContextMenuSeparator />
       {/if}
 
-      <ContextMenuItem onclick={onCut}>
-        <ScissorsIcon size={14} class="shrink-0 text-muted" />
-        <span>Cut</span>
-      </ContextMenuItem>
-      <ContextMenuItem onclick={onCopy}>
-        <CopyIcon size={14} class="shrink-0 text-muted" />
-        <span>Copy</span>
-      </ContextMenuItem>
-      {#if targetType === 'directory'}
-        <ContextMenuItem onclick={onPaste}>
-          <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
-          <span>Paste</span>
+      {#if canNativeFileClipboard}
+        <ContextMenuItem onclick={onCut}>
+          <ScissorsIcon size={14} class="shrink-0 text-muted" />
+          <span>Cut</span>
         </ContextMenuItem>
+        <ContextMenuItem onclick={onCopy}>
+          <CopyIcon size={14} class="shrink-0 text-muted" />
+          <span>Copy</span>
+        </ContextMenuItem>
+        {#if targetType === 'directory'}
+          <ContextMenuItem onclick={onPaste}>
+            <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
+            <span>Paste</span>
+          </ContextMenuItem>
+        {/if}
       {/if}
 
-      <ContextMenuSeparator />
+      {#if canNativeFileClipboard}<ContextMenuSeparator />{/if}
 
       <ContextMenuItem onclick={onCopyPath}>
         <ClipboardIcon size={14} class="shrink-0 text-muted" />
@@ -146,15 +150,16 @@
         <FolderOpen size={14} class="shrink-0 text-muted" />
         <span>New Folder</span>
       </ContextMenuItem>
-
       <ContextMenuSeparator />
 
-      <ContextMenuItem onclick={onPaste}>
-        <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
-        <span>Paste</span>
-      </ContextMenuItem>
+      {#if canNativeFileClipboard}
+        <ContextMenuItem onclick={onPaste}>
+          <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
+          <span>Paste</span>
+        </ContextMenuItem>
+      {/if}
 
-      <ContextMenuSeparator />
+      {#if canNativeFileClipboard}<ContextMenuSeparator />{/if}
 
       {#if canRevealInFileManager}
         <ContextMenuItem onclick={onOpenExternal}>

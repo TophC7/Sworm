@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { backend } from '$lib/api/backend'
+  import { requireNative } from '$lib/platform'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -30,7 +31,7 @@
         loaded = true
         await Promise.all(
           Object.keys(remotes).map(async (server) => {
-            const status = await backend.remotes.status(server)
+            const status = await requireNative().remotes.status(server)
             if (!disposed && current === generation) statuses[server] = status
           })
         )
@@ -42,7 +43,7 @@
       backend.settings.onChanged(({ layer }) => {
         if (layer === 'global') void refresh()
       }),
-      backend.remotes.onStatus(({ server, ...status }) => {
+      requireNative().remotes.onStatus(({ server, ...status }) => {
         if (!disposed) statuses[server] = status
       })
     ]
@@ -59,8 +60,8 @@
     busy = server
     error = ''
     try {
-      if (action === 'rename') await backend.remotes.rename(server, name)
-      else await backend.remotes.remove(server)
+      if (action === 'rename') await requireNative().remotes.rename(server, name)
+      else await requireNative().remotes.remove(server)
       remotes = (await backend.settings.getEffective()).settings.remotes
       renameServer = null
     } catch (cause) {

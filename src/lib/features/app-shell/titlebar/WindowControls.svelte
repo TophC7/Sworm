@@ -2,20 +2,20 @@
   import { getWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { Maximize, Minimize, Minus, X } from '$lib/icons/lucideExports'
-  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { requireNative } from '$lib/platform'
 
   let config = $derived(getWindowControls())
   let maximized = $state(false)
 
-  const appWindow = getCurrentWindow()
+  const appWindow = requireNative().window
 
   $effect(() => {
     const unlisten = appWindow.onResized(async () => {
       maximized = await appWindow.isMaximized()
     })
-    appWindow.isMaximized().then((v) => (maximized = v))
+    void appWindow.isMaximized().then((v) => (maximized = v))
     return () => {
-      unlisten.then((fn) => fn())
+      void unlisten.then((fn) => fn())
     }
   })
 </script>

@@ -7,7 +7,8 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { disposeTauriOsDrop, initTauriOsDrop } from '$lib/features/dnd'
+  import { disposeOsDrop, initOsDrop } from '$lib/features/dnd'
+  import { platform } from '$lib/platform'
   import { dragObserver } from '$lib/features/dnd/observer.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
@@ -47,7 +48,8 @@
   let sidebarPanelEl = $state<HTMLDivElement | null>(null)
   let tabDropActive = $state(false)
   const foreignTabDropObserver = dragObserver({
-    accept: (_payload, types) => !LocalTransfer.has('tab') && types.includes(DND_MIME.SWORM_TAB),
+    accept: (_payload, types) =>
+      platform.capabilities.tabTransfer && !LocalTransfer.has('tab') && types.includes(DND_MIME.SWORM_TAB),
     onEnter: () => (tabDropActive = true),
     onOver: () => (tabDropActive = true),
     onLeave: () => (tabDropActive = false),
@@ -68,8 +70,10 @@
   })
 
   onMount(() => {
-    void initTauriOsDrop()
-    return () => disposeTauriOsDrop()
+    if (platform.capabilities.osDragDrop) void initOsDrop()
+    return () => {
+      if (platform.capabilities.osDragDrop) disposeOsDrop()
+    }
   })
 </script>
 

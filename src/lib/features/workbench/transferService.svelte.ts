@@ -1,4 +1,4 @@
-import { backend } from '$lib/api/backend'
+import { platform, requireNative } from '$lib/platform'
 import { DND_MIME, parsePayload } from '$lib/features/dnd/payload'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
 import * as modelCache from '$lib/features/editor/renderers/monaco/text/modelCache'
@@ -10,7 +10,7 @@ import type { Tab } from '$lib/features/workbench/model'
 import {
   getActiveTabId,
   getTabs,
-  getWindowLabel,
+  getWorkbenchId,
   finalizeTransferredTab,
   isTabTransferring,
   setTabTransferring,
@@ -18,40 +18,19 @@ import {
   setTaskTabStatus,
   stageTransferredTab
 } from '$lib/features/workbench/state.svelte'
-import type { TabTransferExportPayload } from '$lib/types/backend'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { UnlistenFn } from '@tauri-apps/api/event'
-
-interface TransferRequestEvent {
-  transferId: string
-  tabId: string
-}
-
-interface TransferImportEvent {
-  transferId: string
-  exportPayload: TabTransferExportPayload
-  targetIndex: number
-}
-
-interface TransferCommittedEvent {
-  transferId: string
-  tabId: string
-}
-
-interface TransferFinalizedEvent {
-  transferId: string
-}
-
-interface TransferAbortedEvent {
-  transferId: string
-  reason: string
-  ptyLost: boolean
-}
+import type {
+  TransferRequestEvent,
+  TransferImportEvent,
+  TransferCommittedEvent,
+  TransferFinalizedEvent,
+  TransferAbortedEvent
+} from '$lib/platform'
+import type { Unsubscribe } from '$lib/api/transport'
 
 const sourceTransfers = new Map<string, string>()
 const targetTransfers = new Map<string, { tab: Tab; staged: boolean }>()
 const blockedEvents = ['beforeinput', 'keydown', 'paste', 'drop'] as const
-let initialized: Promise<UnlistenFn[]> | null = null
+let initialized: Promise<Unsubscribe[]> | null = null
 let inputListenersActive = false
 
 function updateInputBlocking(): void {
@@ -111,13 +90,15 @@ function isTab(value: unknown): value is Tab {
 
 async function abortLocally(transferId: string, reason: string): Promise<void> {
   clearSourceTransfer(transferId)
-  await backend.window.transferAbort(transferId, reason).catch(() => {})
+  await requireNative()
+    .transfers.abort(transferId, reason)
+    .catch(() => {})
 }
 
 async function handleTransferRequest({ transferId, tabId }: TransferRequestEvent): Promise<void> {
   const tab = getTabs().find((candidate) => candidate.id === tabId)
   if (!tab) {
-    await backend.window.transferAbort(transferId, `Source tab ${tabId} no longer exists`).catch(() => {})
+    await abortLocally(transferId, `Source tab ${tabId} no longer exists`)
     return
   }
 
@@ -133,7 +114,7 @@ async function handleTransferRequest({ transferId, tabId }: TransferRequestEvent
       modelState = modelCache.exportModelTransfer(tab.id)
     }
 
-    await backend.window.transferSourceExported({ transferId, tab, terminalState, modelState })
+    await requireNative().transfers.sourceExported({ transferId, tab, terminalState, modelState })
   } catch (error) {
     await abortLocally(transferId, getErrorMessage(error))
   }
@@ -141,7 +122,9 @@ async function handleTransferRequest({ transferId, tabId }: TransferRequestEvent
 
 async function handleTransferImport({ transferId, exportPayload, targetIndex }: TransferImportEvent): Promise<void> {
   if (!isTab(exportPayload.tab)) {
-    await backend.window.transferAbort(transferId, 'Invalid tab transfer payload').catch(() => {})
+    await requireNative()
+      .transfers.abort(transferId, 'Invalid tab transfer payload')
+      .catch(() => {})
     return
   }
 
@@ -167,6 +150,7 @@ async function handleTransferImport({ transferId, exportPayload, targetIndex }: 
         await taskRegistry.importTransferState(
           {
             runId: tab.runId,
+            attachOnly: tab.attachOnly,
             folderPath: tab.folderPath,
             taskId: tab.taskId,
             activeFilePath: tab.activeFilePath,
@@ -184,12 +168,14 @@ async function handleTransferImport({ transferId, exportPayload, targetIndex }: 
     if (exportPayload.modelState && monaco) modelCache.importModelTransfer(exportPayload.modelState, monaco)
     stageTransferredTab(tab, targetIndex)
     targetTransfers.get(transferId)!.staged = true
-    await backend.window.transferTargetStaged(transferId)
+    await requireNative().transfers.targetStaged(transferId)
   } catch (error) {
     cleanupRegistries(tab)
     if (targetTransfers.get(transferId)?.staged) removeTransferredTab(tab.id)
     clearTargetTransfer(transferId)
-    await backend.window.transferAbort(transferId, getErrorMessage(error)).catch(() => {})
+    await requireNative()
+      .transfers.abort(transferId, getErrorMessage(error))
+      .catch(() => {})
   }
 }
 
@@ -231,19 +217,29 @@ function handleTransferAborted({ transferId, reason, ptyLost }: TransferAbortedE
   else notify.warning('Tab transfer aborted', reason)
 }
 
-async function setupListeners(): Promise<UnlistenFn[]> {
-  const window = getCurrentWindow()
-  return Promise.all([
-    window.listen<TransferRequestEvent>('tab-transfer-request', (event) => void handleTransferRequest(event.payload)),
-    window.listen<TransferImportEvent>('tab-transfer-import', (event) => void handleTransferImport(event.payload)),
-    window.listen<TransferCommittedEvent>('tab-transfer-committed', (event) => handleTransferCommitted(event.payload)),
-    window.listen<TransferFinalizedEvent>('tab-transfer-finalized', (event) => handleTransferFinalized(event.payload)),
-    window.listen<TransferAbortedEvent>('tab-transfer-aborted', (event) => void handleTransferAborted(event.payload))
+async function setupListeners(): Promise<Unsubscribe[]> {
+  const transfers = requireNative().transfers
+  const registrations = await Promise.allSettled([
+    transfers.onRequest((event) => void handleTransferRequest(event)),
+    transfers.onImport((event) => void handleTransferImport(event)),
+    transfers.onCommitted(handleTransferCommitted),
+    transfers.onFinalized(handleTransferFinalized),
+    transfers.onAborted(handleTransferAborted)
   ])
+  const failure = registrations.find((registration) => registration.status === 'rejected')
+  if (failure?.status === 'rejected') {
+    for (const registration of registrations) if (registration.status === 'fulfilled') registration.value()
+    throw failure.reason
+  }
+  return registrations.map((registration) => (registration as PromiseFulfilledResult<Unsubscribe>).value)
 }
 
 export async function initTransferService(): Promise<() => void> {
-  initialized ??= setupListeners()
+  if (!platform.capabilities.tabTransfer) return () => {}
+  initialized ??= setupListeners().catch((error) => {
+    initialized = null
+    throw error
+  })
   const unlisten = await initialized
   return () => {
     for (const cleanup of unlisten) cleanup()
@@ -254,19 +250,24 @@ export async function initTransferService(): Promise<() => void> {
 
 /** True for a tab drag that originated in another window (same-window drags live in LocalTransfer). */
 export function isForeignTabDrag(event: DragEvent): boolean {
-  return !LocalTransfer.has('tab') && !!event.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)
+  return (
+    platform.capabilities.tabTransfer &&
+    !LocalTransfer.has('tab') &&
+    !!event.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)
+  )
 }
 
 /** Initiate a cross-window transfer from a drop event. */
 export function dropForeignTab(event: DragEvent, targetIndex: number): boolean {
+  if (!platform.capabilities.tabTransfer) return false
   const payload = parsePayload(event.dataTransfer?.getData(DND_MIME.SWORM_ITEM))
   const item = payload?.items.find((candidate) => candidate.kind === 'tab')
-  const targetWindow = getWindowLabel()
+  const targetWindow = getWorkbenchId()
   if (!item?.sourceWindowLabel || item.sourceWindowLabel === targetWindow) return false
 
   event.preventDefault()
-  void backend.window
-    .transferInitiate({
+  void requireNative()
+    .transfers.initiate({
       sourceWindow: item.sourceWindowLabel,
       targetWindow,
       tabId: item.tabId,

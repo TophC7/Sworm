@@ -6,7 +6,7 @@
 -->
 
 <script lang="ts">
-  import { backend } from '$lib/api/backend'
+  import { platform } from '$lib/platform'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
   import {
     ContextMenuRoot,
@@ -35,7 +35,7 @@
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
   import { findTask } from '$lib/features/tasks/state.svelte'
-  import { openTaskTab } from '$lib/features/tasks/service.svelte'
+  import { openTaskTab, stopTaskProcess } from '$lib/features/tasks/service.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot, TerminalIcon } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
@@ -99,7 +99,10 @@
   })
 
   function isTabDrag(e: DragEvent) {
-    return dragFrom >= 0 || e.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)
+    return (
+      dragFrom >= 0 ||
+      (platform.capabilities.tabTransfer && Boolean(e.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)))
+    )
   }
 
   function acceptTabDrag(e: DragEvent) {
@@ -159,7 +162,7 @@
       return
     }
 
-    dropForeignTab(e, dropIndex ?? tabs.length)
+    if (platform.capabilities.tabTransfer) dropForeignTab(e, dropIndex ?? tabs.length)
     clearDropTarget()
   }
 
@@ -195,12 +198,8 @@
     const manager = taskRegistry.get(tab.runId)
     await runNotifiedTask(
       async () => {
-        if (manager) {
-          await manager.stopProcess()
-          return
-        }
-        await backend.tasks.stop(tab.runId)
-        setTaskTabStatus(tab.id, 'exited', null)
+        await stopTaskProcess(tab.runId)
+        if (!manager) setTaskTabStatus(tab.id, 'exited', null)
       },
       {
         loading: { title: 'Stopping task', description: tab.label },
@@ -354,5 +353,8 @@
   </div>
 
   <!-- Keep trailing title-bar space both draggable and a tab drop target. -->
-  <div data-tauri-drag-region class="min-w-0 flex-1 self-stretch"></div>
+  <div
+    data-tauri-drag-region={platform.capabilities.nativeWindowControls ? '' : undefined}
+    class="min-w-0 flex-1 self-stretch"
+  ></div>
 </div>

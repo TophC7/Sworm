@@ -42,7 +42,7 @@ pub struct TaskService {
     /// also watch `.sworm/` once that directory exists.
     watchers: Arc<Mutex<HashMap<String, FolderWatcher>>>,
     /// Active singleton task runs, keyed by canonical folder and task id.
-    singletons: Arc<Mutex<HashMap<(PathBuf, String), String>>>,
+    singletons: Arc<Mutex<HashMap<(PathBuf, String), (String, Arc<()>)>>>,
 }
 
 impl TaskService {
@@ -63,30 +63,34 @@ impl TaskService {
         folder: PathBuf,
         task_id: String,
         run_id: String,
-    ) -> Result<(), String> {
+    ) -> Result<Arc<()>, String> {
         match self.singletons.lock().entry((folder, task_id)) {
             std::collections::hash_map::Entry::Occupied(_) => {
                 Err("Singleton task already running".to_string())
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(run_id);
-                Ok(())
+                let lease = Arc::new(());
+                entry.insert((run_id, Arc::clone(&lease)));
+                Ok(lease)
             }
         }
     }
 
-    pub fn release_singleton(&self, folder: &Path, task_id: &str) {
-        self.singletons
-            .lock()
-            .retain(|(active_folder, active_task_id), _| {
-                active_folder != folder || active_task_id != task_id
-            });
+    pub fn release_singleton(&self, folder: &Path, task_id: &str, lease: &Arc<()>) {
+        let mut singletons = self.singletons.lock();
+        let key = (folder.to_path_buf(), task_id.to_owned());
+        if singletons
+            .get(&key)
+            .is_some_and(|(_, active)| Arc::ptr_eq(active, lease))
+        {
+            singletons.remove(&key);
+        }
     }
 
     pub fn release_singleton_by_run_id(&self, run_id: &str) {
         self.singletons
             .lock()
-            .retain(|_, active_run_id| active_run_id != run_id);
+            .retain(|_, (active_run_id, _)| active_run_id != run_id);
     }
 
     /// Parse `.sworm/tasks.jsonc` (or fallback `.sworm/tasks.json`) from
@@ -401,21 +405,27 @@ mod tests {
     }
 
     #[test]
-    fn test_singleton_task_conflict() {
+    fn singleton_late_exit_cannot_release_new_registration() {
         let service = TaskService::new();
         let folder = PathBuf::from("/repo");
-
-        service
+        let first = service
             .register_singleton(folder.clone(), "build".into(), "run-1".into())
-            .expect("first singleton registration succeeds");
+            .unwrap();
         assert!(service
             .register_singleton(folder.clone(), "build".into(), "run-2".into())
             .is_err());
-
-        service.release_singleton(&folder, "build");
+        service.release_singleton_by_run_id("run-1");
+        let second = service
+            .register_singleton(folder.clone(), "build".into(), "run-1".into())
+            .unwrap();
+        service.release_singleton(&folder, "build", &first);
+        assert!(service
+            .register_singleton(folder.clone(), "build".into(), "run-3".into())
+            .is_err());
+        service.release_singleton(&folder, "build", &second);
         service
-            .register_singleton(folder, "build".into(), "run-2".into())
-            .expect("released singleton can register again");
+            .register_singleton(folder, "build".into(), "run-3".into())
+            .unwrap();
     }
 
     #[test]

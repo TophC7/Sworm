@@ -1,11 +1,12 @@
 import { backend } from '$lib/api/backend'
-import { basename, splitRemotePath } from '$lib/utils/paths'
+import type { StreamHandle } from '$lib/api/transport'
 import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
 import { isFormatterManagedLanguage } from '$lib/features/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/features/editor/languageMap'
 import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
 import type { LspDocumentSelector, LspEvent, LspServerSettingsEntry } from '$lib/types/backend'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { basename, splitRemotePath } from '$lib/utils/paths'
+import { getWorkbenchId } from '$lib/features/workbench/state.svelte'
 
 const LSP_MARKER_OWNER = 'sworm-lsp'
 /** Scheme of a remote workspace's model URIs; the authority is the server. */
@@ -84,6 +85,7 @@ interface ServerInstance {
   nextRequestId: number
   documents: Set<string>
   startPromise: Promise<void> | null
+  stream: StreamHandle<void> | null
   /** Set once teardown starts: an exit event, an idle timer and a refresh all stop the same instance. */
   stopPromise: Promise<void> | null
   settings: unknown
@@ -412,9 +414,9 @@ class LspRegistry {
     const settings = entry.config.settings ?? null
     const instance: ServerInstance = {
       key,
-      // Per window: two windows on one folder share this key, and the backend
+      // Per workbench: two views on one folder share this key, and the host
       // grants a session id to exactly one stream at a time.
-      sessionId: `${key}@${getCurrentWindow().label}`,
+      sessionId: `${key}@${getWorkbenchId()}`,
       folderPath: context.folderPath,
       rootPath,
       remoteServer: remote?.server ?? null,
@@ -427,6 +429,7 @@ class LspRegistry {
       pending: new Map(),
       nextRequestId: 1,
       documents: new Set(),
+      stream: null,
       startPromise: null,
       stopPromise: null,
       settings,
@@ -449,13 +452,16 @@ class LspRegistry {
         return
       }
 
-      await backend.lsp.start(
+      const stream = backend.lsp.start(
         instance.sessionId,
         instance.folderPath,
         instance.entry.server.server_definition_id,
         instance.rootPath,
-        (event) => this.onServerEvent(instance, event)
+        { onEvent: (event) => this.onServerEvent(instance, event) }
       )
+      instance.stream = stream
+      await stream.ready
+      if (this.serverInstances.get(instance.key) !== instance) return
 
       const initializeResult = (await this.request(instance, 'initialize', {
         processId: null,
@@ -490,10 +496,13 @@ class LspRegistry {
         }
       }
     } catch (error) {
+      instance.stream?.dispose()
+      instance.stream = null
+      if (this.serverInstances.get(instance.key) !== instance) return
       if (replaceOrphan && isLspAlreadyActive(error)) {
-        // A reloaded webview forgets its instances but leaves the host's
-        // servers running under the same session ids. Session ids are scoped
-        // to this window, so the orphan is ours to replace.
+        // A reloaded view forgets its instances but leaves the host's servers
+        // running under the same session ids. Session ids are scoped to this
+        // workbench, so the orphan is ours to replace.
         try {
           await backend.lsp.stop(instance.sessionId)
         } catch (stopError) {
@@ -518,6 +527,9 @@ class LspRegistry {
     if (instance.stopPromise) return instance.stopPromise
 
     const stop = (async () => {
+      const stream = instance.stream
+      stream?.dispose()
+      instance.stream = null
       this.rejectPending(instance, new Error(`LSP server stopped: ${instance.key}`))
       for (const uri of instance.documents) {
         const document = this.documents.get(uri)
@@ -528,6 +540,7 @@ class LspRegistry {
         this.applyDiagnostics(document)
       }
       try {
+        await stream?.ready.catch(() => {})
         await backend.lsp.stop(instance.sessionId)
       } catch (error) {
         console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)

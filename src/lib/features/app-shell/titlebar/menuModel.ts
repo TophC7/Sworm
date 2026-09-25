@@ -1,6 +1,7 @@
 // App-menu model for the titlebar hamburger (TitleBarMenu). Reads
 // reactive getters; call it from a `$derived` so the structure stays live.
 
+import { platform } from '$lib/platform'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
 import {
@@ -29,29 +30,40 @@ export type MenuEntry = MenuItem | MenuSeparator
 
 export function buildAppMenu(): MenuEntry[] {
   const hasActive = getActiveTabId() !== null
+  const native = platform.capabilities
 
   return [
-    {
-      kind: 'item',
-      label: 'New Window',
-      shortcut: 'Ctrl+Shift+N',
-      onSelect: () => void newWindow()
-    },
+    ...(native.nativeWindowControls
+      ? [{ kind: 'item' as const, label: 'New Window', shortcut: 'Ctrl+Shift+N', onSelect: () => void newWindow() }]
+      : []),
     { kind: 'item', label: 'Reopen Closed Tab', disabled: !hasClosedTabs(), onSelect: reopenTab },
     { kind: 'separator' },
+    ...(native.revealInFileManager
+      ? [
+          {
+            kind: 'item' as const,
+            label: 'Reveal Folder in File Manager',
+            disabled: !hasActive || Boolean(splitRemotePath(getActiveFolderPath() ?? '')),
+            onSelect: revealActiveFolderInFileManager
+          }
+        ]
+      : []),
+    ...(native.openInTerminal
+      ? [
+          {
+            kind: 'item' as const,
+            label: 'Open Folder in External Terminal',
+            disabled: !hasActive,
+            onSelect: openActiveFolderInExternalTerminal
+          }
+        ]
+      : []),
     {
       kind: 'item',
-      label: 'Reveal Folder in File Manager',
-      disabled: !hasActive || Boolean(splitRemotePath(getActiveFolderPath() ?? '')),
-      onSelect: revealActiveFolderInFileManager
-    },
-    {
-      kind: 'item',
-      label: 'Open Folder in External Terminal',
+      label: 'Folder Settings…',
       disabled: !hasActive,
-      onSelect: openActiveFolderInExternalTerminal
+      onSelect: () => void openFolderSettingsFile()
     },
-    { kind: 'item', label: 'Folder Settings…', disabled: !hasActive, onSelect: () => void openFolderSettingsFile() },
     { kind: 'separator' },
     {
       kind: 'item',
@@ -59,8 +71,12 @@ export function buildAppMenu(): MenuEntry[] {
       disabled: !hasActive,
       onSelect: toggleSidebar
     },
-    { kind: 'item', label: 'Zoom In', onSelect: zoomIn },
-    { kind: 'item', label: 'Zoom Out', onSelect: zoomOut },
-    { kind: 'item', label: 'Reset Zoom', onSelect: zoomReset }
+    ...(native.zoom
+      ? [
+          { kind: 'item' as const, label: 'Zoom In', onSelect: zoomIn },
+          { kind: 'item' as const, label: 'Zoom Out', onSelect: zoomOut },
+          { kind: 'item' as const, label: 'Reset Zoom', onSelect: zoomReset }
+        ]
+      : [])
   ]
 }

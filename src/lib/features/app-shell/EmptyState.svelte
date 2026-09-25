@@ -1,5 +1,6 @@
 <script lang="ts">
   import DiscoveredProjectsPanel from '$lib/features/activity-map/DiscoveredProjectsPanel.svelte'
+  import { platform } from '$lib/platform'
   import StageView from '$lib/components/layout/StageView.svelte'
   import { BlurFade } from '$lib/components/ui/blur-fade'
   import { openFolderPicker } from '$lib/features/app-actions/actions.svelte'
@@ -22,16 +23,18 @@
       <p class="mb-8 text-base text-muted">Agentic Development Environment</p>
     </BlurFade>
 
-    <BlurFade delay={0.15} duration={0.4} direction="up" offset={8}>
-      <h2 class="mb-3 text-xs tracking-widest text-muted uppercase">Start</h2>
-      <button
-        class="group flex w-full cursor-pointer items-center gap-2.5 rounded-sm border-none bg-transparent px-0 py-1.5 text-left text-md text-fg transition-colors hover:text-bright focus-visible:shadow-focus-ring focus-visible:outline-none"
-        onclick={() => void openFolderPicker()}
-      >
-        <FolderOpen size={15} class="text-muted transition-colors group-hover:text-accent" />
-        Open Folder
-      </button>
-    </BlurFade>
+    {#if platform.capabilities.nativeDirectoryPicker}
+      <BlurFade delay={0.15} duration={0.4} direction="up" offset={8}>
+        <h2 class="mb-3 text-xs tracking-widest text-muted uppercase">Start</h2>
+        <button
+          class="group flex w-full cursor-pointer items-center gap-2.5 rounded-sm border-none bg-transparent px-0 py-1.5 text-left text-md text-fg transition-colors hover:text-bright focus-visible:shadow-focus-ring focus-visible:outline-none"
+          onclick={() => void openFolderPicker()}
+        >
+          <FolderOpen size={15} class="text-muted transition-colors group-hover:text-accent" />
+          Open Folder
+        </button>
+      </BlurFade>
+    {/if}
 
     <DiscoveredProjectsPanel />
 

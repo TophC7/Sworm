@@ -7,7 +7,7 @@
 -->
 
 <script lang="ts">
-  import { backend } from '$lib/api/backend'
+  import { requireNative } from '$lib/platform'
   import { Alert } from '$lib/components/ui/alert'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
@@ -84,7 +84,7 @@
     error = ''
     const replacing = !!existing
     try {
-      await (replacing ? backend.remotes.repair(input, name) : backend.remotes.pair(input, name))
+      await (replacing ? requireNative().remotes.repair(input, name) : requireNative().remotes.pair(input, name))
       notify.success(replacing ? `Re-paired ${name}` : `Paired ${name}`)
       reset()
     } catch {

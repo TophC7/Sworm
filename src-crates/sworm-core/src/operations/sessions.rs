@@ -1,5 +1,4 @@
 use crate::errors::ApiError;
-use crate::events::EventSink;
 use crate::host::Host;
 use crate::services::codex_state::CodexStateReader;
 use crate::services::folders::resolve_folder;
@@ -8,13 +7,19 @@ use crate::services::omp;
 use crate::services::providers::{
     antigravity_conversation_exists, claude_session_transcript_exists, ProviderService,
 };
+use crate::services::pty::{CompletedRunSink, PtySubscriber, RunRetention};
 use crate::services::resume_discovery::PendingRun;
+use crate::services::runs::RunKind;
 use crate::services::settings_resolution::{
     provider_config_record, resolve_effective_settings_for_folder_path,
 };
+use parking_lot::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::SystemTime;
 use sworm_protocol::provider::ProviderId;
-use sworm_protocol::pty::PtyEvent;
 use sworm_protocol::session::SessionStartInfo;
 use tracing::{info, warn};
 
@@ -51,6 +56,34 @@ impl Host {
     ///   store exists; otherwise fresh and discovery announces the id.
     /// - Terminal: never resumes.
     pub async fn session_start(
+        self: &Arc<Self>,
+        run_id: String,
+        folder_path: String,
+        provider_id: String,
+        resume_token: Option<String>,
+        cols: u16,
+        rows: u16,
+        subscriber: Option<PtySubscriber>,
+        owner_id: Option<String>,
+    ) -> Result<SessionStartInfo, ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.start_session(
+                run_id,
+                folder_path,
+                provider_id,
+                resume_token,
+                cols,
+                rows,
+                subscriber,
+                owner_id,
+            )
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    }
+
+    fn start_session(
         &self,
         run_id: String,
         folder_path: String,
@@ -58,27 +91,87 @@ impl Host {
         resume_token: Option<String>,
         cols: u16,
         rows: u16,
-        output: EventSink<Vec<u8>>,
-        events: EventSink<PtyEvent>,
+        subscriber: Option<PtySubscriber>,
         owner_id: Option<String>,
-        window: bool,
+    ) -> Result<SessionStartInfo, ApiError> {
+        let _owner = self.runs.owner_activity(owner_id.as_deref())?;
+        let folder = resolve_folder(&folder_path)?;
+        self.runs.with_start(&run_id, |runs| {
+            if let Some(info) = runs.reuse_session(
+                &run_id,
+                &folder,
+                &provider_id,
+                &self.pty,
+                subscriber.as_ref(),
+                owner_id.as_deref(),
+                cols,
+                rows,
+            )? {
+                return Ok(info);
+            }
+            let (token, completed) = runs.reserve(
+                &run_id,
+                folder.clone(),
+                RunKind::Session {
+                    provider_id: provider_id.clone(),
+                },
+            );
+            let token = token.expect("session reservation has token cell");
+            let result = self.spawn_session(
+                run_id.clone(),
+                &folder,
+                provider_id,
+                resume_token,
+                cols,
+                rows,
+                subscriber,
+                owner_id,
+                token.clone(),
+                completed,
+            );
+            match result {
+                Ok(info) => {
+                    let mut current = token.lock();
+                    if current.is_none() {
+                        *current = info.resume_token.clone();
+                    }
+                    Ok(info)
+                }
+                Err(error) => {
+                    runs.abort(&run_id);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    fn spawn_session(
+        &self,
+        run_id: String,
+        folder: &std::path::Path,
+        provider_id: String,
+        resume_token: Option<String>,
+        cols: u16,
+        rows: u16,
+        subscriber: Option<PtySubscriber>,
+        owner_id: Option<String>,
+        token: Arc<Mutex<Option<String>>>,
+        completed: Option<CompletedRunSink>,
     ) -> Result<SessionStartInfo, ApiError> {
         let provider = ProviderService::definition(&provider_id)
             .map(|definition| definition.id)
             .ok_or_else(|| {
                 ApiError::InvalidArgument(format!("Unsupported provider: {provider_id}"))
             })?;
-        let folder = resolve_folder(&folder_path)?;
-        let cwd = folder.to_string_lossy().into_owned();
-
-        let effective_settings = resolve_effective_settings_for_folder_path(Some(folder.as_path()))
-            .map_err(ApiError::Internal)?;
+        let effective_settings =
+            resolve_effective_settings_for_folder_path(Some(folder)).map_err(ApiError::Internal)?;
         let provider_config = provider_config_record(&effective_settings.settings, &provider_id);
         if !provider_config.enabled {
             return Err(ApiError::InvalidArgument(format!(
                 "Provider disabled by settings: {provider_id}"
             )));
         }
+        let cwd = folder.to_string_lossy().into_owned();
 
         let nix_env_vars = {
             let db = self.db.read();
@@ -176,8 +269,18 @@ impl Host {
         }
 
         let discovery = self.resume_discovery.clone();
+        let awaiting_token = resume_token.is_none()
+            && matches!(
+                provider,
+                ProviderId::Codex | ProviderId::Antigravity | ProviderId::Omp
+            );
+        let exited = awaiting_token.then(|| Arc::new(AtomicBool::new(false)));
+        let exit_flag = exited.clone();
         let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> = Box::new(move |rid, code| {
             info!("Run {rid} exited with code {code:?}");
+            if let Some(exit_flag) = exit_flag {
+                exit_flag.store(true, Ordering::Release);
+            }
             discovery.cancel(rid);
         });
 
@@ -193,11 +296,11 @@ impl Host {
                 Some(&child_env),
                 cols,
                 rows,
-                output,
-                events,
+                subscriber,
                 owner_id,
-                window,
+                RunRetention::Retained,
                 Some(on_exit),
+                completed,
             )
             .map_err(ApiError::Pty)?;
 
@@ -208,13 +311,23 @@ impl Host {
                 ProviderId::Codex | ProviderId::Antigravity | ProviderId::Omp
             ) =>
             {
+                let tracked_run_id = run_id.clone();
                 self.resume_discovery.track(PendingRun {
                     run_id,
                     provider,
                     cwd,
                     spawned_at,
                     event_sink,
+                    on_bound: Some(Box::new(move |bound| *token.lock() = Some(bound))),
                 });
+                // Exit can beat registration; its callback then had no pending
+                // run to cancel. Check the same flag after registering.
+                if exited
+                    .expect("discoverable run has exit flag")
+                    .load(Ordering::Acquire)
+                {
+                    self.resume_discovery.cancel(&tracked_run_id);
+                }
             }
             None => {}
         }
@@ -225,24 +338,49 @@ impl Host {
         })
     }
 
-    pub async fn session_write(&self, run_id: String, data: Vec<u8>) -> Result<(), ApiError> {
-        self.pty.write(&run_id, &data).map_err(ApiError::Pty)
+    pub async fn session_write(
+        self: &Arc<Self>,
+        run_id: String,
+        data: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || host.pty.write(&run_id, &data).map_err(ApiError::Pty))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     pub async fn session_resize(
-        &self,
+        self: &Arc<Self>,
         run_id: String,
         cols: u16,
         rows: u16,
     ) -> Result<(), ApiError> {
-        self.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
-    /// Stop a run. No-op when no PTY is live.
-    pub async fn session_stop(&self, run_id: String) -> Result<(), ApiError> {
-        self.resume_discovery.cancel(&run_id);
-        let _ = self.pty.kill(&run_id);
-        Ok(())
+    /// Stop a session and release its retained record and transcript, rejecting task IDs.
+    pub async fn session_stop(self: &Arc<Self>, run_id: String) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.runs.with_run(&run_id, |runs| {
+                let result = runs.stop(
+                    &run_id,
+                    RunKind::Session {
+                        provider_id: String::new(),
+                    },
+                    &host.pty,
+                );
+                host.resume_discovery.cancel(&run_id);
+                result
+            })
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
     pub async fn omp_resolve_uri(

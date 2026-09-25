@@ -73,13 +73,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
         COMPLETED_RUNS_KEPT,
         chrono::Duration::days(COMPLETED_RUN_DAYS),
     ));
-    let store = Arc::clone(&completed);
-    host.pty.on_completed_run(Arc::new(move |run| {
-        let run_id = run.run_id.clone();
-        if let Err(error) = store.put(&run) {
-            tracing::error!(%error, run_id, "failed to store completed run");
-        }
-    }));
+    host.configure_completed_runs(Arc::clone(&completed));
 
     let mut quic_config = server_config(&identity)?;
     let mut transport = quinn::TransportConfig::default();
@@ -105,7 +99,6 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
         options.config_dir,
         loaded.auth_token,
         host_events,
-        completed,
     ));
     let (shutdown, shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(run_server(endpoint, host, context, shutdown_rx));
@@ -180,7 +173,9 @@ async fn run_server(
         }
     }
     endpoint.wait_idle().await;
-    host.shutdown();
+    if let Err(error) = tokio::task::spawn_blocking(move || host.shutdown()).await {
+        tracing::error!(%error, "host shutdown task failed");
+    }
 }
 
 async fn run_connection(
@@ -269,12 +264,18 @@ async fn run_connection(
             session.subscriber_id.clone(),
         )
     };
-    for folder in folders {
-        if context.release_folder(&folder) {
-            host.release_folder(&folder);
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        for folder in folders {
+            if context.release_folder(&folder) {
+                host.release_folder(&folder);
+            }
         }
+        host.file_watchers.release_subscriber(&subscriber_id);
+    })
+    .await
+    {
+        tracing::error!(%error, "connection resource release task failed");
     }
-    host.file_watchers.release_subscriber(&subscriber_id);
 }
 
 async fn process_stream(

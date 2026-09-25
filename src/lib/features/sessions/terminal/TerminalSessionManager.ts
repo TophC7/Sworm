@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import type { StreamHandle } from '$lib/api/transport'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
@@ -14,8 +15,7 @@ import {
   setSessionTabTitle
 } from '$lib/features/workbench/state.svelte'
 import type { PtyEvent, SessionSpec, SessionStartInfo, TerminalTransferState } from '$lib/types/backend'
-import type { Channel } from '@tauri-apps/api/core'
-import { readText } from '@tauri-apps/plugin-clipboard-manager'
+import { platform, requireNative } from '$lib/platform'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -24,6 +24,7 @@ import { TerminalLinkProvider } from '$lib/features/sessions/terminal/TerminalLi
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
 import { splitRemotePath } from '$lib/utils/paths'
+import { copyToClipboard } from '$lib/utils/clipboard'
 
 const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
@@ -69,8 +70,9 @@ export class TerminalSessionManager {
   // PTY identity mirrors the persisted tab while the run may still be live.
   private runId: string | null = null
   // Exit clears the restart id, but the runtime stream identity remains for
-  // trailing replay and explicit cleanup until its channels are released.
+  // trailing replay and explicit cleanup until its stream is released.
   private streamRunId: string | null = null
+  private startingRunId: string | null = null
 
   private terminal: Terminal | null = null
   private fitAddon: FitAddon | null = null
@@ -84,8 +86,7 @@ export class TerminalSessionManager {
   private resizeObserver: ResizeObserver | null = null
   private inputDisposable: IDisposable | null = null
   private oscDisposable: IDisposable | null = null
-  private outputChannel: Channel<Uint8Array> | null = null
-  private eventsChannel: Channel<PtyEvent> | null = null
+  private stream: StreamHandle<SessionStartInfo | number> | null = null
   private ptyActive = false
   private inputEnabled = true
   private disposed = false
@@ -97,7 +98,7 @@ export class TerminalSessionManager {
   // Single-flight PTY spawn: concurrent callers (mount debounce, Restart)
   // await the same promise instead of spawning twice.
   private startPromise: Promise<SessionStartInfo> | null = null
-  private stopPtyWhenStarted = false
+  private stopPromise: Promise<void> | null = null
   // Terminal creation yields while the font loads. Every entry path
   // shares this promise so concurrent attach/load/start calls cannot
   // create competing xterm instances or WebGL contexts.
@@ -121,8 +122,8 @@ export class TerminalSessionManager {
   constructor(tabId: TabId) {
     this.tabId = tabId
     const folderPath = getTabs().find((tab) => tab.id === tabId)?.folderPath
-    if (folderPath && splitRemotePath(folderPath)) {
-      this.remoteStatusReady = backend.remotes
+    if (folderPath && splitRemotePath(folderPath) && platform.native) {
+      this.remoteStatusReady = platform.native.remotes
         .onRunStatus((event) => {
           if (this.disposed || event.runId !== this.runId || event.runId !== this.streamRunId) return
           this.setReconnecting(event.state === 'reconnecting')
@@ -284,9 +285,9 @@ export class TerminalSessionManager {
     await this.ensureTerminal()
     await this.remoteStatusReady
     if (this.streamRunId) {
-      await this.stopPty()
+      await this.stopPty(false)
     } else {
-      this.releaseChannels()
+      this.releaseStream()
     }
 
     const terminal = this.terminal
@@ -298,53 +299,35 @@ export class TerminalSessionManager {
     this.providerId = spec.providerId
     const tab = getTabs().find((candidate) => candidate.id === this.tabId)
     const runId = tab?.kind === 'session' && tab.runId ? tab.runId : crypto.randomUUID()
+    this.startingRunId = runId
     await persistSessionTabRunId(this.tabId, runId)
     this.runId = runId
     this.barrier.reset()
     this.streamRunId = runId
 
-    const output = backend.sessions.createOutputChannel((data) => {
-      this.handleOutput(runId, spec.providerId, data)
+    const stream = backend.sessions.start({ ...spec, runId }, terminal.cols, terminal.rows, {
+      onOutput: (data) => this.handleOutput(runId, spec.providerId, data),
+      onEvent: (event) => this.handlePtyEvent(runId, event)
     })
-    const events = backend.sessions.createEventChannel((event) => {
-      this.handlePtyEvent(runId, event)
-    })
-
-    this.outputChannel = output
-    this.eventsChannel = events
-
+    this.stream = stream
+    if (this.disposed) stream.dispose()
     this.fitAndSyncSize()
 
     try {
-      const info = await backend.sessions.start({ ...spec, runId }, terminal.cols, terminal.rows, output, events)
-      if (this.disposed) {
-        // Explicit tab disposal still owns process termination. Window and
-        // transfer teardown only drop this frontend subscriber; backend
-        // window ownership decides whether the process stops or detaches.
-        if (this.stopPtyWhenStarted) {
-          void backend.sessions.stop(runId).catch(() => {})
-          this.ptyActive = false
-          this.runId = null
-          setSessionTabRunId(this.tabId, null)
-        }
-        this.releaseChannels()
-        return info
-      }
-      this.ptyActive = this.runId === runId
+      const info = await stream.ready
+      if (this.disposed && this.stream === stream) this.releaseStream()
+      this.ptyActive = !this.disposed && this.runId === runId
       return info
     } catch (error) {
       this.ptyActive = false
-      if (this.stopPtyWhenStarted) {
-        void backend.sessions.stop(runId).catch(() => {})
-        this.runId = null
-        setSessionTabRunId(this.tabId, null)
-      } else if (!this.disposed) {
+      if (!this.disposed && !this.stopPromise) {
+        this.startingRunId = null
         this.runId = null
         this.lastError = String(error)
         this.emitError(this.lastError)
         setSessionTabStatus(this.tabId, 'failed')
       }
-      this.releaseChannels()
+      this.releaseStream()
       throw error
     }
   }
@@ -406,7 +389,9 @@ export class TerminalSessionManager {
   }
 
   async exportTransferState(): Promise<TerminalTransferState> {
-    const runId = this.runId
+    const transfers = requireNative().transfers
+    const folderPath = this.getFolderPath()
+    const runId = this.runId ?? (folderPath && !splitRemotePath(folderPath) ? this.streamRunId : null)
 
     await this.ensureTerminal()
     const terminal = this.terminal
@@ -430,7 +415,7 @@ export class TerminalSessionManager {
     this.transferBarrierActive = true
     try {
       this.flushDeferredBytes()
-      const targetSequence = await backend.pty.pause(runId)
+      const targetSequence = await transfers.pause(runId)
       await this.barrier.waitFor(targetSequence)
       await this.writeAndWait('')
 
@@ -452,9 +437,10 @@ export class TerminalSessionManager {
 
   async importTransferState(state: TerminalTransferState, transferId: string): Promise<void> {
     if (this.disposed) throw new Error(`Terminal session ${this.tabId} has been disposed`)
+    const transfers = requireNative().transfers
 
-    this.releaseChannels()
-    this.runId = state.runId
+    this.releaseStream()
+    this.runId = state.status === 'exited' ? null : state.runId
     this.barrier.reset()
     this.providerId = state.providerId ?? null
     await this.ensureTerminal()
@@ -474,22 +460,21 @@ export class TerminalSessionManager {
     }
     this.streamRunId = runId
 
-    const output = backend.sessions.createOutputChannel((data) => {
-      this.handleOutput(runId, this.providerId, data)
+    const stream = transfers.attach(runId, transferId, {
+      onOutput: (data) => this.handleOutput(runId, this.providerId, data),
+      onEvent: (event) => this.handlePtyEvent(runId, event)
     })
-    const events = backend.sessions.createEventChannel((event) => {
-      this.handlePtyEvent(runId, event)
-    })
-    this.outputChannel = output
-    this.eventsChannel = events
-
+    this.stream = stream
+    if (this.disposed) stream.dispose()
     this.transferBarrierActive = true
     try {
-      const seq = await backend.pty.attach(runId, transferId, output, events)
-      this.barrier.seed(seq)
-      this.ptyActive = this.runId === runId
+      const seq = await stream.ready
+      if (!this.disposed && this.stream === stream) {
+        this.barrier.seed(seq)
+        this.ptyActive = this.runId === runId
+      }
     } catch (error) {
-      this.releaseChannels()
+      if (this.stream === stream) this.releaseStream()
       this.ptyActive = false
       throw error
     } finally {
@@ -500,7 +485,7 @@ export class TerminalSessionManager {
   detachForTransfer(): void {
     if (this.disposed) return
     this.disposed = true
-    this.releaseChannels()
+    this.releaseStream()
     this.disposeSurface()
   }
 
@@ -512,39 +497,38 @@ export class TerminalSessionManager {
     this.ptyActive = false
     this.runId = null
     setSessionTabRunId(this.tabId, null)
-    this.releaseChannels()
+    this.releaseStream()
     this.writeTerminal('\r\n\x1b[31m[Connection to process lost]\x1b[0m\r\n')
     setSessionTabStatus(this.tabId, 'failed')
   }
 
-  async stopPty(): Promise<void> {
-    const runId = this.streamRunId ?? this.runId
-    if (!runId) return
-    try {
+  stopPty(waitForStart = true): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
+    const pendingStart = waitForStart ? this.startPromise : null
+    const startedRunId = this.streamRunId ?? this.runId ?? this.startingRunId
+    const stop = (async () => {
+      await pendingStart?.catch(() => {})
+      const runId = this.streamRunId ?? this.runId ?? this.startingRunId ?? startedRunId
+      if (!runId) return
       await backend.sessions.stop(runId)
-    } finally {
       this.ptyActive = false
       this.runId = null
+      this.startingRunId = null
       setSessionTabRunId(this.tabId, null)
-      this.releaseChannels()
+      this.releaseStream()
       setSessionTabStatus(this.tabId, 'exited')
-    }
+    })()
+    this.stopPromise = stop.finally(() => {
+      this.stopPromise = null
+    })
+    return this.stopPromise
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-
-    if (this.startPromise) {
-      // If tab disposal races a spawn, the late successful reply must
-      // terminate that run. Non-owning detach paths leave this false.
-      this.stopPtyWhenStarted = true
-      this.releaseChannels()
-    } else if (this.streamRunId || this.runId) {
-      void this.stopPty().catch(() => {})
-    } else {
-      this.releaseChannels()
-    }
+    if (this.startPromise || this.streamRunId || this.runId) void this.stopPty().catch(() => {})
+    this.releaseStream()
     this.disposeSurface()
   }
 
@@ -757,7 +741,7 @@ export class TerminalSessionManager {
           // xterm send SIGINT like a real terminal.
           if (this.terminal?.hasSelection()) {
             const text = this.terminal.getSelection()
-            navigator.clipboard.writeText(text).catch((err) => {
+            copyToClipboard(text).catch((err) => {
               console.warn('Ctrl+C copy failed:', err)
             })
             this.terminal.clearSelection()
@@ -789,7 +773,7 @@ export class TerminalSessionManager {
         const raw = atob(payload)
         const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
         const text = new TextDecoder().decode(bytes)
-        navigator.clipboard.writeText(text).catch((err) => {
+        copyToClipboard(text).catch((err) => {
           console.error('OSC 52 clipboard write failed:', err)
         })
       } catch {
@@ -817,7 +801,7 @@ export class TerminalSessionManager {
   private async handlePasteKey(shiftHeld: boolean): Promise<void> {
     let text = ''
     try {
-      text = (await readText()) ?? ''
+      text = (await platform.clipboard.readText()) ?? ''
     } catch (error) {
       console.warn('clipboard read failed:', error)
     }
@@ -862,11 +846,11 @@ export class TerminalSessionManager {
     }
   }
 
-  private releaseChannels(): void {
+  private releaseStream(): void {
     this.setReconnecting(false)
+    this.stream?.dispose()
+    this.stream = null
     this.streamRunId = null
-    this.outputChannel = null
-    this.eventsChannel = null
   }
 
   private emitEvent(event: PtyEvent): void {

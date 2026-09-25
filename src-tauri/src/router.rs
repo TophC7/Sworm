@@ -16,7 +16,7 @@ use sworm_core::{
     errors::ApiError,
     events::{EventSink, HostEvent},
     services::{
-        pty::PtyRunState, settings::SettingsService,
+        pty::PtySubscriber, settings::SettingsService,
         settings_resolution::resolve_effective_settings_for_folder_path,
     },
     Host,
@@ -842,21 +842,11 @@ impl WorkspaceRouter {
         remote_result.and(local_result)
     }
 
-    fn local_run_status(&self, run_id: &str) -> RunStatus {
-        match self.inner.host.pty.run_state(run_id) {
-            Some(PtyRunState::Live) => RunStatus {
-                live: true,
-                exited: None,
-            },
-            Some(PtyRunState::Completed(code)) => RunStatus {
-                live: false,
-                exited: Some(code),
-            },
-            None => RunStatus {
-                live: false,
-                exited: None,
-            },
-        }
+    async fn local_run_status(&self, run_id: String) -> Result<RunStatus, ApiError> {
+        let host = Arc::clone(&self.inner.host);
+        tokio::task::spawn_blocking(move || host.run_status(&run_id))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 }
 
@@ -1382,7 +1372,10 @@ macro_rules! define_router_operation {
             owner_id: Option<String>,
         ) -> Result<$return_type, ApiError> {
             if let Target::Remote { server, path } = Target::parse(&$folder_path)? {
-                self.inner.remote_runs.ensure_startable(&$run_id)?;
+                self.inner.remote_runs.validate_start(
+                    &self.inner.host, &$run_id, server, RemoteRunKind::Session,
+                    owner_id.as_deref(),
+                )?;
                 self.inner.remember_claim(server, path, None, false);
                 let result = self
                     .call_reply(
@@ -1399,7 +1392,7 @@ macro_rules! define_router_operation {
                     .await?
                     .$method()
                     .map_err(ApiError::from)?;
-                if let Err(error) = self.inner.remote_runs.adopt(
+                self.inner.remote_runs.adopt(
                     Arc::downgrade(&self.inner),
                     &self.inner.host,
                     $run_id.clone(),
@@ -1408,15 +1401,7 @@ macro_rules! define_router_operation {
                     output,
                     events,
                     owner_id,
-                ) {
-                    // The daemon already spawned the process; nothing local
-                    // owns it now, so it must not outlive the failed start.
-                    let _ = self
-                        .inner
-                        .stop_backend(&$run_id, RemoteRunKind::Session)
-                        .await;
-                    return Err(error);
-                }
+                )?;
                 return Ok(result);
             }
             self.inner
@@ -1428,10 +1413,8 @@ macro_rules! define_router_operation {
                     $resume_token,
                     $cols,
                     $rows,
-                    output,
-                    events,
+                    Some(PtySubscriber { output, events }),
                     owner_id,
-                    false,
                 )
                 .await
         }
@@ -1444,7 +1427,8 @@ macro_rules! define_router_operation {
             $task_id:ident: $task_id_type:ty,
             $active_file_path:ident: $active_file_path_type:ty,
             $cols:ident: $cols_type:ty,
-            $rows:ident: $rows_type:ty $(,)?
+            $rows:ident: $rows_type:ty,
+            $attach_only:ident: $attach_only_type:ty $(,)?
         ) -> $return_type:ty;
     ) => {
         #[allow(clippy::too_many_arguments)]
@@ -1456,12 +1440,16 @@ macro_rules! define_router_operation {
             $active_file_path: $active_file_path_type,
             $cols: $cols_type,
             $rows: $rows_type,
+            $attach_only: $attach_only_type,
             output: EventSink<Vec<u8>>,
             events: EventSink<PtyEvent>,
             owner_id: Option<String>,
         ) -> Result<$return_type, ApiError> {
             if let Target::Remote { server, path } = Target::parse(&$folder_path)? {
-                self.inner.remote_runs.ensure_startable(&$run_id)?;
+                self.inner.remote_runs.validate_start(
+                    &self.inner.host, &$run_id, server, RemoteRunKind::Task,
+                    owner_id.as_deref(),
+                )?;
                 self.inner.remember_claim(server, path, None, false);
                 let result = self
                     .call_reply(
@@ -1473,12 +1461,13 @@ macro_rules! define_router_operation {
                             active_file_path: $active_file_path,
                             cols: $cols,
                             rows: $rows,
+                            attach_only: $attach_only,
                         },
                     )
                     .await?
                     .$method()
                     .map_err(ApiError::from)?;
-                if let Err(error) = self.inner.remote_runs.adopt(
+                self.inner.remote_runs.adopt(
                     Arc::downgrade(&self.inner),
                     &self.inner.host,
                     $run_id.clone(),
@@ -1487,12 +1476,7 @@ macro_rules! define_router_operation {
                     output,
                     events,
                     owner_id,
-                ) {
-                    // The daemon already spawned the process; nothing local
-                    // owns it now, so it must not outlive the failed start.
-                    let _ = self.inner.stop_backend(&$run_id, RemoteRunKind::Task).await;
-                    return Err(error);
-                }
+                )?;
                 return Ok(result);
             }
             self.inner
@@ -1504,10 +1488,9 @@ macro_rules! define_router_operation {
                     $active_file_path,
                     $cols,
                     $rows,
-                    output,
-                    events,
+                    Some(PtySubscriber { output, events }),
                     owner_id,
-                    false,
+                    $attach_only,
                 )
                 .await
         }
@@ -1534,7 +1517,7 @@ macro_rules! define_router_operation {
     ) => {
         pub async fn $method(&self, $run_id: $run_id_type) -> Result<$return_type, ApiError> {
             let Some(server) = self.inner.remote_runs.server_for(&$run_id) else {
-                return Ok(self.local_run_status(&$run_id));
+                return self.local_run_status($run_id).await;
             };
             self.call_reply(&server, Request::RunStatus { run_id: $run_id })
                 .await?

@@ -1,5 +1,5 @@
-import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { platform } from '$lib/platform'
 
 export async function copyToClipboard(text: string): Promise<void> {
-  await writeText(text)
+  await platform.clipboard.writeText(text)
 }

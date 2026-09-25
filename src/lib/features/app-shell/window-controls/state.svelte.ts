@@ -1,4 +1,4 @@
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { platform, requireNative } from '$lib/platform'
 
 export interface WindowControlsConfig {
   useSystemDecorations: boolean
@@ -37,11 +37,13 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key !== WC_STORAGE_KEY) return
     windowControls = loadWindowControls()
-    void getCurrentWindow()
-      .setDecorations(windowControls.useSystemDecorations)
-      .catch((error) => {
-        console.warn('Failed to set window decorations from storage event:', error)
-      })
+    if (platform.capabilities.nativeWindowControls) {
+      void requireNative()
+        .window.setDecorations(windowControls.useSystemDecorations)
+        .catch((error) => {
+          console.warn('Failed to set window decorations from storage event:', error)
+        })
+    }
   })
 }
 
@@ -52,9 +54,9 @@ export function getWindowControls(): WindowControlsConfig {
 export function setWindowControls(patch: Partial<WindowControlsConfig>) {
   windowControls = { ...windowControls, ...patch }
   persistWindowControls(windowControls)
-  if (patch.useSystemDecorations !== undefined) {
-    void getCurrentWindow()
-      .setDecorations(patch.useSystemDecorations)
+  if (patch.useSystemDecorations !== undefined && platform.capabilities.nativeWindowControls) {
+    void requireNative()
+      .window.setDecorations(patch.useSystemDecorations)
       .catch((error) => {
         console.warn('Failed to set window decorations:', error)
       })

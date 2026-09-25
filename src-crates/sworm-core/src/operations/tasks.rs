@@ -1,11 +1,11 @@
 use crate::errors::ApiError;
-use crate::events::EventSink;
 use crate::host::Host;
 use crate::services::folders::resolve_folder;
 use crate::services::nix::NixService;
+use crate::services::pty::{CompletedRunSink, PtySubscriber, RunRetention};
+use crate::services::runs::RunKind;
 use std::collections::HashMap;
 use std::sync::Arc;
-use sworm_protocol::pty::PtyEvent;
 use sworm_protocol::task::TaskDefinition;
 
 impl Host {
@@ -28,6 +28,36 @@ impl Host {
     }
 
     pub async fn tasks_start(
+        self: &Arc<Self>,
+        run_id: String,
+        folder_path: String,
+        task_id: String,
+        active_file_path: Option<String>,
+        cols: u16,
+        rows: u16,
+        subscriber: Option<PtySubscriber>,
+        owner_id: Option<String>,
+        attach_only: bool,
+    ) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.start_task(
+                run_id,
+                folder_path,
+                task_id,
+                active_file_path,
+                cols,
+                rows,
+                subscriber,
+                owner_id,
+                attach_only,
+            )
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    }
+
+    fn start_task(
         &self,
         run_id: String,
         folder_path: String,
@@ -35,14 +65,66 @@ impl Host {
         active_file_path: Option<String>,
         cols: u16,
         rows: u16,
-        output: EventSink<Vec<u8>>,
-        events: EventSink<PtyEvent>,
+        subscriber: Option<PtySubscriber>,
         owner_id: Option<String>,
-        window: bool,
+        attach_only: bool,
     ) -> Result<(), ApiError> {
+        let _owner = self.runs.owner_activity(owner_id.as_deref())?;
         let folder = resolve_folder(&folder_path)?;
-        let folder_path = folder.to_string_lossy().into_owned();
+        self.runs.with_start(&run_id, |runs| {
+            if runs.reuse_task(
+                &run_id,
+                &folder,
+                &task_id,
+                &self.pty,
+                subscriber.as_ref(),
+                owner_id.as_deref(),
+                cols,
+                rows,
+            )? {
+                return Ok(());
+            }
+            if attach_only {
+                return Err(ApiError::NotFound(format!("Run not found: {run_id}")));
+            }
+            let (_, completed) = runs.reserve(
+                &run_id,
+                folder.clone(),
+                RunKind::Task {
+                    task_id: task_id.clone(),
+                },
+            );
+            let result = self.spawn_task(
+                run_id.clone(),
+                folder,
+                task_id,
+                active_file_path,
+                cols,
+                rows,
+                subscriber,
+                owner_id,
+                completed,
+            );
+            if result.is_err() {
+                runs.abort(&run_id);
+            }
+            result
+        })
+    }
 
+    fn spawn_task(
+        &self,
+        run_id: String,
+        folder: std::path::PathBuf,
+        task_id: String,
+        active_file_path: Option<String>,
+        cols: u16,
+        rows: u16,
+        subscriber: Option<PtySubscriber>,
+        owner_id: Option<String>,
+        completed: Option<CompletedRunSink>,
+    ) -> Result<(), ApiError> {
+        let folder_path = folder.to_string_lossy().into_owned();
         let task = self
             .tasks
             .find(&folder, &task_id)
@@ -61,14 +143,15 @@ impl Host {
         let cwd = resolved.cwd.to_string_lossy().into_owned();
 
         let on_exit = if task.singleton {
-            self.tasks
+            let lease = self
+                .tasks
                 .register_singleton(folder.clone(), task_id.clone(), run_id.clone())
                 .map_err(ApiError::Internal)?;
             let tasks = self.tasks.clone();
             let singleton_folder = folder.clone();
             let singleton_task_id = task_id.clone();
             Some(Box::new(move |_: &str, _: Option<i32>| {
-                tasks.release_singleton(&singleton_folder, &singleton_task_id);
+                tasks.release_singleton(&singleton_folder, &singleton_task_id, &lease);
             }) as Box<dyn FnOnce(&str, Option<i32>) + Send>)
         } else {
             None
@@ -82,11 +165,11 @@ impl Host {
             Some(&resolved.env),
             cols,
             rows,
-            output,
-            events,
+            subscriber,
             owner_id,
-            window,
+            RunRetention::Retained,
             on_exit,
+            completed,
         ) {
             self.tasks.release_singleton_by_run_id(&run_id);
             return Err(ApiError::Pty(error));
@@ -94,23 +177,48 @@ impl Host {
         Ok(())
     }
 
-    pub async fn tasks_write(&self, run_id: String, data: Vec<u8>) -> Result<(), ApiError> {
-        self.pty.write(&run_id, &data).map_err(ApiError::Pty)
+    pub async fn tasks_write(
+        self: &Arc<Self>,
+        run_id: String,
+        data: Vec<u8>,
+    ) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || host.pty.write(&run_id, &data).map_err(ApiError::Pty))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
-    pub async fn tasks_resize(&self, run_id: String, cols: u16, rows: u16) -> Result<(), ApiError> {
-        self.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
+    pub async fn tasks_resize(
+        self: &Arc<Self>,
+        run_id: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
-    pub async fn tasks_stop(&self, run_id: String) -> Result<(), ApiError> {
-        // Stop remains idempotent after the child has already exited.
-        let result = match self.pty.kill(&run_id) {
-            Ok(()) => Ok(()),
-            Err(error) if error.contains("No active PTY session") => Ok(()),
-            Err(error) => Err(ApiError::Pty(error)),
-        };
-        self.tasks.release_singleton_by_run_id(&run_id);
-        result
+    pub async fn tasks_stop(self: &Arc<Self>, run_id: String) -> Result<(), ApiError> {
+        let host = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            host.runs.with_run(&run_id, |runs| {
+                let result = runs.stop(
+                    &run_id,
+                    RunKind::Task {
+                        task_id: String::new(),
+                    },
+                    &host.pty,
+                );
+                host.tasks.release_singleton_by_run_id(&run_id);
+                result
+            })
+        })
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 }
 

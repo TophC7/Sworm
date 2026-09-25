@@ -2,10 +2,16 @@
 //
 // Persistence is part of normal operation, not a reload-only hook, so a
 // crash or force-quit can never drop more than one debounce window of
-// state. Each window stores its own blob under `workbench:<label>`.
+// state. Each workbench stores its own blob under `workbench:<id>`.
 
 import { backend } from '$lib/api/backend'
-import type { PersistedTab, PersistedWorkbenchV4, Tab, Workbench } from '$lib/features/workbench/model'
+import {
+  isProcessLive,
+  type PersistedTab,
+  type PersistedWorkbenchV4,
+  type Tab,
+  type Workbench
+} from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
 
 const WORKBENCH_DEBOUNCE_MS = 250
@@ -94,11 +100,8 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
       // restart instead of silently vanishing from the tab strip.
       return { kind: 'launcher', folderPath: tab.folderPath, locked: tab.locked }
     case 'task':
-      // Local tasks and already-inert tabs stay ephemeral. A live remote
-      // task outlives the last window, so retain its id for reattach.
-      if (!tab.folderPath.startsWith('sworm://') || (tab.status !== 'starting' && tab.status !== 'running')) {
-        return null
-      }
+      // Only active runs belong in the snapshot, regardless of host type.
+      if (!isProcessLive(tab.status)) return null
       return {
         kind: 'task',
         folderPath: tab.folderPath,
@@ -127,7 +130,7 @@ export function serializeWorkbench(wb: Workbench): PersistedWorkbenchV4 {
     tabs.push(persisted)
   }
   // If the active tab was dropped from persistence (for example, an
-  // untitled buffer or local task), restore the last persisted tab.
+  // untitled buffer or completed task), restore the last persisted tab.
   if (activeTabIndex < 0 && tabs.length > 0) activeTabIndex = tabs.length - 1
   return { version: 4, activeTabIndex, tabs }
 }
@@ -153,13 +156,13 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
         id,
         folderPath: persisted.folderPath,
         runId: persisted.runId,
+        attachOnly: true,
         taskId: persisted.taskId,
         activeFilePath: persisted.activeFilePath,
         label: persisted.label,
         icon: persisted.icon,
         group: persisted.group,
-        // Starting with the persisted id reconnects a live remote run or
-        // replays its retained output and Exit event when already complete.
+        // Restored runs reattach or fail; a missing run never executes again.
         status: 'starting',
         exitCode: null,
         locked: persisted.locked
@@ -244,13 +247,13 @@ let pending: (() => PersistedWorkbenchV4) | null = null
 // persisted shape; skip the SQLite write when the blob is byte-identical.
 let lastWrittenJson: string | null = null
 
-export function schedulePersistWorkbench(label: string, produce: () => PersistedWorkbenchV4): void {
+export function schedulePersistWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4): void {
   pending = produce
   clearTimeout(timer)
   timer = setTimeout(() => {
     // `flushWorkbench` requeues on failure, so the next scheduled
     // mutation retries the write.
-    void flushWorkbench(label).catch((error) => console.warn('Workbench persist failed:', error))
+    void flushWorkbench(workbenchId).catch((error) => console.warn('Workbench persist failed:', error))
   }, WORKBENCH_DEBOUNCE_MS)
 }
 
@@ -259,7 +262,7 @@ export function schedulePersistWorkbench(label: string, produce: () => Persisted
  * exit). Rethrows on failure so callers can refuse to proceed; the failed
  * producer is requeued unless a newer mutation was scheduled meanwhile.
  */
-export async function flushWorkbench(label: string): Promise<void> {
+export async function flushWorkbench(workbenchId: string): Promise<void> {
   const produce = pending
   pending = null
   clearTimeout(timer)
@@ -268,7 +271,7 @@ export async function flushWorkbench(label: string): Promise<void> {
   const json = JSON.stringify(produce())
   if (json === lastWrittenJson) return
   try {
-    await backend.app.statePut(`workbench:${label}`, json)
+    await backend.app.statePut(`workbench:${workbenchId}`, json)
     lastWrittenJson = json
   } catch (error) {
     if (pending === null) pending = produce
@@ -287,9 +290,9 @@ function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV
   return obj.version === 4 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
 }
 
-export async function loadPersistedWorkbench(label: string): Promise<PersistedWorkbenchV4 | null> {
+export async function loadPersistedWorkbench(workbenchId: string): Promise<PersistedWorkbenchV4 | null> {
   try {
-    const raw = await backend.app.stateGet(`workbench:${label}`)
+    const raw = await backend.app.stateGet(`workbench:${workbenchId}`)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
     if (!isPersistedWorkbenchShape(parsed)) {

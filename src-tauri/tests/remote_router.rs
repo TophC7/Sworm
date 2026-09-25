@@ -561,6 +561,83 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     .await
     .expect("timed out waiting for restored remote file watch");
     assert_eq!(watched_after_loss.folder_path, canonical_uri);
+    let original_pid = before_loss
+        .iter()
+        .find_map(|delivery| match delivery {
+            PtyDelivery::Event(PtyEvent::Started { pid, .. }) => *pid,
+            _ => None,
+        })
+        .expect("original remote process started");
+    let (output, events, _) = pty_sinks();
+    let wrong_owner = router
+        .session_start(
+            "reconnect-run".into(),
+            remote_repository.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            output,
+            events,
+            Some("foreign-window".into()),
+        )
+        .await;
+    assert!(matches!(wrong_owner, Err(ApiError::Pty(_))));
+    assert!(router.run_status("reconnect-run".into()).await?.live);
+    router
+        .session_write(
+            "reconnect-run".into(),
+            b"printf '__OWNER_STILL_LIVE__\\n'\n".to_vec(),
+        )
+        .await?;
+    receive_output_until(&mut deliveries, b"__OWNER_STILL_LIVE__\r\n").await;
+
+    let (output, events, mut reloaded_deliveries) = pty_sinks();
+    let reloaded = router
+        .session_start(
+            "reconnect-run".into(),
+            remote_repository.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            output,
+            events,
+            Some("desktop-window".into()),
+        )
+        .await?;
+    assert!(
+        reloaded.resumed,
+        "view reload must not restart daemon process"
+    );
+    let replay = receive_through_synced(&mut reloaded_deliveries).await;
+    let replay_bytes = output_bytes(&replay);
+    for marker in [
+        b"__READY_REMOTE__\r\n".as_slice(),
+        b"__AFTER_REMOTE__\r\n",
+        b"__OWNER_STILL_LIVE__\r\n",
+    ] {
+        assert_eq!(
+            count_bytes(&replay_bytes, marker),
+            1,
+            "reload replay lost or duplicated output"
+        );
+    }
+    let replay_pid = replay
+        .iter()
+        .find_map(|delivery| match delivery {
+            PtyDelivery::Event(PtyEvent::Started { pid, .. }) => *pid,
+            _ => None,
+        })
+        .expect("replay includes original process start");
+    assert_eq!(replay_pid, original_pid);
+    router
+        .session_write(
+            "reconnect-run".into(),
+            b"printf '__AFTER_RELOAD__\\n'\n".to_vec(),
+        )
+        .await?;
+    receive_output_until(&mut reloaded_deliveries, b"__AFTER_RELOAD__\r\n").await;
     router.session_stop("reconnect-run".into()).await?;
 
     let (output, events, mut last_owner_deliveries) = pty_sinks();

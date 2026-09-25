@@ -1,13 +1,13 @@
 // Folder-keyed branches state using Svelte 5 runes.
 //
 // Owns the Branches view list, paused-op status, preferences, recents,
-// and dirty checkout handling. Preferences persist per window and folder
-// under the app_state key `branchesView:<windowLabel>:<folderPath>`.
+// and dirty checkout handling. Preferences persist per workbench and folder
+// under the app_state key `branchesView:<id>:<folderPath>`.
 
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
-import { getWindowLabel } from '$lib/features/workbench/state.svelte'
+import { getWorkbenchId } from '$lib/features/workbench/state.svelte'
 import type { BranchOpState, BranchSummary, GitSummary } from '$lib/types/backend'
 
 // TYPES //
@@ -83,7 +83,7 @@ export function releaseBranchFolder(folderPath: string) {
 // PERSISTENCE //
 
 async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
-  const key = `branchesView:${getWindowLabel()}:${folderPath}`
+  const key = `branchesView:${getWorkbenchId()}:${folderPath}`
   let raw: string | null
   try {
     raw = await backend.app.stateGet(key)
@@ -114,7 +114,7 @@ async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
 
 async function persistPrefs(folderPath: string, prefs: BranchesViewPrefs): Promise<void> {
   try {
-    await backend.app.statePut(`branchesView:${getWindowLabel()}:${folderPath}`, JSON.stringify(prefs))
+    await backend.app.statePut(`branchesView:${getWorkbenchId()}:${folderPath}`, JSON.stringify(prefs))
   } catch (e) {
     console.error('Failed to persist branchesView prefs:', e)
   }

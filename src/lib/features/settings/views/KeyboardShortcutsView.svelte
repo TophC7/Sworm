@@ -4,7 +4,7 @@
 -->
 
 <script lang="ts">
-  import { backend } from '$lib/api/backend'
+  import { platform, requireNative } from '$lib/platform'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
@@ -35,7 +35,7 @@
 
   async function openShortcutsFile(): Promise<void> {
     try {
-      const result = await backend.shortcuts.openGlobalFile()
+      const result = await requireNative().shortcuts.openGlobalFile()
       shortcutsPath = result.path
     } catch (error) {
       notify.error('Failed to open shortcuts file', error instanceof Error ? error.message : String(error))
@@ -102,7 +102,9 @@
           at <span class="font-mono">{shortcutsPath}</span>{/if}.
       </p>
     </div>
-    <Button size="xs" variant="outline" onclick={openShortcutsFile}>Open File</Button>
+    {#if platform.capabilities.externalFileOpen}
+      <Button size="xs" variant="outline" onclick={openShortcutsFile}>Open File</Button>
+    {/if}
   </div>
   <div class="flex items-center gap-2">
     <Input bind:value={search} placeholder="Search commands..." class="max-w-md" />

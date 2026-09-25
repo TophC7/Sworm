@@ -1,5 +1,5 @@
 import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
-import { backend } from '$lib/api/backend'
+import { platform, requireNative } from '$lib/platform'
 import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
 import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
 import { dragObserver, frameAt } from '$lib/features/dnd/observer.svelte'
@@ -66,6 +66,7 @@ function dropEnabled(args: TerminalDropObserverArgs): boolean {
 }
 
 async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
+  if (!platform.capabilities.osDragDrop) return []
   const files = Array.from(event.dataTransfer?.files ?? [])
   const images = files.filter((file) => file.type.startsWith('image/'))
   if (images.length === 0) return []
@@ -73,7 +74,7 @@ async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
   const tempPaths: string[] = []
   for (const image of images) {
     const bytes = new Uint8Array(await image.arrayBuffer())
-    const path = await backend.dnd.saveDroppedBytes(bytes, image.name || 'dropped-image.png')
+    const path = await requireNative().osDrop.saveDroppedBytes(bytes, image.name || 'dropped-image.png')
     tempPaths.push(path)
   }
   return tempPaths

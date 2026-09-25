@@ -19,7 +19,7 @@ import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import type { GitSummary, GraphCommit, StashEntry } from '$lib/types/backend'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { platform } from '$lib/platform'
 
 const GRAPH_LIMIT = 100
 const RECONCILE_INTERVAL_MS = 2_000
@@ -409,8 +409,8 @@ function ensureGitChangedListener(): Promise<void> {
 
 function ensureFocusListener(): Promise<void> {
   if (focusListenerReady) return focusListenerReady
-  focusListenerReady = getCurrentWindow()
-    .onFocusChanged(({ payload: focused }) => {
+  focusListenerReady = platform.focus
+    .onChanged((focused) => {
       if (!focused) return
       for (const folderPath of activeFolderRefs.keys()) void reconcileActiveFolder(folderPath, true)
     })

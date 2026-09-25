@@ -1,7 +1,7 @@
 import type { Tab } from '$lib/features/workbench/model'
 import { type DragPayload, stampDataTransfer } from '$lib/features/dnd/payload'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-import { getWindowLabel } from '$lib/features/workbench/state.svelte'
+import { getWorkbenchId } from '$lib/features/workbench/state.svelte'
 
 export function tabDragSource(args: { tab: Tab }) {
   return (element: HTMLElement) => {
@@ -19,7 +19,7 @@ export function tabDragSource(args: { tab: Tab }) {
 
       const payload: DragPayload = {
         source: 'internal',
-        items: [{ kind: 'tab', tabId: args.tab.id, sourceWindowLabel: getWindowLabel() }]
+        items: [{ kind: 'tab', tabId: args.tab.id, sourceWindowLabel: getWorkbenchId() }]
       }
 
       LocalTransfer.set(payload)

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { platform } from '$lib/platform'
   import { CommandPill } from '$lib/components/ui/command-pill'
   import { IconButton } from '$lib/components/ui/button'
   import TitleBarMenu from './TitleBarMenu.svelte'
@@ -26,5 +27,7 @@
 
   <CommandPill onclick={openPalette} class="mr-1 w-60 shrink-0" />
 
-  <WindowControls />
+  {#if platform.capabilities.nativeWindowControls}
+    <WindowControls />
+  {/if}
 </header>

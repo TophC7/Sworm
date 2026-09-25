@@ -1,4 +1,4 @@
-import { backend } from '$lib/api/backend'
+import { requireNative } from '$lib/platform'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { openPairLink, parsePairLink } from './state.svelte'
 
@@ -25,7 +25,7 @@ export function initDeepLinks(): () => void {
       await ready
       while (wake && !disposed) {
         wake = false
-        const links = await backend.deepLinks.take()
+        const links = await requireNative().deepLinks.take()
         for (const link of links) {
           if (parsePairLink(link)) openPairLink(link)
           else notify.error('Invalid pairing link', 'Request a fresh link from sworm-server pair.')
@@ -39,7 +39,7 @@ export function initDeepLinks(): () => void {
   }
 
   // Subscribe first, then atomically take the queue: startup and live delivery share one owner.
-  const listener = backend.deepLinks.onOpen(() => {
+  const listener = requireNative().deepLinks.onOpen(() => {
     void drain()
   })
   void listener

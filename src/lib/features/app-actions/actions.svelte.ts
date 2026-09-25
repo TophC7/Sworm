@@ -4,6 +4,7 @@
 // these functions so confirmation and side effects stay on one path.
 
 import { backend } from '$lib/api/backend'
+import { requireNative } from '$lib/platform'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -21,12 +22,11 @@ import {
 import { flushWorkbench } from '$lib/features/workbench/persistence'
 import {
   getActiveFolderPath,
-  getWindowLabel,
+  getWorkbenchId,
   openFolder,
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
@@ -43,14 +43,14 @@ export async function reloadView(): Promise<void> {
     if (!proceed) return
   }
   try {
-    await flushWorkbench(getWindowLabel())
+    await flushWorkbench(getWorkbenchId())
   } catch (error) {
     console.warn('Reload flush failed:', error)
   }
   window.location.reload()
 }
 export async function newWindow(): Promise<void> {
-  await backend.window.create()
+  await requireNative().window.create()
 }
 
 export function newEmptyFile(): void {
@@ -62,7 +62,7 @@ export function newEmptyFile(): void {
 /** Native directory picker → open (or focus) that folder. */
 export async function openFolderPicker(): Promise<void> {
   try {
-    const path = await backend.folders.selectDirectory()
+    const path = await requireNative().dialogs.selectDirectory()
     if (path) await openFolder(path)
   } catch (error) {
     notify.error('Open folder failed', getErrorMessage(error))
@@ -75,7 +75,7 @@ export function openSettings(): void {
 
 export async function openGlobalSettingsFile(): Promise<void> {
   try {
-    await backend.settings.openGlobalFile()
+    await requireNative().settings.openGlobalFile()
   } catch (error) {
     notify.error('Open Global Settings failed', getErrorMessage(error))
   }
@@ -99,17 +99,21 @@ export async function openFolderSettingsFile(): Promise<void> {
 export function revealActiveFolderInFileManager(): void {
   const folderPath = getActiveFolderPath()
   if (!folderPath || splitRemotePath(folderPath)) return
-  void revealItemInDir(folderPath).catch((error) => {
-    notify.error('Reveal in file manager failed', getErrorMessage(error))
-  })
+  void requireNative()
+    .files.reveal(folderPath)
+    .catch((error) => {
+      notify.error('Reveal in file manager failed', getErrorMessage(error))
+    })
 }
 
 export function openActiveFolderInExternalTerminal(): void {
   const folderPath = getActiveFolderPath()
   if (!folderPath) return
-  void backend.folders.openInTerminal(folderPath).catch((error) => {
-    notify.error('Open in terminal failed', getErrorMessage(error))
-  })
+  void requireNative()
+    .files.openInTerminal(folderPath)
+    .catch((error) => {
+      notify.error('Open in terminal failed', getErrorMessage(error))
+    })
 }
 
 export function createSession(providerId: string, label: string): void {

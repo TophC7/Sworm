@@ -5,7 +5,7 @@
 // this the single source of truth — divergence between the two call sites
 // is how tabs end up closed while their PTY is still alive.
 
-import { backend } from '$lib/api/backend'
+import { stopTaskProcess } from '$lib/features/tasks/service.svelte'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { stopSessionProcess } from '$lib/features/sessions/service.svelte'
@@ -45,7 +45,7 @@ export async function closeTabWithChecks(tabId: TabId): Promise<boolean> {
     if (!proceed) return false
   }
 
-  if (tab.kind === 'session' && isProcessLive(tab.status)) {
+  if (tab.kind === 'session' && (tab.runId !== null || isProcessLive(tab.status))) {
     try {
       await stopSessionProcess(tab.id)
     } catch (err) {
@@ -54,12 +54,11 @@ export async function closeTabWithChecks(tabId: TabId): Promise<boolean> {
     }
   }
 
-  if (tab.kind === 'task' && isProcessLive(tab.status)) {
-    // Stop failures shouldn't block the close — if the PTY is already
-    // gone the backend swallows the error; any real error surfaces as
-    // a toast but we still tear down the tab to avoid orphaning it.
+  if (tab.kind === 'task') {
+    // Stop even a detached or completed run to release its retained state.
+    // A failed stop still reports a toast, but retains the close policy.
     try {
-      await backend.tasks.stop(tab.runId)
+      await stopTaskProcess(tab.runId)
     } catch (err) {
       notify.error('Stop task failed', getErrorMessage(err))
     }

@@ -85,6 +85,8 @@ export interface TaskTab extends TabBase {
   kind: 'task'
   /** Frontend-generated UUID used as the PTY key for the live run. */
   runId: string
+  /** Restored tab reattaches only; it must never execute a missing task. */
+  attachOnly: boolean
   /** Stable task id from .sworm/tasks.jsonc; used to re-resolve on restart. */
   taskId: string
   /** Active editor path captured when the run was launched. */
@@ -134,7 +136,7 @@ export type PersistedTab = { folderPath: string } & (
     }
   | {
       kind: 'task'
-      /** Stable remote PTY identity, reused to reattach after app restart. */
+      /** Stable PTY identity, reused to reattach without executing again. */
       runId: string
       taskId: string
       activeFilePath: string | null

@@ -15,7 +15,7 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import type { AppRuntimeInfo } from '$lib/types/backend'
-  import { openUrl } from '@tauri-apps/plugin-opener'
+  import { platform } from '$lib/platform'
 
   const REPOSITORY_URL = 'https://github.com/tophc7/sworm'
 
@@ -42,7 +42,7 @@
 
   async function openRepository(): Promise<void> {
     try {
-      await openUrl(REPOSITORY_URL)
+      await platform.links.openExternal(REPOSITORY_URL)
       open = false
     } catch (error) {
       notify.error('Open GitHub failed', getErrorMessage(error))

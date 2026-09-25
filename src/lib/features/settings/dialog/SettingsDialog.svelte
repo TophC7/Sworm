@@ -30,7 +30,8 @@
   import { getSettingsHost, getSettingsServer, loadSettings } from '$lib/features/settings/state/settings.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import type { BuiltinSettingsPage } from '$lib/types/backend'
-  import { getVersion } from '@tauri-apps/api/app'
+  import type { PlatformCapabilities } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import { onMount, type Component } from 'svelte'
 
   import GeneralView from '$lib/features/settings/views/GeneralView.svelte'
@@ -42,25 +43,25 @@
   import RemoteServersView from '$lib/features/settings/views/RemoteServersView.svelte'
   import { getSettingsPage, setSettingsPage } from './state.svelte'
 
-  // SemVer metadata carries commit identity; the numeric prefix only orders packages.
-  const versionPromise: Promise<string | null> = getVersion()
-    .then((version) => version.split('+')[1] ?? (version === '0.0.0' ? 'dev' : version))
-    .catch(() => null)
-
   let { open = false, onClose }: { open?: boolean; onClose: () => void } = $props()
 
   // NAV //
 
   type View = 'appearance' | 'keyboard-shortcuts' | 'providers' | 'window' | string
   type NavIcon = { kind: 'lucide'; icon: Component } | { kind: 'file'; filename: string } | { kind: 'mask' }
-  type NavItem = { id: View; label: string; icon: NavIcon }
+  type NavItem = { id: View; label: string; icon: NavIcon; capability?: keyof PlatformCapabilities }
 
   const GENERAL_ITEMS: NavItem[] = [
     { id: 'appearance', label: 'Appearance', icon: { kind: 'lucide', icon: PaintbrushIcon } },
     { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: { kind: 'lucide', icon: KeyboardIcon } },
     { id: 'providers', label: 'Providers', icon: { kind: 'lucide', icon: PackageIcon } },
-    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow } },
-    { id: 'remote-servers', label: 'Remote Servers', icon: { kind: 'lucide', icon: ServerIcon } }
+    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow }, capability: 'nativeWindowControls' },
+    {
+      id: 'remote-servers',
+      label: 'Remote Servers',
+      icon: { kind: 'lucide', icon: ServerIcon },
+      capability: 'remoteHosts'
+    }
   ]
   let languagePages = $state<BuiltinSettingsPage[]>(getBuiltinSettingsPages())
 
@@ -72,12 +73,15 @@
     }))
   )
   let NAV_SECTIONS = $derived([
-    { title: 'General', items: GENERAL_ITEMS },
+    {
+      title: 'General',
+      items: GENERAL_ITEMS.filter((item) => !item.capability || platform.capabilities[item.capability])
+    },
     { title: 'Languages', items: LANGUAGE_ITEMS }
   ])
   let FLAT_NAV = $derived(NAV_SECTIONS.flatMap((section) => section.items))
 
-  let active = $derived(getSettingsPage())
+  let active = $derived(FLAT_NAV.some((item) => item.id === getSettingsPage()) ? getSettingsPage() : 'appearance')
   let activeItem = $derived(FLAT_NAV.find((item) => item.id === active) ?? FLAT_NAV[0])
   let activeLabel = $derived(activeItem.label)
   let activeLanguagePage = $derived(languagePages.find((definition) => definition.id === active) ?? null)
@@ -129,7 +133,10 @@
   let version = $state<string | null>(null)
 
   onMount(() => {
-    void versionPromise.then((v) => (version = v))
+    void platform.app
+      .version()
+      .then((v) => (version = v.split('+')[1] ?? (v === '0.0.0' ? 'dev' : v)))
+      .catch(() => {})
     void preloadBuiltinCatalog()
       .then((catalog) => {
         languagePages = catalog.settings.pages

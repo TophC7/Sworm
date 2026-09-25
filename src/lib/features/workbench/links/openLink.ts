@@ -5,7 +5,7 @@ import { basename, dirname, normalizeRelativePath, toProjectRelativePath } from 
 import { revealPath } from '$lib/features/files/fileTree.svelte'
 import { openFolder } from '$lib/features/workbench/state.svelte'
 import { openTextFile, type TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { platform } from '$lib/platform'
 import { parseFilePathAndLocation, parseLinkTarget, type ParsedLinkTarget } from './parseLink'
 const GITHUB_REMOTE_REGEX = /(?:github\.com[:/])([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\s|$)/
 const MAX_GIT_CACHE_ENTRIES = 16
@@ -56,7 +56,7 @@ export async function openLink(rawTarget: string, folderPath?: string | null): P
     }
 
     if (target.kind === 'web' && target.url) {
-      await openUrl(target.url)
+      await platform.links.openExternal(target.url)
       return true
     }
 
@@ -98,7 +98,7 @@ async function handleUriLink(target: ParsedLinkTarget, folderPath?: string | nul
 
   // Fallback: try opening with system opener
   try {
-    await openUrl(fullUrl)
+    await platform.links.openExternal(fullUrl)
     return true
   } catch {
     notify.error('Unsupported link', `Scheme "${scheme}://" is not supported.`)
@@ -187,7 +187,7 @@ async function handleIssueOrPrScheme(
   }
 
   const githubUrl = `https://github.com/${owner}/${repo}/${section}/${id}`
-  await openUrl(githubUrl)
+  await platform.links.openExternal(githubUrl)
   return true
 }
 

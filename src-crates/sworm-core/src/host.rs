@@ -4,7 +4,7 @@ use crate::services::{
     files::FileService, git::GitService, git_watcher::GitWatcherService,
     issue_bridge::IssueBridgeService, issues::IssueService, lsp::LspService,
     providers::ProviderService, pty::PtyService, resume_discovery::ResumeDiscoveryService,
-    settings_watcher::SettingsWatcherService, tasks::TaskService,
+    runs::RunCoordinator, settings_watcher::SettingsWatcherService, tasks::TaskService,
 };
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -18,6 +18,7 @@ pub struct Host {
     pub db: Arc<DatabaseService>,
     pub(crate) providers: ProviderService,
     pub pty: PtyService,
+    pub(crate) runs: RunCoordinator,
     pub(crate) git: Arc<GitService>,
     pub(crate) issues: Arc<IssueService>,
     pub(crate) issue_bridge: IssueBridgeService,
@@ -46,6 +47,7 @@ impl Host {
             db,
             providers: ProviderService,
             pty: PtyService::new(),
+            runs: RunCoordinator::default(),
             git: Arc::clone(&git),
             issues: Arc::clone(&issues),
             issue_bridge: IssueBridgeService::new(issues, Arc::clone(&events)),
@@ -78,21 +80,49 @@ impl Host {
     /// Release resources tied to a specific window/owner label while preserving
     /// runs protected by in-flight tab transfers.
     pub fn release_owner(&self, owner: &str, protected_pty_runs: &HashSet<String>) {
-        self.file_watchers.release_subscriber(owner);
-        self.lsp.kill_owner(owner);
-        for run_id in self.pty.kill_owner(owner, protected_pty_runs) {
-            self.tasks.release_singleton_by_run_id(&run_id);
-        }
+        self.teardown_owner(owner, protected_pty_runs, |run_id| {
+            self.pty.kill_owned_run(run_id, owner, protected_pty_runs)
+        });
     }
 
     /// Release a last window's resources. Local runs are killed; adopted
     /// shutdown-detaching runs are dropped without invoking their kill policy.
     pub fn detach_owner(&self, owner: &str, protected_pty_runs: &HashSet<String>) {
-        self.file_watchers.release_subscriber(owner);
-        self.lsp.kill_owner(owner);
-        for run_id in self.pty.detach_owner(owner, protected_pty_runs) {
-            self.tasks.release_singleton_by_run_id(&run_id);
-        }
+        self.teardown_owner(owner, protected_pty_runs, |run_id| {
+            self.pty.detach_owned_run(run_id, owner, protected_pty_runs)
+        });
+    }
+
+    fn teardown_owner(
+        &self,
+        owner: &str,
+        protected_pty_runs: &HashSet<String>,
+        retire: impl Fn(&str) -> bool,
+    ) {
+        self.runs.close_owner(owner, || {
+            self.file_watchers.release_subscriber(owner);
+            self.lsp.kill_owner(owner);
+            for run_id in self.pty.owner_run_ids(owner, protected_pty_runs) {
+                self.runs.with_run(&run_id, |runs| {
+                    if retire(&run_id) {
+                        self.resume_discovery.cancel(&run_id);
+                        self.tasks.release_singleton_by_run_id(&run_id);
+                        runs.release(&run_id);
+                    }
+                });
+            }
+        });
+    }
+
+    /// A replacement view reports restored tasks; completed locals absent from it can be released.
+    pub fn release_unrestored_tasks(
+        &self,
+        owner: &str,
+        restored: &HashSet<String>,
+    ) -> Result<(), crate::errors::ApiError> {
+        let _owner = self.runs.owner_activity(Some(owner))?;
+        self.runs
+            .release_unrestored_tasks(owner, restored, &self.pty)
     }
 
     pub fn settings_generation(&self) -> u64 {
@@ -102,8 +132,34 @@ impl Host {
     /// Gracefully terminate local PTYs and language servers while detaching
     /// adopted runs whose backend owns their remote lifetime.
     pub fn shutdown(&self) -> (usize, usize) {
-        let pty_cleaned = self.pty.kill_all();
+        let pty_cleaned = self.runs.with_exclusive(|runs| {
+            let cleaned = self.pty.kill_all();
+            runs.clear();
+            cleaned
+        });
         let lsp_cleaned = self.lsp.kill_all();
         (pty_cleaned, lsp_cleaned)
+    }
+
+    pub fn configure_completed_runs(
+        &self,
+        store: Arc<crate::services::completed_runs::CompletedRunStore>,
+    ) {
+        self.runs.configure_completed_runs(store);
+    }
+
+    pub fn completed_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<crate::services::completed_runs::CompletedRun>, crate::errors::ApiError>
+    {
+        self.runs.completed_run(run_id)
+    }
+
+    pub fn run_status(
+        &self,
+        run_id: &str,
+    ) -> Result<sworm_protocol::rpc::RunStatus, crate::errors::ApiError> {
+        self.runs.status(run_id, &self.pty)
     }
 }

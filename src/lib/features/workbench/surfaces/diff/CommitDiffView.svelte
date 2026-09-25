@@ -1,5 +1,6 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
+  import { copyToClipboard } from '$lib/utils/clipboard'
   import type { CommitDetail, FileDiff } from '$lib/types/backend'
   import DiffStack from '$lib/features/workbench/surfaces/diff/DiffStack.svelte'
   import { IconButton } from '$lib/components/ui/button'
@@ -53,7 +54,7 @@
   }
 
   async function copyHash() {
-    await navigator.clipboard.writeText(commitHash)
+    await copyToClipboard(commitHash)
     copied = true
     setTimeout(() => (copied = false), 1500)
   }

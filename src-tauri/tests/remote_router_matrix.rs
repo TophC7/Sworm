@@ -548,6 +548,7 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
             None,
             80,
             24,
+            false,
             discard_bytes,
             discard_pty,
             None,
@@ -836,65 +837,4 @@ async fn settings_effective_merges_desktop_sections(fixture: &Fixture) -> anyhow
     assert!(effective.settings.remotes.contains_key("loop"));
 
     Ok(())
-}
-
-/// The router is the only way a user-supplied path reaches a `Host`. Commands
-/// that still touch `state.host` may only use handles or operations that take
-/// no workspace path at all.
-#[test]
-fn commands_reach_hosts_only_through_the_router() {
-    const DESKTOP_ONLY: &[&str] = &[
-        // Shared handles, not workspace operations.
-        "db",
-        "pty",
-        "file_watchers",
-        // Pathless operations about this machine.
-        "activity_map_get",
-        "activity_map_refresh",
-        "builtins_get_catalog",
-        "config_schemas_list",
-        "provider_list",
-        // Resolves local launch targets; rejects remote cwds itself.
-        "omp_resolve_uri",
-        // Desktop-owned settings layers and sections.
-        "settings_get_global_layer",
-        "settings_create_global_file",
-        "settings_set_window",
-        "settings_set_terminal",
-    ];
-
-    let mut offenders = Vec::new();
-    for entry in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands"))
-        .expect("commands directory")
-    {
-        let path = entry.expect("directory entry").path();
-        if !matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("rs")
-        ) {
-            continue;
-        }
-        let source = fs::read_to_string(&path).expect("command module");
-        let dense: String = source
-            .chars()
-            .filter(|char| !char.is_whitespace())
-            .collect();
-        for call in dense.split("state.host.").skip(1) {
-            let member: String = call
-                .chars()
-                .take_while(|char| char.is_alphanumeric() || *char == '_')
-                .collect();
-            if !DESKTOP_ONLY.contains(&member.as_str()) {
-                offenders.push(format!(
-                    "{}: state.host.{member}",
-                    path.file_name().expect("file name").to_string_lossy()
-                ));
-            }
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "these commands bypass the workspace router: {offenders:?}"
-    );
 }

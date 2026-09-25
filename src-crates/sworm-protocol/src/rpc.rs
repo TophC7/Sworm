@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version selected during the QUIC TLS handshake. Bump on any
 /// wire-incompatible change once released; there is no negotiation.
-pub const ALPN: &[u8] = b"sworm/1";
+pub const ALPN: &[u8] = b"sworm/2";
 pub const DEFAULT_SERVER_PORT: u16 = 7420;
 /// Maximum encoded `Open` frame body accepted before a connection is paired,
 /// and the ceiling every non-RPC open is written with: pairing metadata,
@@ -588,6 +588,7 @@ macro_rules! sworm_rpc_ops {
                 active_file_path: Option<String>,
                 cols: u16,
                 rows: u16,
+                attach_only: bool,
             ) -> ();
             #[route(run)]
             SessionStop => session_stop(
@@ -911,6 +912,34 @@ mod tests {
                 message: "unexpected reply variant for files_read_dir".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn task_start_requires_explicit_restoration_intent() {
+        let request = Request::TasksStart {
+            run_id: "saved-run".into(),
+            folder_path: "/repo".into(),
+            task_id: "build".into(),
+            active_file_path: None,
+            cols: 80,
+            rows: 24,
+            attach_only: true,
+        };
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(encoded["params"]["attach_only"], true);
+        assert!(matches!(
+            serde_json::from_value::<Request>(encoded.clone()).unwrap(),
+            Request::TasksStart {
+                attach_only: true,
+                ..
+            }
+        ));
+        let mut old_request = encoded;
+        old_request["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("attach_only");
+        assert!(serde_json::from_value::<Request>(old_request).is_err());
     }
 
     #[test]

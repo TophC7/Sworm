@@ -1,7 +1,6 @@
 <script lang="ts">
-  import '../app.css'
   import { onMount } from 'svelte'
-  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { platform } from '$lib/platform'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { backend } from '$lib/api/backend'
@@ -69,8 +68,9 @@
   })
 
   onMount(() => {
-    const cleanupDeepLinks = initDeepLinks()
-    const appWindow = getCurrentWindow()
+    const cleanupDeepLinks = platform.capabilities.deepLinks ? initDeepLinks() : undefined
+    const native = platform.native
+    const workbenchId = platform.workbench.id
     let cleanupTransfer: (() => void) | undefined
     let disposed = false
     const listeners = [
@@ -79,15 +79,17 @@
       }),
       backend.issues.onChanged(({ folderPath }) => refreshIssuesForFolder(folderPath)),
       backend.nix.onChanged(({ folderPath }) => refreshNixForFolder(folderPath)),
-      backend.window.onFocusTab((payload) => requestFocusTab(payload.tabId, payload.reveal))
+      ...(native ? [native.window.onFocusTab((payload) => requestFocusTab(payload.tabId, payload.reveal))] : [])
     ]
-    void initTransferService().then((cleanup) => {
-      if (disposed) cleanup()
-      else cleanupTransfer = cleanup
-    })
+    if (platform.capabilities.tabTransfer) {
+      void initTransferService().then((cleanup) => {
+        if (disposed) cleanup()
+        else cleanupTransfer = cleanup
+      })
+    }
     void loadSettings()
 
-    const unlisten = appWindow.onCloseRequested(async (event) => {
+    const unlisten = native?.window.onCloseRequested(async (event) => {
       // Guard before any teardown — once we've started flushing the
       // user has effectively committed to closing.
       if (hasAnyDirtyTextSurfaces()) {
@@ -110,7 +112,7 @@
       // failed write would silently lose the layout, so let the user
       // choose between quitting anyway and keeping the app open.
       try {
-        await flushWorkbench(appWindow.label)
+        await flushWorkbench(workbenchId)
       } catch (error) {
         const proceed = await confirmAsync({
           title: 'Could not save workbench layout',
@@ -129,8 +131,8 @@
 
     // Restore system decorations if user previously chose that
     const wc = getWindowControls()
-    if (wc.useSystemDecorations) {
-      appWindow.setDecorations(true).catch((error) => {
+    if (native && wc.useSystemDecorations) {
+      void native.window.setDecorations(true).catch((error) => {
         console.warn('Failed to restore system window decorations:', error)
       })
     }
@@ -147,11 +149,11 @@
 
     return () => {
       disposed = true
-      cleanupDeepLinks()
+      cleanupDeepLinks?.()
       cleanupTransfer?.()
       cleanupShortcuts()
       for (const listener of listeners) listener.then((cleanup) => cleanup()).catch(() => {})
-      unlisten.then((cleanup) => cleanup()).catch(() => {})
+      unlisten?.then((cleanup) => cleanup()).catch(() => {})
     }
   })
 </script>

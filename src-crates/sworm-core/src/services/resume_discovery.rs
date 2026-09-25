@@ -34,6 +34,8 @@ pub struct PendingRun {
     /// creates can predate it.
     pub spawned_at: SystemTime,
     pub event_sink: PtyEventSink,
+    /// Keep the Host's current token independent of any attached stream.
+    pub on_bound: Option<Box<dyn FnOnce(String) + Send>>,
 }
 
 #[derive(Clone)]
@@ -209,10 +211,13 @@ fn worker_loop(inner: Arc<Inner>) {
                         .position(|run| run.run_id == run_id)
                         .map(|index| pending.remove(index))
                 };
-                let Some(run) = run else {
+                let Some(mut run) = run else {
                     continue;
                 };
                 info!("Bound {provider} conversation {token} to run {run_id}");
+                if let Some(on_bound) = run.on_bound.take() {
+                    on_bound(token.clone());
+                }
                 run.event_sink
                     .emit(PtyEvent::ResumeTokenBound { run_id, token });
             }

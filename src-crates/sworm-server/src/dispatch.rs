@@ -2,18 +2,15 @@ use crate::{auth, events::HostEvents, pty_stream::RunFanout};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
-use sworm_core::{
-    services::{completed_runs::CompletedRunStore, pty::PtyRunState},
-    Host,
-};
+use sworm_core::Host;
 use sworm_protocol::{
     rpc::{Reply, Request, Response, RunStatus, WireError, MAX_WHOLE_FILE_BYTES},
     session::SessionStartInfo,
 };
 use sworm_remote::Fingerprint;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 
 pub(crate) struct ServerContext {
     pub config_dir: PathBuf,
@@ -21,11 +18,38 @@ pub(crate) struct ServerContext {
     pub pairing: Mutex<()>,
     pub folders: parking_lot::Mutex<HashMap<PathBuf, usize>>,
     pub host_events: HostEvents,
-    pub completed: Arc<CompletedRunStore>,
+    /// Table locks protect only lookup/publication. Gates serialize one ID's
+    /// Host operation with its transport lease; weak entries disappear after
+    /// the last waiter completes.
+    runs: parking_lot::Mutex<RunRegistry>,
     /// Per-connection LSP streams, keyed by session id. A session's stream
     /// owns its server: closing it kills the process.
     pub lsp: crate::lsp_stream::LspStreams,
-    runs: Mutex<HashMap<String, RunRecord>>,
+}
+
+#[derive(Default)]
+struct RunRegistry {
+    gates: HashMap<String, Weak<Mutex<()>>>,
+    leases: HashMap<String, Arc<RunFanout>>,
+}
+
+struct RunOperation<'a> {
+    context: &'a ServerContext,
+    run_id: String,
+    gate: Arc<Mutex<()>>,
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl Drop for RunOperation<'_> {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut runs = self.context.runs.lock();
+        // Keep the gate if another request already reserved it. Removing it
+        // earlier could let a new start bypass that waiting request.
+        if Arc::strong_count(&self.gate) == 1 {
+            runs.gates.remove(&self.run_id);
+        }
+    }
 }
 
 impl ServerContext {
@@ -33,7 +57,6 @@ impl ServerContext {
         config_dir: PathBuf,
         auth_token: Option<String>,
         host_events: HostEvents,
-        completed: Arc<CompletedRunStore>,
     ) -> Self {
         Self {
             config_dir,
@@ -41,9 +64,8 @@ impl ServerContext {
             pairing: Mutex::new(()),
             folders: parking_lot::Mutex::new(HashMap::new()),
             host_events,
-            completed,
             lsp: crate::lsp_stream::LspStreams::new(),
-            runs: Mutex::new(HashMap::new()),
+            runs: parking_lot::Mutex::new(RunRegistry::default()),
         }
     }
 
@@ -66,12 +88,59 @@ impl ServerContext {
         }
     }
 
-    pub(crate) async fn run_fanout(&self, run_id: &str) -> Option<Arc<RunFanout>> {
-        self.runs
-            .lock()
-            .await
-            .get(run_id)
-            .map(|run| Arc::clone(&run.fanout))
+    async fn run_operation(&self, run_id: &str) -> RunOperation<'_> {
+        let gate = {
+            let mut runs = self.runs.lock();
+            if let Some(gate) = runs.gates.get(run_id).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(()));
+                runs.gates.insert(run_id.to_owned(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+        let mut operation = RunOperation {
+            context: self,
+            run_id: run_id.to_owned(),
+            gate,
+            guard: None,
+        };
+        operation.guard = Some(Arc::clone(&operation.gate).lock_owned().await);
+        operation
+    }
+
+    pub(crate) fn run_fanout(&self, run_id: &str) -> Option<Arc<RunFanout>> {
+        self.runs.lock().leases.get(run_id).cloned()
+    }
+
+    async fn publish_run(&self, run_id: &str, live: bool) -> Result<(), WireError> {
+        let removed = {
+            let mut runs = self.runs.lock();
+            if live {
+                runs.leases
+                    .entry(run_id.to_owned())
+                    .or_insert_with(|| Arc::new(RunFanout::new()));
+                None
+            } else {
+                runs.leases.remove(run_id)
+            }
+        };
+        if let Some(fanout) = removed {
+            tokio::task::spawn_blocking(move || fanout.cancel())
+                .await
+                .map_err(run_operation_join)?;
+        }
+        Ok(())
+    }
+
+    async fn invalidate_run(&self, run_id: &str) -> Result<(), WireError> {
+        self.publish_run(run_id, false).await
+    }
+}
+
+fn run_operation_join(error: tokio::task::JoinError) -> WireError {
+    WireError::Internal {
+        message: format!("run operation task failed: {error}"),
     }
 }
 
@@ -84,20 +153,8 @@ pub(crate) struct Session {
     pub events: Option<(u64, watch::Sender<bool>)>,
 }
 
-#[derive(PartialEq, Eq)]
-enum RunKind {
-    Session { provider_id: String },
-    Task { task_id: String },
-}
-
-struct RunRecord {
-    folder: PathBuf,
-    kind: RunKind,
-    fanout: Arc<RunFanout>,
-}
-
 struct DispatchRuntime<'a> {
-    host: &'a Host,
+    host: &'a Arc<Host>,
     context: &'a Arc<ServerContext>,
     session: &'a Mutex<Session>,
 }
@@ -232,7 +289,7 @@ macro_rules! define_dispatch {
 sworm_protocol::sworm_rpc_ops!(define_dispatch);
 
 pub(crate) async fn handle(
-    host: &Host,
+    host: &Arc<Host>,
     context: &Arc<ServerContext>,
     session: &Mutex<Session>,
     request: Request,
@@ -252,7 +309,7 @@ pub(crate) async fn handle(
 /// The auth and folder claim a `FileRead` stream needs, without the stat a
 /// dispatched request would run: the stream's open validates the version.
 pub(crate) async fn claim_file_read(
-    host: &Host,
+    host: &Arc<Host>,
     context: &Arc<ServerContext>,
     session: &Mutex<Session>,
     project_path: &str,
@@ -279,15 +336,6 @@ impl DispatchRuntime<'_> {
             self.context.claim_folder(&folder);
         }
         Ok(folder)
-    }
-
-    /// Whether a finished run still has a stored transcript to reattach to.
-    fn has_transcript(&self, run_id: &str) -> Result<bool, WireError> {
-        self.context
-            .completed
-            .get(run_id)
-            .map(|run| run.is_some())
-            .map_err(|message| WireError::Internal { message })
     }
 
     /// Writes mirror the read ceiling: a file too large to read back is not
@@ -360,68 +408,37 @@ impl DispatchRuntime<'_> {
         cols: u16,
         rows: u16,
     ) -> Result<SessionStartInfo, WireError> {
-        let folder = self.claim(&folder_path, "folder_path").await?;
-        // The runs lock spans the spawn so a second start cannot race the same
-        // run id. Starts serialize per daemon; a reservation state would only
-        // buy latency nobody waits on.
-        let mut runs = self.context.runs.lock().await;
-        // A finished run is reattachable from its transcript; respawning it
-        // would silently replace output the desktop came back to read.
-        let stored = self.has_transcript(&run_id)?;
-        if let Some(run) = runs.get(&run_id) {
-            ensure_run(
-                &run_id,
-                run,
-                &folder,
-                &RunKind::Session {
-                    provider_id: provider_id.clone(),
-                },
-            )?;
-            if stored || self.host.pty.run_state(&run_id).is_some() {
-                return Ok(SessionStartInfo {
-                    resumed: true,
-                    resume_token: run.fanout.resume_token(),
-                });
-            }
-            run.fanout.cancel();
-            runs.remove(&run_id);
-        } else if self.host.pty.run_state(&run_id).is_some() {
-            return Err(conflicting_run(&run_id));
-        } else if stored {
-            return Ok(SessionStartInfo {
-                resumed: true,
-                resume_token: None,
-            });
-        }
-
-        let fanout = Arc::new(RunFanout::new());
-        let (output, events) = fanout.sinks();
-        let info = self
-            .host
-            .session_start(
-                run_id.clone(),
-                folder_path,
-                provider_id.clone(),
-                resume_token,
-                cols,
-                rows,
-                output,
-                events,
-                None,
-                true,
-            )
-            .await
-            .map_err(WireError::from)?;
-        fanout.set_resume_token(info.resume_token.clone());
-        runs.insert(
-            run_id,
-            RunRecord {
-                folder,
-                kind: RunKind::Session { provider_id },
-                fanout,
-            },
-        );
-        Ok(info)
+        self.claim(&folder_path, "folder_path").await?;
+        // Once submitted, this owned operation finishes even if the RPC
+        // stream disappears. Dropping a borrowed guard during Host's blocking
+        // spawn would let Stop or a reused ID overtake the unfinished start.
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _operation = context.run_operation(&run_id).await;
+            let info = host
+                .session_start(
+                    run_id.clone(),
+                    folder_path,
+                    provider_id,
+                    resume_token,
+                    cols,
+                    rows,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(WireError::from)?;
+            let state_host = Arc::clone(&host);
+            let id = run_id.clone();
+            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
+                .await
+                .map_err(run_operation_join)?;
+            context.publish_run(&run_id, live).await?;
+            Ok(info)
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn tasks_start(
@@ -432,115 +449,71 @@ impl DispatchRuntime<'_> {
         active_file_path: Option<String>,
         cols: u16,
         rows: u16,
+        attach_only: bool,
     ) -> Result<(), WireError> {
-        let folder = self.claim(&folder_path, "folder_path").await?;
-        let mut runs = self.context.runs.lock().await;
-        let stored = self.has_transcript(&run_id)?;
-        if let Some(run) = runs.get(&run_id) {
-            ensure_run(
-                &run_id,
-                run,
-                &folder,
-                &RunKind::Task {
-                    task_id: task_id.clone(),
-                },
-            )?;
-            if stored || self.host.pty.run_state(&run_id).is_some() {
-                return Ok(());
-            }
-            run.fanout.cancel();
-            runs.remove(&run_id);
-        } else if self.host.pty.run_state(&run_id).is_some() {
-            return Err(conflicting_run(&run_id));
-        } else if stored {
-            return Ok(());
-        }
-
-        let fanout = Arc::new(RunFanout::new());
-        let (output, events) = fanout.sinks();
-        self.host
-            .tasks_start(
+        self.claim(&folder_path, "folder_path").await?;
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _operation = context.run_operation(&run_id).await;
+            host.tasks_start(
                 run_id.clone(),
                 folder_path,
-                task_id.clone(),
+                task_id,
                 active_file_path,
                 cols,
                 rows,
-                output,
-                events,
                 None,
-                true,
+                None,
+                attach_only,
             )
             .await
             .map_err(WireError::from)?;
-        runs.insert(
-            run_id,
-            RunRecord {
-                folder,
-                kind: RunKind::Task { task_id },
-                fanout,
-            },
-        );
-        Ok(())
+            let state_host = Arc::clone(&host);
+            let id = run_id.clone();
+            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
+                .await
+                .map_err(run_operation_join)?;
+            context.publish_run(&run_id, live).await
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn session_stop(&self, run_id: String) -> Result<(), WireError> {
-        let mut runs = self.context.runs.lock().await;
-        if let Some(run) = runs.get(&run_id) {
-            if !matches!(&run.kind, RunKind::Session { .. }) {
-                return Err(conflicting_run(&run_id));
-            }
-            run.fanout.cancel();
-        }
-        self.host
-            .session_stop(run_id.clone())
-            .await
-            .map_err(WireError::from)?;
-        runs.remove(&run_id);
-        // An explicitly stopped run is a closed tab: its transcript is moot.
-        self.context.completed.delete(&run_id);
-        Ok(())
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _operation = context.run_operation(&run_id).await;
+            host.session_stop(run_id.clone())
+                .await
+                .map_err(WireError::from)?;
+            context.invalidate_run(&run_id).await
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn tasks_stop(&self, run_id: String) -> Result<(), WireError> {
-        let mut runs = self.context.runs.lock().await;
-        if let Some(run) = runs.get(&run_id) {
-            if !matches!(&run.kind, RunKind::Task { .. }) {
-                return Err(conflicting_run(&run_id));
-            }
-            run.fanout.cancel();
-        }
-        self.host
-            .tasks_stop(run_id.clone())
-            .await
-            .map_err(WireError::from)?;
-        runs.remove(&run_id);
-        self.context.completed.delete(&run_id);
-        Ok(())
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _operation = context.run_operation(&run_id).await;
+            host.tasks_stop(run_id.clone())
+                .await
+                .map_err(WireError::from)?;
+            context.invalidate_run(&run_id).await
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn run_status(&self, run_id: String) -> Result<RunStatus, WireError> {
-        Ok(match self.host.pty.run_state(&run_id) {
-            Some(PtyRunState::Live) => RunStatus {
-                live: true,
-                exited: None,
-            },
-            Some(PtyRunState::Completed(code)) => RunStatus {
-                live: false,
-                exited: Some(code),
-            },
-            None => match self.context.completed.get(&run_id) {
-                Ok(Some(completed)) => RunStatus {
-                    live: false,
-                    exited: Some(completed.exit_code),
-                },
-                Ok(None) => RunStatus {
-                    live: false,
-                    exited: None,
-                },
-                Err(error) => return Err(WireError::Internal { message: error }),
-            },
-        })
+        let host = Arc::clone(self.host);
+        tokio::task::spawn_blocking(move || host.run_status(&run_id))
+            .await
+            .map_err(run_operation_join)?
+            .map_err(Into::into)
     }
 
     async fn lsp_start(
@@ -633,25 +606,6 @@ impl DispatchRuntime<'_> {
     }
 }
 
-fn ensure_run(
-    run_id: &str,
-    run: &RunRecord,
-    folder: &Path,
-    expected: &RunKind,
-) -> Result<(), WireError> {
-    if run.folder == folder && &run.kind == expected {
-        Ok(())
-    } else {
-        Err(conflicting_run(run_id))
-    }
-}
-
-fn conflicting_run(run_id: &str) -> WireError {
-    WireError::InvalidArgument {
-        message: format!("run id is already bound to different metadata: {run_id}"),
-    }
-}
-
 /// Desktop sections describe the machine a window runs on. A daemon that
 /// accepted them would write settings nothing on its side ever reads, and the
 /// desktop would silently stop owning its own terminal and window prefs.
@@ -677,5 +631,76 @@ fn require_absolute(path: &str, field: &str) -> Result<(), WireError> {
 pub(crate) fn unauthorized(message: &str) -> WireError {
     WireError::Unauthorized {
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+
+    #[tokio::test]
+    async fn canceled_waiter_releases_its_run_gate() {
+        let (events, _) = tokio::sync::broadcast::channel(2);
+        let context = ServerContext::new(PathBuf::new(), None, events);
+        let held = context.run_operation("same").await;
+        let mut waiting = Box::pin(context.run_operation("same"));
+        assert!(
+            std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())
+            })
+            .await
+        );
+        drop(held);
+        drop(waiting);
+        assert!(context.runs.lock().gates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_stop_invalidates_the_start_lease_before_id_reuse() {
+        let (events, _) = tokio::sync::broadcast::channel(2);
+        let context = Arc::new(ServerContext::new(PathBuf::new(), None, events));
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        let starting = Arc::clone(&context);
+        let start = tokio::spawn(async move {
+            let _operation = starting.run_operation("same").await;
+            entered.send(()).unwrap();
+            resume.await.unwrap();
+            starting.publish_run("same", true).await.unwrap();
+        });
+        started.await.unwrap();
+
+        let stopping = Arc::clone(&context);
+        let mut stop = Box::pin(async move {
+            let _operation = stopping.run_operation("same").await;
+            stopping.invalidate_run("same").await.unwrap();
+        });
+        // Poll once while Start holds the gate: Stop is now an actual queued
+        // waiter, not merely an RPC sent on a different QUIC stream.
+        assert!(
+            std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(stop.as_mut().poll(cx).is_pending())
+            })
+            .await
+        );
+        release.send(()).unwrap();
+        start.await.unwrap();
+        stop.await;
+        assert!(
+            context.run_fanout("same").is_none(),
+            "stop left a published lease"
+        );
+        assert!(
+            context.runs.lock().gates.is_empty(),
+            "run gate survived its last waiter"
+        );
+
+        let _replacement = context.run_operation("same").await;
+        context.publish_run("same", true).await.unwrap();
+        assert!(
+            context.run_fanout("same").is_some(),
+            "ID reuse lost its new lease"
+        );
     }
 }

@@ -16,19 +16,20 @@
   import { AlertTriangle, FolderOpen } from '$lib/icons/lucideExports'
   import { folderCrumbs, splitRemotePath } from '$lib/utils/paths'
   import { cn } from '$lib/utils/cn'
-  import { backend } from '$lib/api/backend'
+  import { platform, requireNative } from '$lib/platform'
   import { openRemoteManager } from '$lib/features/remotes/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import type { RemoteStatus } from '$lib/types/backend'
 
   let folderPath = $derived(getActiveFolderPath())
   let remote = $derived(folderPath ? splitRemotePath(folderPath) : null)
   let remoteServer = $derived(remote?.server ?? null)
-  let remoteStatus = $state<Awaited<ReturnType<typeof backend.remotes.status>> | null>(null)
+  let remoteStatus = $state<RemoteStatus | null>(null)
 
   $effect(() => {
     const server = remoteServer
     remoteStatus = null
-    if (!server) return
+    if (!server || !platform.capabilities.remoteHosts) return
     let disposed = false
     let pending = false
     let revision = 0
@@ -38,7 +39,7 @@
       pending = true
       const requestedRevision = revision
       try {
-        const status = await backend.remotes.status(server!)
+        const status = await requireNative().remotes.status(server!)
         if (!disposed && revision === requestedRevision) remoteStatus = status
       } catch (error) {
         if (!disposed && revision === requestedRevision) {
@@ -48,8 +49,8 @@
         pending = false
       }
     }
-    void backend.remotes
-      .onStatus((status) => {
+    void requireNative()
+      .remotes.onStatus((status) => {
         if (disposed || status.server !== server) return
         revision++
         remoteStatus = status
@@ -86,7 +87,7 @@
 >
   <div class="flex items-center gap-1">
     <StatusBarAppInfo />
-    {#if remoteServer}
+    {#if remoteServer && platform.capabilities.remoteHosts}
       <StatusChip
         onclick={openRemoteManager}
         title={remoteStatus?.last_error ?? `${remoteServer}: ${remoteState}`}

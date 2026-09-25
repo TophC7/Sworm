@@ -1,10 +1,10 @@
-import { convertFileSrc } from '@tauri-apps/api/core'
-import { dirname, normalizeAbsolutePath } from '$lib/utils/paths'
+import { platform } from '$lib/platform'
+import { dirname } from '$lib/utils/paths'
 
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
 export function mediaAssetUrl(folderPath: string, filePath: string): string {
-  return convertFileSrc(normalizeAbsolutePath(`${folderPath}/${filePath}`))
+  return platform.assets.url(folderPath, filePath)
 }
 
 // Markdown image URLs are document-relative. Browser-relative URLs point at Vite/Tauri chrome, not the repo.

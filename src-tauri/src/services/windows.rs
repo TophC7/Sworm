@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use sworm_core::services::pty::{PtyService, PtySubscriber};
 use sworm_core::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use sworm_protocol::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, WindowSettings};
 use tauri::{
@@ -122,6 +123,7 @@ pub struct WindowCoordinatorService {
     records: Mutex<HashMap<String, LiveWindowRecord>>,
     active_transfers: Mutex<HashMap<String, ActiveTransfer>>,
     exit_requested: Arc<AtomicBool>,
+    pending_cleanup: Mutex<Vec<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl WindowCoordinatorService {
@@ -130,6 +132,23 @@ impl WindowCoordinatorService {
             records: Mutex::new(HashMap::new()),
             active_transfers: Mutex::new(HashMap::new()),
             exit_requested: Arc::new(AtomicBool::new(false)),
+            pending_cleanup: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn track_cleanup(&self) -> std::sync::mpsc::Sender<()> {
+        let (finished, pending) = std::sync::mpsc::channel();
+        let mut cleanup = self.pending_cleanup.lock();
+        cleanup.retain(|job| matches!(job.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        cleanup.push(pending);
+        finished
+    }
+
+    /// Native close cleanup must finish before the final manifest save and Host shutdown.
+    pub(crate) fn wait_for_cleanup(&self) {
+        let cleanup = std::mem::take(&mut *self.pending_cleanup.lock());
+        for job in cleanup {
+            let _ = job.recv();
         }
     }
 
@@ -339,31 +358,15 @@ impl WindowCoordinatorService {
                 WindowEvent::Destroyed => {
                     // Runs after the frontend's CloseRequested handler confirmed
                     // and flushed, so a cancelled close never tears anything down.
-                    state
-                        .windows
-                        .abort_transfers_for_window(&event_app, &event_label);
                     let discard_snapshot = state.windows.destroy_discards_snapshot();
-                    release_window_resources(&state, &event_label);
-                    state.router.release_file_reads(&event_label);
-                    crate::deep_links::window_closed(&event_app, &event_label);
-                    if !discard_snapshot {
-                        return;
-                    }
-                    let db = state.host.db.write();
-                    let result = (|| -> Result<(), String> {
-                        let tx = db
-                            .conn()
-                            .unchecked_transaction()
-                            .map_err(|error| error.to_string())?;
-                        state
-                            .app_state_kv
-                            .delete(&tx, &format!("workbench:{event_label}"))?;
-                        state.windows.save_manifest_with(&tx, &event_app)?;
-                        tx.commit().map_err(|error| error.to_string())
-                    })();
-                    if let Err(error) = result {
-                        tracing::error!("Failed to persist window close: {error}");
-                    }
+                    let detach_runs = state.windows.destroy_detaches_runs();
+                    let finished = state.windows.track_cleanup();
+                    let app = event_app.clone();
+                    let label = event_label.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        finish_window_close(&app, &label, discard_snapshot, detach_runs);
+                        let _ = finished.send(());
+                    });
                 }
                 _ => {}
             }
@@ -626,10 +629,16 @@ impl WindowCoordinatorService {
         let timeout_id = transfer_id.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(TRANSFER_TIMEOUT).await;
-            if let Some(state) = timeout_app.try_state::<AppState>() {
-                state
-                    .windows
-                    .abort_expired_transfer(&timeout_app, &timeout_id);
+            if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                if let Some(state) = timeout_app.try_state::<AppState>() {
+                    state
+                        .windows
+                        .abort_expired_transfer(&timeout_app, &timeout_id);
+                }
+            })
+            .await
+            {
+                tracing::error!("Transfer timeout cleanup failed: {error}");
             }
         });
         Ok(transfer_id)
@@ -638,6 +647,7 @@ impl WindowCoordinatorService {
     pub fn source_export_ready<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        source_window: &str,
         payload: TabTransferExportPayload,
     ) -> Result<(), String> {
         self.abort_expired_transfers(app);
@@ -647,6 +657,9 @@ impl WindowCoordinatorService {
             .get(&payload.transfer_id)
             .cloned()
             .ok_or_else(|| format!("unknown or expired transfer: {}", payload.transfer_id))?;
+        if transfer.source_window != source_window {
+            return Err("transfer export belongs to a different window".to_string());
+        }
         if payload.tab.get("id").and_then(serde_json::Value::as_str)
             != Some(transfer.tab_id.as_str())
         {
@@ -664,6 +677,15 @@ impl WindowCoordinatorService {
                     .map(str::to_owned)
             })
             .flatten();
+        if let Some(run_id) = &pty_run_id {
+            let state = app
+                .try_state::<AppState>()
+                .ok_or_else(|| "AppState is not initialized".to_string())?;
+            state
+                .host
+                .pty
+                .ensure_transfer_owner(run_id, source_window)?;
+        }
         let file_path = (kind == Some("text"))
             .then(|| {
                 self.records
@@ -704,6 +726,7 @@ impl WindowCoordinatorService {
     pub fn target_stage_ready<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        target_window: &str,
         transfer_id: &str,
     ) -> Result<(), String> {
         self.abort_expired_transfers(app);
@@ -712,6 +735,9 @@ impl WindowCoordinatorService {
             .get(transfer_id)
             .cloned()
             .ok_or_else(|| format!("unknown or expired transfer: {transfer_id}"))?;
+        if transfer.target_window != target_window || !transfer.exported {
+            return Err("transfer is not staged for this target window".to_string());
+        }
 
         if let Some(run_id) = &transfer.pty_run_id {
             let state = app
@@ -740,13 +766,13 @@ impl WindowCoordinatorService {
                 return Err(error);
             }
         }
-        transfers.remove(transfer_id);
-        drop(transfers);
         if let Some(run_id) = &transfer.pty_run_id {
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.pty.commit_transfer(run_id);
             }
         }
+        transfers.remove(transfer_id);
+        drop(transfers);
 
         self.emit_transfer_event(
             app,
@@ -777,7 +803,9 @@ impl WindowCoordinatorService {
             let mut pty_lost = false;
             if let Some(run_id) = &transfer.pty_run_id {
                 if let Some(app_state) = app.try_state::<AppState>() {
-                    if app_state.host.pty.resume_original(run_id).is_err() {
+                    if app_state.host.pty.resume_original(run_id).is_err()
+                        && app_state.host.pty.abort_transfer_detached(run_id).is_err()
+                    {
                         let _ = app_state.host.pty.kill(run_id);
                         app_state.host.tasks.release_singleton_by_run_id(run_id);
                         pty_lost = true;
@@ -838,25 +866,46 @@ impl WindowCoordinatorService {
             .filter_map(|transfer| transfer.pty_run_id.clone())
             .collect()
     }
-
-    pub fn authorize_attach(
+    /// Hold the transfer lock through PTY attachment: abort/commit must not
+    /// invalidate authorization before the subscriber is installed.
+    pub fn attach_transfer_pty(
         &self,
         transfer_id: &str,
         window_label: &str,
         run_id: &str,
+        subscriber: PtySubscriber,
+        pty: &PtyService,
+    ) -> Result<u64, String> {
+        let transfers = self.active_transfers.lock();
+        let transfer = transfers
+            .get(transfer_id)
+            .filter(|transfer| {
+                transfer.exported
+                    && transfer.created_at.elapsed() < TRANSFER_TIMEOUT
+                    && transfer.target_window == window_label
+                    && transfer.pty_run_id.as_deref() == Some(run_id)
+            })
+            .ok_or_else(|| "attach is not part of an active transfer".to_string())?;
+        pty.ensure_transfer_owner(run_id, &transfer.source_window)?;
+        pty.attach(run_id, subscriber)
+    }
+
+    pub fn authorize_participant(
+        &self,
+        transfer_id: &str,
+        window_label: &str,
     ) -> Result<(), String> {
         if self
             .active_transfers
             .lock()
             .get(transfer_id)
             .is_some_and(|transfer| {
-                transfer.target_window == window_label
-                    && transfer.pty_run_id.as_deref() == Some(run_id)
+                transfer.source_window == window_label || transfer.target_window == window_label
             })
         {
             Ok(())
         } else {
-            Err("attach is not part of an active transfer".to_string())
+            Err("window is not part of an active transfer".to_string())
         }
     }
 
@@ -1114,10 +1163,41 @@ impl WindowCoordinatorService {
             .collect()
     }
 }
-fn release_window_resources(state: &AppState, label: &str) {
+fn finish_window_close(
+    app: &tauri::AppHandle,
+    label: &str,
+    discard_snapshot: bool,
+    detach_runs: bool,
+) {
+    let state = app.state::<AppState>();
+    state.windows.abort_transfers_for_window(app, label);
+    release_window_resources(&state, label, detach_runs);
+    state.router.release_file_reads(label);
+    crate::deep_links::window_closed(app, label);
+    if !discard_snapshot {
+        return;
+    }
+    let db = state.host.db.write();
+    let result = (|| -> Result<(), String> {
+        let tx = db
+            .conn()
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        state
+            .app_state_kv
+            .delete(&tx, &format!("workbench:{label}"))?;
+        state.windows.save_manifest_with(&tx, app)?;
+        tx.commit().map_err(|error| error.to_string())
+    })();
+    if let Err(error) = result {
+        tracing::error!("Failed to persist window close: {error}");
+    }
+}
+
+fn release_window_resources(state: &AppState, label: &str, detach_runs: bool) {
     let final_folders = state.windows.remove_window(label);
     let protected = state.windows.protected_pty_runs(label);
-    if state.windows.destroy_detaches_runs() {
+    if detach_runs {
         state.host.detach_owner(label, &protected);
     } else {
         state.host.release_owner(label, &protected);
@@ -1193,6 +1273,40 @@ mod tests {
     use super::*;
     use std::sync::mpsc::{channel, Receiver, TryRecvError};
     use tauri::Listener;
+
+    #[test]
+    fn final_shutdown_waits_for_window_cleanup_without_locking_the_queue() {
+        let service = Arc::new(WindowCoordinatorService::new());
+        let finished = service.track_cleanup();
+        let waiter = service.clone();
+        let (exited, exit) = channel();
+        let worker = std::thread::spawn(move || {
+            waiter.wait_for_cleanup();
+            exited.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut waiting = false;
+        while Instant::now() < deadline {
+            waiting = service
+                .pending_cleanup
+                .try_lock()
+                .is_some_and(|queue| queue.is_empty());
+            if waiting {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let premature_exit = exit.try_recv();
+        // The waiter must not hold the queue lock while another window closes.
+        let second = waiting.then(|| service.track_cleanup());
+        finished.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(waiting);
+        assert!(matches!(premature_exit, Err(TryRecvError::Empty)));
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        second.unwrap().send(()).unwrap();
+        service.wait_for_cleanup();
+    }
 
     fn connection() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory database");
@@ -1287,6 +1401,7 @@ mod tests {
         service
             .source_export_ready(
                 app.handle(),
+                source.label(),
                 TabTransferExportPayload {
                     transfer_id: transfer_id.clone(),
                     tab: serde_json::json!({ "id": "tab-1", "kind": "launcher" }),
@@ -1299,7 +1414,7 @@ mod tests {
         assert_no_event(&source_events);
 
         service
-            .target_stage_ready(app.handle(), &transfer_id)
+            .target_stage_ready(app.handle(), target.label(), &transfer_id)
             .expect("commit transfer");
         assert_next_event(&source_events, "tab-transfer-committed");
         assert_next_event(&target_events, "tab-transfer-finalized");
@@ -1403,6 +1518,7 @@ mod tests {
         service
             .source_export_ready(
                 app.handle(),
+                source.label(),
                 TabTransferExportPayload {
                     transfer_id: exported_id.clone(),
                     tab: serde_json::json!({ "id": "tab-exported", "kind": "text" }),
@@ -1420,7 +1536,7 @@ mod tests {
 
         service.remove_window(source.label());
         service
-            .target_stage_ready(app.handle(), &exported_id)
+            .target_stage_ready(app.handle(), target.label(), &exported_id)
             .expect("commit transfer after source close");
         assert_next_event(&source_events, "tab-transfer-committed");
         assert_next_event(&target_events, "tab-transfer-finalized");
@@ -1433,6 +1549,307 @@ mod tests {
         assert_eq!(target_claim.as_deref(), Some("tab-exported"));
         assert_no_event(&source_events);
         assert_no_event(&target_events);
+    }
+
+    fn transfer_subscriber() -> (
+        PtySubscriber,
+        Receiver<Vec<u8>>,
+        Receiver<sworm_protocol::pty::PtyEvent>,
+    ) {
+        let (output, output_rx) = channel();
+        let (events, event_rx) = channel();
+        (
+            PtySubscriber {
+                output: Arc::new(move |bytes| {
+                    output.send(bytes).map_err(|error| error.to_string())
+                }),
+                events: Arc::new(move |event| {
+                    events.send(event).map_err(|error| error.to_string())
+                }),
+            },
+            output_rx,
+            event_rx,
+        )
+    }
+
+    fn receive_output_until(receiver: &Receiver<Vec<u8>>, marker: &str) -> String {
+        let mut text = String::new();
+        while !text.contains(marker) {
+            let bytes = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("receive PTY output");
+            text.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        text
+    }
+
+    fn receive_exit(receiver: &Receiver<sworm_protocol::pty::PtyEvent>, run_id: &str) {
+        loop {
+            match receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("receive PTY exit")
+            {
+                sworm_protocol::pty::PtyEvent::Exit { run_id: id, code } => {
+                    assert_eq!(id, run_id);
+                    assert_eq!(code, Some(0));
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn native_transfer_of_local_pty_preserves_owner_and_delivery_cursors() {
+        use sworm_core::services::pty::{PtyRunState, RunRetention};
+        use sworm_core::Host;
+
+        let temporary = tempfile::tempdir().expect("test directory");
+        let service = Arc::new(WindowCoordinatorService::new());
+        for (index, label) in ["source", "target", "other"].iter().enumerate() {
+            add_window(&service, label, index);
+        }
+        let app = tauri::test::mock_app();
+        for label in ["source", "target", "other"] {
+            tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .expect("create transfer window");
+        }
+        let host = Arc::new(
+            Host::new(temporary.path().join("sworm.db"), Arc::new(|_| Ok(())))
+                .expect("create local host"),
+        );
+        let router = crate::router::WorkspaceRouter::new(Arc::clone(&host));
+        app.manage(AppState {
+            host: Arc::clone(&host),
+            router,
+            windows: Arc::clone(&service),
+            app_state_kv: AppStateKvService::new(),
+        });
+
+        for (scenario, commit, exit_while_paused) in [
+            ("abort", false, true),
+            ("abort-detached", false, true),
+            ("commit", true, false),
+            ("abort-live", false, false),
+        ] {
+            let run_id = format!("run-{scenario}");
+            let tab_id = format!("tab-{scenario}");
+            let (source_subscriber, source_output_rx, source_events) = transfer_subscriber();
+            let mut source_output = Some(source_output_rx);
+            host.pty
+                .spawn(
+                    run_id.clone(),
+                    "/bin/sh",
+                    &["-c", "stty -echo; while IFS= read -r line; do [ \"$line\" = quit ] && exit 0; printf '<%s>\\n' \"$line\"; done"],
+                    None,
+                    None,
+                    80,
+                    24,
+                    Some(source_subscriber),
+                    Some("source".to_string()),
+                    RunRetention::Retained,
+                    None,
+                    None,
+                )
+                .expect("spawn physical PTY");
+            let source_pid = match source_events
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Started")
+            {
+                sworm_protocol::pty::PtyEvent::Started {
+                    run_id: id,
+                    pid: Some(pid),
+                } => {
+                    assert_eq!(id, run_id);
+                    pid
+                }
+                other => panic!("expected Started with PID, got {other:?}"),
+            };
+            host.pty
+                .write(&run_id, b"before\n")
+                .expect("write before pause");
+            let original = receive_output_until(source_output.as_ref().unwrap(), "<before>");
+            assert_eq!(original.matches("<before>").count(), 1);
+
+            let transfer_id = service
+                .initiate_tab_transfer(
+                    app.handle(),
+                    TabTransferInitiateParams {
+                        source_window: "source".to_string(),
+                        target_window: "target".to_string(),
+                        tab_id: tab_id.clone(),
+                        target_index: 0,
+                    },
+                )
+                .expect("start transfer");
+            assert!(host.pty.pause_owned(&run_id, "other").is_err());
+            host.pty
+                .pause_owned(&run_id, "source")
+                .expect("pause source");
+            let payload = TabTransferExportPayload {
+                transfer_id: transfer_id.clone(),
+                tab: serde_json::json!({ "id": tab_id, "kind": "session" }),
+                terminal_state: Some(serde_json::json!({ "runId": run_id })),
+                model_state: None,
+            };
+            assert!(service
+                .source_export_ready(app.handle(), "other", payload.clone())
+                .is_err());
+            service
+                .source_export_ready(app.handle(), "source", payload)
+                .expect("export paused session");
+            let protected = service.protected_pty_runs("source");
+            assert!(protected.contains(&run_id));
+            host.release_owner("source", &protected);
+            assert_eq!(host.pty.run_state(&run_id), Some(PtyRunState::Live));
+            assert!(service
+                .target_stage_ready(app.handle(), "other", &transfer_id)
+                .is_err());
+            assert!(service
+                .authorize_participant(&transfer_id, "other")
+                .is_err());
+
+            let (target_subscriber, target_output, target_events) = transfer_subscriber();
+            assert!(service
+                .attach_transfer_pty(
+                    "wrong-id",
+                    "target",
+                    &run_id,
+                    target_subscriber.clone(),
+                    &host.pty
+                )
+                .is_err());
+            assert!(service
+                .attach_transfer_pty(
+                    &transfer_id,
+                    "other",
+                    &run_id,
+                    target_subscriber.clone(),
+                    &host.pty
+                )
+                .is_err());
+            assert!(service
+                .attach_transfer_pty(
+                    &transfer_id,
+                    "target",
+                    "other-run",
+                    target_subscriber.clone(),
+                    &host.pty
+                )
+                .is_err());
+            assert!(host
+                .pty
+                .attach_same_owner(&run_id, Some("source"), target_subscriber.clone(), 80, 24)
+                .is_err());
+
+            host.pty
+                .write(&run_id, b"during\n")
+                .expect("write during pause");
+            if exit_while_paused {
+                host.pty
+                    .write(&run_id, b"quit\n")
+                    .expect("exit during pause");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while host.pty.run_state(&run_id) != Some(PtyRunState::Completed(Some(0))) {
+                    assert!(Instant::now() < deadline, "PTY must complete while paused");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            service
+                .attach_transfer_pty(
+                    &transfer_id,
+                    "target",
+                    &run_id,
+                    target_subscriber,
+                    &host.pty,
+                )
+                .expect("target attaches transferred PTY");
+            let replayed = receive_output_until(&target_output, "<during>");
+            assert_eq!(replayed.matches("<during>").count(), 1);
+            assert!(!replayed.contains("<before>"));
+            if !exit_while_paused {
+                host.pty
+                    .write(&run_id, b"live\n")
+                    .expect("write while target attached");
+                let live = receive_output_until(&target_output, "<live>");
+                assert_eq!(live.matches("<live>").count(), 1);
+            } else {
+                receive_exit(&target_events, &run_id);
+            }
+
+            if scenario == "abort-detached" {
+                drop(source_output.take());
+                service.abort_tab_transfer(app.handle(), &transfer_id, "source channel closed");
+                host.pty
+                    .ensure_owner(&run_id, Some("source"))
+                    .expect("source keeps completed PTY");
+                let (new_view, new_output, new_events) = transfer_subscriber();
+                host.pty
+                    .attach_same_owner(&run_id, Some("source"), new_view, 80, 24)
+                    .expect("restored source replays after detached abort");
+                assert!(matches!(
+                    new_events.recv_timeout(Duration::from_secs(5)).expect("replayed Started"),
+                    sworm_protocol::pty::PtyEvent::Started { run_id: id, pid: Some(pid) }
+                        if id == run_id && pid == source_pid
+                ));
+                let replayed = receive_output_until(&new_output, "<during>");
+                assert_eq!(replayed.matches("<before>").count(), 1);
+                assert_eq!(replayed.matches("<during>").count(), 1);
+                receive_exit(&new_events, &run_id);
+            } else if commit {
+                host.pty
+                    .write(&run_id, b"quit\n")
+                    .expect("exit while target attached");
+                receive_exit(&target_events, &run_id);
+                service
+                    .target_stage_ready(app.handle(), "target", &transfer_id)
+                    .expect("commit completed PTY");
+                host.pty
+                    .ensure_owner(&run_id, Some("target"))
+                    .expect("target owns completed PTY");
+                assert!(host.pty.ensure_owner(&run_id, Some("source")).is_err());
+                assert!(
+                    source_output.as_ref().unwrap().try_recv().is_err(),
+                    "source receives no committed target output"
+                );
+            } else {
+                service.abort_tab_transfer(app.handle(), &transfer_id, "test abort");
+                host.pty
+                    .ensure_owner(&run_id, Some("source"))
+                    .expect("source owns aborted PTY");
+                let restored = receive_output_until(
+                    source_output.as_ref().unwrap(),
+                    if exit_while_paused {
+                        "<during>"
+                    } else {
+                        "<live>"
+                    },
+                );
+                assert_eq!(restored.matches("<during>").count(), 1);
+                if !exit_while_paused {
+                    assert_eq!(restored.matches("<live>").count(), 1);
+                    host.pty
+                        .write(&run_id, b"quit\n")
+                        .expect("exit after abort");
+                }
+                receive_exit(&source_events, &run_id);
+            }
+            assert!(service
+                .attach_transfer_pty(
+                    &transfer_id,
+                    "target",
+                    &run_id,
+                    transfer_subscriber().0,
+                    &host.pty
+                )
+                .is_err());
+            assert_eq!(
+                host.pty.run_state(&run_id),
+                Some(PtyRunState::Completed(Some(0)))
+            );
+            host.pty.kill(&run_id).expect("release completed PTY");
+        }
     }
 
     #[test]
