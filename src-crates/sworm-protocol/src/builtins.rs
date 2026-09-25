@@ -82,23 +82,23 @@ pub struct BuiltinDocumentSelector {
     pub filenames: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinCatalog {
     pub runtime: BuiltinRuntimeCatalog,
     pub settings: BuiltinSettingsCatalog,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinRuntimeCatalog {
     pub languages: Vec<BuiltinLanguageContribution>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinSettingsCatalog {
     pub pages: Vec<BuiltinSettingsPage>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinSettingsPage {
     pub id: String,
     pub kind: BuiltinSettingsPageKind,
@@ -116,7 +116,7 @@ pub enum BuiltinSettingsPageKind {
     Nix,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinFormatterPolicy {
     pub group: BuiltinFormatterGroupId,
     pub options: Vec<FormatterSelection>,

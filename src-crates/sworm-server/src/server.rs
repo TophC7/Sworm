@@ -206,6 +206,7 @@ async fn run_connection(
         authorized,
         subscriber_id: uuid::Uuid::new_v4().to_string(),
         folders: HashSet::new(),
+        folder_aliases: Default::default(),
         next_events: 0,
         events: None,
     }));
@@ -264,12 +265,15 @@ async fn run_connection(
             session.subscriber_id.clone(),
         )
     };
-    if let Err(error) = tokio::task::spawn_blocking(move || {
-        for folder in folders {
-            if context.release_folder(&folder) {
-                host.release_folder(&folder);
-            }
+    for folder in folders {
+        if let Err(error) = context
+            .release_folder(&host, folder, subscriber_id.clone())
+            .await
+        {
+            tracing::error!(?error, "connection folder release failed");
         }
+    }
+    if let Err(error) = tokio::task::spawn_blocking(move || {
         host.file_watchers.release_subscriber(&subscriber_id);
     })
     .await

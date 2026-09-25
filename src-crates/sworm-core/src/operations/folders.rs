@@ -1,7 +1,12 @@
 use crate::errors::ApiError;
+use crate::events::HostEvent;
 use crate::host::Host;
-use crate::services::folders::{folder_name, resolve_folder};
-use sworm_protocol::folder::{FolderEntry, FolderInfo};
+use crate::services::app_state_kv::AppStateKvService;
+use crate::services::folders::{find_path_root, folder_name, resolve_folder};
+use rusqlite::Connection;
+use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
+
+const RECENT_FOLDERS_KEY: &str = "recent_folders";
 
 impl Host {
     /// Canonicalize a folder path and return its display name.
@@ -13,6 +18,38 @@ impl Host {
         })
     }
 
+    /// The path-root anchor is for browsing, not folder ownership.
+    pub async fn folder_path_root(&self, path: String) -> Result<PathRoot, ApiError> {
+        Ok(find_path_root(&resolve_folder(&path)?))
+    }
+
+    pub async fn recent_folders_list(&self) -> Result<Vec<String>, ApiError> {
+        let db = self.db.read();
+        read_recent_folders(db.conn())
+    }
+
+    pub async fn recent_folders_touch(&self, path: String) -> Result<Vec<String>, ApiError> {
+        let db = self.db.write();
+        let mut folders = read_recent_folders(db.conn())?;
+        folders.retain(|folder| folder != &path);
+        folders.insert(0, path);
+        folders.truncate(12);
+        save_recent_folders(db.conn(), &folders)?;
+        (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
+            .map_err(ApiError::Internal)?;
+        Ok(folders)
+    }
+
+    pub async fn recent_folders_remove(&self, paths: Vec<String>) -> Result<Vec<String>, ApiError> {
+        let db = self.db.write();
+        let mut folders = read_recent_folders(db.conn())?;
+        folders.retain(|folder| !paths.contains(folder));
+        save_recent_folders(db.conn(), &folders)?;
+        (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
+            .map_err(ApiError::Internal)?;
+        Ok(folders)
+    }
+
     /// Immediate children of a canonicalized directory; directories first, then
     /// case-insensitive by name.
     pub async fn folder_list_entries(
@@ -22,6 +59,25 @@ impl Host {
     ) -> Result<Vec<FolderEntry>, ApiError> {
         list_entries(&path, show_hidden)
     }
+}
+
+fn read_recent_folders(conn: &Connection) -> Result<Vec<String>, ApiError> {
+    AppStateKvService::new()
+        .get(conn, RECENT_FOLDERS_KEY)
+        .map_err(ApiError::Database)?
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn save_recent_folders(conn: &Connection, folders: &[String]) -> Result<(), ApiError> {
+    let json =
+        serde_json::to_string(folders).map_err(|error| ApiError::Internal(error.to_string()))?;
+    AppStateKvService::new()
+        .put(conn, RECENT_FOLDERS_KEY, &json)
+        .map_err(ApiError::Database)
 }
 
 fn list_entries(path: &str, show_hidden: bool) -> Result<Vec<FolderEntry>, ApiError> {

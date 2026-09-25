@@ -14,6 +14,7 @@ pub enum HostEvent {
     FilesChanged(FilesChangedEvent),
     GitChanged(GitChangedEvent),
     SettingsChanged(SettingsChangedEvent),
+    RecentFoldersChanged(Vec<String>),
     TasksChanged(String),
     NixChanged(String),
     IssuesChanged(String),

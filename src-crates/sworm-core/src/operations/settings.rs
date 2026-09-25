@@ -173,6 +173,10 @@ impl Host {
         Ok(())
     }
 
+    pub fn settings_paths_watched(&self, folder_path: &Path) -> bool {
+        self.settings_watchers.is_watching(folder_path)
+    }
+
     pub fn watch_settings_paths(&self, folder_path: Option<&Path>) {
         let generation = Arc::clone(&self.settings_generation);
         if let Err(error) = self

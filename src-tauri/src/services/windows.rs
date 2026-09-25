@@ -1,5 +1,4 @@
 use crate::app_state::AppState;
-use crate::services::app_state_kv::AppStateKvService;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -8,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use sworm_core::services::app_state_kv::AppStateKvService;
 use sworm_core::services::pty::{PtyService, PtySubscriber};
 use sworm_core::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use sworm_protocol::settings::{ExternalFileOpenMode, ExternalFolderOpenMode, WindowSettings};

@@ -183,6 +183,28 @@ async fn watch_root(client: &RemoteClient, project_path: &str) -> Result<()> {
     Ok(())
 }
 
+async fn claim_folder(client: &RemoteClient, folder_path: &str) -> Result<()> {
+    client
+        .call(&Request::FolderClaim {
+            folder_path: folder_path.to_owned(),
+        })
+        .await?
+        .folder_claim()
+        .map_err(RemoteError::Wire)?;
+    Ok(())
+}
+
+async fn release_folder(client: &RemoteClient, folder_path: &str) -> Result<()> {
+    client
+        .call(&Request::FolderRelease {
+            folder_path: folder_path.to_owned(),
+        })
+        .await?
+        .folder_release()
+        .map_err(RemoteError::Wire)?;
+    Ok(())
+}
+
 async fn next_host_event(recv: &mut quinn::RecvStream) -> Result<HostEventWire> {
     Ok(read_frame::<HostEventFrame>(recv).await?.0)
 }
@@ -200,6 +222,24 @@ async fn wait_for_files_changed(recv: &mut quinn::RecvStream, folder_path: &str)
     .await
     .with_context(|| format!("no files-changed event for {folder_path}"))??;
     Ok(())
+}
+
+async fn assert_no_files_changed(recv: &mut quinn::RecvStream, folder_path: &str) -> Result<()> {
+    let received = timeout(Duration::from_millis(750), async {
+        loop {
+            if let HostEventWire::FilesChanged(event) = next_host_event(recv).await? {
+                if event.folder_path == folder_path {
+                    return Ok::<(), anyhow::Error>(());
+                }
+            }
+        }
+    })
+    .await;
+    match received {
+        Err(_) => Ok(()),
+        Ok(Ok(())) => bail!("released subscriber received files-changed for {folder_path}"),
+        Ok(Err(error)) => Err(error),
+    }
 }
 
 async fn wait_for_created_file(
@@ -1091,6 +1131,53 @@ async fn events_stream_delivers_only_claimed_folder_changes() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn explicit_folder_claims_keep_each_clients_watch_and_release_independent() -> Result<()> {
+    let fixture = Fixture::start(None).await?;
+    let folder = fixture.repo.path().canonicalize()?;
+    let folder_path = folder.to_string_lossy().into_owned();
+    let first = fixture.paired_client().await?;
+    let second = fixture.client().await?;
+    let (_first_send, mut first_events) = first.open_stream(Open::Events).await?;
+    let (_second_send, mut second_events) = second.open_stream(Open::Events).await?;
+
+    claim_folder(&first, &folder_path).await?;
+    claim_folder(&first, &folder_path).await?;
+    claim_folder(&second, &folder_path).await?;
+    watch_root(&first, &folder_path).await?;
+    watch_root(&second, &folder_path).await?;
+    fs::write(folder.join("both-ready"), "ready\n")?;
+    wait_for_files_changed(&mut first_events, &folder_path).await?;
+    wait_for_files_changed(&mut second_events, &folder_path).await?;
+
+    release_folder(&first, &folder_path).await?;
+    fs::write(folder.join("second-only"), "second\n")?;
+    wait_for_files_changed(&mut second_events, &folder_path).await?;
+    assert_no_files_changed(&mut first_events, &folder_path).await?;
+
+    release_folder(&first, &folder_path).await?;
+    fs::write(folder.join("still-second"), "second\n")?;
+    wait_for_files_changed(&mut second_events, &folder_path).await?;
+    assert_no_files_changed(&mut first_events, &folder_path).await?;
+
+    release_folder(&second, &folder_path).await?;
+    fs::write(folder.join("nobody-watching"), "unwatched\n")?;
+    assert_no_files_changed(&mut second_events, &folder_path).await?;
+
+    claim_folder(&first, &folder_path).await?;
+    watch_root(&first, &folder_path).await?;
+    fs::write(folder.join("rearmed"), "watched\n")?;
+    wait_for_files_changed(&mut first_events, &folder_path).await?;
+    assert_no_files_changed(&mut second_events, &folder_path).await?;
+
+    fs::remove_dir_all(&folder)?;
+    release_folder(&first, &folder_path).await?;
+    first.close();
+    second.close();
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
     let fixture = Fixture::start(None).await?;
     let client = fixture.paired_client().await?;
@@ -1527,6 +1614,68 @@ async fn pty_stream_replays_from_cursor_without_killing_run() -> Result<()> {
     );
 
     stop_session(&client, run_id).await?;
+    fixture.handle.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn folder_release_and_disconnect_preserve_session() -> Result<()> {
+    const BEFORE: &[u8] = b"PID-BEFORE-";
+    const AFTER: &[u8] = b"FRESH-AFTER-7df621";
+    let fixture = Fixture::start(None).await?;
+    let client = fixture.paired_client().await?;
+    let run_id = "loopback-folder-release-retention";
+    let folder_path = fixture.repo_path();
+    start_terminal(&client, run_id, &folder_path).await?;
+
+    let (mut send, mut recv) = client
+        .open_stream(Open::Pty {
+            run_id: run_id.to_owned(),
+            cursor: PtyCursor::default(),
+        })
+        .await?;
+    let mut cursor = PtyCursor::default();
+    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    write_raw_frame(&mut send, b"printf 'PID-BEFORE-%s-END\\n' \"$$\"\n").await?;
+    let recorded = read_until_occurrences(&mut recv, &mut cursor, b"-END", 1).await?;
+    let pid: u32 = String::from_utf8_lossy(&recorded)
+        .split_once("PID-BEFORE-")
+        .context("shell PID marker absent")?
+        .1
+        .split_once("-END")
+        .context("shell PID terminator absent")?
+        .0
+        .parse()?;
+
+    release_folder(&client, &folder_path).await?;
+    client.close();
+    wait_closed(&client).await;
+    drop(send);
+    drop(recv);
+
+    let reconnected = fixture.client().await?;
+    assert!(run_status(&reconnected, run_id).await?.live);
+    let (mut send, mut recv) = reconnected
+        .open_stream(Open::Pty {
+            run_id: run_id.to_owned(),
+            cursor,
+        })
+        .await?;
+    write_raw_frame(
+        &mut send,
+        b"printf 'PID-AFTER-%s;FRESH-AFTER-7df621\\n' \"$$\"\n",
+    )
+    .await?;
+    let resumed = read_until_occurrences(&mut recv, &mut cursor, AFTER, 1).await?;
+    assert!(
+        String::from_utf8_lossy(&resumed).contains(&format!("PID-AFTER-{pid};FRESH-AFTER-7df621")),
+        "reconnected shell has a different PID"
+    );
+    assert!(
+        !resumed.windows(BEFORE.len()).any(|part| part == BEFORE),
+        "saved cursor replayed consumed PID marker"
+    );
+    stop_session(&reconnected, run_id).await?;
     fixture.handle.shutdown().await;
     Ok(())
 }

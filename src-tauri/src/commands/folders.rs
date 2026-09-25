@@ -5,97 +5,30 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use sworm_core::errors::ApiError;
-use sworm_core::services::folders::{find_path_root, resolve_folder};
+use sworm_core::services::folders::resolve_folder;
 use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
-use tauri::Emitter;
-
-const RECENT_FOLDERS_KEY: &str = "recent_folders";
-
-fn read_recent_folders(state: &AppState) -> Result<Vec<String>, ApiError> {
-    let db = state.host.db.read();
-    let value = state
-        .app_state_kv
-        .get(db.conn(), RECENT_FOLDERS_KEY)
-        .map_err(ApiError::Database)?;
-    value
-        .map(|json| {
-            serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
-        })
-        .transpose()
-        .map(Option::unwrap_or_default)
-}
 
 #[tauri::command]
 pub async fn recent_folders_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    read_recent_folders(&state)
+    state.router.recent_folders_list().await
 }
 
 #[tauri::command]
 pub async fn recent_folders_touch(
     path: String,
-    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    let folders = {
-        let db = state.host.db.write();
-        let value = state
-            .app_state_kv
-            .get(db.conn(), RECENT_FOLDERS_KEY)
-            .map_err(ApiError::Database)?;
-        let mut folders: Vec<String> = value
-            .map(|json| {
-                serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        folders.retain(|folder| folder != &path);
-        folders.insert(0, path);
-        folders.truncate(12);
-        let json = serde_json::to_string(&folders)
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
-        state
-            .app_state_kv
-            .put(db.conn(), RECENT_FOLDERS_KEY, &json)
-            .map_err(ApiError::Database)?;
-        folders
-    };
-    app.emit("recent-folders-changed", &folders)
-        .map_err(|error| ApiError::Internal(error.to_string()))?;
-    Ok(folders)
+    state.router.recent_folders_touch(path).await
 }
 
 #[tauri::command]
 pub async fn recent_folders_remove(
     paths: Vec<String>,
-    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, ApiError> {
-    let filtered = {
-        let db = state.host.db.write();
-        let value = state
-            .app_state_kv
-            .get(db.conn(), RECENT_FOLDERS_KEY)
-            .map_err(ApiError::Database)?;
-        let mut filtered: Vec<String> = value
-            .map(|json| {
-                serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        filtered.retain(|folder| !paths.contains(folder));
-        let json = serde_json::to_string(&filtered)
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
-        state
-            .app_state_kv
-            .put(db.conn(), RECENT_FOLDERS_KEY, &json)
-            .map_err(ApiError::Database)?;
-        filtered
-    };
-    app.emit("recent-folders-changed", &filtered)
-        .map_err(|error| ApiError::Internal(error.to_string()))?;
-    Ok(filtered)
+    state.router.recent_folders_remove(paths).await
 }
 
 /// Open a native directory picker and return the selected canonical path.
@@ -149,9 +82,11 @@ pub async fn folder_list_entries(
 
 /// Where the folder switcher's path bar starts for a local folder.
 #[tauri::command]
-pub async fn folder_path_root(path: String) -> Result<PathRoot, ApiError> {
-    crate::router::reject_remote("folder_path_root", &path)?;
-    Ok(find_path_root(&resolve_folder(&path)?))
+pub async fn folder_path_root(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<PathRoot, ApiError> {
+    state.router.folder_path_root(path).await
 }
 
 #[tauri::command]

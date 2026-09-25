@@ -1,5 +1,4 @@
 use crate::remote_runs::{RemoteRunKind, RemoteRunService};
-use crate::services::app_state_kv::AppStateKvService;
 use parking_lot::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
@@ -16,7 +15,7 @@ use sworm_core::{
     errors::ApiError,
     events::{EventSink, HostEvent},
     services::{
-        pty::PtySubscriber, settings::SettingsService,
+        app_state_kv::AppStateKvService, pty::PtySubscriber, settings::SettingsService,
         settings_resolution::resolve_effective_settings_for_folder_path,
     },
     Host,
@@ -1544,6 +1543,53 @@ macro_rules! define_router_operation {
         }
     };
     (
+        #[route(none)]
+        AppRuntimeInfo => $method:ident() -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            name: String,
+            version: String,
+        ) -> Result<$return_type, ApiError> {
+            self.inner.host.$method(name, version).await
+        }
+    };
+    (
+        #[route(folder_path)]
+        FolderClaim => $method:ident($folder_path:ident: $folder_path_type:ty $(,)?) -> $return_type:ty;
+    ) => {};
+    (
+        #[route(folder_path)]
+        FolderRelease => $method:ident($folder_path:ident: $folder_path_type:ty $(,)?) -> $return_type:ty;
+    ) => {};
+    (
+        #[route(none)]
+        FolderPathRoot => $method:ident($path:ident: $path_type:ty $(,)?) -> $return_type:ty;
+    ) => {
+        pub async fn $method(&self, $path: $path_type) -> Result<$return_type, ApiError> {
+            reject_remote("folder_path_root", &$path)?;
+            self.inner.host.$method($path).await
+        }
+    };
+    (
+        #[route(none)]
+        OmpResolveUri => $method:ident(
+            $uri:ident: $uri_type:ty,
+            $cwd:ident: $cwd_type:ty $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $uri: $uri_type,
+            $cwd: $cwd_type,
+        ) -> Result<$return_type, ApiError> {
+            if let Some(cwd) = &$cwd {
+                reject_remote("omp_resolve_uri", cwd)?;
+            }
+            self.inner.host.$method($uri, $cwd).await
+        }
+    };
+    (
         #[route(project_path)]
         FileRename => $method:ident(
             $project_path:ident: $project_path_type:ty,
@@ -1953,6 +1999,19 @@ macro_rules! define_router_operation {
         }
     };
     (
+        #[route(none)]
+        $variant:ident => $method:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $return_type:ty;
+    ) => {
+        pub async fn $method(
+            &self,
+            $($argument: $argument_type),*
+        ) -> Result<$return_type, ApiError> {
+            self.inner.host.$method($($argument),*).await
+        }
+    };
+    (
         #[route($route:ident)]
         $variant:ident => $method:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
@@ -2095,9 +2154,11 @@ async fn run_events(router: Weak<RouterInner>, slot: Weak<RemoteSlot>, server: S
             tokio::select! {
                 frame = read_frame::<HostEventFrame>(&mut recv) => match frame {
                     Ok(HostEventFrame(event)) => {
-                        let Some(router_now) = router.upgrade() else { return };
-                        if let Err(error) = (router_now.events)(remote_host_event(&server, event)) {
-                            tracing::warn!(%server, %error, "remote host event delivery failed");
+                        if let Some(event) = remote_host_event(&server, event) {
+                            let Some(router_now) = router.upgrade() else { return };
+                            if let Err(error) = (router_now.events)(event) {
+                                tracing::warn!(%server, %error, "remote host event delivery failed");
+                            }
                         }
                     }
                     Err(error) => {
@@ -2162,8 +2223,8 @@ async fn restore_claims(server: &str, slot: &RemoteSlot, client: &RemoteClient) 
     }
 }
 
-fn remote_host_event(server: &str, event: HostEventWire) -> HostEvent {
-    match event {
+fn remote_host_event(server: &str, event: HostEventWire) -> Option<HostEvent> {
+    Some(match event {
         HostEventWire::FilesChanged(mut event) => {
             event.folder_path = Target::remote_uri(server, &event.folder_path);
             HostEvent::FilesChanged(event)
@@ -2189,7 +2250,8 @@ fn remote_host_event(server: &str, event: HostEventWire) -> HostEvent {
         HostEventWire::IssuesChanged(folder) => {
             HostEvent::IssuesChanged(Target::remote_uri(server, &folder))
         }
-    }
+        HostEventWire::RecentFoldersChanged(_) => return None,
+    })
 }
 
 fn resolve_remote_configs() -> Result<HashMap<String, RemoteConfig>, ApiError> {

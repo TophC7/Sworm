@@ -6,5 +6,5 @@ use sworm_protocol::provider::ProviderStatus;
 pub async fn provider_list(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ProviderStatus>, ApiError> {
-    state.host.provider_list().await
+    state.router.provider_list().await
 }

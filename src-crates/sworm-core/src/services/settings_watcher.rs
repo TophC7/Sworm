@@ -7,17 +7,22 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use sworm_protocol::settings::{SettingsChangedEvent, SettingsDiagnostic, SettingsLayerKind};
 
 struct FolderSettingsWatcher {
     watcher: RecommendedWatcher,
     watching_sworm_dir: bool,
+    directory_generation: Arc<AtomicU64>,
+    registered_generation: u64,
 }
 
 pub struct SettingsWatcherService {
     global_watcher: Mutex<Option<RecommendedWatcher>>,
-    folder_watchers: Mutex<HashMap<PathBuf, FolderSettingsWatcher>>,
+    folder_watchers: Mutex<HashMap<PathBuf, Arc<Mutex<Option<FolderSettingsWatcher>>>>>,
 }
 
 impl SettingsWatcherService {
@@ -26,6 +31,24 @@ impl SettingsWatcherService {
             global_watcher: Mutex::new(None),
             folder_watchers: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn is_watching(&self, folder: &Path) -> bool {
+        if !self
+            .global_watcher
+            .try_lock()
+            .is_some_and(|slot| slot.is_some())
+        {
+            return false;
+        }
+        self.folder_watchers.lock().get(folder).is_some_and(|slot| {
+            slot.try_lock().is_some_and(|watcher| {
+                watcher.as_ref().is_some_and(|watcher| {
+                    watcher.registered_generation
+                        == watcher.directory_generation.load(Ordering::Acquire)
+                })
+            })
+        })
     }
 
     pub fn watch_global(
@@ -70,24 +93,41 @@ impl SettingsWatcherService {
         folder_path: &Path,
         generation: Arc<Mutex<u64>>,
     ) -> Result<(), String> {
-        let folder_path = folder_path.to_path_buf();
-        let sworm_dir = folder_path.join(".sworm");
-        let mut watchers = self.folder_watchers.lock();
-        if let Some(folder_watcher) = watchers.get_mut(&folder_path) {
-            if !sworm_dir.exists() {
-                folder_watcher.watching_sworm_dir = false;
+        let slot = Arc::clone(
+            self.folder_watchers
+                .lock()
+                .entry(folder_path.to_path_buf())
+                .or_default(),
+        );
+        let mut slot = slot.lock();
+        if let Some(folder_watcher) = slot.as_mut() {
+            let generation = folder_watcher.directory_generation.load(Ordering::Acquire);
+            if folder_watcher.registered_generation == generation {
+                return Ok(());
             }
-            ensure_sworm_watch(folder_watcher, &sworm_dir)?;
+            folder_watcher.watching_sworm_dir = false;
+            ensure_sworm_watch(folder_watcher, &folder_path.join(".sworm"))?;
+            folder_watcher.registered_generation = generation;
             return Ok(());
         }
+        let folder_path = folder_path.to_path_buf();
+        let sworm_dir = folder_path.join(".sworm");
 
         let settings_file = SettingsService::folder_settings_path(&folder_path);
         let events = Arc::clone(&events);
         let settings_file_for_events = settings_file.clone();
         let folder_path_for_events = folder_path.clone();
+        let directory_generation = Arc::new(AtomicU64::new(0));
+        let watch_generation = Arc::clone(&directory_generation);
+        let watched_dir = sworm_dir.clone();
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
+            if event.paths.iter().any(|path| path == &watched_dir) {
+                // Deletion/recreation invalidates the old inotify watch even
+                // when the directory exists again before the next request.
+                watch_generation.fetch_add(1, Ordering::Release);
+            }
             if !event
                 .paths
                 .iter()
@@ -112,14 +152,17 @@ impl SettingsWatcherService {
         let mut folder_watcher = FolderSettingsWatcher {
             watcher,
             watching_sworm_dir: false,
+            directory_generation,
+            registered_generation: 0,
         };
         ensure_sworm_watch(&mut folder_watcher, &sworm_dir)?;
-        watchers.insert(folder_path, folder_watcher);
+        *slot = Some(folder_watcher);
         Ok(())
     }
 
     pub fn stop(&self, folder_path: &Path) {
-        self.folder_watchers.lock().remove(folder_path);
+        let watcher = self.folder_watchers.lock().remove(folder_path);
+        drop(watcher);
     }
 }
 
@@ -149,6 +192,7 @@ fn existing_watch_parent(path: &Path) -> Option<PathBuf> {
 
 fn is_settings_event_path(path: &Path, settings_file: &Path) -> bool {
     path == settings_file
+        || Some(path) == settings_file.parent()
         || (path.parent() == settings_file.parent()
             && path
                 .file_name()

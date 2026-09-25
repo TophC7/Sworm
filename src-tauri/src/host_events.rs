@@ -30,6 +30,9 @@ pub fn host_event_sink(
             HostEvent::FilesChanged(payload) => app.emit(FILES_CHANGED_EVENT, payload),
             HostEvent::GitChanged(payload) => app.emit(GIT_CHANGED_EVENT, payload),
             HostEvent::SettingsChanged(payload) => app.emit(SETTINGS_CHANGED_EVENT, payload),
+            HostEvent::RecentFoldersChanged(folders) => {
+                app.emit("recent-folders-changed", folders)
+            }
             HostEvent::TasksChanged(folder) => app.emit(TASKS_CHANGED_EVENT, folder),
             HostEvent::NixChanged(folder) => {
                 app.emit(NIX_CHANGED_EVENT, json!({ "folderPath": folder }))

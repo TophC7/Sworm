@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version selected during the QUIC TLS handshake. Bump on any
 /// wire-incompatible change once released; there is no negotiation.
-pub const ALPN: &[u8] = b"sworm/2";
+pub const ALPN: &[u8] = b"sworm/3";
 pub const DEFAULT_SERVER_PORT: u16 = 7420;
 /// Maximum encoded `Open` frame body accepted before a connection is paired,
 /// and the ceiling every non-RPC open is written with: pairing metadata,
@@ -66,6 +66,52 @@ fn deserialize_exit<'de, D: serde::Deserializer<'de>>(
 macro_rules! sworm_rpc_ops {
     ($callback:ident) => {
         $callback! {
+            #[route(none)]
+            AppStateGet => app_state_get(key: String) -> Option<String>;
+            #[route(none)]
+            AppStatePut => app_state_put(key: String, value_json: String) -> ();
+            #[route(none)]
+            AppStateDelete => app_state_delete(key: String) -> ();
+            #[route(none)]
+            AppRuntimeInfo => app_runtime_info() -> $crate::app::AppRuntimeInfo;
+            #[route(none)]
+            RecentFoldersList => recent_folders_list() -> Vec<String>;
+            #[route(none)]
+            RecentFoldersTouch => recent_folders_touch(path: String) -> Vec<String>;
+            #[route(none)]
+            RecentFoldersRemove => recent_folders_remove(paths: Vec<String>) -> Vec<String>;
+            #[route(folder_path)]
+            FolderClaim => folder_claim(folder_path: String) -> ();
+            #[route(folder_path)]
+            FolderRelease => folder_release(folder_path: String) -> ();
+            #[route(none)]
+            FolderPathRoot => folder_path_root(path: String) -> $crate::folder::PathRoot;
+            #[route(none)]
+            ProviderList => provider_list() -> Vec<$crate::provider::ProviderStatus>;
+            #[route(none)]
+            ActivityMapGet => activity_map_get() -> Vec<$crate::activity_map::DiscoveredProject>;
+            #[route(none)]
+            ActivityMapRefresh => activity_map_refresh() -> Vec<$crate::activity_map::DiscoveredProject>;
+            #[route(none)]
+            BuiltinsGetCatalog => builtins_get_catalog() -> $crate::builtins::BuiltinCatalog;
+            #[route(none)]
+            ConfigSchemasList => config_schemas_list() -> Vec<$crate::config_schemas::ConfigSchemaEntry>;
+            #[route(none)]
+            OmpResolveUri => omp_resolve_uri(uri: String, cwd: Option<String>) -> $crate::omp::OmpResolvedTarget;
+            #[route(none)]
+            SettingsGetGlobalLayer => settings_get_global_layer() -> $crate::settings::SettingsLayerPayload;
+            #[route(none)]
+            SettingsCreateGlobalFile => settings_create_global_file() -> $crate::settings::SettingsFileResult;
+            #[route(none)]
+            SettingsSetWindow => settings_set_window(settings: $crate::settings::WindowSettings) -> $crate::settings::WindowSettings;
+            #[route(none)]
+            SettingsSetTerminal => settings_set_terminal(settings: $crate::settings::TerminalSettings) -> $crate::settings::TerminalSettings;
+            #[route(none)]
+            ShortcutsGetGlobal => shortcuts_get_global() -> $crate::settings::ShortcutsFilePayload;
+            #[route(none)]
+            ShortcutsSetGlobal => shortcuts_set_global(value: serde_json::Value) -> $crate::settings::ShortcutsFilePayload;
+            #[route(none)]
+            ShortcutsCreateGlobalFile => shortcuts_create_global_file() -> $crate::settings::SettingsFileResult;
             #[route(project_path)]
             FilesReadDir => files_read_dir(
                 project_path: String,
@@ -797,6 +843,7 @@ pub enum HostEventWire {
     TasksChanged(String),
     NixChanged(String),
     IssuesChanged(String),
+    RecentFoldersChanged(Vec<String>),
 }
 
 /// Wire mirror of `sworm_core::errors::ApiError` plus transport-level auth.
@@ -895,6 +942,25 @@ mod tests {
             methods.len(),
             "two operations share a method name, so reply extraction is ambiguous"
         );
+    }
+
+    #[test]
+    fn recent_folders_event_serializes_as_host_global_payload() {
+        let folders = vec!["sworm://host/repo".to_owned(), "/local/repo".to_owned()];
+        let encoded =
+            serde_json::to_value(HostEventWire::RecentFoldersChanged(folders.clone())).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "kind": "recent_folders_changed",
+                "payload": ["sworm://host/repo", "/local/repo"],
+            })
+        );
+        let HostEventWire::RecentFoldersChanged(decoded) = serde_json::from_value(encoded).unwrap()
+        else {
+            panic!("decoded event kind changed");
+        };
+        assert_eq!(decoded, folders);
     }
 
     #[test]

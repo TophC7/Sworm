@@ -6,5 +6,5 @@ use sworm_protocol::builtins::BuiltinCatalog;
 pub async fn builtins_get_catalog(
     state: tauri::State<'_, AppState>,
 ) -> Result<BuiltinCatalog, ApiError> {
-    state.host.builtins_get_catalog().await
+    state.router.builtins_get_catalog().await
 }

@@ -1,4 +1,5 @@
 mod activity_map;
+mod app;
 mod builtins;
 mod config_schemas;
 mod files;
@@ -11,4 +12,5 @@ mod nix;
 mod providers;
 mod sessions;
 mod settings;
+mod shortcuts;
 mod tasks;

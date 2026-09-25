@@ -1,4 +1,5 @@
 pub mod activity_map;
+pub mod app;
 pub mod branch;
 pub mod builtins;
 pub mod config_schemas;

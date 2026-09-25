@@ -1,9 +1,9 @@
 use crate::host_events::host_event_sink;
 use crate::router::WorkspaceRouter;
-use crate::services::{app_state_kv::AppStateKvService, windows::WindowCoordinatorService};
+use crate::services::windows::WindowCoordinatorService;
 use std::path::PathBuf;
 use std::sync::Arc;
-use sworm_core::Host;
+use sworm_core::{services::app_state_kv::AppStateKvService, Host};
 use tauri::Manager;
 
 /// Resolve the default database path inside the Tauri app data directory.

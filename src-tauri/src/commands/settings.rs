@@ -33,7 +33,7 @@ pub async fn settings_get_effective(
 pub async fn settings_get_global_layer(
     state: tauri::State<'_, AppState>,
 ) -> Result<SettingsLayerPayload, ApiError> {
-    state.host.settings_get_global_layer().await
+    state.router.settings_get_global_layer().await
 }
 
 #[tauri::command]
@@ -53,7 +53,7 @@ pub async fn settings_patch_global_section(
 pub async fn settings_create_global_file(
     state: tauri::State<'_, AppState>,
 ) -> Result<SettingsFileResult, ApiError> {
-    state.host.settings_create_global_file().await
+    state.router.settings_create_global_file().await
 }
 
 #[tauri::command]
@@ -61,7 +61,7 @@ pub async fn settings_open_global_file(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<SettingsFileResult, ApiError> {
-    let result = state.host.settings_create_global_file().await?;
+    let result = state.router.settings_create_global_file().await?;
     app.opener()
         .open_path(result.path.clone(), None::<&str>)
         .map_err(|error| {
@@ -86,7 +86,7 @@ pub async fn settings_set_window(
     settings: WindowSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<WindowSettings, ApiError> {
-    state.host.settings_set_window(settings).await
+    state.router.settings_set_window(settings).await
 }
 
 #[tauri::command]
@@ -94,7 +94,7 @@ pub async fn settings_set_terminal(
     settings: TerminalSettings,
     state: tauri::State<'_, AppState>,
 ) -> Result<TerminalSettings, ApiError> {
-    state.host.settings_set_terminal(settings).await
+    state.router.settings_set_terminal(settings).await
 }
 
 #[tauri::command]

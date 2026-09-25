@@ -127,16 +127,6 @@ pub fn is_global_only_pointer(pointer: &str) -> bool {
     })
 }
 
-/// Sections owned by the desktop window rather than the host that runs the
-/// folder. A remote workspace resolves every other section on its daemon; these
-/// three describe the window the user is looking at, so they stay local and the
-/// daemon refuses patches to them.
-pub const DESKTOP_SECTIONS: &[&str] = &["window", "terminal", "remotes"];
-
-pub fn is_desktop_section(section: &str) -> bool {
-    DESKTOP_SECTIONS.contains(&section)
-}
-
 /// One paired `sworm-server`, keyed by the `<server>` segment of `sworm://<server>/…`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -685,6 +675,13 @@ pub struct SettingsLayerPayload {
     pub loaded: bool,
     pub value: Value,
     pub diagnostics: Vec<SettingsDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortcutsFilePayload {
+    pub path: String,
+    pub loaded: bool,
+    pub value: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
