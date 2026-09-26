@@ -55,10 +55,15 @@ const webMarkdownSchema: Options = {
   }
 }
 
-export async function renderMarkdown(source: string, folderPath?: string, filePath?: string | null): Promise<string> {
+export async function renderMarkdown(
+  source: string,
+  folderPath?: string,
+  filePath?: string | null,
+  loadLocalImage?: (filePath: string) => Promise<string | null>
+): Promise<{ html: string; images: Promise<string | null>[] }> {
   // Web admits file: image URLs only to replace them with text; desktop retains its original sanitizer.
-  const localAssetUrls = platform.capabilities.localAssetUrls
-  const schema = localAssetUrls ? markdownSchema : webMarkdownSchema
+  const schema = 'url' in platform.assets ? markdownSchema : webMarkdownSchema
+  const images: Promise<string | null>[] = []
   const processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
@@ -77,15 +82,11 @@ export async function renderMarkdown(source: string, folderPath?: string, filePa
           if (/^data:/i.test(src.replace(/[\t\n\r]/g, '')) && !/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(src)) {
             delete node.properties.src
           } else {
-            const imageSrc = markdownImageSrc(src, folderPath, filePath)
-            if (imageSrc === null) {
-              const alt = typeof node.properties.alt === 'string' ? node.properties.alt : ''
-              node.tagName = 'span'
-              node.properties = { className: ['text-muted'] }
-              node.children = [{ type: 'text', value: `Local image unavailable${alt ? `: ${alt}` : ''}` }]
-            } else {
-              node.properties.src = imageSrc
-            }
+            // Trusted URLs are applied after publication; image I/O must not block the document.
+            node.properties.dataSwormImage = String(images.length)
+            node.properties.ariaBusy = 'true'
+            delete node.properties.src
+            images.push(markdownImageSrc(src, folderPath, filePath, loadLocalImage).catch(() => null))
           }
         }
         if (node.tagName === 'pre') {
@@ -100,24 +101,24 @@ export async function renderMarkdown(source: string, folderPath?: string, filePa
           }
         }
       })
-      if (!needsHighlighting) return
-
       // Highlighting is optional: retain sanitized plaintext if initialization or a grammar fails.
-      try {
-        const highlighter = await getHighlighter()
-        await unified()
-          .use(rehypeShikiFromHighlighter, highlighter, {
-            theme: SHIKI_THEME_NAME,
-            lazy: true,
-            fallbackLanguage: 'text',
-            onError: (cause) => console.warn('Markdown syntax highlighting failed', cause)
-          })
-          .run(tree, file)
-      } catch (cause) {
-        console.warn('Markdown syntax highlighting failed', cause)
+      if (needsHighlighting) {
+        try {
+          const highlighter = await getHighlighter()
+          await unified()
+            .use(rehypeShikiFromHighlighter, highlighter, {
+              theme: SHIKI_THEME_NAME,
+              lazy: true,
+              fallbackLanguage: 'text',
+              onError: (cause) => console.warn('Markdown syntax highlighting failed', cause)
+            })
+            .run(tree, file)
+        } catch (cause) {
+          console.warn('Markdown syntax highlighting failed', cause)
+        }
       }
     })
     .use(rehypeStringify)
 
-  return String(await processor.process(source))
+  return { html: String(await processor.process(source)), images }
 }

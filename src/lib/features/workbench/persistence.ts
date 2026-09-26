@@ -248,6 +248,9 @@ let pending: (() => PersistedWorkbenchV4) | null = null
 let lastWrittenJson: string | null = null
 // Web documents lose control on takeover/Close; nothing may write afterwards.
 let stopped = false
+// The one submitted `app_state_put`. The server does not order concurrent
+// requests, so overlapping writes could commit an older snapshot last.
+let inFlight: Promise<void> | null = null
 
 export function schedulePersistWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4): void {
   if (stopped) return
@@ -261,19 +264,38 @@ export function schedulePersistWorkbench(workbenchId: string, produce: () => Per
 }
 
 /**
- * Force an immediate write of any pending mutation (managed reload, app
- * exit). Rethrows on failure so callers can refuse to proceed; the failed
- * producer is requeued unless a newer mutation was scheduled meanwhile.
+ * Write pending mutations now (managed reload, app exit, page hide). Waits
+ * for any in-flight write and drains through the latest producer, so callers
+ * observe everything scheduled before they resolve. Rethrows on failure so
+ * callers can refuse to proceed; the failed producer is requeued unless a
+ * newer mutation was scheduled meanwhile, and is not retried until the next
+ * mutation or explicit flush.
  */
 export async function flushWorkbench(workbenchId: string): Promise<void> {
-  if (stopped) throw new Error('Workbench is no longer controlled by this page')
-  const produce = pending
-  pending = null
   clearTimeout(timer)
   timer = undefined
-  if (!produce) return
-  const json = JSON.stringify(produce())
-  if (json === lastWrittenJson) return
+  for (;;) {
+    if (stopped) throw new Error('Workbench is no longer controlled by this page')
+    if (inFlight) {
+      await inFlight
+      continue
+    }
+    const produce = pending
+    if (!produce) return
+    pending = null
+    const json = JSON.stringify(produce())
+    if (json === lastWrittenJson) continue
+    const write = writeWorkbench(workbenchId, produce, json)
+    inFlight = write
+    try {
+      await write
+    } finally {
+      if (inFlight === write) inFlight = null
+    }
+  }
+}
+
+async function writeWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4, json: string): Promise<void> {
   try {
     await backend.app.statePut(`workbench:${workbenchId}`, json)
     lastWrittenJson = json

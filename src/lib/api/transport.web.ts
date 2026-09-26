@@ -15,6 +15,7 @@ import {
   toWireParams,
   utf8ByteLength
 } from './transport.web.protocol'
+import type { FileBytes, FileReadRequest } from './transport.web.files'
 import { createWebStreams } from './transport.web.streams'
 
 export type WebConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'busy' | 'revoked' | 'closed' | 'error'
@@ -37,10 +38,18 @@ export interface WebHostTransportOptions {
 
 export interface WebHostTransport extends HostTransport {
   ready: Promise<void>
+  /** Browser-only binary read over the verified FileRead stream; not a host RPC. */
+  readFileBytes(request: FileReadRequest): Promise<FileBytes>
   dispose(): void
 }
 
-type Pending = { method: string; resolve(value: unknown): void; reject(reason: unknown): void }
+type Pending = {
+  method: string
+  /** Own `workbench_close`: this page's `closed` frame is its accepted outcome. */
+  selfClose: boolean
+  resolve(value: unknown): void
+  reject(reason: unknown): void
+}
 type FolderIntent = {
   claimed: boolean
   dirs?: string[]
@@ -128,7 +137,12 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       return Promise.reject(error)
     }
     return new Promise<T>((resolve, reject) => {
-      pending.set(id, { method, resolve: (value) => resolve(value as T), reject })
+      pending.set(id, {
+        method,
+        selfClose: method === 'workbench_close' && 'id' in params && params.id === options.workbenchId,
+        resolve: (value) => resolve(value as T),
+        reject
+      })
       try {
         connection.socket.send(body)
       } catch {
@@ -433,9 +447,10 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
 
   /**
    * The single inert end state for dispose and terminal frames: nothing can
-   * reconnect, recover, or reach the server afterwards.
+   * reconnect, recover, or reach the server afterwards. Only a `closed` frame
+   * accepts this page's own Close, whose reply retirement may discard.
    */
-  function shutdown(callReason: Error, reason: Error): boolean {
+  function shutdown(callReason: Error, reason: Error, closed = false): boolean {
     if (disposed) return false
     disposed = true
     clearTimeout(timer)
@@ -447,7 +462,10 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     active = null
     streams.dispose()
     old?.close()
-    for (const operation of pending.values()) operation.reject(callReason)
+    for (const operation of pending.values()) {
+      if (closed && operation.selfClose) operation.resolve(undefined)
+      else operation.reject(callReason)
+    }
     pending.clear()
     for (const waiter of waiting) waiter.reject(reason)
     waiting.clear()
@@ -458,7 +476,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
   }
 
   function terminate(state: 'busy' | 'revoked' | 'closed' | 'error', reason: Error): void {
-    if (shutdown(reason, reason))
+    if (shutdown(reason, reason, state === 'closed'))
       options.onConnectionState(state, state === 'error' ? (reason as WebHandshakeError) : undefined)
   }
 
@@ -549,6 +567,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     call,
     subscribe,
     openStream,
+    readFileBytes: (request) => streams.readFileBytes(request),
     dispose() {
       shutdown(lostError(OUTCOME_UNKNOWN), new Error(DISCONNECTED))
     }

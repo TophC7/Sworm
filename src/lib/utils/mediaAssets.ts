@@ -3,28 +3,30 @@ import { dirname } from '$lib/utils/paths'
 
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
-export function mediaAssetUrl(folderPath: string, filePath: string): string {
-  return platform.assets.url(folderPath, filePath)
-}
-
 // Markdown image URLs are document-relative. Browser-relative URLs point at Vite/Tauri chrome, not the repo.
-export function markdownImageSrc(
+// Stream-backed platforms resolve project images only through the view-owned loader, never an HTTP-relative fetch.
+export async function markdownImageSrc(
   href: string | null | undefined,
   folderPath?: string,
-  markdownPath?: string | null
-): string | null {
+  markdownPath?: string | null,
+  loadLocalImage?: (filePath: string) => Promise<string | null>
+): Promise<string | null> {
   if (!href) return ''
   const trimmed = href.trim()
   if (!trimmed || trimmed.startsWith('//')) return trimmed
+  const assets = platform.assets
   if (URL_SCHEME_RE.test(trimmed)) {
-    if (/^file:/i.test(trimmed) && !platform.capabilities.localAssetUrls) return null
+    if (/^file:/i.test(trimmed) && !('url' in assets)) return null
     return trimmed
   }
-  if (!platform.capabilities.localAssetUrls) return null
-  if (!folderPath || !markdownPath) return trimmed
-
+  if ('url' in assets) {
+    if (!folderPath || !markdownPath) return trimmed
+    const localPath = resolveMarkdownLocalPath(markdownPath, trimmed)
+    return localPath ? assets.url(folderPath, localPath) : trimmed
+  }
+  if (!folderPath || !markdownPath || !loadLocalImage) return null
   const localPath = resolveMarkdownLocalPath(markdownPath, trimmed)
-  return localPath ? mediaAssetUrl(folderPath, localPath) : trimmed
+  return localPath ? loadLocalImage(localPath) : null
 }
 
 export function resolveMarkdownLocalPath(markdownPath: string, href: string): string | null {

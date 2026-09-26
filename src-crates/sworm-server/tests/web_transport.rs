@@ -129,19 +129,7 @@ impl Fixture {
         token: Option<&str>,
     ) -> Result<Attached> {
         let (ws, ready) = self.hello(workbench, takeover, token).await?;
-        let connection = ready["ready"]["connection_id"]
-            .as_str()
-            .with_context(|| format!("workbench was not ready: {ready}"))?
-            .to_owned();
-        let token = ready["ready"]["controller_token"]
-            .as_str()
-            .with_context(|| format!("workbench ready lacked a controller token: {ready}"))?
-            .to_owned();
-        Ok(Attached {
-            ws,
-            connection,
-            token,
-        })
+        admitted(ws, ready)
     }
     /// A fresh, empty workbench that only reaches the registry. Its page
     /// leaving prunes it; `release` waits for that so lists never count it.
@@ -258,7 +246,7 @@ async fn wait_revoked(addr: SocketAddr, id: &str) -> Result<()> {
                 Err(tokio_tungstenite::tungstenite::Error::Http(response))
                     if response.status().as_u16() == 403 =>
                 {
-                    return Ok::<(), anyhow::Error>(())
+                    return Ok::<(), anyhow::Error>(());
                 }
                 Ok((mut socket, _)) => {
                     socket.close(None).await?;
@@ -361,6 +349,22 @@ async fn http(addr: SocketAddr, route: &str) -> Result<String> {
     let mut response = Vec::new();
     timeout(WAIT, socket.read_to_end(&mut response)).await??;
     Ok(String::from_utf8(response)?)
+}
+
+fn admitted(ws: Socket, ready: Value) -> Result<Attached> {
+    let connection = ready["ready"]["connection_id"]
+        .as_str()
+        .with_context(|| format!("workbench was not ready: {ready}"))?
+        .to_owned();
+    let token = ready["ready"]["controller_token"]
+        .as_str()
+        .with_context(|| format!("workbench ready lacked a controller token: {ready}"))?
+        .to_owned();
+    Ok(Attached {
+        ws,
+        connection,
+        token,
+    })
 }
 
 /// A workbench controller admitted by `ready`.
@@ -1794,20 +1798,6 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
     assert!(listed
         .iter()
         .any(|info| info.id == workbench && info.connected));
-    match rpc(
-        &mut control.ws,
-        11,
-        Request::WorkbenchClose {
-            id: workbench.clone(),
-        },
-    )
-    .await?
-    {
-        Err(WireError::InvalidArgument { message }) => {
-            assert_eq!(message, "A workbench cannot close itself")
-        }
-        other => bail!("workbench closed itself: {other:?}"),
-    }
     assert_eq!(
         get_state(&mut control.ws, 13, probe).await?,
         None,
@@ -2683,6 +2673,293 @@ async fn close_storage_failure(f: &Fixture) -> Result<()> {
     Ok(())
 }
 
+/// Reads a page's own accepted Close through retirement. Its success reply
+/// may precede `closed` or be discarded with the queue; it is never an error.
+async fn self_closed(ws: &mut Socket, close_id: u64) -> Result<()> {
+    timeout(WAIT, async {
+        let mut closed = false;
+        loop {
+            let message = match ws.next().await {
+                Some(Ok(message)) => message,
+                None | Some(Err(_)) => break,
+            };
+            match message {
+                Message::Text(text) => {
+                    let value: Value = serde_json::from_str(&text)?;
+                    if value.get("ping").is_some() {
+                        continue;
+                    }
+                    if closed {
+                        bail!("control frame followed closed: {value}");
+                    }
+                    if value == json!({"closed": true}) {
+                        closed = true;
+                    } else if value.get("response").is_some() {
+                        let response: Response = serde_json::from_value(value["response"].clone())?;
+                        match (value["id"] == close_id, response) {
+                            (true, Ok(reply)) => reply.workbench_close().checked()?,
+                            (true, Err(error)) => bail!("own Close failed: {error:?}"),
+                            (false, Ok(_)) => bail!("closing control completed an RPC: {value}"),
+                            (false, Err(_)) => {}
+                        }
+                    } else if value.get("event").is_none() {
+                        bail!("unexpected frame before closed: {value}");
+                    }
+                }
+                Message::Close(frame) => {
+                    if let Some(frame) = frame {
+                        assert_eq!(u16::from(frame.code), 1008, "terminal close code");
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !closed {
+            bail!("own Close ended without a closed frame");
+        }
+        Ok(())
+    })
+    .await
+    .context("own Close never retired its control")?
+}
+
+/// Hellos until the id is admitted again; a finished Close may still be
+/// releasing its fence when its deletion becomes visible.
+async fn reopen(f: &Fixture, id: &str) -> Result<Attached> {
+    timeout(WAIT, async {
+        loop {
+            let (ws, first) = f.hello(id, false, None).await?;
+            if first.get("ready").is_some() {
+                return admitted(ws, first);
+            }
+            assert_eq!(first["error"], closing_frame(), "{first}");
+            drop(ws);
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("workbench {id} was never recreated"))?
+}
+
+fn closing_frame() -> Value {
+    json!({"kind":"invalid_argument","message":"Workbench is closing; retry Close Workbench"})
+}
+
+async fn wait_deleted(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    let key = format!("workbench:{id}");
+    timeout(WAIT, async {
+        while stored(db, &key)?.is_some() || manifest_ids(db)?.iter().any(|stored| stored == id) {
+            sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .with_context(|| format!("workbench {id} was never deleted"))?
+}
+
+/// A page closing its own workbench gets an accepted close, never a
+/// self-wait or an error, while the supervised transition keeps its order.
+async fn self_close(f: &Fixture) -> Result<()> {
+    let tasks = f.repo.join(".sworm/tasks.jsonc");
+    let task_pid_file = f.repo.join("self-close-task.pid");
+    let _ = fs::remove_file(&task_pid_file);
+    fs::write(
+        &tasks,
+        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"exec sh -c 'printf %s $$ > self-close-task.pid; exec sleep 60'","singleton":true}]}"#,
+    )?;
+    let db = f.db()?;
+    let (mut observer, observer_id) = f.observer().await?;
+
+    // Live own Close stops the runs and deletes the saved state.
+    let a = new_workbench();
+    let key = format!("workbench:{a}");
+    let mut a1 = f.attach(&a, false, None).await?;
+    put_state(&mut a1.ws, 1, &key, &v4(&[&f.folder()], 0)).await?;
+    let (term_run, task_run) = (new_run(), new_run());
+    success(&mut a1.ws, 2, terminal_start(f, &term_run))
+        .await?
+        .session_start()
+        .checked()?;
+    success(&mut a1.ws, 3, task_start(f, &task_run, false))
+        .await?
+        .tasks_start()
+        .checked()?;
+    let mut pty = f
+        .stream(
+            &a1.connection,
+            Open::Pty {
+                run_id: term_run.clone(),
+                cursor: PtyCursor::default(),
+            },
+        )
+        .await?;
+    let term_pid = shell_pid(&mut pty, &mut PtyCursor::default()).await?;
+    let task_pid: u32 = timeout(WAIT, async {
+        loop {
+            if let Some(pid) = fs::read_to_string(&task_pid_file)
+                .ok()
+                .and_then(|text| text.parse().ok())
+            {
+                return pid;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("self-close task never started")?;
+    assert!(stored(&db, &key)?.is_some() && manifest_ids(&db)?.contains(&a));
+    a1.ws
+        .send(request_frame(4, Request::WorkbenchClose { id: a.clone() }))
+        .await?;
+    self_closed(&mut a1.ws, 4).await?;
+    wait_exit(term_pid, "self-closed terminal").await?;
+    wait_exit(task_pid, "self-closed task").await?;
+    wait_deleted(&db, &a).await?;
+
+    // The same id recreates a new incarnation: empty, with a new owner.
+    let mut a2 = reopen(f, &a).await?;
+    assert_ne!(a2.token, a1.token, "closed lease resumed");
+    assert_ne!(a2.connection, a1.connection);
+    assert_eq!(
+        get_state(&mut a2.ws, 1, &key).await?.as_deref(),
+        Some(r#"{"version":4,"activeTabIndex":-1,"tabs":[]}"#),
+        "recreated workbench kept the closed snapshot"
+    );
+    for run in [&term_run, &task_run] {
+        assert!(
+            !live_for(&mut a2.ws, run).await?,
+            "closed run {run} is live"
+        );
+    }
+    let fresh_run = new_run();
+    success(&mut a2.ws, 2, terminal_start(f, &fresh_run))
+        .await?
+        .session_start()
+        .checked()?;
+    assert!(run_status(&mut a2.ws, &fresh_run).await?);
+    close_workbench(&mut observer, 1, &a).await?;
+    retired(&mut a2.ws, "closed").await?;
+    fs::remove_file(&tasks)?;
+
+    // Own Close while an admitted start is held: the fence admits no
+    // controller, and the transition waits for the start, then stops its run.
+    let pids = f.repo.join("delayed-pids");
+    let _ = fs::remove_file(&pids);
+    let h = new_workbench();
+    let h1 = f.attach(&h, false, None).await?;
+    let Attached {
+        ws: mut h_ws,
+        token: h_token,
+        ..
+    } = h1;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let held_run = new_run();
+    h_ws.send(request_frame(1, task_start(f, &held_run, false)))
+        .await?;
+    timeout(WAIT, reached)
+        .await
+        .context("start did not reach gated config read")??;
+    h_ws.send(request_frame(2, Request::WorkbenchClose { id: h.clone() }))
+        .await?;
+    self_closed(&mut h_ws, 2).await?;
+    timeout(WAIT, async {
+        while denied(f, &h, false, None).await?.get("error").is_none() {
+            sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("own Close never fenced the workbench")??;
+    for (takeover, token) in [(false, None), (true, None), (false, Some(h_token.as_str()))] {
+        assert_eq!(
+            denied(f, &h, takeover, token).await?["error"],
+            closing_frame(),
+            "hello crossed the close fence (takeover={takeover}, token={token:?})"
+        );
+    }
+    sleep(Duration::from_millis(300)).await;
+    assert!(
+        f.listed(&h).await?.is_some(),
+        "own Close finished before the admitted start drained"
+    );
+    stalled.unblock()?;
+    f.wait_listed(&h, "closed", |info| info.is_none()).await?;
+    wait_deleted(&db, &h).await?;
+    // Bonus only: the child may be killed before it records its PID.
+    for pid in fs::read_to_string(&pids).unwrap_or_default().lines() {
+        wait_exit(pid.parse()?, "held-start task").await?;
+    }
+    drop(stalled);
+    fs::remove_file(&tasks)?;
+    // The deterministic proof: a surviving run keeps the closed owner, so the
+    // strict status read from a new incarnation fails as foreign; only a
+    // retired run reads as not live.
+    let mut h2 = reopen(f, &h).await?;
+    assert!(
+        !run_status(&mut h2.ws, &held_run).await?,
+        "held start's run survived own Close"
+    );
+    close_workbench(&mut observer, 1, &h).await?;
+    retired(&mut h2.ws, "closed").await?;
+
+    // Failed deletion: the page still saw an accepted close; the record and
+    // fence remain until another control's explicit Close succeeds.
+    let e = new_workbench();
+    let key = format!("workbench:{e}");
+    let snapshot = v4(&[&f.folder()], 0);
+    let mut e1 = f.attach(&e, false, None).await?;
+    put_state(&mut e1.ws, 1, &key, &snapshot).await?;
+    let run = new_run();
+    success(&mut e1.ws, 2, terminal_start(f, &run))
+        .await?
+        .session_start()
+        .checked()?;
+    let mut pty = f
+        .stream(
+            &e1.connection,
+            Open::Pty {
+                run_id: run.clone(),
+                cursor: PtyCursor::default(),
+            },
+        )
+        .await?;
+    let pid = shell_pid(&mut pty, &mut PtyCursor::default()).await?;
+    db.execute_batch(&format!(
+        "CREATE TRIGGER block_self_close BEFORE DELETE ON app_state WHEN old.key = '{key}'
+         BEGIN SELECT RAISE(ABORT, 'injected self-close failure'); END;"
+    ))?;
+    e1.ws
+        .send(request_frame(3, Request::WorkbenchClose { id: e.clone() }))
+        .await?;
+    self_closed(&mut e1.ws, 3).await?;
+    wait_exit(pid, "failed self-close terminal").await?;
+    // Queued behind the failed transition, a retry fails the same way.
+    match rpc(&mut observer, 2, Request::WorkbenchClose { id: e.clone() }).await? {
+        Err(WireError::Database { .. }) => {}
+        other => bail!("Close reported {other:?} despite failed deletion"),
+    }
+    assert!(
+        f.listed(&e).await?.is_some(),
+        "failed self-close lost record"
+    );
+    assert_eq!(stored(&db, &key)?.as_deref(), Some(snapshot.as_str()));
+    assert!(manifest_ids(&db)?.contains(&e));
+    assert_eq!(
+        denied(f, &e, false, None).await?["error"],
+        closing_frame(),
+        "failed self-close reopened the workbench"
+    );
+    db.execute_batch("DROP TRIGGER block_self_close;")?;
+    timeout(WAIT, close_workbench(&mut observer, 3, &e))
+        .await
+        .context("retried Close hung")??;
+    assert_eq!(stored(&db, &key)?, None);
+    assert!(!manifest_ids(&db)?.contains(&e));
+    f.release(observer, &observer_id).await?;
+    Ok(())
+}
+
 async fn folders(f: &Fixture, id: &str) -> Result<Vec<String>> {
     Ok(f.listed(id).await?.context("workbench missing")?.folders)
 }
@@ -3151,6 +3428,7 @@ async fn run(home: &Path) -> Result<()> {
     close_storage_failure(&f)
         .await
         .context("scenario close_storage_failure")?;
+    self_close(&f).await.context("scenario self_close")?;
     file_integrity_and_shutdown(f)
         .await
         .context("scenario file_integrity_and_shutdown")?;

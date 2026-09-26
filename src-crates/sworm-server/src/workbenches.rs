@@ -651,7 +651,8 @@ pub(crate) async fn detach(
 /// Draining waits for the target page's in-flight requests, which may include
 /// its own Close of `caller`. So once `caller` itself is being closed, stop
 /// waiting: the supervised transition still finishes, and two pages closing
-/// each other both close instead of each waiting on the other.
+/// each other both close instead of each waiting on the other. A page closing
+/// itself gets success at that point: the close was accepted, not completed.
 pub(crate) async fn close(
     host: &Arc<Host>,
     context: &Arc<ServerContext>,
@@ -659,6 +660,7 @@ pub(crate) async fn close(
     caller: Option<&str>,
 ) -> Result<(), WireError> {
     let workbenches = &context.workbenches;
+    let self_close = caller == Some(id.as_str());
     let caller_closing = caller.and_then(|caller| {
         workbenches
             .slots
@@ -702,7 +704,7 @@ pub(crate) async fn close(
     tokio::select! {
         biased;
         result = transition => result,
-        _ = caller_closing.cancelled() => Err(closing()),
+        _ = caller_closing.cancelled() => if self_close { Ok(()) } else { Err(closing()) },
     }
 }
 

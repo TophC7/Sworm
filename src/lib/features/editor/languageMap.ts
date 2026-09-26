@@ -157,12 +157,29 @@ const FILENAME_TO_LANG: Record<string, string> = {
 // falls through to the generic "binary, cannot display" surface.
 export type MediaKind = 'image' | 'audio' | 'video'
 
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'avif'])
-const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus'])
 // mov/mkv playback is codec-dependent on Linux (WebKitGTK). Listed
-// optimistically; on decode failure the <video> element surfaces its
-// own error UI.
-const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'mkv'])
+// optimistically; MediaViewer shows an alert if decoding fails.
+const MEDIA_MIME_TYPES: Record<string, `${MediaKind}/${string}`> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  flac: 'audio/flac',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  opus: 'audio/ogg',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  mkv: 'video/x-matroska'
+}
 
 const OTHER_BINARY_EXTENSIONS = new Set([
   'avi',
@@ -196,12 +213,7 @@ const OTHER_BINARY_EXTENSIONS = new Set([
   'eot'
 ])
 
-const BINARY_EXTENSIONS = new Set<string>([
-  ...IMAGE_EXTENSIONS,
-  ...AUDIO_EXTENSIONS,
-  ...VIDEO_EXTENSIONS,
-  ...OTHER_BINARY_EXTENSIONS
-])
+const BINARY_EXTENSIONS = new Set<string>([...Object.keys(MEDIA_MIME_TYPES), ...OTHER_BINARY_EXTENSIONS])
 
 function getExtension(filePath: string): string {
   const name = basename(filePath)
@@ -233,8 +245,17 @@ export function isMarkdownFile(filePath: string): boolean {
 
 export function mediaKind(filePath: string): MediaKind | null {
   const ext = getExtension(filePath)
-  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
-  if (AUDIO_EXTENSIONS.has(ext)) return 'audio'
-  if (VIDEO_EXTENSIONS.has(ext)) return 'video'
+  if (!Object.hasOwn(MEDIA_MIME_TYPES, ext)) return null
+  const mime = MEDIA_MIME_TYPES[ext]
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('audio/')) return 'audio'
+  if (mime.startsWith('video/')) return 'video'
   return null
+}
+
+// SVG renders as an image in markdown but stays editable XML: typed here, never a media kind or binary.
+export function mediaMimeType(filePath: string): string {
+  const ext = getExtension(filePath)
+  if (ext === 'svg') return 'image/svg+xml'
+  return Object.hasOwn(MEDIA_MIME_TYPES, ext) ? MEDIA_MIME_TYPES[ext] : 'application/octet-stream'
 }

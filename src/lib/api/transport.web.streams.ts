@@ -7,7 +7,7 @@ import type {
   StreamHandle,
   TaskStreamRequest
 } from './transport'
-import { FileAssembly } from './transport.web.files'
+import { FileAssembly, MAX_FILE_BYTES, type FileBytes, type FileReadRequest } from './transport.web.files'
 import { MAX_FRAME_BYTES, normalizeWireError } from './transport.web.protocol'
 
 const MAX_OPEN_BYTES = 64 * 1024
@@ -17,6 +17,7 @@ const disconnected = () => new Error('Disconnected from server; operation outcom
 const cancelled = () => new Error('Invalid argument: File read cancelled')
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
+const fileTextDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 type GenerationSocket = { socket: WebSocket; generation: number }
 type Open = Record<string, unknown>
@@ -175,13 +176,15 @@ type FileOwner = {
   assembly: FileAssembly | null
   cancelled: boolean
   done: boolean
-  resolve: (value: FileContent) => void
+  resolve: (value: FileBytes) => void
   reject: (reason: unknown) => void
   finished: PromiseWithResolvers<void>
 }
 
 export interface WebStreams {
   call<T>(method: string, params: object): Promise<T> | undefined
+  /** Binary-safe project file read sharing the text facade's queue, slots, and cancellation by request ID. */
+  readFileBytes(request: FileReadRequest): Promise<FileBytes>
   openStream: HostTransport['openStream']
   controlLost(generation: number): void
   controlReady(generation: number): void
@@ -592,7 +595,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
     }
   }
 
-  function readFile(params: object): Promise<FileContent> {
+  function readFile(params: object): Promise<FileBytes> {
     const { requestId, projectPath, filePath, version, size } = params as Record<string, unknown>
     if (
       typeof requestId !== 'string' ||
@@ -603,13 +606,13 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
     }
     if (files.has(requestId)) return Promise.reject(new Error('File-read request id already in use'))
     if (disposed || currentGeneration === undefined) return Promise.reject(new Error('Disconnected from server'))
-    if (!Number.isSafeInteger(size) || (size as number) < 0 || (size as number) > 256 * 1024 * 1024) {
+    if (!Number.isSafeInteger(size) || (size as number) < 0 || (size as number) > MAX_FILE_BYTES) {
       return Promise.reject(new Error('Invalid argument: Invalid approved file size'))
     }
     if (typeof projectPath !== 'string' || typeof filePath !== 'string' || typeof version !== 'string') {
       return Promise.reject(new Error('Invalid argument: Invalid file read arguments'))
     }
-    const result = Promise.withResolvers<FileContent>()
+    const result = Promise.withResolvers<FileBytes>()
     const owner: FileOwner = {
       requestId,
       projectPath,
@@ -632,7 +635,11 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
 
   function call<T>(method: string, params: object): Promise<T> | undefined {
     if (disposed) return Promise.reject(new Error('Disconnected from server'))
-    if (method === 'file_read_stream') return readFile(params) as unknown as Promise<T>
+    if (method === 'file_read_stream')
+      return readFile(params).then(({ bytes, version }): FileContent => ({
+        content: fileTextDecoder.decode(bytes),
+        version
+      })) as unknown as Promise<T>
     if (method === 'file_read_stream_cancel') {
       const { requestId } = params as { requestId: string }
       const owner = files.get(requestId)
@@ -693,6 +700,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
 
   return {
     call,
+    readFileBytes: readFile,
     openStream,
     controlLost(generation) {
       if (currentGeneration === generation) currentGeneration = undefined

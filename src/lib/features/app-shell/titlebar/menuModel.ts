@@ -5,6 +5,7 @@ import { platform } from '$lib/platform'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
 import {
+  closeCurrentWorkbench,
   newWindow,
   openActiveFolderInExternalTerminal,
   openFolderSettingsFile,
@@ -37,6 +38,9 @@ export function buildAppMenu(): MenuEntry[] {
       ? [{ kind: 'item' as const, label: 'New Window', shortcut: 'Ctrl+Shift+N', onSelect: () => void newWindow() }]
       : []),
     { kind: 'item', label: 'Reopen Closed Tab', disabled: !hasClosedTabs(), onSelect: reopenTab },
+    ...(native.durableWorkbenches
+      ? [{ kind: 'item' as const, label: 'Close Workbench', onSelect: () => void closeCurrentWorkbench() }]
+      : []),
     { kind: 'separator' },
     ...(native.revealInFileManager
       ? [

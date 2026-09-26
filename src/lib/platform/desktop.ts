@@ -126,7 +126,6 @@ export const desktopPlatform: Platform = {
     nativeWindowControls: true,
     zoom: true,
     saveAsDialog: true,
-    localAssetUrls: true,
     nativeFileClipboard: true,
     nativeDirectoryPicker: true,
     externalFileOpen: true,

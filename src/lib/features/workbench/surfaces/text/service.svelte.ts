@@ -1,3 +1,4 @@
+import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
 import { platform, requireNative } from '$lib/platform'
 import {
@@ -46,7 +47,8 @@ export interface MountedTextSurfaceController {
 const pendingReveals = new Map<TabId, TextRevealTarget>()
 const mountedControllers = new Map<TabId, MountedTextSurfaceController>()
 
-const dirtyTabs = $state<Set<TabId>>(new Set())
+// `$state` does not proxy Set instances; SvelteSet makes add/delete/size/has reactive.
+const dirtyTabs = new SvelteSet<TabId>()
 
 // Keep consent across inactive-tab unmounts without retaining streamed bytes.
 const largeFileApprovals = new Map<TabId, string>()

@@ -1,6 +1,17 @@
-import type { FileContent } from '$lib/types/backend'
+export interface FileReadRequest {
+  requestId: string
+  projectPath: string
+  filePath: string
+  version: string
+  size: number
+}
 
-const MAX_FILE_BYTES = 256 * 1024 * 1024
+export interface FileBytes {
+  bytes: Uint8Array<ArrayBuffer>
+  version: string
+}
+
+export const MAX_FILE_BYTES = 256 * 1024 * 1024
 const MAX_CHUNK_BYTES = 1024 * 1024
 
 /** Owns exactly one approved-size buffer. A digest cannot be cancelled; settled tracks its actual lifetime. */
@@ -40,7 +51,7 @@ export class FileAssembly {
     return this.completed
   }
 
-  complete(returnedVersion: string): Promise<FileContent> {
+  complete(returnedVersion: string): Promise<FileBytes> {
     if (this.completed) return Promise.reject(new Error('File read completed twice'))
     this.completed = true // Close may arrive while the native digest is pending.
     if (this.cancelled) return Promise.reject(new Error('Invalid argument: File read cancelled'))
@@ -52,10 +63,7 @@ export class FileAssembly {
         if (!(hash instanceof ArrayBuffer)) throw new Error('File read hash failed')
         const hex = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')
         if (hex !== returnedVersion) throw new Error('File read hash mismatch')
-        return {
-          content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(this.bytes),
-          version: returnedVersion
-        }
+        return { bytes: this.bytes, version: returnedVersion }
       })
     this.settled = digestResult.then(
       () => {},

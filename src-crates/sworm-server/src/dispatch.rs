@@ -901,16 +901,10 @@ impl DispatchRuntime<'_> {
     }
 
     async fn workbench_close(&self, id: String) -> Result<(), WireError> {
-        // Close drains the target's in-flight requests; a page's own would wait on itself.
         let caller = match &self.session.lock().await.scope {
             SessionScope::WebWorkbench { id: own, .. } => Some(own.clone()),
             SessionScope::Quic => None,
         };
-        if caller.as_deref() == Some(id.as_str()) {
-            return Err(WireError::InvalidArgument {
-                message: "A workbench cannot close itself".to_owned(),
-            });
-        }
         workbenches::close(self.host, self.context, id, caller.as_deref()).await
     }
 

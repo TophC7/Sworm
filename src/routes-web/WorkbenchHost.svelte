@@ -3,8 +3,13 @@
   import AppShell from '$lib/features/app-shell/AppShell.svelte'
   import WorkbenchPage from '$lib/features/app-shell/WorkbenchPage.svelte'
   import { Button } from '$lib/components/ui/button'
+  import { statusChipVariants } from '$lib/components/ui/status-chip'
+  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import { cn } from '$lib/utils/cn'
+  import { backend } from '$lib/api/backend'
   import { setWorkbenchId } from '$lib/features/workbench/state.svelte'
-  import { stopWorkbenchPersistence } from '$lib/features/workbench/persistence'
+  import { flushWorkbench, stopWorkbenchPersistence } from '$lib/features/workbench/persistence'
+  import { hasAnyDirtyTextSurfaces } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { registerHostTransport } from '$lib/api/transport'
@@ -34,9 +39,19 @@
   let actions = $state<HTMLDivElement>()
   let tornDown = $state(false)
   let disposed = false
+  // Set only after the Close Workbench confirmation, immediately before the request.
+  let closeRequested = false
+  // This document is navigating away on purpose (own close or bfcache reload); skip the leave prompt.
+  let leaving = false
 
   const recovery = createWebRecovery(workbenchId)
-  installPlatform(createWebPlatform(workbenchId))
+  installPlatform(
+    createWebPlatform(workbenchId, {
+      closeCurrent,
+      // Resolve lazily so takeover's replacement adapter serves media reads.
+      readFileBytes: (request) => transport.readFileBytes(request)
+    })
+  )
   // Adapters report state synchronously during construction; the attempt number
   // fences callbacks from a disposed busy adapter after Take Over.
   let attempt = 0
@@ -52,11 +67,19 @@
       takeover,
       onConnectionState(state, error) {
         if (!isCurrent()) return
+        if (state === 'closed' && closeRequested) {
+          finishClose()
+          return
+        }
         if (state === 'busy' || state === 'revoked' || state === 'closed' || state === 'error') {
           terminate(state, error)
           return
         }
-        if (state === 'reconnecting') recovery.onDisconnected()
+        // A close whose outcome is unknown after connection loss is never resubmitted or assumed.
+        if (state === 'reconnecting') {
+          closeRequested = false
+          recovery.onDisconnected()
+        }
         connectionState = state
       },
       onReconnected() {
@@ -86,16 +109,20 @@
     return adapter
   }
 
+  /** Stops this page's writers and detaches (never stops) its runs; only a fresh document may control the workbench again. */
+  function teardown(): void {
+    if (tornDown) return
+    tornDown = true
+    recovery.dispose()
+    stopWorkbenchPersistence()
+    sessionRegistry.disposeAll()
+    taskRegistry.disposeAll()
+  }
+
   function terminate(state: 'busy' | 'revoked' | 'closed' | 'error', error?: WebHandshakeError): void {
+    closeRequested = false
     // The transport already rejects every call; stop this page's writers before unmounting the workbench.
-    if (surface === 'workbench') {
-      // Persistence is permanently stopped; only a fresh document may control this workbench again.
-      tornDown = true
-      recovery.dispose()
-      stopWorkbenchPersistence()
-      sessionRegistry.disposeAll()
-      taskRegistry.disposeAll()
-    }
+    if (surface === 'workbench') teardown()
     connectionState = state
     if (state !== 'error') {
       surface = state
@@ -104,6 +131,40 @@
     surface = 'error'
     errorMessage = error ? getErrorMessage(error) : 'Connection failed'
     logClientError('web connection failed', { error })
+  }
+
+  /** Makes this document inert before a deliberate navigation; idempotent. */
+  function leave(): void {
+    if (leaving) return
+    leaving = true
+    closeRequested = false
+    teardown()
+    disposed = true
+    transport.dispose()
+    document.body.inert = true
+  }
+
+  function finishClose(): void {
+    if (leaving) return
+    leave()
+    window.location.assign('/')
+  }
+
+  async function closeCurrent(): Promise<void> {
+    // Never queue a destructive request while reconnecting or after this page lost control.
+    if (surface !== 'workbench' || connectionState !== 'connected' || closeRequested || leaving) {
+      throw new Error('Workbench is not connected')
+    }
+    closeRequested = true
+    try {
+      await backend.workbenches.close(workbenchId)
+    } catch (error) {
+      if (leaving) return
+      closeRequested = false
+      throw error
+    }
+    // The reply can precede the terminal `closed` frame; both take the same finish path.
+    if (closeRequested) finishClose()
   }
 
   function takeOver(): void {
@@ -128,6 +189,50 @@
     actions?.querySelector('button')?.focus()
   })
 
+  // Document-scoped: stays armed on revoked/closed surfaces while discarded edits remain dirty.
+  $effect(() => {
+    if (!hasAnyDirtyTextSurfaces()) return
+    const guard = (event: BeforeUnloadEvent) => {
+      // `leaving` is read at event time: effect cleanup would run after a synchronous navigation.
+      if (leaving) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  })
+
+  $effect(() => {
+    const onVisibilityChange = () => {
+      if (
+        document.visibilityState !== 'hidden' ||
+        surface !== 'workbench' ||
+        connectionState !== 'connected' ||
+        tornDown ||
+        closeRequested ||
+        leaving
+      ) {
+        return
+      }
+      // Failures requeue inside persistence; reconnect recovery or the next mutation retries.
+      void flushWorkbench(workbenchId).catch((error: unknown) => {
+        logClientError('workbench flush on hide failed', { error })
+      })
+    }
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return
+      // A restored bfcache document must not regain control before a fresh handshake.
+      leave()
+      window.location.reload()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  })
+
   onDestroy(() => {
     disposed = true
     recovery.dispose()
@@ -136,15 +241,28 @@
 </script>
 
 {#if surface === 'workbench'}
-  <AppShell><WorkbenchPage /></AppShell>
-  {#if connectionState === 'reconnecting'}
-    <div
-      role="status"
-      class="pointer-events-none fixed top-10 right-3 z-10 border border-edge bg-surface px-3 py-2 text-sm text-warning"
-    >
-      Disconnected from server. Reconnecting…
-    </div>
-  {/if}
+  <AppShell>
+    {#snippet connectionStatus()}
+      {@const connected = connectionState === 'connected'}
+      <span role="status" aria-live="polite" class="inline-flex">
+        <TooltipRoot>
+          <TooltipTrigger
+            class={statusChipVariants({ tone: connected ? 'default' : 'warning', class: 'cursor-default' })}
+          >
+            <span class={cn('size-1.5 shrink-0 rounded-full', connected ? 'bg-success' : 'bg-warning')}></span>
+            {connected ? 'Connected' : 'Reconnecting…'}
+          </TooltipTrigger>
+          <TooltipContent class="max-w-md">
+            {connected
+              ? 'Control connection to server is connected.'
+              : 'Disconnected from server. Reconnecting automatically.'}
+            Terminal, LSP, and file streams have independent state.
+          </TooltipContent>
+        </TooltipRoot>
+      </span>
+    {/snippet}
+    <WorkbenchPage />
+  </AppShell>
 {:else if surface === 'connecting'}
   <div role="status" class="flex h-screen items-center justify-center bg-ground text-base text-muted">
     Connecting to server…

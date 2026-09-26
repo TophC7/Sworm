@@ -4,7 +4,7 @@
 // these functions so confirmation and side effects stay on one path.
 
 import { backend } from '$lib/api/backend'
-import { requireNative } from '$lib/platform'
+import { platform, requireNative } from '$lib/platform'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -17,21 +17,24 @@ import {
   createUntitledTextSurface,
   getDirtyTextSurfaceCount,
   hasAnyDirtyTextSurfaces,
+  isTextSurfaceDirty,
   openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { flushWorkbench } from '$lib/features/workbench/persistence'
 import {
   getActiveFolderPath,
+  getTabs,
   getWorkbenchId,
   openFolder,
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
-import { splitRemotePath } from '$lib/utils/paths'
+import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
 export async function reloadView(): Promise<void> {
-  if (hasAnyDirtyTextSurfaces()) {
+  // Web: the document's beforeunload guard owns the dirty prompt.
+  if (platform.native && hasAnyDirtyTextSurfaces()) {
     const count = getDirtyTextSurfaceCount()
     const noun = count === 1 ? 'file' : 'files'
     const proceed = await confirmAsync({
@@ -49,6 +52,39 @@ export async function reloadView(): Promise<void> {
   }
   window.location.reload()
 }
+
+let closingWorkbench = false
+
+/** Confirm, then ask the host to close (stop runs, delete state of) this workbench. */
+export async function closeCurrentWorkbench(): Promise<void> {
+  if (closingWorkbench) return
+  closingWorkbench = true
+  try {
+    const closeCurrent = platform.workbench.closeCurrent
+    if (!closeCurrent) throw new Error('Closing the current workbench is not supported here')
+    const dirtyPaths = getTabs().flatMap((tab) =>
+      tab.kind === 'text' && isTextSurfaceDirty(tab.id)
+        ? [tab.filePath === null ? tab.fileName : resolveProjectFile(tab.folderPath, tab.filePath)]
+        : []
+    )
+    const confirmed = await confirmAsync({
+      title: 'Close Workbench',
+      message: [
+        'Stop all sessions and tasks in this workbench and delete its saved tabs and layout?',
+        ...(dirtyPaths.length > 0 ? ['', 'Unsaved changes will be lost:', ...dirtyPaths] : [])
+      ].join('\n'),
+      confirmLabel: 'Close Workbench',
+      cancelLabel: 'Cancel'
+    })
+    if (!confirmed) return
+    await closeCurrent()
+  } catch (error) {
+    notify.error('Could not close workbench', getErrorMessage(error))
+  } finally {
+    closingWorkbench = false
+  }
+}
+
 export async function newWindow(): Promise<void> {
   await requireNative().window.create()
 }

@@ -18,6 +18,7 @@ import {
 import { splitRemotePath } from '$lib/utils/paths'
 import {
   closeActiveTab,
+  closeCurrentWorkbench,
   createSession,
   newEmptyFile,
   newTerminalSession,
@@ -185,6 +186,16 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       run: openFolderPicker
     }),
     appCommand({
+      id: 'close-workbench',
+      label: 'Close Workbench',
+      group: 'File',
+      icon: XIcon,
+      keywords: ['close', 'workbench', 'stop'],
+      dangerous: true,
+      capability: 'durableWorkbenches',
+      run: closeCurrentWorkbench
+    }),
+    appCommand({
       id: 'switch-folder',
       label: 'Switch Folder',
       group: 'File',
@@ -247,7 +258,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Sessions',
       iconSrc: terminalIcon,
       keywords: ['terminal', 'shell', 'console'],
-      defaultKeybindings: ['Ctrl+T'],
+      // Web: Ctrl+T/W/Shift+T belong to browser tab management.
+      defaultKeybindings: platform.native ? ['Ctrl+T'] : [],
       visible: activeFolderVisible,
       run: newTerminalSession
     }),
@@ -299,7 +311,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: XIcon,
       keywords: ['close', 'tab', 'dismiss'],
-      defaultKeybindings: ['Ctrl+W'],
+      defaultKeybindings: platform.native ? ['Ctrl+W'] : [],
       visible: activeFolderVisible,
       run: closeActiveTab
     }),
@@ -309,7 +321,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: Undo2Icon,
       keywords: ['reopen', 'undo', 'restore', 'tab'],
-      defaultKeybindings: ['Ctrl+Shift+T'],
+      defaultKeybindings: platform.native ? ['Ctrl+Shift+T'] : [],
       visible: hasClosedTabs,
       run: reopenTab
     }),

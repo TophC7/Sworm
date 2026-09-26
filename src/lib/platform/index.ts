@@ -26,7 +26,6 @@ export interface PlatformCapabilities {
   nativeWindowControls: boolean
   zoom: boolean
   saveAsDialog: boolean
-  localAssetUrls: boolean
   nativeFileClipboard: boolean
   nativeDirectoryPicker: boolean
   externalFileOpen: boolean
@@ -126,13 +125,21 @@ export interface NativePlatform {
   zoom: { setZoom(level: number): Promise<void> }
 }
 
+export interface AssetHandle {
+  url: string
+  dispose(): void
+}
+
 export interface Platform {
-  readonly workbench: { readonly id: string }
+  readonly workbench: { readonly id: string; closeCurrent?(): Promise<void> }
   app: { version(): Promise<string> }
   clipboard: { readText(): Promise<string>; writeText(text: string): Promise<void> }
   links: { openExternal(url: string): Promise<void> }
   focus: { onChanged(handler: (focused: boolean) => void): Promise<Unsubscribe> }
-  assets: { url(folderPath: string, filePath: string): string }
+  // Native assets have no allocated URL resource; web assets do.
+  assets:
+    | { url(folderPath: string, filePath: string): string }
+    | { load(folderPath: string, filePath: string, signal: AbortSignal): Promise<AssetHandle> }
   capabilities: PlatformCapabilities
   native: NativePlatform | null
 }

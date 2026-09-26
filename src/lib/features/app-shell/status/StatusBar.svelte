@@ -21,6 +21,9 @@
   import { openRemoteManager } from '$lib/features/remotes/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import type { RemoteStatus } from '$lib/types/backend'
+  import type { Snippet } from 'svelte'
+
+  let { connectionStatus }: { connectionStatus?: Snippet } = $props()
 
   let folderPath = $derived(getActiveFolderPath())
   let remote = $derived(folderPath ? splitRemotePath(folderPath) : null)
@@ -97,6 +100,7 @@
 >
   <div class="flex items-center gap-1">
     <StatusBarAppInfo />
+    {#if connectionStatus}{@render connectionStatus()}{/if}
     {#if remoteServer && platform.capabilities.remoteHosts}
       <StatusChip
         onclick={openRemoteManager}

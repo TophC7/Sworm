@@ -33,7 +33,7 @@
   import type { Snippet } from 'svelte'
   import { initDeepLinks } from '$lib/features/remotes/deepLink.svelte'
 
-  let { children }: { children: Snippet } = $props()
+  let { children, connectionStatus }: { children: Snippet; connectionStatus?: Snippet } = $props()
 
   // Keep xterm's textarea focus aligned with the active session.
   //
@@ -166,7 +166,7 @@
       {@render children()}
     </main>
 
-    <StatusBar />
+    <StatusBar {connectionStatus} />
   </div>
 
   <!-- Dialogs and overlays live under the same Tooltip.Provider as the
