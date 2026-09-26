@@ -1471,6 +1471,104 @@ impl PtyService {
         true
     }
 
+    /// Stop one owned run for a non-transferable owner's explicit close. The
+    /// caller holds the coordinator run gate after closing owner admission.
+    /// `Ok(false)` means nothing of this owner's remained to stop. A failed
+    /// kill keeps the entry, backend and flags intact so a retry reaches it.
+    pub fn stop_owned_run(&self, run_id: &str, owner_id: &str) -> Result<bool, String> {
+        let Ok(entry) = self.entry(run_id) else {
+            return Ok(false);
+        };
+        let live = {
+            let state = entry.state.lock();
+            if state.owner_id.as_deref() != Some(owner_id) {
+                return Ok(false);
+            }
+            match &state.run {
+                RunSlot::Active(live) => Some(Arc::clone(live)),
+                RunSlot::Reserved => None,
+                RunSlot::Retired => return Ok(false),
+            }
+        };
+        if let Some(live) = &live {
+            // Backend I/O happens outside registry and stream locks.
+            let kill_needed = !live.event_sink.is_completed();
+            if kill_needed {
+                if let Err(error) = live.backend.kill() {
+                    if !live.event_sink.is_completed() {
+                        return Err(error);
+                    }
+                }
+            }
+            live.shutdown.store(true, Ordering::Release);
+            live.finalized.store(true, Ordering::Release);
+        }
+        // Retire only the exact incarnation observed above; a natural exit may
+        // already have removed it. A retired reservation cancels its start.
+        let mut state = entry.state.lock();
+        let mut sessions = self.sessions.lock();
+        let same = match (&state.run, &live) {
+            (RunSlot::Active(current), Some(expected)) => Arc::ptr_eq(current, expected),
+            (RunSlot::Reserved, None) => true,
+            // A reservation published a process after the snapshot; stop it on retry.
+            (RunSlot::Active(_), None) => {
+                return Err(format!("PTY startup completed during stop: {run_id}"));
+            }
+            _ => false,
+        };
+        if same
+            && sessions
+                .get(run_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &entry))
+        {
+            state.run = RunSlot::Retired;
+            sessions.remove(run_id);
+        }
+        Ok(true)
+    }
+
+    /// The owner of `entry` while it is a live, noncompleted run. Reservations,
+    /// completed transcripts and ownerless runs have none.
+    fn live_owner(entry: &RunEntry) -> Option<String> {
+        let (owner, live) = {
+            let state = entry.state.lock();
+            match (&state.owner_id, &state.run) {
+                (Some(owner), RunSlot::Active(live)) => (owner.clone(), Arc::clone(live)),
+                _ => return None,
+            }
+        };
+        (!live.shutdown.load(Ordering::Acquire) && !live.event_sink.is_completed()).then_some(owner)
+    }
+
+    fn entries(&self) -> Vec<(String, Arc<RunEntry>)> {
+        self.sessions
+            .lock()
+            .iter()
+            .map(|(id, entry)| (id.clone(), Arc::clone(entry)))
+            .collect()
+    }
+
+    /// Live run ids per owner, each list sorted; see [`Self::live_owner`].
+    /// The answer may change right after.
+    pub fn live_owner_runs(&self) -> HashMap<String, Vec<String>> {
+        let mut runs: HashMap<String, Vec<String>> = HashMap::new();
+        for (run_id, entry) in self.entries() {
+            if let Some(owner) = Self::live_owner(&entry) {
+                runs.entry(owner).or_default().push(run_id);
+            }
+        }
+        runs.values_mut().for_each(|ids| ids.sort());
+        runs
+    }
+
+    /// Whether `owner_id` has any live run; stops at the first. The answer may
+    /// change right after.
+    pub fn owner_has_live_run(&self, owner_id: &str) -> bool {
+        self.entries()
+            .iter()
+            .any(|(_, entry)| Self::live_owner(entry).as_deref() == Some(owner_id))
+    }
+
     pub fn kill_owner(&self, owner_id: &str, protected: &HashSet<String>) -> Vec<String> {
         self.owner_run_ids(owner_id, protected)
             .into_iter()
@@ -2361,6 +2459,98 @@ mod tests {
             vec!["adopted".to_string()]
         );
         assert!(killed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn live_owner_runs_only_live_owned_runs() {
+        let service = PtyService::new();
+        let adopt = |id: &str, owner: Option<&str>, detaches: bool| {
+            service
+                .adopt(
+                    id.to_string(),
+                    Box::new(FakeBackend {
+                        killed: Arc::new(AtomicBool::new(false)),
+                        detaches,
+                    }),
+                    None,
+                    owner.map(str::to_string),
+                )
+                .unwrap();
+        };
+        adopt("a1", Some("a"), false);
+        adopt("a2", Some("a"), false);
+        adopt("b-done", Some("b"), true);
+        adopt("ownerless", None, false);
+        service.reserve("a-starting", Some("a".into())).unwrap();
+        service.complete_adopted("b-done", Some(0)).unwrap();
+        adopt("c-retained", Some("c"), false);
+        service
+            .active("c-retained")
+            .unwrap()
+            .event_sink
+            .state
+            .lock()
+            .completed = true;
+
+        assert_eq!(
+            service.live_owner_runs(),
+            HashMap::from([("a".to_string(), vec!["a1".to_string(), "a2".to_string()])])
+        );
+        assert!(service.owner_has_live_run("a"));
+        for owner in ["b", "c", "missing"] {
+            assert!(!service.owner_has_live_run(owner), "{owner}");
+        }
+    }
+
+    #[test]
+    fn stop_owned_run_ignores_foreign_and_retires_reservation_and_completion() {
+        let service = PtyService::new();
+        let killed = Arc::new(AtomicBool::new(false));
+        service
+            .adopt(
+                "foreign".to_string(),
+                Box::new(FakeBackend {
+                    killed: Arc::clone(&killed),
+                    detaches: false,
+                }),
+                None,
+                Some("other".to_string()),
+            )
+            .unwrap();
+        assert_eq!(service.stop_owned_run("foreign", "owner"), Ok(false));
+        assert!(!killed.load(Ordering::Acquire));
+        assert_eq!(service.run_state("foreign"), Some(PtyRunState::Live));
+        assert_eq!(service.stop_owned_run("missing", "owner"), Ok(false));
+
+        service.reserve("starting", Some("owner".into())).unwrap();
+        assert_eq!(service.stop_owned_run("starting", "owner"), Ok(true));
+        assert!(service.entry("starting").is_err());
+
+        let done_killed = Arc::new(AtomicBool::new(false));
+        service
+            .adopt(
+                "done".to_string(),
+                Box::new(FakeBackend {
+                    killed: Arc::clone(&done_killed),
+                    detaches: false,
+                }),
+                None,
+                Some("owner".to_string()),
+            )
+            .unwrap();
+        service
+            .active("done")
+            .unwrap()
+            .event_sink
+            .state
+            .lock()
+            .completed = true;
+        assert_eq!(service.stop_owned_run("done", "owner"), Ok(true));
+        assert!(
+            !done_killed.load(Ordering::Acquire),
+            "completed run killed again"
+        );
+        assert!(service.run_state("done").is_none());
     }
 
     #[test]

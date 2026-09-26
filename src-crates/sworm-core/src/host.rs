@@ -1,16 +1,27 @@
 use crate::events::{EventSink, HostEvent};
 use crate::services::{
-    db::DatabaseService, env::EnvironmentService, file_watcher::FileWatcherService,
-    files::FileService, git::GitService, git_watcher::GitWatcherService,
-    issue_bridge::IssueBridgeService, issues::IssueService, lsp::LspService,
-    providers::ProviderService, pty::PtyService, resume_discovery::ResumeDiscoveryService,
-    runs::RunCoordinator, settings_watcher::SettingsWatcherService, tasks::TaskService,
+    db::DatabaseService,
+    env::EnvironmentService,
+    file_watcher::FileWatcherService,
+    files::FileService,
+    git::GitService,
+    git_watcher::GitWatcherService,
+    issue_bridge::IssueBridgeService,
+    issues::IssueService,
+    lsp::LspService,
+    providers::ProviderService,
+    pty::PtyService,
+    resume_discovery::ResumeDiscoveryService,
+    runs::{RunCoordinator, RunKind},
+    settings_watcher::SettingsWatcherService,
+    tasks::TaskService,
 };
 use parking_lot::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sworm_protocol::activity_map::DiscoveredProject;
+use sworm_protocol::rpc::WorkbenchRun;
 
 /// Services and workflows executing on one development host. The embedding
 /// application supplies storage location, event delivery and lifetime policy.
@@ -114,6 +125,36 @@ impl Host {
         });
     }
 
+    /// Explicitly close a non-transferable owner. Unlike `release_owner`, a
+    /// failed kill keeps that run tracked with its metadata and singleton lease,
+    /// and returns an error; the owner stays closed so a retry stops the rest.
+    pub fn stop_owner(&self, owner: &str) -> Result<(), crate::errors::ApiError> {
+        self.runs.close_owner(owner, || {
+            let mut failures = Vec::new();
+            for run_id in self.pty.owner_run_ids(owner, &HashSet::new()) {
+                self.runs.with_run(&run_id, |runs| {
+                    match self.pty.stop_owned_run(&run_id, owner) {
+                        Ok(true) => {
+                            self.resume_discovery.cancel(&run_id);
+                            self.tasks.release_singleton_by_run_id(&run_id);
+                            runs.release(&run_id);
+                        }
+                        Ok(false) => {}
+                        Err(error) => failures.push(format!("{run_id}: {error}")),
+                    }
+                });
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(crate::errors::ApiError::Pty(format!(
+                    "Failed to stop runs: {}",
+                    failures.join("; ")
+                )))
+            }
+        })
+    }
+
     /// A replacement view reports restored tasks; completed locals absent from it can be released.
     pub fn release_unrestored_tasks(
         &self,
@@ -123,6 +164,33 @@ impl Host {
         let _owner = self.runs.owner_activity(Some(owner))?;
         self.runs
             .release_unrestored_tasks(owner, restored, &self.pty)
+    }
+
+    /// Live, noncompleted runs per owner with their folder and kind. Runs
+    /// whose coordinator record is gone are skipped.
+    pub fn live_runs_by_owner(&self) -> HashMap<String, Vec<WorkbenchRun>> {
+        self.pty
+            .live_owner_runs()
+            .into_iter()
+            .map(|(owner, run_ids)| {
+                let runs = self
+                    .runs
+                    .describe(&run_ids)
+                    .into_iter()
+                    .map(|(folder, kind)| {
+                        let folder = folder.to_string_lossy().into_owned();
+                        match kind {
+                            RunKind::Session { provider_id } => WorkbenchRun::Session {
+                                folder,
+                                provider_id,
+                            },
+                            RunKind::Task { task_id } => WorkbenchRun::Task { folder, task_id },
+                        }
+                    })
+                    .collect();
+                (owner, runs)
+            })
+            .collect()
     }
 
     pub fn settings_generation(&self) -> u64 {

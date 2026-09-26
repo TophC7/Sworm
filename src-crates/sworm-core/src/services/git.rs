@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, CommitFileChange, GitChange, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, CommitFileChange, GitBrief, GitChange, GitSummary, GraphCommit, StashEntry,
 };
 use tracing::warn;
 
@@ -366,6 +366,75 @@ impl GitService {
         };
         self.store_summary(path, generation, &summary);
         Ok(summary)
+    }
+
+    /// Branch, distinct changed-path count and upstream ahead/behind from a
+    /// single `git status` run, for surfaces that never show per-file changes.
+    /// Uncached: Home asks once per card per visit. Error handling mirrors
+    /// [`Self::get_summary`]: a missing directory fails, a plain one is `is_repo: false`.
+    pub fn get_brief(&self, path: &Path) -> Result<GitBrief, String> {
+        let output = std::process::Command::new("git")
+            .args([
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "-z",
+                "--untracked-files=all",
+            ])
+            .env("LC_ALL", "C")
+            .current_dir(path)
+            .output()
+            .map_err(|error| format!("Failed to read Git status: {error}"))?;
+        let mut brief = GitBrief {
+            is_repo: false,
+            branch: None,
+            changed: 0,
+            ahead: None,
+            behind: None,
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("not a git repository")
+                || stderr.contains("must be run in a work tree")
+            {
+                return Ok(brief);
+            }
+            let detail = stderr.trim();
+            return Err(if detail.is_empty() {
+                format!(
+                    "Failed to read Git status: git exited with {}",
+                    output.status
+                )
+            } else {
+                format!("Failed to read Git status: {detail}")
+            });
+        }
+
+        brief.is_repo = true;
+        let mut records = output.stdout.split(|byte| *byte == 0);
+        while let Some(record) = records.next() {
+            match record.first() {
+                Some(b'#') => {
+                    let header = String::from_utf8_lossy(record);
+                    if let Some(head) = header.strip_prefix("# branch.head ") {
+                        brief.branch = (head != "(detached)").then(|| head.to_string());
+                    } else if let Some(ab) = header.strip_prefix("# branch.ab ") {
+                        let (ahead, behind) = ab.split_once(' ').unwrap_or_default();
+                        brief.ahead = ahead.trim_start_matches('+').parse().ok();
+                        brief.behind = behind.trim_start_matches('-').parse().ok();
+                    }
+                }
+                Some(b'1' | b'u' | b'?') => brief.changed += 1,
+                Some(b'2') => {
+                    brief.changed += 1;
+                    // Renames and copies carry their original path as a separate record.
+                    records.next();
+                }
+                _ => {}
+            }
+        }
+        Ok(brief)
     }
 
     /// Get changed files using porcelain v2 + numstat.
@@ -2304,6 +2373,34 @@ mod tests {
             "corrupt index must surface the git status failure"
         );
 
+        std::fs::remove_dir_all(plain).ok();
+    }
+
+    #[test]
+    fn brief_counts_distinct_paths_and_distinguishes_non_repo() {
+        let service = GitService::new();
+        let repo = temp_repo("brief");
+        // Staged and unstaged edits to one path still count once.
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        std::fs::write(repo.join("a.txt"), "three\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+
+        let brief = service.get_brief(&repo).unwrap();
+        assert!(brief.is_repo);
+        assert_eq!(brief.branch.as_deref(), Some("main"));
+        assert_eq!(brief.changed, 2);
+        assert_eq!((brief.ahead, brief.behind), (None, None), "no upstream");
+
+        let plain = repo.with_extension("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!service.get_brief(&plain).unwrap().is_repo);
+        assert!(
+            service.get_brief(&plain.join("missing")).is_err(),
+            "missing working directory must not masquerade as a non-repository"
+        );
+
+        std::fs::remove_dir_all(repo).ok();
         std::fs::remove_dir_all(plain).ok();
     }
 

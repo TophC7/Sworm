@@ -32,6 +32,8 @@ export interface PlatformCapabilities {
   externalFileOpen: boolean
   fileClaims: boolean
   remoteHosts: boolean
+  /** Server-owned workbenches the user can switch between and close (web). */
+  durableWorkbenches: boolean
 }
 
 export interface TransferRequestEvent {

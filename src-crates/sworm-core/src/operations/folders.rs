@@ -5,6 +5,7 @@ use crate::services::app_state_kv::AppStateKvService;
 use crate::services::folders::{find_path_root, folder_name, resolve_folder};
 use rusqlite::Connection;
 use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
+use sworm_protocol::rpc::RecentFolder;
 
 const RECENT_FOLDERS_KEY: &str = "recent_folders";
 
@@ -23,16 +24,22 @@ impl Host {
         Ok(find_path_root(&resolve_folder(&path)?))
     }
 
-    pub async fn recent_folders_list(&self) -> Result<Vec<String>, ApiError> {
+    pub async fn recent_folders_list(&self) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.read();
         read_recent_folders(db.conn())
     }
 
-    pub async fn recent_folders_touch(&self, path: String) -> Result<Vec<String>, ApiError> {
+    pub async fn recent_folders_touch(&self, path: String) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.write();
         let mut folders = read_recent_folders(db.conn())?;
-        folders.retain(|folder| folder != &path);
-        folders.insert(0, path);
+        folders.retain(|folder| folder.path != path);
+        folders.insert(
+            0,
+            RecentFolder {
+                path,
+                opened_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
         folders.truncate(12);
         save_recent_folders(db.conn(), &folders)?;
         (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
@@ -40,10 +47,13 @@ impl Host {
         Ok(folders)
     }
 
-    pub async fn recent_folders_remove(&self, paths: Vec<String>) -> Result<Vec<String>, ApiError> {
+    pub async fn recent_folders_remove(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.write();
         let mut folders = read_recent_folders(db.conn())?;
-        folders.retain(|folder| !paths.contains(folder));
+        folders.retain(|folder| !paths.contains(&folder.path));
         save_recent_folders(db.conn(), &folders)?;
         (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
             .map_err(ApiError::Internal)?;
@@ -61,7 +71,7 @@ impl Host {
     }
 }
 
-fn read_recent_folders(conn: &Connection) -> Result<Vec<String>, ApiError> {
+fn read_recent_folders(conn: &Connection) -> Result<Vec<RecentFolder>, ApiError> {
     AppStateKvService::new()
         .get(conn, RECENT_FOLDERS_KEY)
         .map_err(ApiError::Database)?
@@ -72,7 +82,7 @@ fn read_recent_folders(conn: &Connection) -> Result<Vec<String>, ApiError> {
         .map(Option::unwrap_or_default)
 }
 
-fn save_recent_folders(conn: &Connection, folders: &[String]) -> Result<(), ApiError> {
+fn save_recent_folders(conn: &Connection, folders: &[RecentFolder]) -> Result<(), ApiError> {
     let json =
         serde_json::to_string(folders).map_err(|error| ApiError::Internal(error.to_string()))?;
     AppStateKvService::new()

@@ -14,7 +14,7 @@
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
   import { activateGitFolder, getGitFreshness, getGitSummary } from '$lib/features/git/state.svelte'
   import SidebarRail from '$lib/features/app-shell/sidebar/SidebarRail.svelte'
-  import EmptyState from '$lib/features/app-shell/EmptyState.svelte'
+  import WorkbenchHome from '$lib/features/home/WorkbenchHome.svelte'
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
   import FilesSidebar from '$lib/features/files/FilesSidebar.svelte'
   import IssuesSidebar from '$lib/features/issues/IssuesSidebar.svelte'
@@ -125,7 +125,7 @@
     {#if activeTab}
       <SurfaceHost {activeTab} />
     {:else}
-      <EmptyState />
+      <WorkbenchHome />
     {/if}
     {#if tabDropActive}
       <div

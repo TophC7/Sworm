@@ -221,6 +221,17 @@ impl RunCoordinator {
         Ok(())
     }
 
+    /// Folder and kind of each tracked run, in input order; untracked ids are
+    /// skipped.
+    pub(crate) fn describe(&self, run_ids: &[String]) -> Vec<(PathBuf, RunKind)> {
+        let state = self.state.lock();
+        run_ids
+            .iter()
+            .filter_map(|id| state.records.get(id))
+            .map(|record| (record.folder.clone(), record.kind.clone()))
+            .collect()
+    }
+
     /// Set once, before daemon runs start. Desktop hosts leave transcripts in memory.
     pub(crate) fn configure_completed_runs(&self, store: Arc<CompletedRunStore>) {
         let mut state = self.state.lock();
@@ -1507,5 +1518,101 @@ mod tests {
             events: Vec::new(),
         });
         assert!(fixture.host.completed_run("closed").unwrap().is_none());
+    }
+
+    struct KillOnSecondTry {
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::services::pty::RunBackend for KillOnSecondTry {
+        fn write(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn resize(&self, _: u16, _: u16) -> Result<(), String> {
+            Ok(())
+        }
+        fn kill(&self) -> Result<(), String> {
+            match self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            {
+                0 => Err("kill failed".into()),
+                _ => Ok(()),
+            }
+        }
+        fn detaches_on_shutdown(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn failed_owner_stop_keeps_failed_run_retryable_and_owner_fenced() {
+        let fixture = Fixture::new("true");
+        let host = &fixture.host;
+        let mut attempts = Vec::new();
+        for id in ["stubborn", "plain"] {
+            let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let backend = KillOnSecondTry {
+                attempts: Arc::clone(&tries),
+            };
+            // The ordinary run consumes its failing attempt up front.
+            if id == "plain" {
+                tries.store(1, std::sync::atomic::Ordering::Release);
+            }
+            host.runs.with_run(id, |runs| {
+                runs.reserve(
+                    id,
+                    fixture.folder.clone(),
+                    RunKind::Task { task_id: id.into() },
+                );
+            });
+            host.tasks
+                .register_singleton(fixture.folder.clone(), id.into(), id.into())
+                .unwrap();
+            host.pty
+                .adopt(id.into(), Box::new(backend), None, Some("owner".into()))
+                .unwrap();
+            attempts.push(tries);
+        }
+        let tracked = |id: &str| host.runs.state.lock().records.contains_key(id);
+        // A probe registration succeeds only once the candidate's lease is gone.
+        let leased = |task: &str| {
+            let free = host
+                .tasks
+                .register_singleton(fixture.folder.clone(), task.into(), "probe".into())
+                .is_ok();
+            host.tasks.release_singleton_by_run_id("probe");
+            !free
+        };
+        assert!(leased("stubborn") && leased("plain"));
+
+        assert!(matches!(host.stop_owner("owner"), Err(ApiError::Pty(_))));
+        assert_eq!(host.pty.run_state("stubborn"), Some(PtyRunState::Live));
+        assert!(tracked("stubborn"), "failed run lost its metadata");
+        host.pty
+            .write("stubborn", b"still reachable")
+            .expect("failed stop marked the run shut down");
+        assert!(host.pty.run_state("plain").is_none());
+        assert!(!tracked("plain"), "stopped run kept its metadata");
+        assert!(leased("stubborn"), "failed run lost its singleton lease");
+        assert!(!leased("plain"), "stopped run kept its singleton lease");
+        assert!(matches!(
+            host.runs.owner_activity(Some("owner")),
+            Err(ApiError::NotFound(_))
+        ));
+
+        host.stop_owner("owner").unwrap();
+        assert!(host.pty.run_state("stubborn").is_none());
+        assert!(!tracked("stubborn"));
+        assert!(!leased("stubborn"), "retry kept the singleton lease");
+        assert_eq!(
+            attempts
+                .iter()
+                .map(|tries| tries.load(std::sync::atomic::Ordering::Acquire))
+                .collect::<Vec<_>>(),
+            vec![2, 2],
+            "stopped run was killed again on retry"
+        );
+        assert!(host.runs.owner_activity(Some("owner")).is_err());
     }
 }

@@ -42,6 +42,43 @@ pub struct RunStatus {
     pub exited: Option<Option<i32>>,
 }
 
+/// A durable web workbench as the Home screen lists it. `connected` and `running`
+/// are live observations, never persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkbenchInfo {
+    pub id: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub connected: bool,
+    /// Distinct tab folder paths from the saved V4 snapshot: the active tab's
+    /// folder first, then tab order. Empty when malformed/unrecognized.
+    pub folders: Vec<String>,
+    /// Live, noncompleted runs owned by this workbench.
+    pub running: Vec<WorkbenchRun>,
+}
+
+/// A live run owned by a durable web workbench.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkbenchRun {
+    /// `provider_id` is `"terminal"` for shells.
+    Session {
+        folder: String,
+        provider_id: String,
+    },
+    Task {
+        folder: String,
+        task_id: String,
+    },
+}
+
+/// A recently opened folder; `opened_at` is RFC 3339 UTC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentFolder {
+    pub path: String,
+    pub opened_at: String,
+}
+
 fn deserialize_exit<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<i32>>, D::Error> {
@@ -73,13 +110,17 @@ macro_rules! sworm_rpc_ops {
             #[route(none)]
             AppStateDelete => app_state_delete(key: String) -> ();
             #[route(none)]
+            WorkbenchList => workbench_list() -> Vec<$crate::rpc::WorkbenchInfo>;
+            #[route(none)]
+            WorkbenchClose => workbench_close(id: String) -> ();
+            #[route(none)]
             AppRuntimeInfo => app_runtime_info() -> $crate::app::AppRuntimeInfo;
             #[route(none)]
-            RecentFoldersList => recent_folders_list() -> Vec<String>;
+            RecentFoldersList => recent_folders_list() -> Vec<$crate::rpc::RecentFolder>;
             #[route(none)]
-            RecentFoldersTouch => recent_folders_touch(path: String) -> Vec<String>;
+            RecentFoldersTouch => recent_folders_touch(path: String) -> Vec<$crate::rpc::RecentFolder>;
             #[route(none)]
-            RecentFoldersRemove => recent_folders_remove(paths: Vec<String>) -> Vec<String>;
+            RecentFoldersRemove => recent_folders_remove(paths: Vec<String>) -> Vec<$crate::rpc::RecentFolder>;
             #[route(folder_path)]
             FolderClaim => folder_claim(folder_path: String) -> ();
             #[route(folder_path)]
@@ -175,6 +216,10 @@ macro_rules! sworm_rpc_ops {
             GitGetSummary => git_get_summary(
                 path: String,
             ) -> $crate::git::GitSummary;
+            #[route(path)]
+            GitGetBrief => git_get_brief(
+                path: String,
+            ) -> $crate::git::GitBrief;
             #[route(path)]
             FolderResolve => folder_resolve(
                 path: String,
@@ -843,7 +888,7 @@ pub enum HostEventWire {
     TasksChanged(String),
     NixChanged(String),
     IssuesChanged(String),
-    RecentFoldersChanged(Vec<String>),
+    RecentFoldersChanged(Vec<RecentFolder>),
 }
 
 /// Wire mirror of `sworm_core::errors::ApiError` plus transport-level auth.
@@ -946,14 +991,26 @@ mod tests {
 
     #[test]
     fn recent_folders_event_serializes_as_host_global_payload() {
-        let folders = vec!["sworm://host/repo".to_owned(), "/local/repo".to_owned()];
+        let folders = vec![
+            RecentFolder {
+                path: "sworm://host/repo".to_owned(),
+                opened_at: "2026-01-02T03:04:05+00:00".to_owned(),
+            },
+            RecentFolder {
+                path: "/local/repo".to_owned(),
+                opened_at: "2026-01-01T03:04:05+00:00".to_owned(),
+            },
+        ];
         let encoded =
             serde_json::to_value(HostEventWire::RecentFoldersChanged(folders.clone())).unwrap();
         assert_eq!(
             encoded,
             serde_json::json!({
                 "kind": "recent_folders_changed",
-                "payload": ["sworm://host/repo", "/local/repo"],
+                "payload": [
+                    { "path": "sworm://host/repo", "opened_at": "2026-01-02T03:04:05+00:00" },
+                    { "path": "/local/repo", "opened_at": "2026-01-01T03:04:05+00:00" },
+                ],
             })
         );
         let HostEventWire::RecentFoldersChanged(decoded) = serde_json::from_value(encoded).unwrap()

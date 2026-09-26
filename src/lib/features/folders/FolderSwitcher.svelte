@@ -349,7 +349,7 @@
     return untrack(() => {
       if (!opened) return
       const previousFocus = document.activeElement
-      const initialPath = getActiveFolderPath() ?? getRecentFolders()[0] ?? null
+      const initialPath = getActiveFolderPath() ?? getRecentFolders()[0]?.path ?? null
       if (initialPath && basename(initialPath).startsWith('.')) {
         showHidden = true
       }

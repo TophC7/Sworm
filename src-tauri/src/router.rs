@@ -1562,6 +1562,9 @@ macro_rules! define_router_operation {
         #[route(folder_path)]
         FolderRelease => $method:ident($folder_path:ident: $folder_path_type:ty $(,)?) -> $return_type:ty;
     ) => {};
+    // Daemon-owned web workbench registry: handled only by server dispatch.
+    (#[route(none)] WorkbenchList => $($rest:tt)*) => {};
+    (#[route(none)] WorkbenchClose => $($rest:tt)*) => {};
     (
         #[route(none)]
         FolderPathRoot => $method:ident($path:ident: $path_type:ty $(,)?) -> $return_type:ty;

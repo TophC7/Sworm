@@ -9,5 +9,6 @@ mod pty_stream;
 mod server;
 mod stream;
 mod web;
+mod workbenches;
 
 pub use server::{serve, ServeOptions, ServerHandle};

@@ -246,8 +246,11 @@ let pending: (() => PersistedWorkbenchV4) | null = null
 // Session/task status ticks commit the workbench without changing the
 // persisted shape; skip the SQLite write when the blob is byte-identical.
 let lastWrittenJson: string | null = null
+// Web documents lose control on takeover/Close; nothing may write afterwards.
+let stopped = false
 
 export function schedulePersistWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4): void {
+  if (stopped) return
   pending = produce
   clearTimeout(timer)
   timer = setTimeout(() => {
@@ -263,6 +266,7 @@ export function schedulePersistWorkbench(workbenchId: string, produce: () => Per
  * producer is requeued unless a newer mutation was scheduled meanwhile.
  */
 export async function flushWorkbench(workbenchId: string): Promise<void> {
+  if (stopped) throw new Error('Workbench is no longer controlled by this page')
   const produce = pending
   pending = null
   clearTimeout(timer)
@@ -274,9 +278,20 @@ export async function flushWorkbench(workbenchId: string): Promise<void> {
     await backend.app.statePut(`workbench:${workbenchId}`, json)
     lastWrittenJson = json
   } catch (error) {
-    if (pending === null) pending = produce
+    if (pending === null && !stopped) pending = produce
     throw error
   }
+}
+
+/**
+ * Permanently suspend this document's persistence (web takeover/Close). No
+ * reset: a new document gets a fresh module instance. Desktop never calls it.
+ */
+export function stopWorkbenchPersistence(): void {
+  stopped = true
+  pending = null
+  clearTimeout(timer)
+  timer = undefined
 }
 
 // ---------------------------------------------------------------------------

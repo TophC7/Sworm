@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use sworm_protocol::branch::{BranchOpState, BranchSummary};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, DiffFileContent, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, DiffFileContent, GitBrief, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
 };
 
 /// Lightweight defense against arg-injection for branch / remote
@@ -311,6 +311,15 @@ impl Host {
     pub async fn git_get_summary(&self, path: String) -> Result<GitSummary, ApiError> {
         let git = std::sync::Arc::clone(&self.git);
         tokio::task::spawn_blocking(move || git.get_summary(Path::new(&path)))
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?
+            .map_err(ApiError::Internal)
+    }
+
+    /// Branch, changed-path count and upstream ahead/behind from one `git status`.
+    pub async fn git_get_brief(&self, path: String) -> Result<GitBrief, ApiError> {
+        let git = std::sync::Arc::clone(&self.git);
+        tokio::task::spawn_blocking(move || git.get_brief(Path::new(&path)))
             .await
             .map_err(|error| ApiError::Internal(error.to_string()))?
             .map_err(ApiError::Internal)

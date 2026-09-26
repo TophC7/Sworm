@@ -91,11 +91,18 @@ impl RunFanout {
         }
     }
 
+    /// Fences this stream's queued input without closing the run: a blocking
+    /// write already holding the owner lock completes first, a later `begin`
+    /// still attaches, and a stale finish cannot fence a newer attachment.
     fn finish(&self, host: &Host, run_id: &str, generation: u64) {
         let mut owner = self.owner.lock();
         if !owner.active || owner.generation != generation {
             return;
         }
+        owner.generation = owner
+            .generation
+            .checked_add(1)
+            .expect("PTY stream generation overflow");
         if let Some(attachment) = owner.attachment.take() {
             let _ = host.pty.pause_attachment(run_id, attachment);
         }
@@ -502,4 +509,110 @@ async fn write_stream_error(send: &mut StreamWriter, error: WireError) {
         return;
     }
     let _ = send.finish().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Bytes;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use sworm_core::services::pty::RunBackend;
+
+    struct GatedBackend {
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl RunBackend for GatedBackend {
+        fn write(&self, data: &[u8]) -> Result<(), String> {
+            self.entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+            self.writes.lock().push(data.to_vec());
+            Ok(())
+        }
+        fn resize(&self, _: u16, _: u16) -> Result<(), String> {
+            Ok(())
+        }
+        fn kill(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn detaches_on_shutdown(&self) -> bool {
+            false
+        }
+    }
+
+    fn raw(bytes: &'static [u8]) -> Frame<PtyUp> {
+        Frame::Raw(Bytes::from_static(bytes))
+    }
+
+    #[test]
+    fn finish_waits_for_running_input_and_fences_queued_input_until_next_begin() {
+        let scratch = tempfile::tempdir().unwrap();
+        let events: EventSink<sworm_core::events::HostEvent> = Arc::new(|_| Ok(()));
+        let host = Arc::new(Host::new(scratch.path().join("server.db"), events).unwrap());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        host.pty
+            .adopt(
+                "run".into(),
+                Box::new(GatedBackend {
+                    writes: Arc::clone(&writes),
+                    entered: entered_tx,
+                    release: Mutex::new(release_rx),
+                }),
+                None,
+                Some("workbench".into()),
+            )
+            .unwrap();
+        let fanout = Arc::new(RunFanout::new());
+        let (old, _) = fanout.begin().unwrap();
+
+        let writing = {
+            let (host, fanout) = (Arc::clone(&host), Arc::clone(&fanout));
+            std::thread::spawn(move || fanout.input(&host, "run", old, raw(b"accepted")))
+        };
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (finished_tx, finished) = mpsc::channel();
+        let finishing = {
+            let (host, fanout) = (Arc::clone(&host), Arc::clone(&fanout));
+            std::thread::spawn(move || {
+                fanout.finish(&host, "run", old);
+                finished_tx.send(()).unwrap();
+            })
+        };
+        assert!(
+            finished.recv_timeout(Duration::from_millis(100)).is_err(),
+            "finish overtook an input already writing to the backend"
+        );
+        release.send(()).unwrap();
+        writing.join().unwrap().unwrap();
+        finishing.join().unwrap();
+
+        // A queued old-generation input observes the fence and never reaches the backend.
+        fanout.input(&host, "run", old, raw(b"queued")).unwrap();
+        assert!(
+            entered.try_recv().is_err(),
+            "fenced input reached the backend"
+        );
+        assert_eq!(*writes.lock(), vec![b"accepted".to_vec()]);
+
+        // Ordinary detach keeps the run attachable; a stale finish cannot fence it.
+        let (current, _) = fanout.begin().unwrap();
+        fanout.finish(&host, "run", old);
+        let writing = {
+            let (host, fanout) = (Arc::clone(&host), Arc::clone(&fanout));
+            std::thread::spawn(move || fanout.input(&host, "run", current, raw(b"current")))
+        };
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        release.send(()).unwrap();
+        writing.join().unwrap().unwrap();
+        assert_eq!(
+            *writes.lock(),
+            vec![b"accepted".to_vec(), b"current".to_vec()]
+        );
+        host.shutdown();
+    }
 }

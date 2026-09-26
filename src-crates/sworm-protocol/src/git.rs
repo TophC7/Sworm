@@ -24,6 +24,17 @@ pub struct GitSummary {
     pub untracked_count: i32,
 }
 
+/// Cheap git state for a Home project card: one `git status` pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitBrief {
+    pub is_repo: bool,
+    pub branch: Option<String>,
+    /// Distinct changed paths, untracked included.
+    pub changed: u32,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+}
+
 /// Commit data for git graph rendering (includes parent hashes and refs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphCommit {

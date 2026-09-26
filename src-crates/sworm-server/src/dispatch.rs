@@ -1,4 +1,4 @@
-use crate::{auth, events::HostEvents, pty_stream::RunFanout};
+use crate::{auth, events::HostEvents, pty_stream::RunFanout, workbenches};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -28,6 +28,8 @@ pub(crate) struct ServerContext {
     /// Per-connection LSP streams, keyed by session id. A session's stream
     /// owns its server: closing it kills the process.
     pub lsp: crate::lsp_stream::LspStreams,
+    /// Durable web workbench registry and its per-workbench transition slots.
+    pub(crate) workbenches: workbenches::Workbenches,
 }
 
 #[derive(Default)]
@@ -130,6 +132,7 @@ impl ServerContext {
             host_events,
             lsp: crate::lsp_stream::LspStreams::new(),
             runs: parking_lot::Mutex::new(RunRegistry::default()),
+            workbenches: workbenches::Workbenches::new(),
         }
     }
 
@@ -203,6 +206,27 @@ impl ServerContext {
     async fn invalidate_run(&self, run_id: &str) -> Result<(), WireError> {
         self.publish_run(run_id, false).await
     }
+
+    /// After an owner stop, retire the transport lease of every run that is
+    /// gone. Runs whose stop failed stay published for the retry.
+    pub(crate) async fn retire_stopped_runs(
+        &self,
+        host: &Arc<Host>,
+        run_ids: Vec<String>,
+    ) -> Result<(), WireError> {
+        for run_id in run_ids {
+            let _operation = self.run_operation(&run_id).await;
+            let state_host = Arc::clone(host);
+            let id = run_id.clone();
+            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
+                .await
+                .map_err(run_operation_join)?;
+            if !live {
+                self.invalidate_run(&run_id).await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn run_operation_join(error: tokio::task::JoinError) -> WireError {
@@ -217,6 +241,29 @@ fn folder_operation_join(error: tokio::task::JoinError) -> WireError {
     }
 }
 
+/// Which surface a connection controls. Only server hello processing assigns
+/// a web scope; no RPC payload can choose its run owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionScope {
+    Quic,
+    /// `owner` is the record's run-owner incarnation, resolved at attach: the
+    /// Host tombstones closed owners, so a recreated id needs a fresh one.
+    WebWorkbench {
+        id: String,
+        owner: String,
+    },
+}
+
+impl SessionScope {
+    /// Stable PTY owner. LSP ownership stays connection-scoped (`subscriber_id`).
+    fn run_owner(&self) -> Option<&str> {
+        match self {
+            Self::WebWorkbench { owner, .. } => Some(owner),
+            Self::Quic => None,
+        }
+    }
+}
+
 pub(crate) struct Session {
     pub fingerprint: Option<Fingerprint>,
     pub authorized: bool,
@@ -225,6 +272,26 @@ pub(crate) struct Session {
     pub folder_aliases: HashMap<PathBuf, PathBuf>,
     pub next_events: u64,
     pub events: Option<(u64, watch::Sender<bool>)>,
+    pub scope: SessionScope,
+}
+
+impl Session {
+    pub(crate) fn new(
+        fingerprint: Option<Fingerprint>,
+        authorized: bool,
+        scope: SessionScope,
+    ) -> Self {
+        Self {
+            fingerprint,
+            authorized,
+            subscriber_id: uuid::Uuid::new_v4().to_string(),
+            folders: HashSet::new(),
+            folder_aliases: HashMap::new(),
+            next_events: 0,
+            events: None,
+            scope,
+        }
+    }
 }
 
 struct DispatchRuntime<'a> {
@@ -254,6 +321,13 @@ macro_rules! dispatch_operation {
     (#[route($route:ident)] RunStatus => $($rest:tt)*) => {};
     (#[route($route:ident)] LspStart => $($rest:tt)*) => {};
     (#[route($route:ident)] Pair => $($rest:tt)*) => {};
+    // The manifest and registered snapshots belong to the workbench registry.
+    (#[route($route:ident)] AppStateGet => $($rest:tt)*) => {};
+    (#[route($route:ident)] AppStatePut => $($rest:tt)*) => {};
+    (#[route($route:ident)] AppStateDelete => $($rest:tt)*) => {};
+    // Server registry operations; the Host has no workbench methods.
+    (#[route($route:ident)] WorkbenchList => $($rest:tt)*) => {};
+    (#[route($route:ident)] WorkbenchClose => $($rest:tt)*) => {};
     (
         #[route(server)]
         SettingsPatchGlobalSection => $method:ident(
@@ -382,8 +456,11 @@ pub(crate) async fn handle(
     session: &Mutex<Session>,
     request: Request,
 ) -> Response {
-    if !matches!(&request, Request::Pair { .. }) && !session.lock().await.authorized {
-        return Err(unauthorized("client is not paired with this server"));
+    {
+        let session = session.lock().await;
+        if !matches!(&request, Request::Pair { .. }) && !session.authorized {
+            return Err(unauthorized("client is not paired with this server"));
+        }
     }
     DispatchRuntime {
         host,
@@ -392,6 +469,46 @@ pub(crate) async fn handle(
     }
     .dispatch(request)
     .await
+}
+
+/// Web workbenches act only on their own live runs; runs absent from memory
+/// keep the existing UUID-only, read-only archive semantics. Caller holds the
+/// run gate.
+async fn check_run_owner(
+    host: &Arc<Host>,
+    owner: Option<String>,
+    run_id: &str,
+) -> Result<(), WireError> {
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    let host = Arc::clone(host);
+    let id = run_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        if host.pty.run_state(&id).is_none() {
+            return Ok(());
+        }
+        host.pty
+            .ensure_owner(&id, Some(&owner))
+            .map_err(|message| WireError::Unauthorized { message })
+    })
+    .await
+    .map_err(run_operation_join)?
+}
+
+/// Ownership check for status and stream access under the run gate.
+pub(crate) async fn authorize_run(
+    host: &Arc<Host>,
+    context: &Arc<ServerContext>,
+    session: &Mutex<Session>,
+    run_id: &str,
+) -> Result<(), WireError> {
+    let owner = session.lock().await.scope.run_owner().map(str::to_owned);
+    if owner.is_none() {
+        return Ok(());
+    }
+    let _operation = context.run_operation(run_id).await;
+    check_run_owner(host, owner, run_id).await
 }
 
 /// The auth and folder claim a `FileRead` stream needs, without the stat a
@@ -590,6 +707,7 @@ impl DispatchRuntime<'_> {
         rows: u16,
     ) -> Result<SessionStartInfo, WireError> {
         let folder = self.claim(&folder_path, "folder_path").await?;
+        let owner = self.run_owner().await;
         // Once submitted, this owned operation finishes even if the RPC
         // stream disappears. Dropping a borrowed guard during Host's blocking
         // spawn would let Stop or a reused ID overtake the unfinished start.
@@ -607,7 +725,7 @@ impl DispatchRuntime<'_> {
                     cols,
                     rows,
                     None,
-                    None,
+                    owner,
                 )
                 .await
                 .map_err(WireError::from)?;
@@ -634,6 +752,7 @@ impl DispatchRuntime<'_> {
         attach_only: bool,
     ) -> Result<(), WireError> {
         let folder = self.claim(&folder_path, "folder_path").await?;
+        let owner = self.run_owner().await;
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
@@ -647,7 +766,7 @@ impl DispatchRuntime<'_> {
                 cols,
                 rows,
                 None,
-                None,
+                owner,
                 attach_only,
             )
             .await
@@ -664,10 +783,12 @@ impl DispatchRuntime<'_> {
     }
 
     async fn session_stop(&self, run_id: String) -> Result<(), WireError> {
+        let owner = self.run_owner().await;
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
             let _operation = context.run_operation(&run_id).await;
+            check_run_owner(&host, owner, &run_id).await?;
             host.session_stop(run_id.clone())
                 .await
                 .map_err(WireError::from)?;
@@ -678,10 +799,12 @@ impl DispatchRuntime<'_> {
     }
 
     async fn tasks_stop(&self, run_id: String) -> Result<(), WireError> {
+        let owner = self.run_owner().await;
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
             let _operation = context.run_operation(&run_id).await;
+            check_run_owner(&host, owner, &run_id).await?;
             host.tasks_stop(run_id.clone())
                 .await
                 .map_err(WireError::from)?;
@@ -692,11 +815,103 @@ impl DispatchRuntime<'_> {
     }
 
     async fn run_status(&self, run_id: String) -> Result<RunStatus, WireError> {
+        authorize_run(self.host, self.context, self.session, &run_id).await?;
         let host = Arc::clone(self.host);
         tokio::task::spawn_blocking(move || host.run_status(&run_id))
             .await
             .map_err(run_operation_join)?
             .map_err(Into::into)
+    }
+
+    async fn run_owner(&self) -> Option<String> {
+        self.session
+            .lock()
+            .await
+            .scope
+            .run_owner()
+            .map(str::to_owned)
+    }
+
+    /// Reserved registry state is reachable only through registry code. A web
+    /// workbench may touch its own snapshot and scoped preferences only; QUIC
+    /// keeps arbitrary keys except registered web snapshots. Returns the
+    /// caller's workbench when `key` is its own snapshot.
+    async fn app_state_scope(&self, key: &str, delete: bool) -> Result<Option<String>, WireError> {
+        if key == workbenches::MANIFEST_KEY {
+            return Err(unauthorized("The web workbench manifest is reserved"));
+        }
+        let scope = self.session.lock().await.scope.clone();
+        match scope {
+            SessionScope::WebWorkbench { id, .. } => {
+                if let Some(target) = workbenches::snapshot_id(key) {
+                    if target != id {
+                        return Err(unauthorized(
+                            "Workbench snapshot belongs to another workbench",
+                        ));
+                    }
+                    if delete {
+                        return Err(unauthorized(
+                            "Close Workbench is the only way to delete a workbench snapshot",
+                        ));
+                    }
+                    return Ok(Some(id));
+                }
+                // Legacy unscoped keys carry an absolute folder path.
+                if let Some(rest) = key.strip_prefix("branchesView:") {
+                    if !rest.starts_with('/') && rest.split(':').next() != Some(id.as_str()) {
+                        return Err(unauthorized("Preferences belong to another workbench"));
+                    }
+                }
+                Ok(None)
+            }
+            SessionScope::Quic => {
+                if let Some(target) = workbenches::snapshot_id(key) {
+                    if workbenches::is_registered(self.host, target).await? {
+                        return Err(unauthorized("Web workbench snapshots are server-managed"));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    async fn app_state_get(&self, key: String) -> Result<Option<String>, WireError> {
+        self.app_state_scope(&key, false).await?;
+        self.host.app_state_get(key).await.map_err(Into::into)
+    }
+
+    async fn app_state_put(&self, key: String, value_json: String) -> Result<(), WireError> {
+        match self.app_state_scope(&key, false).await? {
+            Some(id) => workbenches::put_snapshot(self.host, id, value_json).await,
+            None => self
+                .host
+                .app_state_put(key, value_json)
+                .await
+                .map_err(Into::into),
+        }
+    }
+
+    async fn app_state_delete(&self, key: String) -> Result<(), WireError> {
+        self.app_state_scope(&key, true).await?;
+        self.host.app_state_delete(key).await.map_err(Into::into)
+    }
+
+    async fn workbench_list(&self) -> Result<Vec<sworm_protocol::rpc::WorkbenchInfo>, WireError> {
+        workbenches::list(self.host, self.context).await
+    }
+
+    async fn workbench_close(&self, id: String) -> Result<(), WireError> {
+        // Close drains the target's in-flight requests; a page's own would wait on itself.
+        let caller = match &self.session.lock().await.scope {
+            SessionScope::WebWorkbench { id: own, .. } => Some(own.clone()),
+            SessionScope::Quic => None,
+        };
+        if caller.as_deref() == Some(id.as_str()) {
+            return Err(WireError::InvalidArgument {
+                message: "A workbench cannot close itself".to_owned(),
+            });
+        }
+        workbenches::close(self.host, self.context, id, caller.as_deref()).await
     }
 
     async fn lsp_start(
@@ -921,6 +1136,7 @@ mod tests {
             folder_aliases: HashMap::new(),
             next_events: 0,
             events: None,
+            scope: SessionScope::Quic,
         })
     }
 

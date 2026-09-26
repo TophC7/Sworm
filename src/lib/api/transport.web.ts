@@ -17,13 +17,22 @@ import {
 } from './transport.web.protocol'
 import { createWebStreams } from './transport.web.streams'
 
-export type WebConnectionState = 'connecting' | 'connected' | 'reconnecting'
+export type WebConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'busy' | 'revoked' | 'closed' | 'error'
 
-interface WebHostTransportOptions {
+/** Handshake `error` frame: normalized message plus the raw wire kind (`invalid_argument`, ...). */
+export interface WebHandshakeError extends Error {
+  kind: string
+}
+
+export interface WebHostTransportOptions {
   url: URL
-  onConnectionState(state: WebConnectionState): void
-  onReconnected(): void
-  onLspDisconnected(serverDefinitionId: string): void
+  workbenchId: string
+  /** Sent on the first connection attempt only; never replayed by reconnect backoff. */
+  takeover?: boolean
+  /** Terminal states fire once, after every call/stream/waiter has been rejected; `error` carries its cause. */
+  onConnectionState(state: WebConnectionState, error?: WebHandshakeError): void
+  onReconnected?(): void
+  onLspDisconnected?(serverDefinitionId: string): void
 }
 
 export interface WebHostTransport extends HostTransport {
@@ -73,6 +82,9 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
   let retries = 0
   let disposed = false
   let everReady = false
+  // Memory only: a duplicated tab or reload must not inherit automatic-controller authority.
+  let controllerToken: string | null = null
+  let takeover = options.takeover ?? false
   const lostErrors = new WeakSet<Error>()
   function lostError(message: string): Error {
     const error = new Error(message)
@@ -143,7 +155,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       return { socket: child, generation: connection.generation }
     },
     onLspDisconnected(id: string) {
-      if (!disposed) options.onLspDisconnected(id)
+      if (!disposed) options.onLspDisconnected?.(id)
     },
     emitLocal
   })
@@ -277,7 +289,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       )
       return
     }
-    if (reconnected) options.onReconnected()
+    if (reconnected) options.onReconnected?.()
   }
 
   function retry(): void {
@@ -313,6 +325,10 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
   function connect(): void {
     if (disposed || socket) return
     const token = ++generation
+    const hello = JSON.stringify({
+      hello: { workbench_id: options.workbenchId, takeover, controller_token: controllerToken }
+    })
+    takeover = false
     let ws: WebSocket
     try {
       ws = new WebSocket(controlUrl)
@@ -324,6 +340,14 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     }
     socket = ws
     expectHeartbeat(ws, token)
+    ws.onopen = () => {
+      if (socket !== ws || disposed) return
+      try {
+        ws.send(hello)
+      } catch {
+        lose(ws, token)
+      }
+    }
     ws.onmessage = (message) => {
       if (socket !== ws || disposed || token !== generation) return
       if (typeof message.data !== 'string') {
@@ -332,8 +356,23 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       }
       try {
         const frame = decodeControlMessage(message.data)
+        if ('revoked' in frame) return terminate('revoked', new Error('Another page controls this workbench'))
+        if ('closed' in frame) return terminate('closed', new Error('Workbench closed'))
+        if ('busy' in frame || 'error' in frame) {
+          if (active) throw new Error('Handshake result after ready')
+          if ('busy' in frame) return terminate('busy', new Error('This workbench is controlled by another page'))
+          const normalized = normalizeWireError(frame.error)
+          const error = (
+            normalized instanceof Error ? normalized : new Error(`Remote error: ${frame.error.kind}`)
+          ) as WebHandshakeError
+          error.kind = frame.error.kind
+          return terminate('error', error)
+        }
         if ('ready' in frame) {
           if (active) throw new Error('Duplicate control ready message')
+          // A mismatched lease is refused as revoked, so a new token here means the
+          // workbench was pruned or closed while offline and recreated: adopt it.
+          controllerToken = frame.ready.controller_token
           const wasReady = everReady
           active = { socket: ws, generation: token, connectionId: frame.ready.connection_id }
           expectHeartbeat(ws, token)
@@ -390,6 +429,37 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     }
     ws.onerror = () => lose(ws, token)
     ws.onclose = () => lose(ws, token)
+  }
+
+  /**
+   * The single inert end state for dispose and terminal frames: nothing can
+   * reconnect, recover, or reach the server afterwards.
+   */
+  function shutdown(callReason: Error, reason: Error): boolean {
+    if (disposed) return false
+    disposed = true
+    clearTimeout(timer)
+    clearTimeout(livenessTimer)
+    clearTimeout(declarationTimer)
+    timer = livenessTimer = declarationTimer = undefined
+    const old = socket
+    socket = null
+    active = null
+    streams.dispose()
+    old?.close()
+    for (const operation of pending.values()) operation.reject(callReason)
+    pending.clear()
+    for (const waiter of waiting) waiter.reject(reason)
+    waiting.clear()
+    if (!everReady) readyReject(reason)
+    folders.clear()
+    listeners.clear()
+    return true
+  }
+
+  function terminate(state: 'busy' | 'revoked' | 'closed' | 'error', reason: Error): void {
+    if (shutdown(reason, reason))
+      options.onConnectionState(state, state === 'error' ? (reason as WebHandshakeError) : undefined)
   }
 
   function subscribe<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
@@ -480,24 +550,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     subscribe,
     openStream,
     dispose() {
-      if (disposed) return
-      disposed = true
-      clearTimeout(timer)
-      clearTimeout(livenessTimer)
-      clearTimeout(declarationTimer)
-      timer = undefined
-      const old = socket
-      socket = null
-      active = null
-      streams.dispose()
-      old?.close()
-      for (const operation of pending.values()) operation.reject(lostError(OUTCOME_UNKNOWN))
-      pending.clear()
-      for (const waiter of waiting) waiter.reject(new Error(DISCONNECTED))
-      waiting.clear()
-      if (!everReady) readyReject(new Error(DISCONNECTED))
-      folders.clear()
-      listeners.clear()
+      shutdown(lostError(OUTCOME_UNKNOWN), new Error(DISCONNECTED))
     }
   }
 }

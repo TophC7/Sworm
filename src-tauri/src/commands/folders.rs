@@ -7,11 +7,12 @@ use std::process::{Command, Stdio};
 use sworm_core::errors::ApiError;
 use sworm_core::services::folders::resolve_folder;
 use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
+use sworm_protocol::rpc::RecentFolder;
 
 #[tauri::command]
 pub async fn recent_folders_list(
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, ApiError> {
+) -> Result<Vec<RecentFolder>, ApiError> {
     state.router.recent_folders_list().await
 }
 
@@ -19,7 +20,7 @@ pub async fn recent_folders_list(
 pub async fn recent_folders_touch(
     path: String,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, ApiError> {
+) -> Result<Vec<RecentFolder>, ApiError> {
     state.router.recent_folders_touch(path).await
 }
 
@@ -27,7 +28,7 @@ pub async fn recent_folders_touch(
 pub async fn recent_folders_remove(
     paths: Vec<String>,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, ApiError> {
+) -> Result<Vec<RecentFolder>, ApiError> {
     state.router.recent_folders_remove(paths).await
 }
 

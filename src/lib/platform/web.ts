@@ -49,7 +49,8 @@ export function createWebPlatform(workbenchId: string): Platform {
       nativeDirectoryPicker: false,
       externalFileOpen: false,
       fileClaims: false,
-      remoteHosts: false
+      remoteHosts: false,
+      durableWorkbenches: true
     },
     native: null
   }

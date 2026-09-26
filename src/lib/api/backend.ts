@@ -26,6 +26,7 @@ import type {
   NixSettings,
   TerminalSettings,
   WindowSettings,
+  GitBrief,
   GitChangedEvent,
   GitQuickDiffData,
   GitSummary,
@@ -66,7 +67,9 @@ import type {
   ShortcutsFilePayload,
   ShortcutsFileResult,
   StashEntry,
-  TaskDefinition
+  TaskDefinition,
+  RecentFolder,
+  WorkbenchInfo
 } from '$lib/types/backend'
 
 // Keep the command names and argument shapes at the host facade boundary.
@@ -99,17 +102,28 @@ export const backend = {
     }
   },
 
+  /** Daemon-owned web workbench registry; attaching to an unknown id creates it. */
+  workbenches: {
+    list(): Promise<WorkbenchInfo[]> {
+      return invoke<WorkbenchInfo[]>('workbench_list')
+    },
+    /** Stops the workbench's sessions/tasks and deletes its saved state. */
+    close(id: string): Promise<void> {
+      return invoke<void>('workbench_close', { id })
+    }
+  },
+
   folders: {
-    recentList(): Promise<string[]> {
-      return invoke<string[]>('recent_folders_list')
+    recentList(): Promise<RecentFolder[]> {
+      return invoke<RecentFolder[]>('recent_folders_list')
     },
-    recentTouch(path: string): Promise<string[]> {
-      return invoke<string[]>('recent_folders_touch', { path })
+    recentTouch(path: string): Promise<RecentFolder[]> {
+      return invoke<RecentFolder[]>('recent_folders_touch', { path })
     },
-    recentRemove(paths: string[]): Promise<string[]> {
-      return invoke<string[]>('recent_folders_remove', { paths })
+    recentRemove(paths: string[]): Promise<RecentFolder[]> {
+      return invoke<RecentFolder[]>('recent_folders_remove', { paths })
     },
-    onRecentFoldersChanged(handler: (folders: string[]) => void): Promise<Unsubscribe> {
+    onRecentFoldersChanged(handler: (folders: RecentFolder[]) => void): Promise<Unsubscribe> {
       return getHostTransport().subscribe('recent-folders-changed', handler)
     },
     claim(folderPath: string): Promise<void> {
@@ -166,6 +180,10 @@ export const backend = {
   git: {
     getSummary(path: string): Promise<GitSummary> {
       return invoke<GitSummary>('git_get_summary', { path })
+    },
+    /** Branch, changed-path count and ahead/behind from one `git status`; for Home cards. */
+    getBrief(path: string): Promise<GitBrief> {
+      return invoke<GitBrief>('git_get_brief', { path })
     },
     /** Arm or repair the folder's git watcher; idempotent and silent on non-repos. */
     watch(projectPath: string): Promise<void> {

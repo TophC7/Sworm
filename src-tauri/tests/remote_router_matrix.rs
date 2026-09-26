@@ -13,7 +13,7 @@ use sworm_core::{
     Host,
 };
 use sworm_lib::router::{Target, WorkspaceRouter};
-use sworm_protocol::rpc::Request;
+use sworm_protocol::rpc::{RecentFolder, Request};
 use sworm_protocol::{
     file_diff::{DiffSource, GitStatus},
     issues::{
@@ -946,20 +946,22 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     );
 
     let local_uri = "sworm://loop/srv/opaque folder/%2F?literal".to_owned();
+    let paths = |folders: Vec<RecentFolder>| -> Vec<String> {
+        folders.into_iter().map(|folder| folder.path).collect()
+    };
     assert_eq!(
         bounded("recent_folders_list", router.recent_folders_list()).await?,
-        Vec::<String>::new()
+        Vec::<RecentFolder>::new()
     );
-    assert_eq!(
-        bounded(
-            "recent_folders_touch",
-            router.recent_folders_touch(local_uri.clone())
-        )
-        .await?,
-        vec![local_uri.clone()]
-    );
+    let touched = bounded(
+        "recent_folders_touch",
+        router.recent_folders_touch(local_uri.clone()),
+    )
+    .await?;
+    assert!(chrono::DateTime::parse_from_rfc3339(&touched[0].opened_at).is_ok());
+    assert_eq!(paths(touched.clone()), vec![local_uri.clone()]);
     match bounded("desktop recent event", workspace.events.recv()).await {
-        Some(HostEvent::RecentFoldersChanged(paths)) => assert_eq!(paths, vec![local_uri.clone()]),
+        Some(HostEvent::RecentFoldersChanged(folders)) => assert_eq!(folders, touched),
         Some(_) => panic!("desktop recent mutation emitted wrong event"),
         None => panic!("desktop event sink closed"),
     }
@@ -969,7 +971,7 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
             workspace.host.recent_folders_list()
         )
         .await?,
-        vec![local_uri.clone()]
+        touched
     );
 
     let home = fixture.root.path().join("home");
@@ -1045,7 +1047,10 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
         )
         .await?
         .recent_folders_touch()
-        .map_err(sworm_remote::RemoteError::Wire)?,
+        .map_err(sworm_remote::RemoteError::Wire)?
+        .into_iter()
+        .map(|folder| folder.path)
+        .collect::<Vec<_>>(),
         vec![remote_recent]
     );
     let marker_folder = fixture.root.path().join("second-event-marker");
@@ -1070,7 +1075,7 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     })
     .await;
     assert_eq!(
-        bounded("desktop recent_folders_list", router.recent_folders_list()).await?,
+        paths(bounded("desktop recent_folders_list", router.recent_folders_list()).await?),
         vec![local_uri.clone()],
         "daemon's recent list must not overwrite desktop's list"
     );
@@ -1080,7 +1085,7 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
             router.recent_folders_remove(vec![local_uri])
         )
         .await?,
-        Vec::<String>::new()
+        Vec::<RecentFolder>::new()
     );
     match bounded("desktop recent removal event", workspace.events.recv()).await {
         Some(HostEvent::RecentFoldersChanged(paths)) => assert!(paths.is_empty()),

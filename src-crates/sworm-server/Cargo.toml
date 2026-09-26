@@ -33,6 +33,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 chrono.workspace = true
+rusqlite.workspace = true
 libc = "0.2"
 
 [dev-dependencies]

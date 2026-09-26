@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
+use chrono::DateTime;
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 use sworm_core::services::settings::SettingsService;
 use sworm_protocol::{
     folder::PathRootKind,
     provider::{ProviderConnectionStatus, ProviderId},
-    rpc::{HostEventFrame, HostEventWire, Open, Request, WireError},
+    rpc::{HostEventFrame, HostEventWire, Open, RecentFolder, Request, WireError},
     settings::{PatchSettingsSectionInput, SettingsLayerKind},
 };
 use sworm_remote::{wire::read_frame, Identity, RemoteClient, RemoteError};
@@ -130,7 +131,7 @@ async fn kv_delete(client: &RemoteClient, key: &str) -> Result<(), RemoteError> 
         .map_err(RemoteError::Wire)
 }
 
-async fn recent_list(client: &RemoteClient) -> Result<Vec<String>, RemoteError> {
+async fn recent_list(client: &RemoteClient) -> Result<Vec<RecentFolder>, RemoteError> {
     client
         .call(&Request::RecentFoldersList {})
         .await?
@@ -138,7 +139,7 @@ async fn recent_list(client: &RemoteClient) -> Result<Vec<String>, RemoteError> 
         .map_err(RemoteError::Wire)
 }
 
-async fn recent_touch(client: &RemoteClient, path: &str) -> Result<Vec<String>, RemoteError> {
+async fn recent_touch(client: &RemoteClient, path: &str) -> Result<Vec<RecentFolder>, RemoteError> {
     client
         .call(&Request::RecentFoldersTouch {
             path: path.to_owned(),
@@ -151,12 +152,16 @@ async fn recent_touch(client: &RemoteClient, path: &str) -> Result<Vec<String>, 
 async fn recent_remove(
     client: &RemoteClient,
     paths: Vec<String>,
-) -> Result<Vec<String>, RemoteError> {
+) -> Result<Vec<RecentFolder>, RemoteError> {
     client
         .call(&Request::RecentFoldersRemove { paths })
         .await?
         .recent_folders_remove()
         .map_err(RemoteError::Wire)
+}
+
+fn recent_paths(folders: &[RecentFolder]) -> Vec<String> {
+    folders.iter().map(|folder| folder.path.clone()).collect()
 }
 
 async fn next_event(recv: &mut quinn::RecvStream) -> Result<HostEventWire> {
@@ -214,7 +219,10 @@ async fn settings_barrier(
     Ok(())
 }
 
-async fn assert_recent_event(recv: &mut quinn::RecvStream, expected: &[String]) -> Result<()> {
+async fn assert_recent_event(
+    recv: &mut quinn::RecvStream,
+    expected: &[RecentFolder],
+) -> Result<()> {
     timeout(WAIT, async {
         loop {
             if let HostEventWire::RecentFoldersChanged(folders) = next_event(recv).await? {
@@ -258,31 +266,33 @@ async fn kv_and_recent(daemon: &mut Daemon) -> Result<()> {
     kv_delete(&client, KEY).await?;
     assert_eq!(kv_get(&client, KEY).await?, None);
 
-    assert_eq!(recent_list(&client).await?, Vec::<String>::new());
-    assert_eq!(recent_touch(&client, "A").await?, vec!["A".to_owned()]);
-    assert_eq!(
-        recent_touch(&client, "B").await?,
-        vec!["B".to_owned(), "A".to_owned()]
-    );
-    assert_eq!(
-        recent_touch(&client, "A").await?,
-        vec!["A".to_owned(), "B".to_owned()]
-    );
+    assert_eq!(recent_list(&client).await?, Vec::<RecentFolder>::new());
+    let touched = recent_touch(&client, "A").await?;
+    assert_eq!(recent_paths(&touched), ["A"]);
+    let first_opened = DateTime::parse_from_rfc3339(&touched[0].opened_at)?;
+    assert_eq!(recent_paths(&recent_touch(&client, "B").await?), ["B", "A"]);
+    let touched = recent_touch(&client, "A").await?;
+    assert_eq!(recent_paths(&touched), ["A", "B"]);
+    assert!(DateTime::parse_from_rfc3339(&touched[0].opened_at)? >= first_opened);
     let mut expected = vec!["A".to_owned(), "B".to_owned()];
     for n in 0..13 {
         let entry = format!("scratch-{n}");
         expected.retain(|path| path != &entry);
         expected.insert(0, entry.clone());
         expected.truncate(12);
-        assert_eq!(recent_touch(&client, &entry).await?, expected);
+        assert_eq!(
+            recent_paths(&recent_touch(&client, &entry).await?),
+            expected
+        );
     }
-    assert_eq!(recent_list(&client).await?, expected);
+    let mut listed = recent_list(&client).await?;
+    assert_eq!(recent_paths(&listed), expected);
     let removed = vec!["scratch-12".into(), "scratch-5".into(), "unknown".into()];
-    expected.retain(|path| !removed.contains(path));
-    assert_eq!(recent_remove(&client, removed).await?, expected);
-    assert_eq!(recent_list(&client).await?, expected);
+    listed.retain(|folder| !removed.contains(&folder.path));
+    assert_eq!(recent_remove(&client, removed).await?, listed);
+    assert_eq!(recent_list(&client).await?, listed);
 
-    let saved = serde_json::to_string(&expected)?;
+    let saved = serde_json::to_string(&listed)?;
     kv_put(&client, "recent_folders", "not json [").await?;
     assert_wire_error(recent_list(&client).await, "database");
     assert_wire_error(recent_touch(&client, "new").await, "database");
@@ -295,22 +305,22 @@ async fn kv_and_recent(daemon: &mut Daemon) -> Result<()> {
         Some("not json [")
     );
     kv_put(&client, "recent_folders", &saved).await?;
-    assert_eq!(recent_list(&client).await?, expected);
+    assert_eq!(recent_list(&client).await?, listed);
 
     let second = daemon.paired_client().await?;
     let (_first_send, mut first_events) = client.open_stream(Open::Events).await?;
     let (_second_send, mut second_events) = second.open_stream(Open::Events).await?;
     settings_barrier(&client, &mut first_events, &mut second_events).await?;
     let entry = "sworm://remote/opaque";
-    expected.insert(0, entry.into());
-    expected.truncate(12);
-    assert_eq!(recent_touch(&client, entry).await?, expected);
-    assert_recent_event(&mut first_events, &expected).await?;
-    assert_recent_event(&mut second_events, &expected).await?;
-    expected.remove(0);
-    assert_eq!(recent_remove(&client, vec![entry.into()]).await?, expected);
-    assert_recent_event(&mut first_events, &expected).await?;
-    assert_recent_event(&mut second_events, &expected).await?;
+    let touched = recent_touch(&client, entry).await?;
+    assert_eq!(touched[0].path, entry);
+    assert_eq!(touched[1..], listed[..]);
+    assert_recent_event(&mut first_events, &touched).await?;
+    assert_recent_event(&mut second_events, &touched).await?;
+    let removed = recent_remove(&client, vec![entry.into()]).await?;
+    assert_eq!(removed, touched[1..]);
+    assert_recent_event(&mut first_events, &removed).await?;
+    assert_recent_event(&mut second_events, &removed).await?;
     second.close();
     client.close();
     Ok(())

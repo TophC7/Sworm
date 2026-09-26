@@ -131,7 +131,8 @@ export const desktopPlatform: Platform = {
     nativeDirectoryPicker: true,
     externalFileOpen: true,
     fileClaims: true,
-    remoteHosts: true
+    remoteHosts: true,
+    durableWorkbenches: false
   },
   native
 }

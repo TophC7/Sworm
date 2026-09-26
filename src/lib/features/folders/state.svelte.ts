@@ -1,13 +1,14 @@
-// Recent folders — canonical folder paths managed and broadcast by the backend.
-// Feeds the empty state, the hamburger menu's "Open Recent" group, and the
-// activity map's discovered-folder filter.
+// Recent folders — canonical folder paths opened in Sworm, managed and
+// broadcast by the backend. Feeds Home's project cards, the "Open Recent"
+// menus, and the folder switcher's starting point.
 
 import { backend } from '$lib/api/backend'
+import type { RecentFolder } from '$lib/types/backend'
 
-let recentFolders = $state<string[]>([])
+let recentFolders = $state<RecentFolder[]>([])
 let recentFoldersListening = false
 
-export function getRecentFolders(): string[] {
+export function getRecentFolders(): RecentFolder[] {
   return recentFolders
 }
 
@@ -20,9 +21,9 @@ export async function filterExistingFolders(paths: string[]): Promise<string[]> 
 /** Load the MRU and drop entries whose folder no longer resolves. */
 export async function loadRecentFolders(): Promise<void> {
   const saved = await backend.folders.recentList()
-  const alive = await filterExistingFolders(saved)
-  recentFolders = alive
-  const missing = saved.filter((p) => !alive.includes(p))
+  const alive = new Set(await filterExistingFolders(saved.map((folder) => folder.path)))
+  recentFolders = saved.filter((folder) => alive.has(folder.path))
+  const missing = saved.filter((folder) => !alive.has(folder.path)).map((folder) => folder.path)
   if (missing.length > 0) {
     void backend.folders.recentRemove(missing)
   }
@@ -36,6 +37,9 @@ export async function loadRecentFolders(): Promise<void> {
 
 /** Move `path` (already canonical) to the front of the MRU and persist immediately. */
 export function pushRecentFolder(path: string): void {
-  recentFolders = [path, ...recentFolders.filter((p) => p !== path)]
+  recentFolders = [
+    { path, opened_at: new Date().toISOString() },
+    ...recentFolders.filter((folder) => folder.path !== path)
+  ]
   void backend.folders.recentTouch(path).catch((e) => console.warn('Failed to touch recent folder:', e))
 }

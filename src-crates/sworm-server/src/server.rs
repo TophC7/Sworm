@@ -4,7 +4,7 @@ use crate::{
     web,
 };
 use anyhow::Context;
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use sworm_core::{services::completed_runs::CompletedRunStore, Host};
 use sworm_protocol::rpc::{
     Open, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
@@ -188,6 +188,8 @@ async fn supervise(
     } else if let Err(error) = quic.await {
         tracing::error!(%error, "QUIC listener failed");
     }
+    // Registry transitions started by any socket or RPC finish before the Host stops.
+    context.workbenches.shutdown().await;
     if let Err(error) = tokio::task::spawn_blocking(move || host.shutdown()).await {
         tracing::error!(%error, "host shutdown task failed");
     }
@@ -285,15 +287,11 @@ async fn run_connection(
             false
         }
     };
-    let session = Arc::new(Mutex::new(dispatch::Session {
-        fingerprint: Some(fingerprint),
+    let session = Arc::new(Mutex::new(dispatch::Session::new(
+        Some(fingerprint),
         authorized,
-        subscriber_id: uuid::Uuid::new_v4().to_string(),
-        folders: HashSet::new(),
-        folder_aliases: Default::default(),
-        next_events: 0,
-        events: None,
-    }));
+        dispatch::SessionScope::Quic,
+    )));
     let mut streams = JoinSet::new();
 
     loop {
@@ -339,14 +337,19 @@ async fn run_connection(
         }
     }
 
-    cleanup_session(&host, &context, &session).await;
+    if let Err(error) = cleanup_session(&host, &context, &session).await {
+        tracing::error!(?error, "connection cleanup failed");
+    }
 }
 
+/// Attempts every release and reports the first failure. Released folders
+/// leave the Session first, so a failure is never retried blindly: a
+/// JoinError may follow a partially applied reference-count decrement.
 pub(crate) async fn cleanup_session(
     host: &Arc<Host>,
     context: &Arc<dispatch::ServerContext>,
     session: &Arc<Mutex<dispatch::Session>>,
-) {
+) -> Result<(), WireError> {
     let (folders, subscriber_id) = {
         let mut session = session.lock().await;
         if let Some((_, stop)) = session.events.take() {
@@ -357,12 +360,13 @@ pub(crate) async fn cleanup_session(
             session.subscriber_id.clone(),
         )
     };
+    let mut result = Ok(());
     for folder in folders {
         if let Err(error) = context
             .release_folder(host, folder, subscriber_id.clone())
             .await
         {
-            tracing::error!(?error, "connection folder release failed");
+            result = result.and(Err(error));
         }
     }
     let host = Arc::clone(host);
@@ -371,8 +375,11 @@ pub(crate) async fn cleanup_session(
     })
     .await
     {
-        tracing::error!(%error, "connection resource release task failed");
+        result = result.and(Err(WireError::Internal {
+            message: format!("connection resource release task failed: {error}"),
+        }));
     }
+    result
 }
 
 async fn process_stream(

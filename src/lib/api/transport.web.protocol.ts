@@ -88,10 +88,16 @@ export function normalizeWireError(value: unknown): Error | Record<string, unkno
 }
 
 export type ControlMessage =
-  | { ready: { connection_id: string } }
+  | { ready: { connection_id: string; controller_token: string } }
+  | { busy: true }
+  | { revoked: true }
+  | { closed: true }
+  | { error: Record<string, unknown> & { kind: string } }
   | { ping: number }
   | { id: number; response: { Ok: { method: string; params: unknown } } | { Err: unknown } }
   | { event: { kind: string; payload: unknown } }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function decodeControlMessage(raw: string): ControlMessage {
   if (raw.length > MAX_FRAME_BYTES || (raw.length * 3 > MAX_FRAME_BYTES && utf8ByteLength(raw) > MAX_FRAME_BYTES)) {
@@ -110,14 +116,30 @@ export function decodeControlMessage(raw: string): ControlMessage {
     return value as ControlMessage
   }
   if ('ready' in value) {
+    const ready = value.ready
     if (
       Object.keys(value).length !== 1 ||
-      !record(value.ready) ||
-      typeof value.ready.connection_id !== 'string' ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.ready.connection_id)
+      !record(ready) ||
+      Object.keys(ready).length !== 2 ||
+      typeof ready.connection_id !== 'string' ||
+      !UUID.test(ready.connection_id) ||
+      typeof ready.controller_token !== 'string' ||
+      !UUID.test(ready.controller_token)
     ) {
       throw new Error('Invalid control ready message')
     }
+    return value as ControlMessage
+  }
+  for (const terminal of ['busy', 'revoked', 'closed'] as const) {
+    if (terminal in value) {
+      if (Object.keys(value).length !== 1 || value[terminal] !== true)
+        throw new Error(`Invalid control ${terminal} message`)
+      return value as ControlMessage
+    }
+  }
+  if ('error' in value) {
+    if (Object.keys(value).length !== 1 || !record(value.error) || typeof value.error.kind !== 'string')
+      throw new Error('Invalid control error message')
     return value as ControlMessage
   }
   if ('id' in value) {

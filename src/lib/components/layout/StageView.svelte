@@ -15,7 +15,8 @@
   } = $props()
 </script>
 
-<div class="relative flex flex-1 items-center justify-center overflow-hidden bg-ground">
+<!-- Content centers while it fits and scrolls once it outgrows the stage. -->
+<div class="relative flex flex-1 flex-col overflow-y-auto bg-ground">
   <Particles
     class="z-0 opacity-60"
     quantity={particleQuantity}
@@ -25,7 +26,7 @@
     ease={60}
   />
 
-  <div class="relative z-10 w-full max-w-2xl px-8">
+  <div class="relative z-10 m-auto w-full max-w-2xl px-8 py-10">
     {@render children()}
   </div>
 </div>

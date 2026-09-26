@@ -263,7 +263,7 @@ export function hasClosedTabs(): boolean {
 /** Recent folders without an open tab; feeds the "Open Recent" menus. */
 export function getRecentUnopenedFolders(): string[] {
   const open = new Set(workbench.tabs.map((t) => t.folderPath))
-  return getRecentFolders().filter((path) => !open.has(path))
+  return getRecentFolders().flatMap(({ path }) => (open.has(path) ? [] : [path]))
 }
 
 /** Find an existing live task tab by its source task id (singleton rerun). */

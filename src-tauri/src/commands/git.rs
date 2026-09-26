@@ -3,7 +3,7 @@ use sworm_core::errors::ApiError;
 use sworm_protocol::branch::{BranchOpState, BranchSummary};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, DiffFileContent, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, DiffFileContent, GitBrief, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
 };
 
 #[tauri::command]
@@ -12,6 +12,14 @@ pub async fn git_get_summary(
     state: tauri::State<'_, AppState>,
 ) -> Result<GitSummary, ApiError> {
     state.router.git_get_summary(path).await
+}
+
+#[tauri::command]
+pub async fn git_get_brief(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<GitBrief, ApiError> {
+    state.router.git_get_brief(path).await
 }
 
 #[tauri::command]

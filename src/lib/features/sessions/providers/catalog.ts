@@ -73,3 +73,8 @@ export const directOptions: ProviderMeta[] = [
     gradientTo: '#3f3f46'
   }
 ]
+
+/** Every catalog entry by id. */
+export const providerById: Partial<Record<string, ProviderMeta>> = Object.fromEntries(
+  [...allProviders, ...directOptions].map((provider) => [provider.id, provider])
+)

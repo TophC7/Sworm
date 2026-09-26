@@ -2,6 +2,7 @@ use crate::{
     dispatch, events, file_stream, lsp_stream, pty_stream,
     server::cleanup_session,
     stream::{StreamReader, StreamWriter},
+    workbenches::{self, Attach},
 };
 use axum::{
     extract::{
@@ -17,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    future::IntoFuture,
+    future::{Future, IntoFuture},
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -28,8 +29,8 @@ use std::{
 };
 use sworm_core::Host;
 use sworm_protocol::rpc::{
-    FileReadDown, Open, Request, Response as RpcResponse, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES,
-    MAX_STREAMS_PER_CONNECTION,
+    FileReadDown, Open, PtyDown, Request, Response as RpcResponse, WireError, MAX_FRAME_BYTES,
+    MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
 };
 use tokio::{
     net::TcpListener,
@@ -50,6 +51,8 @@ pub(crate) struct WebState {
     requests: Arc<Semaphore>,
     controls: Arc<StdMutex<Registry>>,
     upgrades: TaskTracker,
+    /// Wakes sockets still waiting for their hello when the server stops.
+    closing: Arc<watch::Sender<bool>>,
 }
 
 #[derive(Default)]
@@ -58,13 +61,89 @@ struct Registry {
     controls: HashMap<String, Arc<Control>>,
 }
 
-struct Control {
+/// Why a control stopped admitting work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Terminal {
+    Revoked,
+    Closed,
+    Disconnected,
+}
+
+pub(crate) struct Control {
     session: Arc<Mutex<dispatch::Session>>,
     admitted: Arc<Semaphore>,
     tasks: TaskTracker,
     stop: watch::Sender<bool>,
     live_ids: Arc<StdMutex<HashSet<u64>>>,
     close_code: AtomicU16,
+    /// `None` while admitted. Admission and retirement share this lock, so no
+    /// request or stream is tracked after retirement closes the tracker.
+    terminal: StdMutex<Option<Terminal>>,
+    /// Set once all admitted work and Session cleanup drained; every waiter,
+    /// including a retried Close, observes the retained result.
+    completion: watch::Sender<Option<Result<(), WireError>>>,
+}
+
+impl Control {
+    pub(crate) fn new(session: dispatch::Session) -> Arc<Self> {
+        Arc::new(Self {
+            session: Arc::new(Mutex::new(session)),
+            admitted: Arc::new(Semaphore::new(MAX_STREAMS_PER_CONNECTION as usize)),
+            tasks: TaskTracker::new(),
+            stop: watch::channel(false).0,
+            live_ids: Arc::new(StdMutex::new(HashSet::new())),
+            close_code: AtomicU16::new(close_code::NORMAL),
+            terminal: StdMutex::new(None),
+            completion: watch::channel(None).0,
+        })
+    }
+
+    /// Close admission, stop children and event forwarding. The first reason wins.
+    pub(crate) fn retire(&self, terminal: Terminal) {
+        let mut current = self.terminal.lock().expect("control authority poisoned");
+        if current.is_none() {
+            *current = Some(terminal);
+        }
+        self.tasks.close();
+        self.stop.send_replace(true);
+    }
+
+    pub(crate) fn admitted(&self) -> bool {
+        self.terminal
+            .lock()
+            .expect("control authority poisoned")
+            .is_none()
+    }
+
+    fn terminal(&self) -> Option<Terminal> {
+        *self.terminal.lock().expect("control authority poisoned")
+    }
+
+    /// Run `track` only while admitted, atomically with retirement.
+    fn admit<T>(&self, track: impl FnOnce() -> T) -> Option<T> {
+        let current = self.terminal.lock().expect("control authority poisoned");
+        current.is_none().then(track)
+    }
+
+    pub(crate) fn complete(&self, result: Result<(), WireError>) {
+        self.completion.send_replace(Some(result));
+    }
+
+    pub(crate) async fn completion(&self) -> Result<(), WireError> {
+        let mut completion = self.completion.subscribe();
+        let result = completion
+            .wait_for(Option::is_some)
+            .await
+            .expect("control owns its completion sender")
+            .clone();
+        result.expect("waited for completion")
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn retired(&self) {
+        let mut stop = self.stop.subscribe();
+        let _ = stop.wait_for(|stopped| *stopped).await;
+    }
 }
 
 struct Outgoing {
@@ -86,6 +165,21 @@ struct Incoming {
     pong: Option<u32>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HelloEnvelope {
+    hello: Hello,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Hello {
+    workbench_id: String,
+    takeover: bool,
+    #[serde(deserialize_with = "workbenches::explicit")]
+    controller_token: Option<String>,
+}
+
 #[derive(Serialize)]
 struct Ready<'a> {
     ready: ReadyId<'a>,
@@ -94,6 +188,12 @@ struct Ready<'a> {
 #[derive(Serialize)]
 struct ReadyId<'a> {
     connection_id: &'a str,
+    controller_token: &'a str,
+}
+
+#[derive(Serialize)]
+struct HandshakeError<'a> {
+    error: &'a WireError,
 }
 
 #[derive(Serialize)]
@@ -106,6 +206,10 @@ struct ReplyEnvelope<'a> {
 struct EventEnvelope<'a> {
     event: &'a sworm_protocol::rpc::HostEventWire,
 }
+
+const BUSY: &str = r#"{"busy":true}"#;
+const REVOKED: &str = r#"{"revoked":true}"#;
+const CLOSED: &str = r#"{"closed":true}"#;
 
 impl WebState {
     pub(crate) fn new(
@@ -121,14 +225,16 @@ impl WebState {
             requests,
             controls: Arc::new(StdMutex::new(Registry::default())),
             upgrades: TaskTracker::new(),
+            closing: Arc::new(watch::channel(false).0),
         }
     }
 
     fn stop_all(&self) {
         let mut registry = self.controls.lock().expect("web registry poisoned");
         registry.closing = true;
+        self.closing.send_replace(true);
         for control in registry.controls.values() {
-            let _ = control.stop.send(true);
+            control.retire(Terminal::Disconnected);
         }
     }
 }
@@ -266,7 +372,8 @@ async fn stream_upgrade(
     let Some(id) = query.get("connection_id") else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    // Admission and removal share this lock: teardown cannot miss a late upgrade.
+    // Admission and retirement share the control's authority lock: teardown
+    // cannot miss a late upgrade, and retired controls get 403.
     let (control, permit, token) = {
         let registry = state.controls.lock().expect("web registry poisoned");
         if registry.closing {
@@ -275,14 +382,20 @@ async fn stream_upgrade(
         let Some(control) = registry.controls.get(id).cloned() else {
             return StatusCode::FORBIDDEN.into_response();
         };
-        if *control.stop.borrow() {
-            return StatusCode::FORBIDDEN.into_response();
+        let admitted = control.admit(|| {
+            if *control.stop.borrow() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            let permit = Arc::clone(&control.admitted)
+                .try_acquire_owned()
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+            Ok((permit, control.tasks.token()))
+        });
+        match admitted {
+            Some(Ok((permit, token))) => (control, permit, token),
+            Some(Err(status)) => return status.into_response(),
+            None => return StatusCode::FORBIDDEN.into_response(),
         }
-        let Ok(permit) = Arc::clone(&control.admitted).try_acquire_owned() else {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        };
-        let token = control.tasks.token();
-        (control, permit, token)
     };
     upgrade_limits(ws)
         .on_upgrade(move |socket| async move {
@@ -300,39 +413,92 @@ fn close(code: u16, reason: &'static str) -> Message {
     }))
 }
 
+/// The first application frame must be a strict text hello. Ping/Pong may
+/// precede it; anything else closes with policy, oversize with 1009.
+async fn read_hello(
+    stream: &mut futures_util::stream::SplitStream<WebSocket>,
+    mut closing: watch::Receiver<bool>,
+) -> Result<Hello, u16> {
+    let first = tokio::select! {
+        _ = closing.wait_for(|closing| *closing) => return Err(close_code::AWAY),
+        result = timeout(IO_TIMEOUT, async {
+            loop {
+                match stream.next().await {
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                    message => break message,
+                }
+            }
+        }) => result,
+    };
+    let text = match first {
+        Ok(Some(Ok(Message::Text(text)))) => text,
+        Ok(Some(Err(_))) => return Err(close_code::SIZE),
+        _ => return Err(close_code::POLICY),
+    };
+    if text.len() > MAX_REQUEST_FRAME_BYTES {
+        return Err(close_code::SIZE);
+    }
+    serde_json::from_str::<HelloEnvelope>(&text)
+        .map(|envelope| envelope.hello)
+        .map_err(|_| close_code::POLICY)
+}
+
+/// A terminal frame precedes a best-effort policy close.
+async fn terminate(mut sink: futures_util::stream::SplitSink<WebSocket, Message>, frame: String) {
+    if matches!(
+        timeout(IO_TIMEOUT, sink.send(Message::Text(frame.into()))).await,
+        Ok(Ok(()))
+    ) {
+        let _ = timeout(IO_TIMEOUT, sink.send(close(close_code::POLICY, "terminal"))).await;
+    }
+}
+
 async fn control_socket(socket: WebSocket, state: WebState) {
+    let (mut sink, mut stream) = socket.split();
+    let hello = match read_hello(&mut stream, state.closing.subscribe()).await {
+        Ok(hello) => hello,
+        Err(code) => {
+            let _ = timeout(IO_TIMEOUT, sink.send(close(code, "invalid hello"))).await;
+            return;
+        }
+    };
+    let workbench = hello.workbench_id;
+    let (token, control) = match workbenches::attach(
+        &state.host,
+        &state.context,
+        workbench.clone(),
+        hello.takeover,
+        hello.controller_token,
+    )
+    .await
+    {
+        Ok(Attach::Ready { token, control }) => (token, control),
+        Ok(Attach::Busy) => return terminate(sink, BUSY.to_owned()).await,
+        Ok(Attach::Revoked) => return terminate(sink, REVOKED.to_owned()).await,
+        Err(error) => {
+            let frame = serde_json::to_string(&HandshakeError { error: &error })
+                .expect("handshake error is serializable");
+            return terminate(sink, frame).await;
+        }
+    };
     let id = uuid::Uuid::new_v4().to_string();
-    let session = Arc::new(Mutex::new(dispatch::Session {
-        fingerprint: None,
-        authorized: true,
-        subscriber_id: uuid::Uuid::new_v4().to_string(),
-        folders: HashSet::new(),
-        folder_aliases: Default::default(),
-        next_events: 0,
-        events: None,
-    }));
-    let events = state.context.host_events.subscribe();
-    let (stop, mut stop_rx) = watch::channel(false);
-    let control = Arc::new(Control {
-        session,
-        admitted: Arc::new(Semaphore::new(MAX_STREAMS_PER_CONNECTION as usize)),
-        tasks: TaskTracker::new(),
-        stop,
-        live_ids: Arc::new(StdMutex::new(HashSet::new())),
-        close_code: AtomicU16::new(close_code::NORMAL),
-    });
     {
         let mut registry = state.controls.lock().expect("web registry poisoned");
         if registry.closing {
-            return;
+            control.retire(Terminal::Disconnected);
+        } else {
+            registry.controls.insert(id.clone(), Arc::clone(&control));
         }
-        registry.controls.insert(id.clone(), Arc::clone(&control));
     }
-    let (mut sink, stream) = socket.split();
+    let events = state.context.host_events.subscribe();
     let ready = serde_json::to_string(&Ready {
-        ready: ReadyId { connection_id: &id },
+        ready: ReadyId {
+            connection_id: &id,
+            controller_token: &token,
+        },
     })
     .expect("ready is serializable");
+    let mut stop_rx = control.stop.subscribe();
     let ready_sent = if *stop_rx.borrow() {
         false
     } else {
@@ -355,20 +521,32 @@ async fn control_socket(socket: WebSocket, state: WebState) {
     } else {
         None
     };
-    // Remove before signaling children, and prevent a racing stream from escaping the drain.
+    // Retirement closes admission and stream lookup before the drain; late
+    // cleanup removes only this connection's entry.
+    control.retire(Terminal::Disconnected);
     {
         let mut registry = state.controls.lock().expect("web registry poisoned");
-        registry.controls.remove(&id);
-        control.tasks.close();
-        let _ = control.stop.send(true);
+        if registry
+            .controls
+            .get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, &control))
+        {
+            registry.controls.remove(&id);
+        }
     }
+    control.tasks.wait().await;
+    let result = cleanup_session(&state.host, &state.context, &control.session).await;
+    if let Err(error) = &result {
+        tracing::error!(?error, "web connection cleanup failed");
+    }
+    control.complete(result);
+    workbenches::detach(&state.host, &state.context, workbench, token, &control).await;
+    // The old browser's acknowledgement never gates replacement readiness.
     if let Some(writer) = writer {
         if let Err(error) = writer.await {
             tracing::warn!(%error, "web writer task failed");
         }
     }
-    control.tasks.wait().await;
-    cleanup_session(&state.host, &state.context, &control.session).await;
 }
 
 async fn write_control(
@@ -381,20 +559,57 @@ async fn write_control(
         if *stop.borrow() {
             break;
         }
-        tokio::select! {
+        let outgoing = tokio::select! {
             biased;
             _ = stop.changed() => break,
-            outgoing = rx.recv() => {
-                let Some(outgoing) = outgoing else { break; };
-                let result = timeout(IO_TIMEOUT, sink.send(outgoing.message)).await;
-                if let Some(id) = outgoing.id { control.live_ids.lock().expect("request IDs poisoned").remove(&id); }
-                if !matches!(result, Ok(Ok(()))) { break; }
-            }
+            outgoing = rx.recv() => outgoing,
+        };
+        let Some(outgoing) = outgoing else { break };
+        let result = tokio::select! {
+            biased;
+            _ = stop.changed() => break,
+            result = timeout(IO_TIMEOUT, sink.send(outgoing.message)) => result,
+        };
+        if let Some(id) = outgoing.id {
+            control
+                .live_ids
+                .lock()
+                .expect("request IDs poisoned")
+                .remove(&id);
+        }
+        if !matches!(result, Ok(Ok(()))) {
+            break;
         }
     }
-    let _ = control.stop.send(true);
+    control.stop.send_replace(true);
+    // Terminal state outranks the ordinary queue: queued events and replies
+    // are discarded and their senders fail fast.
+    drop(rx);
+    let terminal = match control.terminal() {
+        Some(Terminal::Revoked) => Some(REVOKED),
+        Some(Terminal::Closed) => Some(CLOSED),
+        Some(Terminal::Disconnected) | None => None,
+    };
+    if let Some(frame) = terminal {
+        return terminate(sink, frame.to_owned()).await;
+    }
     let code = control.close_code.load(Ordering::Relaxed);
     let _ = timeout(IO_TIMEOUT, sink.send(close(code, "closing"))).await;
+}
+
+/// Wait for the shared execution permit, then re-check authority: a request
+/// retired while queued never enters dispatch. A dispatched request runs to
+/// completion so its owned effects are never abandoned mid-flight.
+async fn execute(
+    control: &Control,
+    requests: Arc<Semaphore>,
+    request: impl Future<Output = RpcResponse>,
+) -> Option<RpcResponse> {
+    let _execution = requests.acquire_owned().await.ok()?;
+    if !control.admitted() {
+        return Some(Err(dispatch::unauthorized("Workbench control was retired")));
+    }
+    Some(request.await)
 }
 
 async fn read_control(
@@ -468,24 +683,24 @@ async fn read_control(
                 let requests = Arc::clone(&state.requests);
                 let tx = tx.clone();
                 let reply_control = Arc::clone(control);
-                control.tasks.spawn(async move {
-                    let Ok(execution) = requests.acquire_owned().await else { return; };
-                    let response = dispatch::handle(&host, &context, &session, envelope.request).await;
-                    drop(execution);
+                let admitted = control.admit(|| control.tasks.spawn(async move {
+                    let dispatched = dispatch::handle(&host, &context, &session, envelope.request);
+                    let Some(response) = execute(&reply_control, requests, dispatched).await else { return; };
                     match serde_json::to_string(&ReplyEnvelope { id: envelope.id, response: &response }) {
                         Ok(text) if text.len() <= MAX_FRAME_BYTES => {
                             let _ = tx.send(Outgoing { message: Message::Text(text.into()), id: Some(envelope.id), _admission: Some(admission) }).await;
                         }
                         Ok(_) => {
                             reply_control.close_code.store(close_code::SIZE, Ordering::Relaxed);
-                            let _ = reply_control.stop.send(true);
+                            reply_control.stop.send_replace(true);
                         }
                         Err(_) => {
                             reply_control.close_code.store(close_code::ERROR, Ordering::Relaxed);
-                            let _ = reply_control.stop.send(true);
+                            reply_control.stop.send_replace(true);
                         }
                     }
-                });
+                }));
+                if admitted.is_none() { break close_code::NORMAL; }
             }
         }
     }
@@ -560,7 +775,8 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
         .await;
         return;
     }
-    if *stop.borrow() {
+    // Authority may have been retired while the open frame was in flight.
+    if *stop.borrow() || !control.admitted() {
         return;
     }
     let (sink, stream) = socket.split();
@@ -569,6 +785,14 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
     let reader = StreamReader::web(stream, stream_stop);
     match open {
         Open::Pty { run_id, cursor } => {
+            if let Err(error) =
+                dispatch::authorize_run(&state.host, &state.context, &control.session, &run_id)
+                    .await
+            {
+                let _ = timeout(IO_TIMEOUT, writer.write_json(&PtyDown::Closed { error })).await;
+                let _ = timeout(IO_TIMEOUT, writer.finish()).await;
+                return;
+            }
             pty_stream::run(
                 state.host,
                 state.context,
@@ -626,5 +850,106 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
             .await;
         }
         Open::Rpc(_) | Open::Events => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::atomic::AtomicBool, task::Poll};
+    use sworm_protocol::rpc::Reply;
+
+    fn workbench_control() -> Arc<Control> {
+        Control::new(dispatch::Session::new(
+            None,
+            true,
+            dispatch::SessionScope::WebWorkbench {
+                id: "a".into(),
+                owner: "a".into(),
+            },
+        ))
+    }
+
+    async fn pending(future: &mut (impl Future + Unpin)) -> bool {
+        std::future::poll_fn(|cx| {
+            Poll::Ready(std::pin::Pin::new(&mut *future).poll(cx).is_pending())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn retirement_fences_queued_requests_but_not_dispatched_ones() {
+        let control = workbench_control();
+        let requests = Arc::new(Semaphore::new(0));
+
+        // Queued behind the shared execution permit when retirement happens.
+        let entered = Arc::new(AtomicBool::new(false));
+        let effect = Arc::clone(&entered);
+        let mut queued = Box::pin(execute(&control, Arc::clone(&requests), async move {
+            effect.store(true, Ordering::SeqCst);
+            Ok(Reply::WorkbenchClose(()))
+        }));
+        assert!(pending(&mut queued).await, "request was not queued");
+
+        // Already inside dispatch when retirement happens.
+        let other = workbench_control();
+        let (release, resume) = tokio::sync::oneshot::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let effect = Arc::clone(&finished);
+        let mut running = Box::pin(execute(&other, Arc::new(Semaphore::new(1)), async move {
+            resume.await.unwrap();
+            effect.store(true, Ordering::SeqCst);
+            Ok(Reply::WorkbenchClose(()))
+        }));
+        assert!(
+            pending(&mut running).await,
+            "request did not enter dispatch"
+        );
+
+        control.retire(Terminal::Revoked);
+        other.retire(Terminal::Revoked);
+        assert!(
+            control.admit(|| ()).is_none(),
+            "retired control admitted work"
+        );
+        assert!(control.tasks.is_closed());
+        assert_eq!(control.terminal(), Some(Terminal::Revoked));
+        control.retire(Terminal::Disconnected);
+        assert_eq!(
+            control.terminal(),
+            Some(Terminal::Revoked),
+            "first reason must win"
+        );
+
+        requests.add_permits(1);
+        assert!(matches!(
+            queued.await,
+            Some(Err(WireError::Unauthorized { .. }))
+        ));
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "queued request reached dispatch"
+        );
+
+        release.send(()).unwrap();
+        assert!(matches!(running.await, Some(Ok(_))));
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "dispatched request was abandoned"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_is_retained_for_every_waiter() {
+        let control = workbench_control();
+        let mut early = Box::pin(control.completion());
+        assert!(pending(&mut early).await);
+        let failure = WireError::Internal {
+            message: "folder operation task failed".into(),
+        };
+        control.complete(Err(failure.clone()));
+        assert_eq!(early.await, Err(failure.clone()));
+        // A retried Close observes the same result rather than a consumed signal.
+        assert_eq!(control.completion().await, Err(failure));
     }
 }

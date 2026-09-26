@@ -94,6 +94,27 @@ export interface AppRuntimeInfo {
   file_descriptor_count: number | null
 }
 
+/** Durable web workbench on Home; `connected`/`running` are live observations. */
+export interface WorkbenchInfo {
+  id: string
+  created_at: string
+  last_seen_at: string
+  connected: boolean
+  /** Tab folders from the saved layout, active tab's folder first. */
+  folders: string[]
+  running: WorkbenchRun[]
+}
+
+/** A live process a workbench left running. */
+export type WorkbenchRun =
+  { kind: 'session'; folder: string; provider_id: string } | { kind: 'task'; folder: string; task_id: string }
+
+/** A folder opened in Sworm, most recent first. */
+export interface RecentFolder {
+  path: string
+  opened_at: string
+}
+
 export interface SessionStartInfo {
   resumed: boolean
   /** Token the launched process is known to own at spawn time; null until discovery binds one. */
@@ -464,6 +485,15 @@ export interface GitSummary {
   staged_count: number
   unstaged_count: number
   untracked_count: number
+}
+
+/** Cheap git state for Home project cards; `changed` counts distinct paths. */
+export interface GitBrief {
+  is_repo: boolean
+  branch: string | null
+  changed: number
+  ahead: number | null
+  behind: number | null
 }
 
 export interface GraphCommit {
