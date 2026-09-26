@@ -153,6 +153,8 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         config_dir: server_config.clone(),
         data_dir: temporary.path().join("server-data"),
         listen: Some("127.0.0.1:0".parse()?),
+        config_file: None,
+        web_assets_dir: None,
     })
     .await?;
     let server_address = server.local_addr;
@@ -196,6 +198,8 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         config_dir: pairing_config.clone(),
         data_dir: temporary.path().join("pairing-data"),
         listen: Some("127.0.0.1:0".parse()?),
+        config_file: None,
+        web_assets_dir: None,
     })
     .await?;
     let token = sworm_server::auth::write_pairing_token(&pairing_config)?;
@@ -482,6 +486,63 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             .content,
         "sentinel\n"
     );
+
+    // A settings-only remote (as Home Manager writes it) against a daemon with a
+    // provisioned identity: the desktop is rejected until the server declares its
+    // fingerprint, then admitted with no pairing, as with SSH authorized_keys.
+    let server_key = temporary.path().join("declared-server.pem");
+    let server_fingerprint = Identity::create(&server_key)?.fingerprint();
+    let declared_keys = temporary.path().join("declared-keys");
+    fs::write(&declared_keys, "")?;
+    let declared_config = temporary.path().join("declared-config");
+    fs::create_dir_all(&declared_config)?;
+    fs::write(
+        declared_config.join("server.jsonc"),
+        json!({ "identity_file": server_key, "authorized_keys_file": declared_keys }).to_string(),
+    )?;
+    let declared_server = serve(ServeOptions {
+        config_dir: declared_config.clone(),
+        data_dir: temporary.path().join("declared-data"),
+        listen: Some("127.0.0.1:0".parse()?),
+        config_file: None,
+        web_assets_dir: None,
+    })
+    .await?;
+    let mut remotes = remote_settings.clone();
+    remotes["declared"] = json!({
+        "address": declared_server.local_addr.to_string(),
+        "fingerprint": server_fingerprint.to_string(),
+    });
+    host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: remotes,
+    })
+    .await?;
+    let declared_repository = Target::remote_uri("declared", &repository.to_string_lossy());
+    assert!(router
+        .file_read(declared_repository.clone(), "hello.txt".into())
+        .await
+        .expect_err("undeclared desktop must be rejected")
+        .to_string()
+        .contains("not paired"));
+    fs::write(
+        &declared_keys,
+        format!("{} desktop\n", desktop_identity.fingerprint()),
+    )?;
+    assert_eq!(
+        router
+            .file_read(declared_repository, "hello.txt".into())
+            .await?
+            .content,
+        "sentinel\n"
+    );
+    assert!(!declared_config.join("authorized_keys").exists());
+    declared_server.shutdown().await;
+    host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: remote_settings.clone(),
+    })
+    .await?;
     router
         .files_watch_dirs(
             "desktop-window".into(),

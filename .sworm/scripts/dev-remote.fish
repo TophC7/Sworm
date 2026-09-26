@@ -5,12 +5,12 @@ cd $repo_root
 
 set -l config_dir .sworm/dev-remote/config
 set -l data_dir .sworm/dev-remote/data
-set -l server_toml $config_dir/server.toml
+set -l server_config $config_dir/server.jsonc
 
 mkdir -p $config_dir $data_dir
 
-if not test -f $server_toml; or not grep -qF '[web]' $server_toml
-    printf '\n[web]\nbind = "127.0.0.1:7421"\nassets_dir = "../../../build-web"\n' >> $server_toml
+if not test -f $server_config
+    printf '{\n  "web": { "listen": "127.0.0.1:7421", "assets_dir": "../../../build-web" }\n}\n' > $server_config
 end
 
 if not test -f build-web/index.html

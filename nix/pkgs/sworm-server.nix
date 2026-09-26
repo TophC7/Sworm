@@ -60,10 +60,7 @@ pkgs.runCommand "sworm-server-${version}"
     mkdir -p "$out/bin"
     cat > "$out/bin/sworm-server" <<'EOF'
     #!${pkgs.runtimeShell}
-    if [ -z "''${SWORM_WEB_ASSETS_DIR+x}" ]; then
-      export SWORM_WEB_ASSETS_DIR="${webFrontend}"
-    fi
-    exec "${unwrapped}/bin/sworm-server" "$@"
+    exec "${unwrapped}/bin/sworm-server" --web-assets-dir "${webFrontend}" "$@"
     EOF
     chmod +x "$out/bin/sworm-server"
   ''

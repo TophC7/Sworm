@@ -17,7 +17,7 @@ use tokio::sync::{
 
 pub(crate) struct ServerContext {
     pub config_dir: PathBuf,
-    pub auth_token: Option<String>,
+    pub authorized_keys_file: Option<PathBuf>,
     pub pairing: Mutex<()>,
     folders: parking_lot::Mutex<HashMap<PathBuf, FolderState>>,
     pub host_events: HostEvents,
@@ -121,12 +121,12 @@ impl Drop for RunOperation<'_> {
 impl ServerContext {
     pub(crate) fn new(
         config_dir: PathBuf,
-        auth_token: Option<String>,
+        authorized_keys_file: Option<PathBuf>,
         host_events: HostEvents,
     ) -> Self {
         Self {
             config_dir,
-            auth_token,
+            authorized_keys_file,
             pairing: Mutex::new(()),
             folders: parking_lot::Mutex::new(HashMap::new()),
             host_events,
@@ -976,11 +976,11 @@ impl DispatchRuntime<'_> {
             return Ok(());
         }
         let config_dir = self.context.config_dir.clone();
-        let static_token = self.context.auth_token.clone();
         let persisted = tokio::task::spawn_blocking(move || -> Result<bool, WireError> {
-            let valid = auth::consume_pairing_token(&config_dir, &token, static_token.as_deref())
-                .map_err(|error| WireError::Io {
-                message: format!("consume pairing token: {error}"),
+            let valid = auth::consume_pairing_token(&config_dir, &token).map_err(|error| {
+                WireError::Io {
+                    message: format!("consume pairing token: {error}"),
+                }
             })?;
             if !valid {
                 return Ok(false);

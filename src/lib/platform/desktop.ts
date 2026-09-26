@@ -97,6 +97,7 @@ const native: NativePlatform = {
   remotes: {
     pair: (link, name) => invoke<RemoteSettings>('pair_remote', { link, name }),
     repair: (link, name) => invoke<RemoteSettings>('repair_remote', { link, name }),
+    clientFingerprint: () => invoke<string>('remote_client_fingerprint'),
     status: (server) => invoke<RemoteStatus>('remote_status', { server }),
     rename: (server, name) => invoke<void>('rename_remote', { server, name }),
     remove: (server) => invoke<void>('remove_remote', { server }),

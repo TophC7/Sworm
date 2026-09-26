@@ -42,13 +42,13 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn start(server_toml: Option<&str>) -> Result<Self> {
+    async fn start(server_config: Option<serde_json::Value>) -> Result<Self> {
         let config = tempfile::tempdir()?;
         let data = tempfile::tempdir()?;
         let repo = tempfile::tempdir()?;
         let client_dir = tempfile::tempdir()?;
-        if let Some(contents) = server_toml {
-            fs::write(config.path().join("server.toml"), contents)?;
+        if let Some(contents) = server_config {
+            fs::write(config.path().join("server.jsonc"), contents.to_string())?;
         }
         init_repo(repo.path())?;
         let client_identity = Identity::load_or_generate(client_dir.path(), "client")?;
@@ -57,6 +57,8 @@ impl Fixture {
             config_dir: config.path().to_path_buf(),
             data_dir: data.path().to_path_buf(),
             listen: Some("127.0.0.1:0".parse()?),
+            config_file: None,
+            web_assets_dir: None,
         })
         .await?;
         Ok(Self {
@@ -93,6 +95,8 @@ impl Fixture {
             config_dir: self.config.path().to_path_buf(),
             data_dir: self.data.path().to_path_buf(),
             listen: Some("127.0.0.1:0".parse()?),
+            config_file: None,
+            web_assets_dir: None,
         })
         .await?;
         let previous = std::mem::replace(&mut self.handle, handle);
@@ -778,64 +782,39 @@ async fn one_use_token_has_one_winner_across_connections() -> Result<()> {
     Ok(())
 }
 
+/// The fully declarative (sops/agenix) path: both keys provisioned up front, so
+/// each side's fingerprint is known before the daemon ever starts.
 #[tokio::test(flavor = "multi_thread")]
-async fn static_token_pairs_without_pending_token_file() -> Result<()> {
-    let fixture = Fixture::start(Some("auth_token = \"static-secret\"\n")).await?;
-    let client = fixture.client().await?;
-    client.pair("static-secret", "declarative client").await?;
-    assert!(!fixture.config.path().join("pairing-token").exists());
-    assert_eq!(
-        fs::read_to_string(fixture.config.path().join("authorized_keys"))?,
-        format!(
-            "{} declarative-client\n",
-            fixture.client_identity.fingerprint()
-        )
-    );
+async fn provisioned_keys_admit_without_pairing() -> Result<()> {
+    let keys = tempfile::tempdir()?;
+    let server_key = keys.path().join("server.pem");
+    let server_fingerprint = Identity::create(&server_key)?.fingerprint();
+    let desktop = Identity::create(&keys.path().join("desktop.pem"))?;
+    let declared = keys.path().join("authorized");
+    fs::write(&declared, format!("{} desktop\n", desktop.fingerprint()))?;
+    let fixture = Fixture::start(Some(serde_json::json!({
+        "identity_file": server_key,
+        "authorized_keys_file": declared,
+    })))
+    .await?;
+    assert_eq!(fixture.handle.fingerprint, server_fingerprint);
 
-    let contents = client
-        .call(&Request::FileRead {
-            project_path: fixture.repo_path(),
-            file_path: "hello.txt".to_string(),
-        })
-        .await?
-        .file_read()
-        .map_err(RemoteError::Wire)?;
-    assert_eq!(contents.content, "sentinel\n");
+    let client = RemoteClient::connect(
+        &fixture.endpoint,
+        fixture.handle.local_addr,
+        &desktop,
+        server_fingerprint,
+    )
+    .await?;
+    let entries = root_entries(&client, &fixture.repo_path()).await?;
+    assert!(entries.iter().any(|entry| entry.name == "src"));
+    assert!(!fixture.config.path().join("authorized_keys").exists());
 
+    let undeclared = fixture.client().await?;
+    assert_unauthorized(root_entries(&undeclared, &fixture.repo_path()).await);
+
+    client.close();
     fixture.handle.shutdown().await;
-    wait_closed(&client).await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn strict_config_rejects_unknown_fields() -> Result<()> {
-    let config = tempfile::tempdir()?;
-    let data = tempfile::tempdir()?;
-    fs::write(config.path().join("server.toml"), "unknown = true\n")?;
-    let result = serve(ServeOptions {
-        config_dir: config.path().to_path_buf(),
-        data_dir: data.path().to_path_buf(),
-        listen: Some("127.0.0.1:0".parse()?),
-    })
-    .await;
-    assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_static_token_is_rejected() -> Result<()> {
-    let config = tempfile::tempdir()?;
-    let data = tempfile::tempdir()?;
-    fs::write(config.path().join("server.toml"), "auth_token = \"\"\n")?;
-    let result = serve(ServeOptions {
-        config_dir: config.path().to_path_buf(),
-        data_dir: data.path().to_path_buf(),
-        listen: Some("127.0.0.1:0".parse()?),
-    })
-    .await;
-    assert!(
-        matches!(result, Err(error) if error.to_string().contains("auth_token must not be empty"))
-    );
     Ok(())
 }
 

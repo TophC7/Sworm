@@ -59,11 +59,9 @@ impl Fixture {
         )?;
         fs::write(assets.join("app.js"), "window.swormAsset = 7751;")?;
         fs::write(
-            config.join("server.toml"),
-            format!(
-                "[web]\nbind = \"127.0.0.1:0\"\nassets_dir = {:?}\n",
-                assets.to_string_lossy().as_ref()
-            ),
+            config.join("server.jsonc"),
+            serde_json::json!({ "web": { "listen": "127.0.0.1:0", "assets_dir": assets } })
+                .to_string(),
         )?;
         let status = Command::new("git")
             .args(["-c", "init.defaultBranch=main", "init"])
@@ -81,6 +79,8 @@ impl Fixture {
             config_dir: config.clone(),
             data_dir: data,
             listen: Some("127.0.0.1:0".parse()?),
+            config_file: None,
+            web_assets_dir: None,
         })
         .await?;
         Ok(Self {
@@ -3317,6 +3317,8 @@ async fn run(home: &Path) -> Result<()> {
         config_dir: disabled_config,
         data_dir: disabled_data,
         listen: Some("127.0.0.1:0".parse()?),
+        config_file: None,
+        web_assets_dir: None,
     })
     .await?;
     let startup_config = home.join("startup-config");
@@ -3327,15 +3329,17 @@ async fn run(home: &Path) -> Result<()> {
         config_dir: startup_config.clone(),
         data_dir: startup_data.clone(),
         listen: Some("127.0.0.1:0".parse().unwrap()),
+        config_file: None,
+        web_assets_dir: None,
     };
     let missing = home.join("missing-web-assets");
-    fs::write(
-        startup_config.join("server.toml"),
-        format!(
-            "[web]\nbind = \"127.0.0.1:0\"\nassets_dir = {:?}\n",
-            missing.to_string_lossy().as_ref()
-        ),
-    )?;
+    let write_web = |web: serde_json::Value| {
+        fs::write(
+            startup_config.join("server.jsonc"),
+            serde_json::json!({ "web": web }).to_string(),
+        )
+    };
+    write_web(serde_json::json!({ "listen": "127.0.0.1:0", "assets_dir": missing }))?;
     fs::create_dir_all(home.join("assets"))?;
     fs::write(
         home.join("assets/index.html"),
@@ -3346,26 +3350,16 @@ async fn run(home: &Path) -> Result<()> {
         "missing web assets started successfully"
     );
     let occupied = TcpListener::bind("127.0.0.1:0")?;
-    fs::write(
-        startup_config.join("server.toml"),
-        format!(
-            "[web]\nbind = {:?}\nassets_dir = {:?}\n",
-            occupied.local_addr()?.to_string(),
-            home.join("assets").to_string_lossy().as_ref()
-        ),
-    )?;
+    write_web(serde_json::json!({
+        "listen": occupied.local_addr()?.to_string(),
+        "assets_dir": home.join("assets"),
+    }))?;
     assert!(
         serve(options()).await.is_err(),
         "occupied web bind started successfully"
     );
     drop(occupied);
-    fs::write(
-        startup_config.join("server.toml"),
-        format!(
-            "[web]\nassets_dir = {:?}\n",
-            home.join("assets").to_string_lossy().as_ref()
-        ),
-    )?;
+    write_web(serde_json::json!({ "assets_dir": home.join("assets") }))?;
     let default_web = serve(options()).await?;
     assert!(
         default_web
@@ -3376,13 +3370,7 @@ async fn run(home: &Path) -> Result<()> {
         "default bind exposed non-loopback interface"
     );
     default_web.shutdown().await;
-    fs::write(
-        startup_config.join("server.toml"),
-        format!(
-            "[web]\nbind = \"0.0.0.0:0\"\nassets_dir = {:?}\n",
-            home.join("assets").to_string_lossy().as_ref()
-        ),
-    )?;
+    write_web(serde_json::json!({ "listen": "0.0.0.0:0", "assets_dir": home.join("assets") }))?;
     let exposed = serve(options()).await?;
     assert!(
         exposed

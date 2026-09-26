@@ -1,134 +1,87 @@
-use anyhow::Context;
-use serde::Deserialize;
+use anyhow::{anyhow, bail, ensure, Context};
+use serde_json::Value;
 use std::{
     fs,
-    net::SocketAddr,
     path::{Path, PathBuf},
 };
-use sworm_protocol::rpc::DEFAULT_SERVER_PORT;
+pub use sworm_protocol::server_config::{ServerConfig, WebConfig, SERVER_CONFIG_FILE};
+use sworm_remote::Identity;
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct ServerConfig {
-    pub listen: SocketAddr,
-    pub auth_token: Option<String>,
-    auth_token_file: Option<PathBuf>,
-    pub web: Option<WebConfig>,
+pub fn default_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(SERVER_CONFIG_FILE)
 }
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct WebConfig {
-    pub bind: SocketAddr,
-    pub assets_dir: Option<PathBuf>,
-}
-
-impl Default for WebConfig {
-    fn default() -> Self {
-        Self {
-            bind: SocketAddr::from(([127, 0, 0, 1], 7421)),
-            assets_dir: None,
+/// A missing file means defaults: a fresh install needs no config.
+pub fn load(path: &Path) -> anyhow::Result<ServerConfig> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ServerConfig::default())
         }
-    }
-}
-
-impl WebConfig {
-    pub fn resolve_assets(&self, config_dir: &Path) -> anyhow::Result<PathBuf> {
-        let path = if let Some(path) = &self.assets_dir {
-            anyhow::ensure!(
-                !path.as_os_str().is_empty(),
-                "web assets directory is invalid: {}",
-                path.display()
-            );
-            if path.is_absolute() {
-                path.clone()
-            } else {
-                config_dir.join(path)
-            }
-        } else if let Some(path) = std::env::var_os("SWORM_WEB_ASSETS_DIR") {
-            let path = PathBuf::from(path);
-            anyhow::ensure!(
-                path.is_absolute() && !path.as_os_str().is_empty(),
-                "SWORM_WEB_ASSETS_DIR must be a nonempty absolute path: {}",
-                path.display()
-            );
-            path
-        } else {
-            anyhow::bail!("web.assets_dir or SWORM_WEB_ASSETS_DIR is required");
-        };
-        anyhow::ensure!(
-            path.is_dir(),
-            "web assets directory is invalid: {}",
-            path.display()
-        );
-        let index = path.join("index.html");
-        anyhow::ensure!(
-            index.is_file(),
-            "web index.html is not a file: {}",
-            index.display()
-        );
-        fs::File::open(&index)
-            .with_context(|| format!("read web index.html at {}", index.display()))?;
-        Ok(path)
-    }
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_SERVER_PORT)),
-            auth_token: None,
-            auth_token_file: None,
-            web: None,
-        }
-    }
-}
-
-pub(crate) fn load(config_dir: &Path) -> anyhow::Result<ServerConfig> {
-    load_with_auth_token_file(
-        config_dir,
-        std::env::var_os("SWORM_SERVER_AUTH_TOKEN_FILE").map(PathBuf::from),
-    )
-}
-
-fn load_with_auth_token_file(
-    config_dir: &Path,
-    override_file: Option<PathBuf>,
-) -> anyhow::Result<ServerConfig> {
-    let path = config_dir.join("server.toml");
-    let mut config: ServerConfig = match fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ServerConfig::default(),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
-
-    if let Some(path) = override_file {
-        // The service environment takes precedence over a legacy server.toml.
-        config.auth_token = None;
-        config.auth_token_file = Some(path);
-    } else {
-        anyhow::ensure!(
-            config.auth_token.is_none() || config.auth_token_file.is_none(),
-            "server.toml auth_token conflicts with auth_token_file"
-        );
+    if raw.trim().is_empty() {
+        return Ok(ServerConfig::default());
     }
-    if let Some(path) = config.auth_token_file.as_deref() {
-        anyhow::ensure!(
-            path.is_absolute(),
-            "auth_token_file must be an absolute path"
-        );
-        let token = fs::read_to_string(path)
-            .with_context(|| format!("read auth_token_file {}", path.display()))?;
-        config.auth_token = Some(token.trim_end_matches(['\r', '\n']).to_owned());
-    }
-    if config
-        .auth_token
-        .as_deref()
-        .is_some_and(|token| token.trim().is_empty())
-    {
-        anyhow::bail!("server auth_token must not be empty");
+    let value = jsonc_parser::parse_to_serde_value::<Value>(&raw, &Default::default())
+        .map_err(|error| anyhow!("parse {}: {error}", path.display()))?;
+    let config: ServerConfig = serde_json::from_value(value)
+        .map_err(|error| anyhow!("invalid {}: {error}", path.display()))?;
+    for (field, file) in [
+        ("identity_file", &config.identity_file),
+        ("authorized_keys_file", &config.authorized_keys_file),
+    ] {
+        if let Some(file) = file {
+            ensure!(file.is_absolute(), "{field} must be an absolute path");
+        }
     }
     Ok(config)
+}
+
+/// The daemon's TLS identity: the provisioned `identity_file`, else one
+/// generated in the config dir on first use.
+pub fn identity(config_dir: &Path, config: &ServerConfig) -> anyhow::Result<Identity> {
+    Ok(match &config.identity_file {
+        Some(path) => Identity::load(path)?,
+        None => Identity::load_or_generate(config_dir, "server")?,
+    })
+}
+
+/// `web.assets_dir` wins over the launcher-supplied default.
+pub fn resolve_web_assets(
+    web: &WebConfig,
+    config_path: &Path,
+    default: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    let path = match (&web.assets_dir, default) {
+        (Some(dir), _) => {
+            ensure!(
+                !dir.as_os_str().is_empty(),
+                "web.assets_dir must not be empty"
+            );
+            config_path
+                .parent()
+                .map_or_else(|| dir.clone(), |base| base.join(dir))
+        }
+        (None, Some(dir)) => dir.to_path_buf(),
+        (None, None) => {
+            bail!("web.assets_dir is required; packaged launchers pass --web-assets-dir")
+        }
+    };
+    ensure!(
+        path.is_dir(),
+        "web assets directory is invalid: {}",
+        path.display()
+    );
+    let index = path.join("index.html");
+    ensure!(
+        index.is_file(),
+        "web index.html is not a file: {}",
+        index.display()
+    );
+    fs::File::open(&index)
+        .with_context(|| format!("read web index.html at {}", index.display()))?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -136,64 +89,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_file_resolves_without_server_toml() {
+    fn jsonc_config_resolves_relative_assets() {
         let dir = tempfile::tempdir().unwrap();
-        let token_path = dir.path().join("token");
-        fs::write(&token_path, "secret-token\n").unwrap();
+        let config_path = dir.path().join(SERVER_CONFIG_FILE);
+        fs::create_dir_all(dir.path().join("web")).unwrap();
+        fs::write(dir.path().join("web/index.html"), "<html></html>").unwrap();
 
-        let loaded = load_with_auth_token_file(dir.path(), Some(token_path)).unwrap();
-        assert_eq!(loaded.auth_token.as_deref(), Some("secret-token"));
-        assert!(load_with_auth_token_file(dir.path(), None)
-            .unwrap()
-            .auth_token
-            .is_none());
-    }
-
-    #[test]
-    fn token_file_failures_are_not_ignored() {
-        let dir = tempfile::tempdir().unwrap();
-        let token_path = dir.path().join("token");
-        let config_path = dir.path().join("server.toml");
-
-        let missing = load_with_auth_token_file(dir.path(), Some(token_path.clone()))
-            .err()
-            .unwrap();
-        assert!(missing.to_string().contains("read auth_token_file"));
-        fs::write(&token_path, "\n").unwrap();
-        let empty = load_with_auth_token_file(dir.path(), Some(token_path.clone()))
-            .err()
-            .unwrap();
-        assert!(empty.to_string().contains("must not be empty"));
-
-        fs::write(&token_path, "valid\n").unwrap();
-        fs::write(&config_path, "auth_token = \"inline\"\n").unwrap();
-        assert_eq!(
-            load_with_auth_token_file(dir.path(), None)
-                .unwrap()
-                .auth_token
-                .as_deref(),
-            Some("inline")
-        );
-        let loaded = load_with_auth_token_file(dir.path(), Some(token_path.clone())).unwrap();
-        assert_eq!(loaded.auth_token.as_deref(), Some("valid"));
+        assert!(load(&config_path).unwrap().web.is_none());
         fs::write(
             &config_path,
-            format!("auth_token_file = {:?}\n", token_path.display().to_string()),
+            "{\n  // comments are fine\n  \"web\": { \"assets_dir\": \"web\" }\n}\n",
         )
         .unwrap();
-        let loaded = load_with_auth_token_file(dir.path(), None).unwrap();
-        assert_eq!(loaded.auth_token.as_deref(), Some("valid"));
+        let config = load(&config_path).unwrap();
+        let web = config.web.as_ref().unwrap();
+        assert!(web.listen.ip().is_loopback());
+        assert_eq!(
+            resolve_web_assets(web, &config_path, Some(Path::new("/launcher/default"))).unwrap(),
+            dir.path().join("web")
+        );
     }
 
     #[test]
-    fn conflicting_toml_token_sources_are_rejected() {
+    fn relative_key_paths_and_unknown_fields_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join("server.toml"),
-            "auth_token = \"inline\"\nauth_token_file = \"/some/token\"\n",
-        )
-        .unwrap();
-        let error = load_with_auth_token_file(dir.path(), None).err().unwrap();
-        assert!(error.to_string().contains("conflicts"));
+        let config_path = dir.path().join(SERVER_CONFIG_FILE);
+        fs::write(&config_path, r#"{ "identity_file": "server.pem" }"#).unwrap();
+        assert!(load(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("absolute"));
+        fs::write(&config_path, r#"{ "auth_token": "inline" }"#).unwrap();
+        assert!(load(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field"));
     }
 }

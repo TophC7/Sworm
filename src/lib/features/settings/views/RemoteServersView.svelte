@@ -17,9 +17,18 @@
   let busy = $state<string | null>(null)
   let error = $state('')
   let loaded = $state(false)
+  let deviceFingerprint = $state('')
 
   onMount(() => {
     let disposed = false
+    requireNative()
+      .remotes.clientFingerprint()
+      .then((value) => {
+        if (!disposed) deviceFingerprint = value
+      })
+      .catch((cause) => {
+        if (!disposed) error = getErrorMessage(cause)
+      })
     let generation = 0
     async function refresh() {
       const current = ++generation
@@ -89,6 +98,21 @@
     field?.focus()
   }
 </script>
+
+<section class="flex flex-col gap-3 border-b border-edge px-5 py-4">
+  <div>
+    <h3 class="text-md font-semibold text-bright">This Device</h3>
+    <p class="text-xs text-subtle">
+      Servers admit this fingerprint once paired, or when it is listed in their <span class="font-mono"
+        >authorizedKeys</span
+      >.
+    </p>
+  </div>
+  <div class="flex items-start gap-2">
+    <p class="min-w-0 flex-1 font-mono text-xs break-all text-muted">{deviceFingerprint || 'Loading…'}</p>
+    <Button size="xs" disabled={!deviceFingerprint} onclick={() => copy(deviceFingerprint)}>Copy Fingerprint</Button>
+  </div>
+</section>
 
 <RemotePairForm {remotes} />
 

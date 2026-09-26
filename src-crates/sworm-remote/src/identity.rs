@@ -78,6 +78,27 @@ impl Identity {
         generate(dir, stem, &identity_path)
     }
 
+    /// Load a provisioned identity (e.g. a sops/agenix secret), never
+    /// generating or modifying it.
+    pub fn load(path: &Path) -> Result<Self, RemoteError> {
+        load_existing(path)
+    }
+
+    /// Write a new identity to `path` without overwriting, like `ssh-keygen -f`.
+    pub fn create(path: &Path) -> Result<Self, RemoteError> {
+        let stem = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                RemoteError::Identity(format!("invalid identity path {}", path.display()))
+            })?;
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        generate(dir, stem, path)
+    }
+
     pub fn fingerprint(&self) -> Fingerprint {
         Fingerprint::of_cert(&self.cert)
     }
@@ -112,9 +133,10 @@ fn generate(dir: &Path, stem: &str, identity_path: &Path) -> Result<Identity, Re
     load_existing(identity_path)
 }
 
+/// Follows symlinks so provisioned secrets can be linked into place, and like
+/// ssh refuses a key other users can read instead of silently fixing it.
 fn load_existing(identity_path: &Path) -> Result<Identity, RemoteError> {
-    require_regular_file(identity_path)?;
-    set_mode(identity_path, 0o600)?;
+    require_private_file(identity_path)?;
 
     let cert = CertificateDer::from_pem_file(identity_path).map_err(|error| {
         RemoteError::Identity(format!(
@@ -153,21 +175,30 @@ fn entry_exists(path: &Path) -> Result<bool, RemoteError> {
         ))),
     }
 }
-fn require_regular_file(path: &Path) -> Result<(), RemoteError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
+fn require_private_file(path: &Path) -> Result<(), RemoteError> {
+    let metadata = fs::metadata(path).map_err(|error| {
         RemoteError::Identity(format!(
             "cannot inspect identity file {}: {error}",
             path.display()
         ))
     })?;
-    if metadata.file_type().is_file() {
-        Ok(())
-    } else {
-        Err(RemoteError::Identity(format!(
+    if !metadata.file_type().is_file() {
+        return Err(RemoteError::Identity(format!(
             "identity path {} is not a regular file",
             path.display()
-        )))
+        )));
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(RemoteError::Identity(format!(
+                "identity file {} is accessible by other users; chmod 600 it",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn secure_directory(dir: &Path) -> Result<(), RemoteError> {
@@ -472,5 +503,44 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join(".client.identity.lock"), b"stale").unwrap();
         Identity::load_or_generate(directory.path(), "client").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provisioned_identity_loads_through_symlink_only_when_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("secret.pem");
+        let created = Identity::create(&secret).unwrap();
+        assert!(Identity::create(&secret).is_err(), "overwrote an identity");
+
+        let config = directory.path().join("config");
+        fs::create_dir(&config).unwrap();
+        std::os::unix::fs::symlink(&secret, config.join("client.pem")).unwrap();
+        let linked = Identity::load_or_generate(&config, "client").unwrap();
+        assert_eq!(linked.fingerprint(), created.fingerprint());
+
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Identity::load(&secret).is_err());
+        assert_eq!(
+            fs::metadata(&secret).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "loading must not modify a provisioned file"
+        );
+    }
+
+    // A provisioned link whose secret is not decrypted yet must fail, not be
+    // replaced by a fresh identity with a different fingerprint.
+    #[cfg(unix)]
+    #[test]
+    fn dangling_identity_link_is_never_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let link = directory.path().join("client.pem");
+        std::os::unix::fs::symlink(directory.path().join("not-yet-decrypted"), &link).unwrap();
+        assert!(Identity::load_or_generate(directory.path(), "client").is_err());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }

@@ -12,7 +12,7 @@ use sworm_protocol::rpc::{
 use sworm_remote::{
     tls::{peer_fingerprint, server_config},
     wire::{read_frame_with_limit, write_frame},
-    Fingerprint, Identity,
+    Fingerprint,
 };
 use tokio::{
     sync::{broadcast, watch, Mutex, Semaphore},
@@ -35,7 +35,11 @@ const COMPLETED_RUN_DAYS: i64 = 7;
 pub struct ServeOptions {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
+    /// Defaults to `<config_dir>/server.jsonc`.
+    pub config_file: Option<PathBuf>,
     pub listen: Option<SocketAddr>,
+    /// Frontend used when the config sets no `web.assets_dir`.
+    pub web_assets_dir: Option<PathBuf>,
 }
 
 pub struct ServerHandle {
@@ -56,18 +60,25 @@ impl ServerHandle {
 }
 
 pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
-    let loaded = config::load(&options.config_dir)?;
-    let web = if let Some(config) = &loaded.web {
-        let assets = config.resolve_assets(&options.config_dir)?;
-        let listener = tokio::net::TcpListener::bind(config.bind)
+    let config_path = options
+        .config_file
+        .unwrap_or_else(|| config::default_path(&options.config_dir));
+    let loaded = config::load(&config_path)?;
+    let web = if let Some(web_config) = &loaded.web {
+        let assets = config::resolve_web_assets(
+            web_config,
+            &config_path,
+            options.web_assets_dir.as_deref(),
+        )?;
+        let listener = tokio::net::TcpListener::bind(web_config.listen)
             .await
-            .with_context(|| format!("bind web server to {}", config.bind))?;
+            .with_context(|| format!("bind web server to {}", web_config.listen))?;
         Some((listener, assets))
     } else {
         None
     };
     let listen = options.listen.unwrap_or(loaded.listen);
-    let identity = Identity::load_or_generate(&options.config_dir, "server")?;
+    let identity = config::identity(&options.config_dir, &loaded)?;
     let fingerprint = identity.fingerprint();
     std::fs::create_dir_all(&options.data_dir)
         .with_context(|| format!("create data directory {}", options.data_dir.display()))?;
@@ -111,7 +122,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let local_addr = endpoint.local_addr()?;
     let context = Arc::new(dispatch::ServerContext::new(
         options.config_dir,
-        loaded.auth_token,
+        loaded.authorized_keys_file,
         host_events,
     ));
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -276,8 +287,9 @@ async fn run_connection(
         return;
     };
     let config_dir = context.config_dir.clone();
+    let static_keys = context.authorized_keys_file.clone();
     let authorized = match tokio::task::spawn_blocking(move || {
-        crate::auth::is_authorized(&config_dir, fingerprint)
+        crate::auth::is_authorized(&config_dir, fingerprint, static_keys.as_deref())
     })
     .await
     {
@@ -287,6 +299,9 @@ async fn run_connection(
             false
         }
     };
+    if !authorized {
+        tracing::info!(%fingerprint, "unpaired client connected; pair it or add this fingerprint to authorized keys");
+    }
     let session = Arc::new(Mutex::new(dispatch::Session::new(
         Some(fingerprint),
         authorized,

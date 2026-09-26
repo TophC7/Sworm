@@ -16,6 +16,7 @@ use sworm_protocol::config_schemas::ConfigSchemaEntry;
 
 use crate::services::builtins::BuiltinCatalogService;
 use sworm_protocol::{
+    server_config::ServerConfig,
     settings::{settings_layer_schema, SettingsLayerKind},
     task::TasksFile,
 };
@@ -49,6 +50,12 @@ pub fn all_config_schemas() -> Result<Vec<ConfigSchemaEntry>, String> {
             id: "sworm.shortcuts".into(),
             file_match: vec!["**/shortcuts.jsonc".into()],
             schema: shortcuts_file_schema(),
+        },
+        ConfigSchemaEntry {
+            id: "sworm.server".into(),
+            file_match: vec!["**/sworm/server.jsonc".into()],
+            schema: serde_json::to_value(schema_for!(ServerConfig))
+                .expect("server config schema serializes"),
         },
     ])
 }

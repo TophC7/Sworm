@@ -101,6 +101,8 @@ impl Fixture {
             config_dir: server_config.clone(),
             data_dir: root.path().join("server-data"),
             listen: Some("127.0.0.1:0".parse()?),
+            config_file: None,
+            web_assets_dir: None,
         })
         .await?;
 

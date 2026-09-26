@@ -119,6 +119,7 @@ pub fn run() {
             deep_links::deep_link_take,
             router::pair_remote,
             router::repair_remote,
+            router::remote_client_fingerprint,
             router::remote_status,
             router::rename_remote,
             router::remove_remote,

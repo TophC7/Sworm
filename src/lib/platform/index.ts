@@ -116,6 +116,7 @@ export interface NativePlatform {
   remotes: {
     pair(link: string, name: string): Promise<RemoteSettings>
     repair(link: string, name: string): Promise<RemoteSettings>
+    clientFingerprint(): Promise<string>
     status(server: string): Promise<RemoteStatus>
     rename(server: string, name: string): Promise<void>
     remove(server: string): Promise<void>

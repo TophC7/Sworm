@@ -23,7 +23,9 @@ use sworm_core::{
 use sworm_protocol::{
     pty::PtyEvent,
     rpc::{HostEventFrame, HostEventWire, Open, Reply, Request, RunStatus},
-    settings::{merge_desktop_sections, tag_host_diagnostics, EffectiveSettingsInput},
+    settings::{
+        merge_desktop_sections, tag_host_diagnostics, EffectiveSettingsInput, RemoteSettings,
+    },
 };
 use sworm_remote::{wire::read_frame, Fingerprint, Identity, RemoteClient, RemoteError};
 use tokio::{
@@ -82,7 +84,7 @@ pub async fn pair_remote(
     state: tauri::State<'_, crate::app_state::AppState>,
     link: String,
     name: String,
-) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+) -> Result<RemoteSettings, ApiError> {
     state.router.pair_remote(&link, &name, false).await
 }
 
@@ -91,8 +93,22 @@ pub async fn repair_remote(
     state: tauri::State<'_, crate::app_state::AppState>,
     link: String,
     name: String,
-) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+) -> Result<RemoteSettings, ApiError> {
     state.router.pair_remote(&link, &name, true).await
+}
+
+/// This desktop's identity fingerprint, which servers list in `authorized_keys`.
+#[tauri::command]
+pub async fn remote_client_fingerprint(
+    state: tauri::State<'_, crate::app_state::AppState>,
+) -> Result<String, ApiError> {
+    Ok(state
+        .router
+        .inner
+        .client_identity()
+        .await?
+        .fingerprint()
+        .to_string())
 }
 
 #[tauri::command]
@@ -185,14 +201,8 @@ impl<'a> Target<'a> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct RemoteConfig {
-    address: String,
-    fingerprint: String,
-}
-
 struct CachedRemote {
-    config: RemoteConfig,
+    config: RemoteSettings,
     client: Arc<RemoteClient>,
 }
 
@@ -256,7 +266,7 @@ impl Drop for RemoteSlot {
 
 struct SettingsCache {
     generation: u64,
-    remotes: HashMap<String, RemoteConfig>,
+    remotes: HashMap<String, RemoteSettings>,
 }
 
 /// A stop the daemon never acknowledged. It outlives the tab, the window, and
@@ -332,7 +342,7 @@ impl WorkspaceRouter {
         link: &str,
         name: &str,
         replace: bool,
-    ) -> Result<sworm_protocol::settings::RemoteSettings, ApiError> {
+    ) -> Result<RemoteSettings, ApiError> {
         validate_server_name(name)?;
         let link: sworm_protocol::pairing::PairLink = link
             .parse()
@@ -349,20 +359,7 @@ impl WorkspaceRouter {
                 format!("Remote `{name}` already exists; use Re-pair instead")
             }));
         }
-        let identity = self
-            .inner
-            .identity
-            .get_or_try_init(|| async {
-                tokio::task::spawn_blocking(|| {
-                    let dir = SettingsService::global_config_dir().map_err(ApiError::Internal)?;
-                    Identity::load_or_generate(&dir, "client")
-                        .map(Arc::new)
-                        .map_err(|error| ApiError::Remote(error.to_string()))
-                })
-                .await
-                .map_err(|error| ApiError::Internal(error.to_string()))?
-            })
-            .await?;
+        let identity = self.inner.client_identity().await?;
         let addresses = tokio::net::lookup_host(link.address())
             .await
             .map_err(|error| ApiError::Remote(error.to_string()))?
@@ -372,7 +369,7 @@ impl WorkspaceRouter {
         let client = connect_happy(
             &self.inner.endpoint,
             interleave_addresses(addresses),
-            Arc::clone(identity),
+            identity,
             fingerprint,
         )
         .await
@@ -381,7 +378,7 @@ impl WorkspaceRouter {
             client.close();
             return Err(remote_error(name, error));
         }
-        let entry = sworm_protocol::settings::RemoteSettings {
+        let entry = RemoteSettings {
             address: link.address(),
             fingerprint: link.fingerprint,
         };
@@ -411,21 +408,17 @@ impl WorkspaceRouter {
             client.close();
             return Err(error);
         }
-        let config = RemoteConfig {
-            address: entry.address.clone(),
-            fingerprint: entry.fingerprint.clone(),
-        };
         self.inner
             .settings
             .lock()
             .await
             .remotes
-            .insert(name.into(), config.clone());
+            .insert(name.into(), entry.clone());
         let slot = self.inner.slot(name);
         let client = Arc::new(client);
         let mut cached = slot.cached.lock().await;
         if let Some(old) = cached.replace(CachedRemote {
-            config,
+            config: entry.clone(),
             client: Arc::clone(&client),
         }) {
             old.client.close();
@@ -850,6 +843,24 @@ impl WorkspaceRouter {
 }
 
 impl RouterInner {
+    /// Loaded once; `~/.config/sworm/client.pem` may be a provisioned secret
+    /// linked into place, like `~/.ssh/id_ed25519`.
+    async fn client_identity(&self) -> Result<Arc<Identity>, ApiError> {
+        self.identity
+            .get_or_try_init(|| async {
+                tokio::task::spawn_blocking(|| {
+                    let dir = SettingsService::global_config_dir().map_err(ApiError::Internal)?;
+                    Identity::load_or_generate(&dir, "client")
+                        .map(Arc::new)
+                        .map_err(|error| ApiError::Remote(format!("client identity: {error}")))
+                })
+                .await
+                .map_err(|error| ApiError::Internal(error.to_string()))?
+            })
+            .await
+            .map(Arc::clone)
+    }
+
     pub(crate) fn run_status(&self, run_id: &str, state: &str) {
         let _ = (self.events)(HostEvent::RemoteRunStatus {
             run_id: run_id.into(),
@@ -1053,23 +1064,11 @@ impl RouterInner {
                 config.address
             )));
         }
-        let identity = self
-            .identity
-            .get_or_try_init(|| async {
-                tokio::task::spawn_blocking(|| {
-                    let dir = SettingsService::global_config_dir().map_err(ApiError::Internal)?;
-                    Identity::load_or_generate(&dir, "client")
-                        .map(Arc::new)
-                        .map_err(|error| ApiError::Remote(format!("client identity: {error}")))
-                })
-                .await
-                .map_err(|error| ApiError::Internal(error.to_string()))?
-            })
-            .await?;
+        let identity = self.client_identity().await?;
         let client = connect_happy(
             &self.endpoint,
             interleave_addresses(addresses),
-            Arc::clone(identity),
+            identity,
             fingerprint,
         )
         .await
@@ -2257,22 +2256,9 @@ fn remote_host_event(server: &str, event: HostEventWire) -> Option<HostEvent> {
     })
 }
 
-fn resolve_remote_configs() -> Result<HashMap<String, RemoteConfig>, ApiError> {
+fn resolve_remote_configs() -> Result<HashMap<String, RemoteSettings>, ApiError> {
     let resolved = resolve_effective_settings_for_folder_path(None).map_err(ApiError::Internal)?;
-    Ok(resolved
-        .settings
-        .remotes
-        .into_iter()
-        .map(|(name, remote)| {
-            (
-                name,
-                RemoteConfig {
-                    address: remote.address,
-                    fingerprint: remote.fingerprint,
-                },
-            )
-        })
-        .collect())
+    Ok(resolved.settings.remotes.into_iter().collect())
 }
 
 fn client_endpoint() -> quinn::Endpoint {

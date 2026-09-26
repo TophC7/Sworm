@@ -8,7 +8,26 @@
 let
   cfg = config.services.sworm-server;
   home = config.users.users.${cfg.user}.home;
-  listenPort = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
+  portOf = address: lib.toInt (lib.last (lib.splitString ":" address));
+  authorizedKeysFile = pkgs.writeText "sworm-authorized-keys" (
+    lib.concatMapStrings (key: "${key}\n") cfg.authorizedKeys
+  );
+  # Holds only addresses and file paths, never a private key.
+  serverConfig = (pkgs.formats.json { }).generate "sworm-server.jsonc" (
+    {
+      inherit (cfg) listen;
+    }
+    // lib.optionalAttrs (cfg.identityFile != null) { identity_file = cfg.identityFile; }
+    // lib.optionalAttrs (cfg.authorizedKeys != [ ]) {
+      authorized_keys_file = "${authorizedKeysFile}";
+    }
+    // lib.optionalAttrs cfg.web.enable { web.listen = cfg.web.listen; }
+  );
+  # The service and shell commands (`pair`, `fingerprint`) must agree on the
+  # identity and port, so both run through this.
+  cli = pkgs.writeShellScriptBin "sworm-server" ''
+    exec ${cfg.package}/bin/sworm-server --config ${serverConfig} "$@"
+  '';
 in
 {
   options.services.sworm-server = {
@@ -32,10 +51,27 @@ in
       description = "UDP address and port on which the Sworm server listens.";
     };
 
-    authTokenFile = lib.mkOption {
+    identityFile = lib.mkOption {
       type = lib.types.nullOr (lib.types.strMatching "/.+");
       default = null;
-      description = "Absolute path to a runtime-readable token file; its contents never enter the Nix store.";
+      example = "/run/secrets/sworm-server-identity";
+      description = ''
+        Provisioned server identity (from `sworm-server keygen`), like openssh's host keys: keeps
+        the fingerprint desktops pin stable across reinstalls. Must be owned by `user` with mode
+        0600 or stricter and live outside the Nix store (e.g. sops-nix/agenix). Unset means one
+        is generated in the user's config directory on first start.
+      '';
+    };
+
+    authorizedKeys = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "SHA256:[0-9a-fA-F]{64}( .*)?");
+      default = [ ];
+      example = [ "SHA256:0123…cdef laptop" ];
+      description = ''
+        Client fingerprints admitted without pairing, as `SHA256:<hex> [name]`. Fingerprints are
+        public, so this file lives in the Nix store. An unpaired client's fingerprint is logged
+        when it connects.
+      '';
     };
 
     xdgConfigHome = lib.mkOption {
@@ -61,6 +97,26 @@ in
       default = false;
       description = "Whether to open the configured UDP port in the firewall.";
     };
+
+    web = {
+      enable = lib.mkEnableOption ''
+        the Sworm web frontend. It has no authentication and grants the service user's full
+        filesystem and process authority to anyone who can reach it; keep it on loopback or
+        behind an authenticating proxy/VPN
+      '';
+
+      listen = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1:7421";
+        description = "TCP address and port for the web frontend.";
+      };
+
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Whether to open the web TCP port in the firewall.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -69,9 +125,16 @@ in
         assertion = builtins.hasAttr cfg.user config.users.users;
         message = "services.sworm-server.user must name a configured NixOS user.";
       }
+      {
+        assertion = cfg.identityFile == null || !lib.hasPrefix builtins.storeDir cfg.identityFile;
+        message = "services.sworm-server.identityFile must not be a Nix store path; the store is world-readable.";
+      }
     ];
-    environment.systemPackages = [ cfg.package ];
-    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ listenPort ];
+    environment.systemPackages = [ cli ];
+    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ (portOf cfg.listen) ];
+    networking.firewall.allowedTCPPorts = lib.mkIf (cfg.web.enable && cfg.web.openFirewall) [
+      (portOf cfg.web.listen)
+    ];
 
     systemd.services.sworm-server = {
       description = "Sworm remote workspace server";
@@ -94,19 +157,11 @@ in
       }
       // lib.optionalAttrs (cfg.xdgDataHome != null) {
         XDG_DATA_HOME = cfg.xdgDataHome;
-      }
-      // lib.optionalAttrs (cfg.authTokenFile != null) {
-        SWORM_SERVER_AUTH_TOKEN_FILE = cfg.authTokenFile;
       };
       serviceConfig = {
         User = cfg.user;
         WorkingDirectory = home;
-        ExecStart = lib.escapeShellArgs [
-          "${cfg.package}/bin/sworm-server"
-          "serve"
-          "--listen"
-          cfg.listen
-        ];
+        ExecStart = "${cli}/bin/sworm-server serve";
         Restart = "on-failure";
         KillMode = "mixed";
       };

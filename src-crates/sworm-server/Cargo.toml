@@ -30,7 +30,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-toml = "0.8"
+jsonc-parser.workspace = true
 clap = { version = "4", features = ["derive"] }
 chrono.workspace = true
 rusqlite.workspace = true

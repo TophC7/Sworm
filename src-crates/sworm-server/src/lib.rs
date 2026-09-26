@@ -1,5 +1,5 @@
 pub mod auth;
-mod config;
+pub mod config;
 mod dispatch;
 mod events;
 mod file_stream;

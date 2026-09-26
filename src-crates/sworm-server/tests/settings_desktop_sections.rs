@@ -58,6 +58,8 @@ impl Daemon {
             config_dir: config.path().to_path_buf(),
             data_dir: data.path().to_path_buf(),
             listen: Some("127.0.0.1:0".parse()?),
+            config_file: None,
+            web_assets_dir: None,
         })
         .await?;
         Ok(Self {

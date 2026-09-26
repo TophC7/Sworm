@@ -20,12 +20,20 @@ struct PendingToken {
     expires_at: i64,
 }
 
-pub fn is_authorized(config_dir: &Path, fingerprint: Fingerprint) -> bool {
-    let contents = match fs::read_to_string(config_dir.join(AUTHORIZED_KEYS)) {
+/// `extra` is an operator-managed key file (e.g. from the NixOS module) that is
+/// read-only to the server; pairing only ever appends to the config-dir file.
+pub fn is_authorized(config_dir: &Path, fingerprint: Fingerprint, extra: Option<&Path>) -> bool {
+    let primary = config_dir.join(AUTHORIZED_KEYS);
+    file_contains_fingerprint(&primary, fingerprint)
+        || extra.is_some_and(|path| file_contains_fingerprint(path, fingerprint))
+}
+
+fn file_contains_fingerprint(path: &Path, fingerprint: Fingerprint) -> bool {
+    let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
         Err(error) => {
-            tracing::warn!(%error, "failed to read authorized keys");
+            tracing::warn!(path = %path.display(), %error, "failed to read authorized keys file");
             return false;
         }
     };
@@ -88,15 +96,7 @@ pub fn write_pairing_token(config_dir: &Path) -> io::Result<String> {
     Ok(token)
 }
 
-pub(crate) fn consume_pairing_token(
-    config_dir: &Path,
-    presented: &str,
-    static_token: Option<&str>,
-) -> io::Result<bool> {
-    if static_token == Some(presented) {
-        return Ok(true);
-    }
-
+pub(crate) fn consume_pairing_token(config_dir: &Path, presented: &str) -> io::Result<bool> {
     let path = config_dir.join(PAIRING_TOKEN);
     let contents = match fs::read(&path) {
         Ok(contents) => contents,
@@ -112,4 +112,37 @@ pub(crate) fn consume_pairing_token(
     }
     fs::remove_file(path)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fingerprint(byte: u8) -> Fingerprint {
+        Fingerprint([byte; 32])
+    }
+
+    #[test]
+    fn paired_and_operator_keys_both_authorize() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let extra = config_dir.path().join("operator-keys");
+        let (paired, declared, stranger) = (fingerprint(1), fingerprint(2), fingerprint(3));
+        append_authorized(config_dir.path(), paired, "laptop").unwrap();
+        fs::write(&extra, format!("# nix\n{declared} desktop\n")).unwrap();
+
+        assert!(is_authorized(config_dir.path(), paired, Some(&extra)));
+        assert!(is_authorized(config_dir.path(), declared, Some(&extra)));
+        assert!(!is_authorized(config_dir.path(), declared, None));
+        assert!(!is_authorized(config_dir.path(), stranger, Some(&extra)));
+        assert!(is_authorized(
+            config_dir.path(),
+            paired,
+            Some(&config_dir.path().join("missing"))
+        ));
+        assert!(!is_authorized(
+            config_dir.path(),
+            stranger,
+            Some(&config_dir.path().join("missing"))
+        ));
+    }
 }

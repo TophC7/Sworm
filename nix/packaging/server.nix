@@ -67,10 +67,7 @@ let
       BIN_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
       BASE_DIR="\$(cd "\$BIN_DIR/.." && pwd)"
       LIB_DIR="\$BASE_DIR/lib"
-      if [ -z "\''${SWORM_WEB_ASSETS_DIR+x}" ]; then
-        export SWORM_WEB_ASSETS_DIR="\$BASE_DIR/share/sworm/web"
-      fi
-      exec "\$LIB_DIR/$ldSoName" --inhibit-cache --library-path "\$LIB_DIR" --argv0 sworm-server "\$BIN_DIR/.sworm-server-bin" "\$@"
+      exec "\$LIB_DIR/$ldSoName" --inhibit-cache --library-path "\$LIB_DIR" --argv0 sworm-server "\$BIN_DIR/.sworm-server-bin" --web-assets-dir "\$BASE_DIR/share/sworm/web" "\$@"
       EOF
             chmod +x "$out/bin/sworm-server"
 

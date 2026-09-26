@@ -4,11 +4,14 @@ use std::{
     path::Path,
     ptr,
 };
-use sworm_remote::Identity;
-use sworm_server::auth;
+use sworm_server::{
+    auth,
+    config::{self, ServerConfig},
+};
 
 pub fn run(
     config_dir: &Path,
+    config_file: &Path,
     host: Option<String>,
     listen: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
@@ -16,8 +19,9 @@ pub fn run(
         .map(Ok)
         .unwrap_or_else(|| first_non_loopback_address().map(|address| address.to_string()))?;
     authority_host(&host)?;
-    let port = resolve_listen(config_dir, listen)?.port();
-    let identity = Identity::load_or_generate(config_dir, "server")?;
+    let config = config::load(config_file)?;
+    let port = resolve_listen(&config, listen).port();
+    let identity = config::identity(config_dir, &config)?;
     let token = auth::write_pairing_token(config_dir)?;
     let fingerprint = identity.fingerprint();
     let link = pairing_link(&host, port, &fingerprint.to_string(), &token)?;
@@ -29,9 +33,8 @@ pub fn run(
     Ok(())
 }
 
-fn resolve_listen(config_dir: &Path, listen: Option<SocketAddr>) -> anyhow::Result<SocketAddr> {
-    let configured = crate::config::load(config_dir)?;
-    Ok(listen.unwrap_or(configured.listen))
+fn resolve_listen(config: &ServerConfig, listen: Option<SocketAddr>) -> SocketAddr {
+    listen.unwrap_or(config.listen)
 }
 
 fn pairing_link(host: &str, port: u16, fingerprint: &str, token: &str) -> anyhow::Result<String> {
@@ -182,20 +185,19 @@ mod tests {
     #[test]
     fn configured_or_explicit_listen_port_is_advertised() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(
-            directory.path().join("server.toml"),
-            "listen = \"0.0.0.0:8123\"\n",
-        )
-        .unwrap();
+        let config = directory
+            .path()
+            .join(sworm_protocol::server_config::SERVER_CONFIG_FILE);
+        fs::write(&config, r#"{ "listen": "0.0.0.0:8123" }"#).unwrap();
+        let config = sworm_server::config::load(&config).unwrap();
 
-        let configured = resolve_listen(directory.path(), None).unwrap();
+        let configured = resolve_listen(&config, None);
         assert_eq!(
             pairing_link("homelab", configured.port(), "SHA256:abcd", "token").unwrap(),
             "sworm-pair://homelab:8123/SHA256:abcd/token"
         );
 
-        let explicit =
-            resolve_listen(directory.path(), Some("127.0.0.1:9000".parse().unwrap())).unwrap();
+        let explicit = resolve_listen(&config, Some("127.0.0.1:9000".parse().unwrap()));
         assert_eq!(
             pairing_link("homelab", explicit.port(), "SHA256:abcd", "token").unwrap(),
             "sworm-pair://homelab:9000/SHA256:abcd/token"

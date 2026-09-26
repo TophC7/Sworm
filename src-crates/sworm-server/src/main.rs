@@ -1,4 +1,3 @@
-mod config;
 mod pairing;
 
 use anyhow::Context;
@@ -16,6 +15,12 @@ struct Cli {
     config_dir: Option<PathBuf>,
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
+    /// Server config; defaults to `<config-dir>/server.jsonc`.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Web frontend used when `web.assets_dir` is unset; packaged launchers set this.
+    #[arg(long, global = true)]
+    web_assets_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -32,7 +37,11 @@ enum Command {
         #[arg(long)]
         listen: Option<SocketAddr>,
     },
-    Fingerprint,
+    /// Print the server's fingerprint, or that of an identity file (like `ssh-keygen -lf`).
+    Fingerprint { file: Option<PathBuf> },
+    /// Write a new identity to FILE and print its fingerprint (like `ssh-keygen -f`).
+    /// Works for desktops too: provision it as `~/.config/sworm/client.pem`.
+    Keygen { file: PathBuf },
 }
 
 #[tokio::main]
@@ -43,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
         .map(Ok)
         .unwrap_or_else(SettingsService::global_config_dir)
         .map_err(anyhow::Error::msg)?;
+    let config_file = cli
+        .config
+        .unwrap_or_else(|| sworm_server::config::default_path(&config_dir));
 
     match cli.command {
         Command::Serve { listen } => {
@@ -59,7 +71,9 @@ async fn main() -> anyhow::Result<()> {
             let handle = serve(ServeOptions {
                 config_dir,
                 data_dir,
+                config_file: Some(config_file),
                 listen,
+                web_assets_dir: cli.web_assets_dir,
             })
             .await?;
             tracing::info!("listening on {}", handle.local_addr);
@@ -75,11 +89,18 @@ async fn main() -> anyhow::Result<()> {
             handle.shutdown().await;
             signal_result?;
         }
-        Command::Pair { host, listen } => pairing::run(&config_dir, host, listen)?,
-        Command::Fingerprint => {
-            let identity = Identity::load_or_generate(&config_dir, "server")?;
+        Command::Pair { host, listen } => pairing::run(&config_dir, &config_file, host, listen)?,
+        Command::Fingerprint { file } => {
+            let identity = match file {
+                Some(file) => Identity::load(&file)?,
+                None => sworm_server::config::identity(
+                    &config_dir,
+                    &sworm_server::config::load(&config_file)?,
+                )?,
+            };
             println!("{}", identity.fingerprint());
         }
+        Command::Keygen { file } => println!("{}", Identity::create(&file)?.fingerprint()),
     }
     Ok(())
 }
