@@ -95,7 +95,7 @@ export type ControlMessage =
   | { error: Record<string, unknown> & { kind: string } }
   | { ping: number }
   | { id: number; response: { Ok: { method: string; params: unknown } } | { Err: unknown } }
-  | { event: { kind: string; payload: unknown } }
+  | { event: { kind: 'workbenches_changed'; payload: null } | { kind: string; payload: unknown } }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

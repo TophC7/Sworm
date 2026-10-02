@@ -4,6 +4,8 @@
 // presentation, and DnD code can depend on workbench shapes without
 // importing the state store itself.
 
+import { splitRemotePath } from '$lib/utils/paths'
+
 export type TabId = string
 
 export interface TabBase {
@@ -119,6 +121,10 @@ export interface EpicTab extends TabBase {
 
 export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab | IssueTab | EpicTab
 
+export function tabServer(tab: Tab): string | null {
+  return splitRemotePath(tab.folderPath)?.server ?? null
+}
+
 export interface Workbench {
   tabs: Tab[]
   activeTabId: TabId | null
@@ -196,10 +202,19 @@ export type PersistedTab = { folderPath: string } & (
     }
 )
 
+export interface PersistedGroupRef {
+  server: string
+  id: string
+  controllerToken: string | null
+  index: number
+}
+
 export interface PersistedWorkbenchV4 {
   version: 4
   activeTabIndex: number
   tabs: PersistedTab[]
+  groups?: PersistedGroupRef[]
+  activeGroup?: { server: string; index: number }
 }
 
 export function canLockTab(tab: Tab): boolean {

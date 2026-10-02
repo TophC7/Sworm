@@ -7,6 +7,7 @@
   import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
   import { getTabs, openFolder, restoreWorkbench } from '$lib/features/workbench/state.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import { initGroupService, openWorkbench } from '$lib/features/workbench/groups.svelte'
   import type { OpenTarget } from '$lib/types/backend'
   import { describeClientError, logClientError } from '$lib/utils/client-error'
   import { markDeepLinksReady } from '$lib/features/remotes/deepLink.svelte'
@@ -16,7 +17,8 @@
 
   async function openTarget(target: OpenTarget): Promise<void> {
     if (target.type === 'folder') await openFolder(target.folder_path)
-    else await openTextFile(target.folder_path, target.file_path)
+    else if (target.type === 'file') await openTextFile(target.folder_path, target.file_path)
+    else await openWorkbench(target.server, target.workbench_id, false)
   }
 
   onMount(() => {
@@ -41,6 +43,7 @@
 
         await Promise.all([loadRecentFolders(), restoreWorkbench(workbenchId)])
         if (platform.native) {
+          await initGroupService()
           await platform.native.window.ready(getTabs().flatMap((tab) => (tab.kind === 'task' ? [tab.runId] : [])))
         }
         if (!disposed && platform.capabilities.deepLinks) markDeepLinksReady()

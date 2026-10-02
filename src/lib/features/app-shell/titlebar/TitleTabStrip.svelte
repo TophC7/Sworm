@@ -7,6 +7,7 @@
 
 <script lang="ts">
   import { platform } from '$lib/platform'
+  import { confirmCloseWorkbench } from '$lib/features/app-actions/actions.svelte'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
   import {
     ContextMenuRoot,
@@ -15,7 +16,35 @@
     ContextMenuItem,
     ContextMenuSeparator
   } from '$lib/components/ui/context-menu'
-  import { canLockTab, isProcessLive, type SessionTab, type Tab, type TabId } from '$lib/features/workbench/model'
+  import {
+    DropdownMenuRoot,
+    DropdownMenuTrigger,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator
+  } from '$lib/components/ui/dropdown-menu'
+  import {
+    canLockTab,
+    isProcessLive,
+    tabServer,
+    type SessionTab,
+    type Tab,
+    type TabId
+  } from '$lib/features/workbench/model'
+  import { canMoveGroupAt, canReorderAt } from '$lib/features/workbench/tabInsertion'
+  import {
+    focusGroup,
+    getGroups,
+    getTabGroup,
+    moveGroup,
+    isTabInert,
+    takeBackGroup,
+    retryGroup,
+    removeGroupFromWindow,
+    moveGroupToNewWindow,
+    closeGroupWorkbench,
+    type WorkbenchGroup
+  } from '$lib/features/workbench/groups.svelte'
   import {
     getActiveTabId,
     getTabs,
@@ -27,9 +56,9 @@
     toggleTabLocked
   } from '$lib/features/workbench/state.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
-  import { tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
+  import { groupDragSource, tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-  import { dropForeignTab } from '$lib/features/workbench/transferService.svelte'
+  import { dropFromOtherWindow } from '$lib/features/workbench/transferService.svelte'
   import { startSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
@@ -37,7 +66,7 @@
   import { findTask } from '$lib/features/tasks/state.svelte'
   import { openTaskTab, stopTaskProcess } from '$lib/features/tasks/service.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot, TerminalIcon } from '$lib/icons/lucideExports'
+  import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot, TerminalIcon, ServerIcon } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import { onMount, tick } from 'svelte'
@@ -46,10 +75,23 @@
   import { getSurfaceKind } from '$lib/features/workbench/surfaces'
   import { getSettings } from '$lib/features/settings/state/settings.svelte'
   import { getPathColor } from '$lib/utils/pathColor'
-  import { splitRemotePath } from '$lib/utils/paths'
   import NewTabMenu from './NewTabMenu.svelte'
 
   let tabs = $derived(getTabs())
+  let blocks = $derived.by(() => {
+    const result: { group: WorkbenchGroup | null; entries: { tab: Tab; index: number }[] }[] = []
+    tabs.forEach((tab, index) => {
+      const group = getTabGroup(tab)
+      const last = result[result.length - 1]
+      if (last && last.group?.server === group?.server) last.entries.push({ tab, index })
+      else result.push({ group, entries: [{ tab, index }] })
+    })
+    // Workbenches controlled elsewhere keep only their chip, trailing the strip where Take Back appends.
+    for (const group of getGroups()) {
+      if (!result.some((block) => block.group?.server === group.server)) result.push({ group, entries: [] })
+    }
+    return result
+  })
   let activeTabId = $derived(getActiveTabId())
   let settings = $derived(getSettings())
   let beamPosition = $derived(settings?.window.tab_beam_position ?? 'top')
@@ -87,27 +129,37 @@
   }
 
   // DRAG REORDER //
-  // Drop targets are the tabs themselves; the left/right half of the
-  // hovered tab decides the insertion slot.
+  // Tabs and server tabs are the drop targets: a tab's hovered half picks the insertion slot,
+  // a server tab always means its group's leading slot.
   let dropIndex = $state<number | null>(null)
+  // Another window's payload is unreadable until drop; its types still say whether it's a group.
+  let foreignGroup = $state(false)
 
-  // The source index is fixed for the whole drag; derive it once instead
-  // of rescanning the transfer and tab list on every dragover.
+  // Fixed for the whole drag; derive once instead of rescanning on every dragover.
   let dragFrom = $derived.by(() => {
-    const item = LocalTransfer.peek()?.items.find((i) => i.kind === 'tab')
-    return item ? tabs.findIndex((t) => t.id === item.tabId) : -1
+    const item = LocalTransfer.peek()?.items[0]
+    return item?.kind === 'tab' ? tabs.findIndex((t) => t.id === item.tabId) : -1
   })
+  let draggedGroup = $derived.by(() => {
+    const item = LocalTransfer.peek()?.items[0]
+    return item?.kind === 'workbench' ? item.server : null
+  })
+  let showDropSeam = $derived(dropIndex !== null && canDropAt(dropIndex))
 
-  function isTabDrag(e: DragEvent) {
-    return (
-      dragFrom >= 0 ||
-      (platform.capabilities.tabTransfer && Boolean(e.dataTransfer?.types.includes(DND_MIME.SWORM_TAB)))
-    )
+  function canDropAt(slot: number): boolean {
+    if (draggedGroup !== null) return canMoveGroupAt(tabs, slot, draggedGroup)
+    if (dragFrom >= 0) return canReorderAt(tabs, dragFrom, slot)
+    return !foreignGroup || canMoveGroupAt(tabs, slot)
   }
 
-  function acceptTabDrag(e: DragEvent) {
-    e.preventDefault()
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  function isTabDrag(e: DragEvent) {
+    const types = e.dataTransfer?.types ?? []
+    return (
+      dragFrom >= 0 ||
+      draggedGroup !== null ||
+      (platform.capabilities.tabTransfer &&
+        (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)))
+    )
   }
 
   function clearDropTarget() {
@@ -122,25 +174,42 @@
     return Math.min(Math.max(x, left), right)
   }
 
+  /** A group's leading slot sits before its server tab, unless the dragged tab belongs to that group. */
+  function slotX(slot: number): number {
+    const find = (selector: string) => stripEl?.querySelector<HTMLElement>(selector)
+    const right = tabs[slot]
+    const server = right ? tabServer(right) : null
+    const mover = dragFrom >= 0 ? tabServer(tabs[dragFrom]) : null
+    if (server !== null && server !== mover && (slot === 0 || tabServer(tabs[slot - 1]) !== server))
+      return find(`[data-tab-group="${CSS.escape(server)}"]`)?.offsetLeft ?? 0
+    if (right) return find(`[data-tab-id="${CSS.escape(right.id)}"]`)?.offsetLeft ?? 0
+    const last = slot > 0 ? find(`[data-tab-id="${CSS.escape(tabs[slot - 1].id)}"]`) : null
+    return last ? last.offsetLeft + last.offsetWidth : 0
+  }
+
+  function setDropSlot(e: DragEvent, slot: number) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    foreignGroup = Boolean(e.dataTransfer?.types.includes(DND_MIME.SWORM_WORKBENCH))
+    dropIndex = slot
+    seamX = clampSeamX(slotX(slot))
+  }
+
   function handleDragOver(e: DragEvent, index: number) {
     if (!isTabDrag(e)) return
-    acceptTabDrag(e)
-    const tab = e.currentTarget as HTMLElement
-    const rect = tab.getBoundingClientRect()
-    const before = e.clientX < rect.left + rect.width / 2
-    dropIndex = before ? index : index + 1
-    seamX = clampSeamX(before ? tab.offsetLeft : tab.offsetLeft + tab.offsetWidth)
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setDropSlot(e, e.clientX < rect.left + rect.width / 2 ? index : index + 1)
+  }
+
+  function handleGroupDragOver(e: DragEvent, server: string) {
+    const first = tabs.findIndex((tab) => tabServer(tab) === server)
+    if (first >= 0 && isTabDrag(e)) setDropSlot(e, first)
   }
 
   function handleStripDragOver(e: DragEvent) {
-    const target = e.target
-    if ((target instanceof Element && target.closest('[data-tab-id]')) || !isTabDrag(e)) return
-    acceptTabDrag(e)
-    dropIndex = tabs.length
-
-    const tabElements = stripEl?.querySelectorAll<HTMLElement>('[data-tab-id]')
-    const lastTab = tabElements?.[tabElements.length - 1]
-    seamX = clampSeamX(lastTab ? lastTab.offsetLeft + lastTab.offsetWidth : 0)
+    // A tab or server tab below already claimed this dragover.
+    if (e.defaultPrevented || !isTabDrag(e)) return
+    setDropSlot(e, tabs.length)
   }
 
   function handleStripDragLeave(e: DragEvent) {
@@ -150,20 +219,34 @@
   }
 
   function handleDrop(e: DragEvent) {
-    const from = dragFrom
-    if (from >= 0) {
-      if (dropIndex === null) return
+    const slot = dropIndex
+    const allowed = slot !== null && canDropAt(slot)
+    if (dragFrom >= 0 || draggedGroup !== null) {
+      if (slot === null) return
       e.preventDefault()
-      // Insertion slot → post-removal index.
-      const to = dropIndex > from ? dropIndex - 1 : dropIndex
-      reorderTab(from, to)
+      if (draggedGroup !== null) {
+        if (allowed) moveGroup(draggedGroup, slot)
+      } else {
+        // Insertion slot → post-removal index.
+        reorderTab(dragFrom, slot > dragFrom ? slot - 1 : slot)
+      }
       clearDropTarget()
       LocalTransfer.clear()
       return
     }
 
-    if (platform.capabilities.tabTransfer) dropForeignTab(e, dropIndex ?? tabs.length)
+    if (platform.capabilities.tabTransfer && (slot === null || allowed)) dropFromOtherWindow(e, slot ?? tabs.length)
     clearDropTarget()
+  }
+
+  async function confirmCloseGroup(server: string): Promise<void> {
+    const folders = tabs.filter((tab) => tabServer(tab) === server).map((tab) => tab.folderPath)
+    if (await confirmCloseWorkbench(folders)) {
+      await runNotifiedTask(() => closeGroupWorkbench(server), {
+        loading: { title: 'Closing workbench', description: server },
+        error: { title: 'Close workbench failed' }
+      })
+    }
   }
 
   // SESSION MENU //
@@ -219,8 +302,154 @@
   }
 </script>
 
+{#snippet tabItem(tab: Tab, i: number)}
+  {@const presentation = getTabPresentation(tab)}
+  {@const surfaceKind = getSurfaceKind(tab)}
+  {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
+  {@const transferring = isTabTransferring(tab.id)}
+  {@const tabColor = getPathColor(tab.folderPath)}
+  {@const inert = isTabInert(tab)}
+  <ContextMenuRoot>
+    <ContextMenuTrigger
+      class="contents"
+      disabled={inert}
+      draggable={!tab.locked && !transferring && !inert}
+      {@attach transferring || inert ? undefined : tabDragSource({ tab })}
+    >
+      <TabButton
+        active={activeTabId === tab.id}
+        position={beamPosition}
+        color={tabColor}
+        class={dragFrom === i ? 'opacity-40' : undefined}
+        draggable={!tab.locked && !transferring && !inert}
+        data-tab-id={tab.id}
+        title="{tab.folderPath} — {presentation.title}"
+        onclick={() => setActiveTab(tab.id)}
+        ondblclick={() => {
+          if (surfaceKind !== 'session' && surfaceKind !== 'launcher' && presentation.preview) {
+            promoteTab(tab.id)
+          }
+        }}
+        onauxclick={tab.locked || transferring || inert ? undefined : (e) => handleAuxClick(e, tab.id)}
+        ondragover={(e) => handleDragOver(e, i)}
+        ondragend={clearDropTarget}
+        onClose={tab.locked || transferring || inert ? undefined : (e) => handleTabClose(e, tab.id)}
+      >
+        {#snippet leading()}
+          {#if surfaceKind === 'diff'}
+            <FileDiff size={14} class="shrink-0 text-accent" />
+          {:else if surfaceKind === 'tool'}
+            <BellIcon size={14} class="shrink-0 text-accent" />
+          {:else if surfaceKind === 'issue'}
+            <CircleDot size={14} class="shrink-0 text-accent" />
+          {:else if surfaceKind === 'epic'}
+            <Layers size={14} class="shrink-0 text-warning" />
+          {:else if tab.kind === 'text' && presentation.fileName}
+            <!-- Pass the full relative path so the resolver can apply
+                     directory-aware rules (e.g. .sworm/*.json → sworm icon).
+                     Falls back to the basename for unsaved "Untitled" tabs. -->
+            <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
+          {:else if surfaceKind === 'launcher'}
+            <Plus size={14} class="shrink-0 text-accent" />
+          {:else if surfaceKind === 'task'}
+            <!-- Task icon comes from .sworm/tasks.jsonc. Any Lucide name
+                     is valid; fall back to the terminal glyph when the
+                     dynamic loader can't find a match. -->
+            {#if presentation.lucideIcon}
+              <LucideIcon name={presentation.lucideIcon} size={14} class="shrink-0 text-accent" />
+            {:else}
+              <TerminalIcon size={14} class="shrink-0 text-accent" />
+            {/if}
+          {:else if presentation.providerIcon}
+            <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
+          {/if}
+          {#if tab.locked}
+            <Lock size={11} class="shrink-0 text-muted" />
+          {/if}
+        {/snippet}
+        <span class="max-w-[120px] truncate {presentation.preview ? 'italic' : ''}">
+          {presentation.title}
+        </span>
+      </TabButton>
+    </ContextMenuTrigger>
+
+    <ContextMenuContent>
+      {#if tab.kind === 'session'}
+        <ContextMenuItem onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
+          {sessionLive ? 'Stop' : 'Restart'}
+        </ContextMenuItem>
+      {/if}
+      {#if tab.kind === 'task'}
+        {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
+        <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
+          {taskRunning ? 'Stop' : 'Restart'}
+        </ContextMenuItem>
+      {/if}
+      {#if canLockTab(tab)}
+        <!-- Lock only makes sense on content tabs where accidental input
+                 can cause damage (session terminals, Monaco text tabs). Launcher
+                 and diff tabs skip this affordance entirely. -->
+        <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
+          {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+      {/if}
+      <ContextMenuItem
+        destructive
+        disabled={tab.locked || transferring}
+        onclick={() => void closeTabWithChecks(tab.id)}
+      >
+        Close
+      </ContextMenuItem>
+    </ContextMenuContent>
+  </ContextMenuRoot>
+{/snippet}
+
+{#snippet groupLabel(group: WorkbenchGroup)}
+  <ServerIcon size={14} class="shrink-0" />
+  <span class="truncate">{group.server}</span>
+  {#if group.state === 'busy' || group.state === 'revoked'}
+    <span class="max-w-28 shrink-0 truncate font-normal">in {group.client ?? 'another app'}</span>
+  {/if}
+{/snippet}
+
+{#snippet groupActions(group: WorkbenchGroup, Item: typeof ContextMenuItem, Separator: typeof ContextMenuSeparator)}
+  {#if group.state === 'busy' || group.state === 'revoked'}
+    <Item
+      onclick={() =>
+        void runNotifiedTask(() => takeBackGroup(group.server), {
+          loading: { title: 'Taking back workbench', description: group.server },
+          error: { title: 'Take back failed' }
+        })}>Take Back</Item
+    >
+  {:else if group.state === 'offline'}
+    <Item onclick={() => void retryGroup(group.server)}>Retry</Item>
+  {:else if group.state === 'active'}
+    <Item
+      onclick={() =>
+        void runNotifiedTask(() => moveGroupToNewWindow(group.server), {
+          loading: { title: 'Moving workbench', description: group.server },
+          error: { title: 'Move workbench failed' }
+        })}>Move to New Window</Item
+    >
+  {/if}
+  {#if group.state !== 'active'}
+    <Item
+      onclick={() =>
+        void runNotifiedTask(() => removeGroupFromWindow(group.server), {
+          loading: { title: 'Removing workbench', description: group.server },
+          error: { title: 'Remove workbench failed' }
+        })}>Remove from Window</Item
+    >
+  {/if}
+  <Separator />
+  <Item destructive onclick={() => void confirmCloseGroup(group.server)}>Close Workbench…</Item>
+{/snippet}
+
 <div
-  class="flex min-w-0 flex-1 self-stretch {dropIndex !== null && dragFrom < 0 ? 'bg-accent/10' : ''}"
+  class="flex min-w-0 flex-1 self-stretch {dropIndex !== null && dragFrom < 0 && draggedGroup === null
+    ? 'bg-accent/10'
+    : ''}"
   role="group"
   aria-label="Tabs and tab drop area"
   ondragover={handleStripDragOver}
@@ -229,116 +458,71 @@
 >
   <div class="flex min-w-0 shrink self-stretch" bind:this={stripEl}>
     <TabStrip ariaLabel="Tabs" class="h-full">
-      {#each tabs as tab, i (tab.id)}
-        {@const presentation = getTabPresentation(tab)}
-        {@const surfaceKind = getSurfaceKind(tab)}
-        {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
-        {@const transferring = isTabTransferring(tab.id)}
-        {@const tabColor = getPathColor(tab.folderPath)}
-        {@const remote = splitRemotePath(tab.folderPath)}
-        <ContextMenuRoot>
-          <ContextMenuTrigger
-            class="contents"
-            draggable={!tab.locked && !transferring}
-            {@attach transferring ? undefined : tabDragSource({ tab })}
+      {#each blocks as block (block.group?.server ?? block.entries[0].tab.id)}
+        {#if block.group}
+          {@const group = block.group}
+          {@const controlled = group.state === 'active'}
+          {@const serverTabClass =
+            'flex h-full max-w-48 shrink-0 cursor-pointer items-center gap-1.5 bg-(--group) px-3 text-sm font-medium text-ground focus-visible:shadow-focus-ring focus-visible:outline-none'}
+          <!-- The group line owns the beam edge; the border pushes each tab's own beam just inside
+               it. Unpositioned: the drop seam measures tab offsets against the strip. -->
+          <div
+            role="group"
+            aria-label="{group.server} workbench"
+            data-tab-group={group.server}
+            class="flex h-full shrink-0 items-center border-(--group) {beamPosition === 'bottom'
+              ? 'border-b-2'
+              : 'border-t-2'} {draggedGroup === group.server ? 'opacity-40' : controlled ? '' : 'opacity-60'}"
+            style:--group={getPathColor(group.server)}
           >
-            <TabButton
-              active={activeTabId === tab.id}
-              position={beamPosition}
-              color={tabColor}
-              class={dragFrom === i ? 'opacity-40' : undefined}
-              draggable={!tab.locked && !transferring}
-              data-tab-id={tab.id}
-              title="{tab.folderPath} — {presentation.title}"
-              onclick={() => setActiveTab(tab.id)}
-              ondblclick={() => {
-                if (surfaceKind !== 'session' && surfaceKind !== 'launcher' && presentation.preview) {
-                  promoteTab(tab.id)
-                }
-              }}
-              onauxclick={tab.locked || transferring ? undefined : (e) => handleAuxClick(e, tab.id)}
-              ondragover={(e) => handleDragOver(e, i)}
-              ondragend={clearDropTarget}
-              onClose={tab.locked || transferring ? undefined : (e) => handleTabClose(e, tab.id)}
-            >
-              {#snippet leading()}
-                {#if surfaceKind === 'diff'}
-                  <FileDiff size={14} class="shrink-0 text-accent" />
-                {:else if surfaceKind === 'tool'}
-                  <BellIcon size={14} class="shrink-0 text-accent" />
-                {:else if surfaceKind === 'issue'}
-                  <CircleDot size={14} class="shrink-0 text-accent" />
-                {:else if surfaceKind === 'epic'}
-                  <Layers size={14} class="shrink-0 text-warning" />
-                {:else if tab.kind === 'text' && presentation.fileName}
-                  <!-- Pass the full relative path so the resolver can apply
-                     directory-aware rules (e.g. .sworm/*.json → sworm icon).
-                     Falls back to the basename for unsaved "Untitled" tabs. -->
-                  <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
-                {:else if surfaceKind === 'launcher'}
-                  <Plus size={14} class="shrink-0 text-accent" />
-                {:else if surfaceKind === 'task'}
-                  <!-- Task icon comes from .sworm/tasks.jsonc. Any Lucide name
-                     is valid; fall back to the terminal glyph when the
-                     dynamic loader can't find a match. -->
-                  {#if presentation.lucideIcon}
-                    <LucideIcon name={presentation.lucideIcon} size={14} class="shrink-0 text-accent" />
-                  {:else}
-                    <TerminalIcon size={14} class="shrink-0 text-accent" />
-                  {/if}
-                {:else if presentation.providerIcon}
-                  <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
-                {/if}
-                {#if tab.locked}
-                  <Lock size={11} class="shrink-0 text-muted" />
-                {/if}
-              {/snippet}
-              {#if remote}
-                <span
-                  class="max-w-24 truncate rounded-sm bg-edge px-1 py-0.5 font-mono text-2xs text-muted"
-                  title="Remote: {remote.server}"
+            {#if block.entries.length}
+              <!-- Acts like a tab: click shows the group, right-click for actions, drag moves the whole group. -->
+              <ContextMenuRoot>
+                <ContextMenuTrigger
+                  class="contents"
+                  {@attach controlled ? groupDragSource({ server: group.server, workbenchId: group.id }) : undefined}
                 >
-                  {remote.server}
-                </span>
-              {/if}
-              <span class="max-w-[120px] truncate {presentation.preview ? 'italic' : ''}">
-                {presentation.title}
-              </span>
-            </TabButton>
-          </ContextMenuTrigger>
-
-          <ContextMenuContent>
-            {#if tab.kind === 'session'}
-              <ContextMenuItem onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
-                {sessionLive ? 'Stop' : 'Restart'}
-              </ContextMenuItem>
+                  <button
+                    type="button"
+                    class={serverTabClass}
+                    title="{group.server}: {group.state}"
+                    draggable={controlled}
+                    onclick={() => focusGroup(group.server)}
+                    ondragover={(e) => handleGroupDragOver(e, group.server)}
+                  >
+                    {@render groupLabel(group)}
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  {@render groupActions(group, ContextMenuItem, ContextMenuSeparator)}
+                </ContextMenuContent>
+              </ContextMenuRoot>
+            {:else}
+              <!-- Controlled elsewhere: nothing to show or move, so a click opens the actions. -->
+              <DropdownMenuRoot>
+                <DropdownMenuTrigger
+                  aria-label="Workbench {group.server} actions"
+                  title="{group.server}: {group.state}"
+                  class={serverTabClass}
+                >
+                  {@render groupLabel(group)}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" sideOffset={4}>
+                  {@render groupActions(group, DropdownMenuItem, DropdownMenuSeparator)}
+                </DropdownMenuContent>
+              </DropdownMenuRoot>
             {/if}
-            {#if tab.kind === 'task'}
-              {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
-              <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
-                {taskRunning ? 'Stop' : 'Restart'}
-              </ContextMenuItem>
-            {/if}
-            {#if canLockTab(tab)}
-              <!-- Lock only makes sense on content tabs where accidental input
-                 can cause damage (session terminals, Monaco text tabs). Launcher
-                 and diff tabs skip this affordance entirely. -->
-              <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
-                {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
-              </ContextMenuItem>
-              <ContextMenuSeparator />
-            {/if}
-            <ContextMenuItem
-              destructive
-              disabled={tab.locked || transferring}
-              onclick={() => void closeTabWithChecks(tab.id)}
-            >
-              Close
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenuRoot>
+            {#each block.entries as { tab, index } (tab.id)}
+              {@render tabItem(tab, index)}
+            {/each}
+          </div>
+        {:else}
+          {#each block.entries as { tab, index } (tab.id)}
+            {@render tabItem(tab, index)}
+          {/each}
+        {/if}
       {/each}
-      {#if dropIndex !== null}
+      {#if showDropSeam}
         <span
           aria-hidden="true"
           style="left: {seamX}px"

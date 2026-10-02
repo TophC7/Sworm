@@ -69,6 +69,8 @@ import type {
   StashEntry,
   TaskDefinition,
   RecentFolder,
+  AttachMode,
+  WorkbenchAttached,
   WorkbenchInfo
 } from '$lib/types/backend'
 
@@ -102,14 +104,26 @@ export const backend = {
     }
   },
 
-  /** Daemon-owned web workbench registry; attaching to an unknown id creates it. */
+  /** Server-owned workbench registry; attaching to an unknown id creates it. */
   workbenches: {
-    list(): Promise<WorkbenchInfo[]> {
-      return invoke<WorkbenchInfo[]>('workbench_list')
+    list(server?: string): Promise<WorkbenchInfo[]> {
+      return invoke<WorkbenchInfo[]>('workbench_list', { server })
     },
     /** Stops the workbench's sessions/tasks and deletes its saved state. */
-    close(id: string): Promise<void> {
-      return invoke<void>('workbench_close', { id })
+    close(id: string, server?: string): Promise<void> {
+      return invoke<void>('workbench_close', { id, server })
+    },
+    attach(server: string, id: string, mode: AttachMode, attachmentId: string): Promise<WorkbenchAttached | null> {
+      return invoke<WorkbenchAttached | null>('workbench_attach', { server, id, mode, attachmentId })
+    },
+    detach(server: string, id: string, attachmentId: string): Promise<void> {
+      return invoke<void>('workbench_detach', { server, id, attachmentId })
+    },
+    save(server: string, id: string, snapshot: string): Promise<void> {
+      return invoke<void>('workbench_save', { server, id, snapshot })
+    },
+    onChanged(handler: (event: { server: string | null }) => void): Promise<Unsubscribe> {
+      return getHostTransport().subscribe('workbenches-changed', handler)
     }
   },
 

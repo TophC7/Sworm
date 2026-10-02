@@ -1,5 +1,5 @@
 import { resolveProjectFile } from '$lib/utils/paths'
-import type { FilePasteMapping, LspEvent, SessionStartInfo } from '$lib/types/backend'
+import type { AttachMode, FilePasteMapping, LspEvent, SessionStartInfo } from '$lib/types/backend'
 import type {
   HostTransport,
   LspStreamRequest,
@@ -70,7 +70,8 @@ const eventNames: Record<string, string> = {
   recent_folders_changed: 'recent-folders-changed',
   tasks_changed: 'tasks-changed',
   nix_changed: 'nix-changed',
-  issues_changed: 'issues-changed'
+  issues_changed: 'issues-changed',
+  workbenches_changed: 'workbenches-changed'
 }
 
 export function createWebHostTransport(options: WebHostTransportOptions): WebHostTransport {
@@ -339,9 +340,12 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
   function connect(): void {
     if (disposed || socket) return
     const token = ++generation
-    const hello = JSON.stringify({
-      hello: { workbench_id: options.workbenchId, takeover, controller_token: controllerToken }
-    })
+    const mode: AttachMode = takeover
+      ? { kind: 'takeover' }
+      : controllerToken
+        ? { kind: 'resume', controller_token: controllerToken }
+        : { kind: 'open' }
+    const hello = JSON.stringify({ hello: { workbench_id: options.workbenchId, mode } })
     takeover = false
     let ws: WebSocket
     try {
@@ -414,9 +418,11 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
           const name = eventNames[frame.event.kind]
           if (!name) throw new Error(`Unknown host event: ${frame.event.kind}`)
           const payload =
-            frame.event.kind === 'nix_changed' || frame.event.kind === 'issues_changed'
-              ? { folderPath: frame.event.payload }
-              : frame.event.payload
+            frame.event.kind === 'workbenches_changed'
+              ? { server: null }
+              : frame.event.kind === 'nix_changed' || frame.event.kind === 'issues_changed'
+                ? { folderPath: frame.event.payload }
+                : frame.event.payload
           emitLocal(name, payload)
           return
         }

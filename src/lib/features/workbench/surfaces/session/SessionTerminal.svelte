@@ -7,7 +7,7 @@
   import { startSessionProcess } from '$lib/features/sessions/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import type { TerminalSessionManager } from '$lib/features/sessions/terminal/TerminalSessionManager'
-  import { getActiveSessionTabId } from '$lib/features/workbench/state.svelte'
+  import { getActiveSessionTabId, isTabTransferring } from '$lib/features/workbench/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
 
   // Dormant tabs (restored or newly created) wait this long after
@@ -114,14 +114,6 @@
     attachedTabId = tabId
     bindManager(nextManager)
     focusIfCurrent(nextManager)
-
-    if (nextManager.isPtyActive() || tab.id !== tabId || tab.status !== 'dormant') return
-
-    startTimer = setTimeout(() => {
-      startTimer = null
-      if (tab.id !== tabId || tab.status !== 'dormant') return
-      void startProcess(nextManager)
-    }, START_DELAY_MS)
   }
 
   onMount(() => {
@@ -143,9 +135,22 @@
     if (id === attachedTabId) return
     untrack(() => void attachSession(id))
   })
+  // A handoff freezes deferred starts too; an aborted move restores the dormant timer.
+  $effect(() => {
+    const current = manager
+    const id = tab.id
+    if (!current || id !== attachedTabId || tab.status !== 'dormant' || isTabTransferring(id)) return
+    if (untrack(() => current.isPtyActive())) return
+    startTimer = setTimeout(() => {
+      startTimer = null
+      if (tab.id !== id || tab.status !== 'dormant' || isTabTransferring(id)) return
+      void startProcess(current)
+    }, START_DELAY_MS)
+    return cancelStartTimer
+  })
 
   $effect(() => {
-    manager?.setInputEnabled(!tab.locked)
+    manager?.setInputEnabled(!tab.locked && !isTabTransferring(tab.id))
   })
 
   function restart() {

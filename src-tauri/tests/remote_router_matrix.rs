@@ -13,7 +13,7 @@ use sworm_core::{
     Host,
 };
 use sworm_lib::router::{Target, WorkspaceRouter};
-use sworm_protocol::rpc::{RecentFolder, Request};
+use sworm_protocol::rpc::{AttachMode, RecentFolder, Request};
 use sworm_protocol::{
     file_diff::{DiffSource, GitStatus},
     issues::{
@@ -404,29 +404,340 @@ impl Sample for IssueDependencyInput {
 /// driven from one runtime here.
 #[test]
 fn remote_workspaces_route_every_reachable_operation() -> anyhow::Result<()> {
-    // HOME/XDG/git are process-global: isolate before constructing Tokio.
-    let (root, _environment) = Fixture::isolate()?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(async {
-        let fixture = Fixture::start(root).await?;
-        let suite = tokio::time::timeout(SUITE_TIMEOUT, async {
-            every_routed_workspace_op_reaches_the_daemon(&fixture).await?;
-            remote_file_rename_emits_desktop_file_moved(&fixture).await?;
-            remote_paste_stays_on_source_host(&fixture).await?;
-            settings_effective_merges_desktop_sections(&fixture).await?;
-            local_only_ops_stay_on_desktop(&fixture).await?;
-            anyhow::Ok(())
-        })
-        .await;
+    // The generated route matrix's async frame exceeds the test harness's 2 MiB stack.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            // HOME/XDG/git are process-global: isolate before constructing Tokio.
+            let (root, _environment) = Fixture::isolate()?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let result = runtime.block_on(async {
+                let fixture = Fixture::start(root).await?;
+                let suite = tokio::time::timeout(SUITE_TIMEOUT, async {
+                    lease_receives_registry_events_without_folder_claims(&fixture).await?;
+                    local_leases_follow_authority_and_transfer_identity(&fixture).await?;
+                    independent_servers_do_not_share_transition_gates(&fixture).await?;
+                    every_routed_workspace_op_reaches_the_daemon(&fixture).await?;
+                    remote_file_rename_emits_desktop_file_moved(&fixture).await?;
+                    remote_paste_stays_on_source_host(&fixture).await?;
+                    settings_effective_merges_desktop_sections(&fixture).await?;
+                    local_only_ops_stay_on_desktop(&fixture).await?;
+                    anyhow::Ok(())
+                })
+                .await;
+                fixture.shutdown().await;
+                suite.unwrap_or_else(|_| {
+                    panic!("the routing suite did not finish within {SUITE_TIMEOUT:?}")
+                })
+            });
+            drop(runtime);
+            result
+        })?
+        .join()
+        .expect("route matrix test thread panicked")
+}
 
-        fixture.shutdown().await;
-        suite
-            .unwrap_or_else(|_| panic!("the routing suite did not finish within {SUITE_TIMEOUT:?}"))
+async fn local_leases_follow_authority_and_transfer_identity(
+    fixture: &Fixture,
+) -> anyhow::Result<()> {
+    use sworm_protocol::rpc::WorkbenchAttached;
+    let workspace = fixture.workspace("lease-identities")?;
+    let router = &workspace.router;
+    let id = "lease-identities".to_owned();
+    let Some(WorkbenchAttached::Ready { .. }) = router
+        .workbench_attach(
+            "source",
+            "loop",
+            id.clone(),
+            AttachMode::Open {},
+            "old".into(),
+        )
+        .await?
+    else {
+        panic!("source attach refused")
+    };
+    let Some(WorkbenchAttached::Ready {
+        controller_token, ..
+    }) = router
+        .workbench_attach(
+            "source",
+            "loop",
+            id.clone(),
+            AttachMode::Takeover {},
+            "current".into(),
+        )
+        .await?
+    else {
+        panic!("source replacement refused")
+    };
+    router
+        .workbench_detach("source", "loop", id.clone(), "old".into())
+        .await?;
+    assert!(router.workbench_owned("source", "loop", &id, "current"));
+    let snapshot = r#"{"version":4,"activeTabIndex":-1,"tabs":[]}"#;
+    router
+        .workbench_save("loop", id.clone(), snapshot.into())
+        .await?;
+    assert!(router
+        .workbench_transfer("source", "target", "loop", id.clone(), "old".into())
+        .await
+        .is_err());
+    router
+        .session_start(
+            "transferred-proxy".into(),
+            workspace.remote.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            Arc::new(|_| Ok(())),
+            Arc::new(|_| Ok(())),
+            Some("source".into()),
+        )
+        .await?;
+    router
+        .workbench_attach(
+            "target",
+            "loop",
+            "occupied-target".into(),
+            AttachMode::Open {},
+            "occupied".into(),
+        )
+        .await?;
+    assert!(router
+        .workbench_transfer("source", "target", "loop", id.clone(), "current".into())
+        .await
+        .is_err());
+    router
+        .workbench_close("loop", "occupied-target".into())
+        .await?;
+    let transferred = router
+        .workbench_transfer("source", "target", "loop", id.clone(), "current".into())
+        .await?;
+    assert_eq!(
+        transferred,
+        WorkbenchAttached::Ready {
+            attachment_id: "current".into(),
+            controller_token: controller_token.clone(),
+            snapshot: snapshot.into(),
+        }
+    );
+    router
+        .workbench_detach("source", "loop", id.clone(), "current".into())
+        .await?;
+    assert!(router.workbench_owned("target", "loop", &id, "current"));
+    workspace
+        .host
+        .pty
+        .ensure_owner("transferred-proxy", Some("target"))
+        .unwrap();
+    assert!(router
+        .remote_runs_release("source", &["transferred-proxy".into()])
+        .is_err());
+    assert!(!workspace
+        .host
+        .pty
+        .stop_owned_run("transferred-proxy", "source")
+        .unwrap());
+    let adopted = router
+        .session_start(
+            "transferred-proxy".into(),
+            workspace.remote.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            Arc::new(|_| Ok(())),
+            Arc::new(|_| Ok(())),
+            Some("target".into()),
+        )
+        .await?;
+    assert!(
+        adopted.resumed,
+        "local window transfer must retain the daemon process"
+    );
+    assert!(
+        !router
+            .workbench_list_for_owner("source", "loop")
+            .await?
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .yours
+    );
+    assert!(
+        router
+            .workbench_list_for_owner("target", "loop")
+            .await?
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .yours
+    );
+    router
+        .workbench_transfer("target", "source", "loop", id.clone(), "current".into())
+        .await?;
+    assert!(router.workbench_owned("source", "loop", &id, "current"));
+    workspace
+        .host
+        .pty
+        .ensure_owner("transferred-proxy", Some("source"))
+        .unwrap();
+    router.session_stop("transferred-proxy".into()).await?;
+
+    let outsider = fixture.client().await?;
+    outsider
+        .call(&Request::WorkbenchAttach {
+            id: id.clone(),
+            attachment_id: "outsider".into(),
+            mode: AttachMode::Takeover {},
+            client: "outsider".into(),
+        })
+        .await?
+        .workbench_attach()
+        .unwrap();
+    // A stale local cache must not redirect the requester to the old window.
+    let redirected = router
+        .workbench_attach(
+            "requester",
+            "loop",
+            id.clone(),
+            AttachMode::Open {},
+            "requester".into(),
+        )
+        .await?;
+    assert!(matches!(redirected, Some(WorkbenchAttached::Busy { .. })));
+    assert!(!router.workbench_owned("source", "loop", &id, "current"));
+    outsider
+        .call(&Request::WorkbenchDetach {
+            id: id.clone(),
+            attachment_id: "outsider".into(),
+        })
+        .await?
+        .workbench_detach()
+        .unwrap();
+    router.workbench_close("loop", id).await?;
+    Ok(())
+}
+
+async fn independent_servers_do_not_share_transition_gates(
+    fixture: &Fixture,
+) -> anyhow::Result<()> {
+    let workspace = fixture.workspace("server-gates")?;
+    // Bound UDP socket absorbs QUIC traffic without replying, keeping the
+    // first server's connect pending rather than depending on DNS timing.
+    let stalled = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    workspace.host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: json!({
+            "loop": { "address": format!("localhost:{}", fixture.server.local_addr.port()), "fingerprint": fixture.server.fingerprint.to_string() },
+            "stalled": { "address": stalled.local_addr()?.to_string(), "fingerprint": fixture.server.fingerprint.to_string() },
+        }),
+    }).await?;
+    let router = workspace.router.clone();
+    let blocked = tokio::spawn(async move {
+        router
+            .workbench_attach(
+                "slow",
+                "stalled",
+                "slow".into(),
+                AttachMode::Open {},
+                "slow".into(),
+            )
+            .await
     });
-    drop(runtime);
-    result
+    let mut packet = [0u8; 2048];
+    bounded("waiting_for_stalled_server", stalled.recv_from(&mut packet)).await?;
+    let attached = tokio::time::timeout(
+        Duration::from_secs(2),
+        workspace.router.workbench_attach(
+            "fast",
+            "loop",
+            "fast".into(),
+            AttachMode::Open {},
+            "fast".into(),
+        ),
+    )
+    .await
+    .expect("healthy server waited behind stalled server")?;
+    assert!(matches!(
+        attached,
+        Some(sworm_protocol::rpc::WorkbenchAttached::Ready { .. })
+    ));
+    assert!(
+        !blocked.is_finished(),
+        "stalled server must still be pending during healthy attach"
+    );
+    blocked.abort();
+    let _ = blocked.await;
+    workspace
+        .router
+        .workbench_close("loop", "fast".into())
+        .await?;
+    workspace.host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: json!({
+            "loop": { "address": format!("localhost:{}", fixture.server.local_addr.port()), "fingerprint": fixture.server.fingerprint.to_string() },
+        }),
+    }).await?;
+    Ok(())
+}
+
+async fn lease_receives_registry_events_without_folder_claims(
+    fixture: &Fixture,
+) -> anyhow::Result<()> {
+    let mut workspace = fixture.workspace("lease-events")?;
+    let id = "lease-events".to_owned();
+    workspace
+        .router
+        .workbench_attach(
+            "first-window",
+            "loop",
+            id.clone(),
+            AttachMode::Open {},
+            "first-window-attachment".into(),
+        )
+        .await?;
+    let mut received = false;
+    for attempt in 0..20 {
+        workspace
+            .router
+            .workbench_attach(
+                "first-window",
+                "loop",
+                id.clone(),
+                AttachMode::Takeover {},
+                format!("first-window-attachment-{attempt}"),
+            )
+            .await?;
+        if tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let event = workspace
+                    .events
+                    .recv()
+                    .await
+                    .expect("host event sink closed");
+                if let HostEvent::RemoteWorkbenchesChanged { server } = event {
+                    assert_eq!(server, "loop");
+                    break;
+                }
+            }
+        })
+        .await
+        .is_ok()
+        {
+            received = true;
+            break;
+        }
+    }
+    assert!(
+        received,
+        "a workbench lease must open the server event stream without folder claims"
+    );
+    workspace.router.workbench_close("loop", id).await?;
+    Ok(())
 }
 
 async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyhow::Result<()> {
@@ -560,6 +871,114 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         bounded("settings_get", router.settings_get(Some("loop".to_owned()))).await,
     );
 
+    let workbench_id = "matrix-workbench".to_owned();
+    let attached = bounded(
+        "workbench_attach",
+        router.workbench_attach(
+            "matrix-window",
+            "loop",
+            workbench_id.clone(),
+            AttachMode::Open {},
+            "matrix-window-attachment".into(),
+        ),
+    )
+    .await?;
+    assert!(matches!(
+        attached,
+        Some(sworm_protocol::rpc::WorkbenchAttached::Ready { .. })
+    ));
+    assert!(bounded("workbench_list", router.workbench_list("loop"))
+        .await?
+        .iter()
+        .any(|workbench| workbench.id == workbench_id && workbench.yours));
+    bounded(
+        "workbench_save",
+        router.workbench_save(
+            "loop",
+            workbench_id.clone(),
+            r#"{"version":4,"activeTabIndex":-1,"tabs":[]}"#.into(),
+        ),
+    )
+    .await?;
+    let second = bounded(
+        "workbench_second_window",
+        router.workbench_attach(
+            "matrix-second",
+            "loop",
+            workbench_id.clone(),
+            AttachMode::Takeover {},
+            "matrix-second-attachment".into(),
+        ),
+    )
+    .await?;
+    assert!(
+        second.is_none(),
+        "opening an occupied workbench must reuse its window"
+    );
+    bounded(
+        "stale_window_detach",
+        router.workbench_detach(
+            "matrix-second",
+            "loop",
+            workbench_id.clone(),
+            "matrix-second-attachment".into(),
+        ),
+    )
+    .await?;
+    assert!(bounded(
+        "workbench_list_after_takeover",
+        router.workbench_list("loop")
+    )
+    .await?
+    .iter()
+    .any(|workbench| workbench.id == workbench_id && workbench.yours));
+    bounded(
+        "workbench_close",
+        router.workbench_close("loop", workbench_id),
+    )
+    .await?;
+
+    let detached_id = "matrix-detach".to_owned();
+    bounded(
+        "workbench_attach",
+        router.workbench_attach(
+            "matrix-window",
+            "loop",
+            detached_id.clone(),
+            AttachMode::Open {},
+            "matrix-window-attachment".into(),
+        ),
+    )
+    .await?;
+    let replacement_id = "matrix-replacement".to_owned();
+    bounded(
+        "workbench_replace",
+        router.workbench_attach(
+            "matrix-window",
+            "loop",
+            replacement_id.clone(),
+            AttachMode::Open {},
+            "matrix-window-attachment".into(),
+        ),
+    )
+    .await?;
+    bounded(
+        "stale_same_window_detach",
+        router.workbench_detach(
+            "matrix-window",
+            "loop",
+            detached_id,
+            "matrix-window-attachment".into(),
+        ),
+    )
+    .await?;
+    assert!(bounded(
+        "workbench_list_after_replace",
+        router.workbench_list("loop")
+    )
+    .await?
+    .iter()
+    .any(|workbench| workbench.id == replacement_id && workbench.yours));
     // Watchers are subscriptions, not probes: they must succeed on the daemon.
     // Releasing the folder afterwards drops the claim, so a reconnect does not
     // re-subscribe watchers nothing is listening to.
@@ -593,7 +1012,7 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
             24,
             Arc::clone(&discard_bytes),
             Arc::clone(&discard_pty),
-            None,
+            Some("matrix-window".into()),
         ),
     )
     .await;
@@ -614,7 +1033,7 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
             false,
             discard_bytes,
             discard_pty,
-            None,
+            Some("matrix-window".into()),
         ),
     )
     .await;
@@ -623,6 +1042,32 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         "an unknown task must not spawn a run on the daemon"
     );
     assert_routed("tasks_start", task);
+    bounded(
+        "workbench_detach",
+        router.workbench_detach(
+            "matrix-window",
+            "loop",
+            replacement_id,
+            "matrix-window-attachment".into(),
+        ),
+    )
+    .await?;
+    assert!(matches!(
+        router
+            .session_start(
+                format!("{PROBE}-unleased"),
+                remote.clone(),
+                PROBE.to_owned(),
+                None,
+                80,
+                24,
+                Arc::new(|_| Ok(())),
+                Arc::new(|_| Ok(())),
+                Some("matrix-window".into()),
+            )
+            .await,
+        Err(ApiError::InvalidArgument(_))
+    ));
     let language_server = bounded(
         "lsp_start",
         router.lsp_start(

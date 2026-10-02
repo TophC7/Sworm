@@ -6,7 +6,7 @@ use sworm_core::{
     Host,
 };
 use sworm_lib::router::{Target, WorkspaceRouter};
-use sworm_protocol::{pty::PtyEvent, settings::PatchSettingsSectionInput};
+use sworm_protocol::{pty::PtyEvent, rpc::AttachMode, settings::PatchSettingsSectionInput};
 use sworm_remote::Identity;
 use sworm_server::{auth::append_authorized, serve, ServeOptions};
 use tempfile::tempdir;
@@ -256,6 +256,137 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     let remote_repository = format!("sworm://loop{}", repository.display());
     let canonical_repository = fs::canonicalize(&repository)?;
     let canonical_uri = Target::remote_uri("loop", &canonical_repository.to_string_lossy());
+
+    let attached = router
+        .workbench_attach(
+            "lease-window",
+            "loop",
+            "lease-workbench".into(),
+            AttachMode::Open {},
+            "lease-window-attachment".into(),
+        )
+        .await?;
+    assert!(matches!(
+        attached,
+        Some(sworm_protocol::rpc::WorkbenchAttached::Ready { .. })
+    ));
+    let (output, events, mut leased_output) = pty_sinks();
+    router
+        .session_start(
+            "leased-run".into(),
+            remote_repository.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            output,
+            events,
+            Some("lease-window".into()),
+        )
+        .await?;
+    router
+        .session_write(
+            "leased-run".into(),
+            b"printf '__LEASED_RUN__\\n'\n".to_vec(),
+        )
+        .await?;
+    receive_output_until(&mut leased_output, b"__LEASED_RUN__\r\n").await;
+    let listed = router.workbench_list("loop").await?;
+    let workbench = listed
+        .iter()
+        .find(|workbench| workbench.id == "lease-workbench")
+        .unwrap();
+    assert!(workbench.yours);
+    assert!(
+        workbench.running.iter().any(|run| matches!(
+            run,
+            sworm_protocol::rpc::WorkbenchRun::Session { provider_id, .. }
+                if provider_id == "terminal"
+        )),
+        "session must belong to workbench, not connection"
+    );
+    assert!(router
+        .workbench_attach(
+            "foreign-window",
+            "loop",
+            "foreign-workbench".into(),
+            AttachMode::Open {},
+            "foreign-window-attachment".into(),
+        )
+        .await?
+        .is_some());
+    let (foreign_output, foreign_events, _foreign_deliveries) = pty_sinks();
+    router
+        .session_start(
+            "foreign-release-run".into(),
+            remote_repository.clone(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            foreign_output,
+            foreign_events,
+            Some("foreign-window".into()),
+        )
+        .await?;
+    assert!(matches!(
+        router.remote_runs_release(
+            "lease-window",
+            &["foreign-release-run".into(), "leased-run".into()]
+        ),
+        Err(ApiError::Pty(_))
+    ));
+    assert!(
+        host.pty.run_state("foreign-release-run").is_some(),
+        "foreign proxy must stay attached"
+    );
+    assert!(
+        host.pty.run_state("leased-run").is_none(),
+        "owned proxy must detach despite foreign error"
+    );
+    router.session_stop("foreign-release-run".into()).await?;
+    router
+        .workbench_detach(
+            "foreign-window",
+            "loop",
+            "foreign-workbench".into(),
+            "foreign-window-attachment".into(),
+        )
+        .await?;
+    router
+        .workbench_close("loop", "foreign-workbench".into())
+        .await?;
+    router.remote_runs_release(
+        "lease-window",
+        &[
+            "dormant-run".into(),
+            "leased-run".into(),
+            "leased-run".into(),
+        ],
+    )?;
+    assert!(
+        router
+            .workbench_list("loop")
+            .await?
+            .iter()
+            .find(|workbench| workbench.id == "lease-workbench")
+            .unwrap()
+            .running
+            .iter()
+            .any(|run| matches!(run, sworm_protocol::rpc::WorkbenchRun::Session { .. })),
+        "daemon run must remain alive after releasing its desktop proxy"
+    );
+    router
+        .workbench_detach(
+            "lease-window",
+            "loop",
+            "lease-workbench".into(),
+            "lease-window-attachment".into(),
+        )
+        .await?;
+    router
+        .workbench_close("loop", "lease-workbench".into())
+        .await?;
 
     assert_eq!(
         router
@@ -555,6 +686,31 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         Err(ApiError::InvalidArgument(message)) if message == "Invalid remote path: sworm://"
     ));
 
+    assert!(matches!(
+        router
+            .session_start(
+                "unleased-run".into(),
+                remote_repository.clone(),
+                "terminal".into(),
+                None,
+                80,
+                24,
+                Arc::new(|_| Ok(())),
+                Arc::new(|_| Ok(())),
+                Some("desktop-window".into()),
+            )
+            .await,
+        Err(ApiError::InvalidArgument(_))
+    ));
+    router
+        .workbench_attach(
+            "desktop-window",
+            "loop",
+            "desktop-workbench".into(),
+            AttachMode::Open {},
+            "desktop-window-attachment".into(),
+        )
+        .await?;
     let (output, events, mut deliveries) = pty_sinks();
     router
         .session_start(
@@ -653,6 +809,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         .await?;
     receive_output_until(&mut deliveries, b"__OWNER_STILL_LIVE__\r\n").await;
 
+    router
+        .workbench_attach(
+            "desktop-window",
+            "loop",
+            "desktop-workbench".into(),
+            AttachMode::Takeover {},
+            "desktop-window-takeover".into(),
+        )
+        .await?;
     let (output, events, mut reloaded_deliveries) = pty_sinks();
     let reloaded = router
         .session_start(
@@ -701,6 +866,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     receive_output_until(&mut reloaded_deliveries, b"__AFTER_RELOAD__\r\n").await;
     router.session_stop("reconnect-run".into()).await?;
 
+    router
+        .workbench_attach(
+            "last-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Open {},
+            "last-window-attachment".into(),
+        )
+        .await?;
     let (output, events, mut last_owner_deliveries) = pty_sinks();
     router
         .session_start(
@@ -728,6 +902,23 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         router.run_status("last-owner-run".into()).await?.live,
         "last-owner detach must leave daemon run live"
     );
+    router
+        .workbench_detach(
+            "last-window",
+            "loop",
+            "last-workbench".into(),
+            "last-window-attachment".into(),
+        )
+        .await?;
+    router
+        .workbench_attach(
+            "replacement-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Takeover {},
+            "replacement-window-attachment".into(),
+        )
+        .await?;
 
     let (output, events, mut resumed_owner_deliveries) = pty_sinks();
     let resumed = router
@@ -754,6 +945,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     receive_output_until(&mut resumed_owner_deliveries, b"__AFTER_OWNER_DETACH__\r\n").await;
     router.session_stop("last-owner-run".into()).await?;
 
+    router
+        .workbench_attach(
+            "secondary-window",
+            "loop",
+            "secondary-workbench".into(),
+            AttachMode::Open {},
+            "secondary-window-attachment".into(),
+        )
+        .await?;
     let (output, events, mut secondary_owner_deliveries) = pty_sinks();
     router
         .session_start(
@@ -857,7 +1057,7 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             24,
             output,
             events,
-            Some("last-window".into()),
+            Some("replacement-window".into()),
         )
         .await?;
     router
@@ -867,6 +1067,14 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         )
         .await?;
     receive_output_until(&mut detached_deliveries, b"__BEFORE_DETACH__\r\n").await;
+    router
+        .workbench_detach(
+            "replacement-window",
+            "loop",
+            "last-workbench".into(),
+            "replacement-window-attachment".into(),
+        )
+        .await?;
     assert_eq!(
         host.shutdown().0,
         0,
@@ -881,6 +1089,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     )?);
     let router = WorkspaceRouter::new(Arc::clone(&host));
     let (output, events, mut resumed_deliveries) = pty_sinks();
+    router
+        .workbench_attach(
+            "restarted-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Takeover {},
+            "restarted-window-attachment".into(),
+        )
+        .await?;
     let resumed = router
         .session_start(
             "detached-run".into(),
@@ -937,6 +1154,21 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     )?);
     let router = WorkspaceRouter::new(Arc::clone(&host));
     let (output, events, mut replayed_deliveries) = pty_sinks();
+    let Some(sworm_protocol::rpc::WorkbenchAttached::Ready {
+        controller_token: replayed_token,
+        ..
+    }) = router
+        .workbench_attach(
+            "replayed-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Takeover {},
+            "replayed-window-attachment".into(),
+        )
+        .await?
+    else {
+        panic!("replayed workbench attach was not ready")
+    };
     let replayed = router
         .session_start(
             "completed-run".into(),
@@ -996,18 +1228,41 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         "an unreachable daemon must fail the stop"
     );
     assert_eq!(router.pending_stops_for_test().len(), 1);
+    drop(router);
+    drop(host);
+    let host = Arc::new(Host::new(
+        temporary.path().join("sworm-replayed.db"),
+        Arc::new(|_| Ok(())),
+    )?);
+    let router = WorkspaceRouter::new(Arc::clone(&host));
     assert_eq!(
-        WorkspaceRouter::new(Arc::clone(&host))
-            .pending_stops_for_test()
-            .len(),
+        router.pending_stops_for_test().len(),
         1,
         "a pending stop must survive a desktop restart"
     );
+    router.retry_pending_stops();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        router.pending_stops_for_test().len(),
+        1,
+        "retry must wait for the workbench lease"
+    );
     host.settings_patch_global_section(PatchSettingsSectionInput {
         section: "remotes".into(),
-        value: remote_settings,
+        value: remote_settings.clone(),
     })
     .await?;
+    router
+        .workbench_attach(
+            "replayed-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Resume {
+                controller_token: replayed_token,
+            },
+            "replayed-window-resumed".into(),
+        )
+        .await?;
     timeout(Duration::from_secs(60), async {
         while !router.pending_stops_for_test().is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1032,6 +1287,74 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     assert!(
         !orphan_restart.resumed,
         "the retried stop must have killed the daemon run"
+    );
+    host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: json!({
+            "loop": {
+                "address": "sworm-unreachable.invalid:7420",
+                "fingerprint": server_fingerprint.to_string(),
+            }
+        }),
+    })
+    .await?;
+    assert!(router.session_stop("orphan-run".into()).await.is_err());
+    assert_eq!(router.pending_stops_for_test().len(), 1);
+    assert!(router
+        .workbench_detach(
+            "replayed-window",
+            "loop",
+            "last-workbench".into(),
+            "replayed-window-resumed".into()
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        router.pending_stops_for_test().len(),
+        1,
+        "an unacknowledged detach cannot prove the lease or stop was revoked"
+    );
+    assert_eq!(
+        WorkspaceRouter::new(Arc::clone(&host))
+            .pending_stops_for_test()
+            .len(),
+        1
+    );
+    host.settings_patch_global_section(PatchSettingsSectionInput {
+        section: "remotes".into(),
+        value: remote_settings,
+    })
+    .await?;
+    router
+        .workbench_attach(
+            "replayed-window",
+            "loop",
+            "last-workbench".into(),
+            AttachMode::Takeover {},
+            "replayed-window-takeover".into(),
+        )
+        .await?;
+    assert!(
+        router.pending_stops_for_test().is_empty(),
+        "a takeover must discard stops authorized by the previous controller token"
+    );
+    let (output, events, _) = pty_sinks();
+    assert!(
+        router
+            .session_start(
+                "orphan-run".into(),
+                remote_repository,
+                "terminal".into(),
+                None,
+                80,
+                24,
+                output,
+                events,
+                Some("replayed-window".into()),
+            )
+            .await?
+            .resumed,
+        "the run remains visible after its desktop lease is released"
     );
     router.session_stop("orphan-run".into()).await?;
 

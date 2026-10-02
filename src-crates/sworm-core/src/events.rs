@@ -36,4 +36,8 @@ pub enum HostEvent {
         run_id: String,
         state: String,
     },
+    /// `server`'s workbench registry changed; the desktop re-lists it.
+    RemoteWorkbenchesChanged {
+        server: String,
+    },
 }

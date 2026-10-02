@@ -6,7 +6,8 @@ use crate::{
 use serde::Serialize;
 use std::{future::Future, net::SocketAddr, time::Duration};
 use sworm_protocol::rpc::{
-    Open, OpenRpc, Reply, Request, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES,
+    Open, OpenRpc, OpenWorkbenchRpc, Reply, Request, Response, WireError, MAX_FRAME_BYTES,
+    MAX_REQUEST_FRAME_BYTES,
 };
 use tokio::time::timeout;
 
@@ -19,6 +20,8 @@ pub enum RemoteError {
     Transport(String),
     #[error("{0}")]
     Connection(String),
+    #[error("{0}")]
+    Timeout(String),
     #[error("{0:?}")]
     Wire(WireError),
     #[error("{0}")]
@@ -63,30 +66,48 @@ impl RemoteClient {
         })
     }
 
-    /// Run one bounded request/response exchange.
+    /// Run one request/response exchange. Normal RPCs have a deadline; attach
+    /// recovery waits for its supervised operation or connection shutdown.
     ///
     /// An RPC may carry a file body, so its open frame is bounded by the
     /// whole-frame ceiling rather than the small intake cap. The daemon only
     /// accepts a frame that large once this connection is paired.
     pub async fn call(&self, request: &Request) -> Result<Reply, RemoteError> {
-        timeout(REQUEST_TIMEOUT, async {
-            let (mut send, mut recv) = self
-                .open_frame(&OpenRpc::new(request), MAX_FRAME_BYTES)
-                .await?;
-            send.finish()
-                .map_err(|error| transport_error("finish request stream", error))?;
-            match read_frame::<Response>(&mut recv).await? {
-                Ok(reply) => Ok(reply),
-                Err(error) => Err(RemoteError::Wire(error)),
-            }
-        })
-        .await
-        .map_err(|_| {
-            RemoteError::Transport(format!(
-                "remote request timed out after {} seconds",
-                REQUEST_TIMEOUT.as_secs()
-            ))
-        })?
+        let open = OpenRpc::new(request);
+        if matches!(request, Request::WorkbenchRecover { .. }) {
+            return self.exchange(&open).await;
+        }
+        self.call_open(&open).await
+    }
+
+    pub async fn call_workbench(
+        &self,
+        workbench: &str,
+        request: &Request,
+    ) -> Result<Reply, RemoteError> {
+        self.call_open(&OpenWorkbenchRpc::new(workbench, request))
+            .await
+    }
+
+    async fn call_open<T: Serialize>(&self, open: &T) -> Result<Reply, RemoteError> {
+        timeout(REQUEST_TIMEOUT, self.exchange(open))
+            .await
+            .map_err(|_| {
+                RemoteError::Timeout(format!(
+                    "remote request timed out after {} seconds",
+                    REQUEST_TIMEOUT.as_secs()
+                ))
+            })?
+    }
+
+    async fn exchange<T: Serialize>(&self, open: &T) -> Result<Reply, RemoteError> {
+        let (mut send, mut recv) = self.open_frame(open, MAX_FRAME_BYTES).await?;
+        send.finish()
+            .map_err(|error| transport_error("finish request stream", error))?;
+        match read_frame::<Response>(&mut recv).await? {
+            Ok(reply) => Ok(reply),
+            Err(error) => Err(RemoteError::Wire(error)),
+        }
     }
 
     /// Open a lifetime stream. Callers own its timeout and shutdown policy.

@@ -7,11 +7,12 @@ export function createWebPlatform(
   workbenchId: string,
   options: {
     closeCurrent: () => Promise<void>
+    takeOver: (id: string) => Promise<void>
     readFileBytes: (request: FileReadRequest) => Promise<FileBytes>
   }
 ): Platform {
   return {
-    workbench: { id: workbenchId, closeCurrent: options.closeCurrent },
+    workbench: { id: workbenchId, closeCurrent: options.closeCurrent, takeOver: options.takeOver },
     app: { version: async () => (await backend.app.runtimeInfo()).version },
     clipboard: {
       readText: () => navigator.clipboard.readText(),

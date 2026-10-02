@@ -31,7 +31,7 @@
     openStashDiff,
     openWorkingTreeDiff
   } from '$lib/features/workbench/surfaces/diff/service.svelte'
-  import { dropForeignTab } from '$lib/features/workbench/transferService.svelte'
+  import { dropFromOtherWindow } from '$lib/features/workbench/transferService.svelte'
   import { getActiveTab, getTabs, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
 
   let activeTab = $derived(getActiveTab())
@@ -49,13 +49,16 @@
   let tabDropActive = $state(false)
   const foreignTabDropObserver = dragObserver({
     accept: (_payload, types) =>
-      platform.capabilities.tabTransfer && !LocalTransfer.has('tab') && types.includes(DND_MIME.SWORM_TAB),
+      platform.capabilities.tabTransfer &&
+      !LocalTransfer.has('tab') &&
+      !LocalTransfer.has('workbench') &&
+      (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)),
     onEnter: () => (tabDropActive = true),
     onOver: () => (tabDropActive = true),
     onLeave: () => (tabDropActive = false),
     onDrop: (event) => {
       tabDropActive = false
-      dropForeignTab(event, getTabs().length)
+      dropFromOtherWindow(event, getTabs().length)
     },
     dropEffect: 'move'
   })

@@ -29,7 +29,7 @@ import {
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
-import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
+import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
 export async function reloadView(): Promise<void> {
@@ -51,6 +51,15 @@ export async function reloadView(): Promise<void> {
     console.warn('Reload flush failed:', error)
   }
   window.location.reload()
+}
+
+export function confirmCloseWorkbench(folders: string[]): Promise<boolean> {
+  return confirmAsync({
+    title: 'Close Workbench',
+    message: `Stop all sessions and tasks in ${[...new Set(folders.map(basename))].join(', ') || 'this workbench'} and delete its saved tabs and layout? Unsaved changes in any connected page will be lost.`,
+    confirmLabel: 'Close Workbench',
+    cancelLabel: 'Cancel'
+  })
 }
 
 let closingWorkbench = false

@@ -1,4 +1,4 @@
-import { normalizeAbsolutePath } from './paths'
+import { normalizeAbsolutePath, splitRemotePath } from './paths'
 
 /**
  * MurmurHash3 32-bit finalizer mix.
@@ -30,12 +30,17 @@ function hashPath(str: string): number {
 const colorCache = new Map<string, string>()
 const MAX_CACHE_ENTRIES = 256
 
-/** Returns a deterministic CSS color string for the given project path. */
+/**
+ * Deterministic CSS color for a project path. Hashes the server-local path, so
+ * a remote folder keeps its color whether reached as `sworm://<server>/...`
+ * from desktop or as a plain path from that server's web client.
+ */
 export function getPathColor(path: string): string {
   const cached = colorCache.get(path)
   if (cached) return cached
 
-  const hash = hashPath(normalizeAbsolutePath(path || '/'))
+  const normalized = normalizeAbsolutePath(path || '/')
+  const hash = hashPath(splitRemotePath(normalized)?.path ?? normalized)
   // Mix each axis separately so nearby hues need not share lightness or chroma.
   const hue = (hash / 0xffffffff) * 360
   const lightness = 0.65 + (fmix32(hash ^ 0x9e3779b9) / 0xffffffff) * 0.15

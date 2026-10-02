@@ -153,6 +153,9 @@ impl From<WireError> for ApiError {
             WireError::LspAlreadyActive { session_id } => ApiError::LspAlreadyActive { session_id },
             WireError::TooLarge { size, limit } => ApiError::TooLarge { size, limit },
             WireError::Unauthorized { message } => ApiError::Remote(message),
+            WireError::NotController { workbench } => ApiError::Remote(format!(
+                "This window no longer controls workbench {workbench}"
+            )),
         }
     }
 }

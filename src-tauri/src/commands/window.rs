@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::host_events::channel_sink;
 use crate::router::Target;
 use crate::services::windows::{
-    ClaimFileResult, TabTransferExportPayload, TabTransferInitiateParams,
+    ClaimFileResult, OpenTarget, TabTransferExportPayload, TabTransferInitiateParams,
 };
 use std::path::{Path, PathBuf};
 use sworm_core::{errors::ApiError, services::pty::PtySubscriber};
@@ -10,12 +10,19 @@ use sworm_protocol::pty::PtyEvent;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 #[tauri::command]
-pub fn window_create(app: AppHandle, state: State<'_, AppState>) -> Result<String, ApiError> {
-    state
-        .windows
-        .create_workbench_window(&app, None)
-        .map(|window| window.label().to_string())
-        .map_err(ApiError::Internal)
+pub fn window_create(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target: Option<OpenTarget>,
+) -> Result<String, ApiError> {
+    match target {
+        Some(target) => state.windows.create_window_with_target(&app, target),
+        None => state
+            .windows
+            .create_workbench_window(&app, None)
+            .map(|window| window.label().to_string()),
+    }
+    .map_err(ApiError::Internal)
 }
 
 #[tauri::command]
@@ -182,6 +189,87 @@ pub async fn window_transfer_abort(
     })
     .await
     .map_err(|error| ApiError::Internal(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn window_group_handoff(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    source_window: String,
+    server: String,
+    workbench_id: String,
+    index: usize,
+    target_window: Option<String>,
+) -> Result<(), ApiError> {
+    state
+        .windows
+        .group_handoff(
+            &app,
+            window.label(),
+            source_window,
+            server,
+            workbench_id,
+            index,
+            target_window,
+        )
+        .await
+        .map_err(ApiError::Internal)
+}
+
+#[tauri::command]
+pub async fn window_group_exported(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    transfer_id: String,
+    attachment_id: String,
+    tabs: Vec<serde_json::Value>,
+    active_tab_id: Option<String>,
+    model_states: Vec<serde_json::Value>,
+) -> Result<(), ApiError> {
+    state
+        .windows
+        .group_exported(
+            &app,
+            window.label(),
+            &transfer_id,
+            attachment_id,
+            tabs,
+            active_tab_id,
+            model_states,
+        )
+        .await
+        .map_err(ApiError::Internal)
+}
+
+#[tauri::command]
+pub async fn window_group_staged(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), ApiError> {
+    state
+        .windows
+        .group_staged(&app, window.label(), &transfer_id)
+        .await
+        .map_err(ApiError::Internal)
+}
+
+#[tauri::command]
+pub async fn window_group_abort(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    transfer_id: String,
+    reason: String,
+) -> Result<(), ApiError> {
+    state
+        .windows
+        .group_abort(&app, window.label(), &transfer_id, &reason)
+        .await
+        .map_err(ApiError::Internal)
 }
 
 #[tauri::command]

@@ -1,14 +1,11 @@
 use crate::remote_runs::{RemoteRunKind, RemoteRunService};
 use parking_lot::Mutex;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-        Arc, LazyLock, Weak,
-    },
+    sync::{Arc, LazyLock, Weak},
     time::Duration,
 };
 use sworm_core::{
@@ -22,12 +19,16 @@ use sworm_core::{
 };
 use sworm_protocol::{
     pty::PtyEvent,
-    rpc::{HostEventFrame, HostEventWire, Open, Reply, Request, RunStatus},
+    rpc::{
+        AttachMode, HostEventFrame, HostEventWire, Open, Reply, Request, RunStatus,
+        WorkbenchAttached, WorkbenchInfo,
+    },
     settings::{
         merge_desktop_sections, tag_host_diagnostics, EffectiveSettingsInput, RemoteSettings,
     },
 };
 use sworm_remote::{wire::read_frame, Fingerprint, Identity, RemoteClient, RemoteError};
+use tauri::Manager;
 use tokio::{
     sync::{Mutex as AsyncMutex, OnceCell},
     task::{JoinHandle, JoinSet},
@@ -117,6 +118,125 @@ pub async fn remote_status(
     server: String,
 ) -> Result<RemoteStatus, ApiError> {
     state.router.remote_status(&server).await
+}
+
+#[tauri::command]
+pub async fn workbench_list(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    server: String,
+) -> Result<Vec<WorkbenchInfo>, ApiError> {
+    state
+        .router
+        .workbench_list_for_owner(window.label(), &server)
+        .await
+}
+
+#[tauri::command]
+pub async fn workbench_close(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    server: String,
+    id: String,
+) -> Result<(), ApiError> {
+    state.router.workbench_close(&server, id).await
+}
+
+#[tauri::command]
+pub async fn workbench_attach(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    server: String,
+    id: String,
+    mode: AttachMode,
+    attachment_id: String,
+) -> Result<Option<WorkbenchAttached>, ApiError> {
+    let attached = state
+        .router
+        .workbench_attach(
+            window.label(),
+            &server,
+            id.clone(),
+            mode,
+            attachment_id.clone(),
+        )
+        .await?;
+    if attached.is_none() {
+        if let Some(owner) = state.router.workbench_owner(&server, &id, window.label()) {
+            if let Some(other) = window.app_handle().get_webview_window(&owner) {
+                other
+                    .unminimize()
+                    .and_then(|_| other.show())
+                    .and_then(|_| other.set_focus())
+                    .map_err(|error| ApiError::Internal(error.to_string()))?;
+            }
+        }
+    }
+    // The RPC may finish after the window's teardown already drained its leases.
+    if matches!(attached, Some(WorkbenchAttached::Ready { .. }))
+        && !state.windows.has_window(window.label())
+    {
+        if let Err(error) = state
+            .router
+            .workbench_detach(window.label(), &server, id, attachment_id)
+            .await
+        {
+            tracing::warn!(%server, %error, "late workbench attach detach failed");
+        }
+    }
+    Ok(attached)
+}
+
+#[tauri::command]
+pub async fn workbench_detach(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    server: String,
+    id: String,
+    attachment_id: String,
+) -> Result<(), ApiError> {
+    state
+        .router
+        .workbench_detach(window.label(), &server, id, attachment_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn workbench_transfer(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    target_owner: String,
+    server: String,
+    id: String,
+    attachment_id: String,
+) -> Result<WorkbenchAttached, ApiError> {
+    if !state.windows.has_window(&target_owner) {
+        return Err(ApiError::NotFound(format!(
+            "Unknown target window `{target_owner}`"
+        )));
+    }
+    state
+        .router
+        .workbench_transfer(window.label(), &target_owner, &server, id, attachment_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn workbench_save(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    server: String,
+    id: String,
+    snapshot: String,
+) -> Result<(), ApiError> {
+    state.router.workbench_save(&server, id, snapshot).await
+}
+
+#[tauri::command]
+pub fn remote_runs_release(
+    state: tauri::State<'_, crate::app_state::AppState>,
+    window: tauri::WebviewWindow,
+    run_ids: Vec<String>,
+) -> Result<(), ApiError> {
+    state.router.remote_runs_release(window.label(), &run_ids)
 }
 
 #[tauri::command]
@@ -274,8 +394,18 @@ struct SettingsCache {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PendingStop {
     server: String,
+    workbench: String,
     run_id: String,
     kind: RemoteRunKind,
+    #[serde(default)]
+    controller_token: String,
+}
+
+#[derive(Clone, Debug)]
+struct WorkbenchLease {
+    id: String,
+    attachment_id: String,
+    controller_token: String,
 }
 
 pub(crate) struct RouterInner {
@@ -287,10 +417,12 @@ pub(crate) struct RouterInner {
     settings: AsyncMutex<SettingsCache>,
     identity: OnceCell<Arc<Identity>>,
     events: EventSink<HostEvent>,
+    leases: Mutex<HashMap<(String, String), WorkbenchLease>>,
+    transitions: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     pub(crate) remote_runs: RemoteRunService,
     pub(crate) remote_lsp: crate::remote_lsp::RemoteLspService,
     pending_stops: Mutex<HashMap<String, PendingStop>>,
-    pending_stop_running: AtomicBool,
+    pending_stop_running: Mutex<HashSet<String>>,
     remote_management: AsyncMutex<()>,
     file_reads: Mutex<HashMap<(String, String), tokio::sync::watch::Sender<bool>>>,
     file_stream_permits: tokio::sync::Semaphore,
@@ -673,10 +805,12 @@ impl WorkspaceRouter {
                 }),
                 identity: OnceCell::new(),
                 events,
+                leases: Mutex::new(HashMap::new()),
+                transitions: Mutex::new(HashMap::new()),
                 remote_runs: RemoteRunService::new(),
                 remote_lsp: crate::remote_lsp::RemoteLspService::new(),
                 pending_stops: Mutex::new(pending_stops),
-                pending_stop_running: AtomicBool::new(false),
+                pending_stop_running: Mutex::new(HashSet::new()),
                 remote_management: AsyncMutex::new(()),
                 file_reads: Mutex::new(HashMap::new()),
                 file_stream_permits: tokio::sync::Semaphore::new(MAX_FILE_STREAMS),
@@ -755,15 +889,20 @@ impl WorkspaceRouter {
             .collect()
     }
 
-    /// Queue a stop as if `server` had been unreachable when it was sent.
     #[doc(hidden)]
     pub fn queue_stop_for_test(&self, server: &str, run_id: &str) {
-        self.inner.remember_failed_stop(
-            server,
-            run_id,
-            RemoteRunKind::Session,
-            &ApiError::Remote("unreachable".into()),
+        let mut pending = self.inner.pending_stops.lock();
+        pending.insert(
+            run_id.to_owned(),
+            PendingStop {
+                server: server.to_owned(),
+                workbench: "test-workbench".into(),
+                run_id: run_id.to_owned(),
+                kind: RemoteRunKind::Session,
+                controller_token: String::new(),
+            },
         );
+        self.inner.persist_pending_stops(&pending);
     }
 
     #[doc(hidden)]
@@ -787,7 +926,13 @@ impl WorkspaceRouter {
         };
         let mut claims = slot.claims.lock();
         claims.remove(path);
-        let idle = claims.is_empty();
+        let idle = claims.is_empty()
+            && !self
+                .inner
+                .leases
+                .lock()
+                .keys()
+                .any(|(_, lease_server)| lease_server == server);
         drop(claims);
         if idle {
             slot.stop_events();
@@ -796,6 +941,325 @@ impl WorkspaceRouter {
 
     async fn call_reply(&self, server: &str, request: Request) -> Result<Reply, ApiError> {
         self.inner.call_reply(server, request).await
+    }
+
+    async fn call_run_reply(
+        &self,
+        server: &str,
+        owner: Option<&str>,
+        request: Request,
+    ) -> Result<(Reply, String, tokio::sync::OwnedMutexGuard<()>), ApiError> {
+        let guard = self.inner.transition(server).lock_owned().await;
+        let workbench = owner
+            .and_then(|owner| {
+                self.inner
+                    .leases
+                    .lock()
+                    .get(&(owner.to_owned(), server.to_owned()))
+                    .map(|lease| lease.id.clone())
+            })
+            .ok_or_else(|| {
+                ApiError::InvalidArgument(format!(
+                    "Window has no attached workbench on remote `{server}`"
+                ))
+            })?;
+        let reply = self
+            .inner
+            .call_reply_for(server, Some(&workbench), request)
+            .await?;
+        Ok((reply, workbench, guard))
+    }
+
+    pub async fn workbench_list(&self, server: &str) -> Result<Vec<WorkbenchInfo>, ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        self.inner.reconcile(server).await
+    }
+
+    pub async fn workbench_list_for_owner(
+        &self,
+        owner: &str,
+        server: &str,
+    ) -> Result<Vec<WorkbenchInfo>, ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        let mut rows = self.inner.reconcile(server).await?;
+        let leases = self.inner.leases.lock();
+        let lease = leases.get(&(owner.to_owned(), server.to_owned()));
+        for row in &mut rows {
+            row.yours &= lease.is_some_and(|lease| lease.id == row.id);
+        }
+        Ok(rows)
+    }
+
+    pub async fn workbench_close(&self, server: &str, id: String) -> Result<(), ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        self.call_reply(server, Request::WorkbenchClose { id: id.clone() })
+            .await?
+            .workbench_close()
+            .map_err(ApiError::from)?;
+        self.inner.clear_workbench(server, &id);
+        Ok(())
+    }
+
+    pub async fn workbench_attach(
+        &self,
+        owner: &str,
+        server: &str,
+        id: String,
+        mode: AttachMode,
+        attachment_id: String,
+    ) -> Result<Option<WorkbenchAttached>, ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        self.inner.reconcile(server).await?;
+        if self.workbench_owner(server, &id, owner).is_some() {
+            return Ok(None);
+        }
+        let previous = self
+            .inner
+            .leases
+            .lock()
+            .get(&(owner.to_owned(), server.to_owned()))
+            .cloned();
+        if let Some(previous) = previous.as_ref().filter(|previous| previous.id != id) {
+            self.detach_locked(
+                owner,
+                server,
+                previous.id.clone(),
+                previous.attachment_id.clone(),
+            )
+            .await?;
+        }
+        let client = self.inner.client(server).await?;
+        let request = Request::WorkbenchAttach {
+            id: id.clone(),
+            mode,
+            attachment_id: attachment_id.clone(),
+            client: gethostname::gethostname().to_string_lossy().into_owned(),
+        };
+        let attached = match client.call(&request).await {
+            Ok(reply) => reply.workbench_attach().map_err(ApiError::from),
+            Err(error)
+                if !client.is_closed()
+                    && matches!(error, RemoteError::Timeout(_) | RemoteError::Transport(_)) =>
+            {
+                // A lost response says nothing about admission. Recover only
+                // this exact operation on this connection; never replay it.
+                self.inner
+                    .recover_workbench(server, &client, id.clone(), attachment_id)
+                    .await
+                    .and_then(|result| {
+                        result.ok_or_else(|| {
+                            ApiError::Remote(format!("{server}: attach result no longer available"))
+                        })
+                    })
+            }
+            Err(error) => {
+                if client.is_closed() || matches!(error, RemoteError::Connection(_)) {
+                    self.inner.evict(server, &client).await;
+                }
+                Err(remote_error(server, error))
+            }
+        };
+        if let Ok(WorkbenchAttached::Ready {
+            controller_token,
+            attachment_id,
+            ..
+        }) = &attached
+        {
+            self.inner.leases.lock().insert(
+                (owner.to_owned(), server.to_owned()),
+                WorkbenchLease {
+                    id: id.clone(),
+                    attachment_id: attachment_id.clone(),
+                    controller_token: controller_token.clone(),
+                },
+            );
+            self.inner.drain_pending_stops();
+            let slot = self.inner.slot(server);
+            self.inner.ensure_events(server, &slot);
+        } else if matches!(
+            &attached,
+            Ok(WorkbenchAttached::Busy { .. } | WorkbenchAttached::Revoked { .. })
+        ) {
+            if let Some(previous) = previous.filter(|lease| lease.id == id) {
+                self.inner
+                    .clear_lease(owner, server, &id, &previous.attachment_id);
+            }
+        }
+        if let Err(error) = self.inner.reconcile(server).await {
+            tracing::warn!(%server, %error, "workbench reconciliation after attach failed");
+        }
+        attached.map(Some)
+    }
+
+    pub fn workbench_owned(
+        &self,
+        owner: &str,
+        server: &str,
+        id: &str,
+        attachment_id: &str,
+    ) -> bool {
+        self.inner
+            .leases
+            .lock()
+            .get(&(owner.to_owned(), server.to_owned()))
+            .is_some_and(|lease| lease.id == id && lease.attachment_id == attachment_id)
+    }
+    fn workbench_owner(&self, server: &str, id: &str, owner: &str) -> Option<String> {
+        self.inner
+            .leases
+            .lock()
+            .iter()
+            .find(|((window, remote), lease)| {
+                window.as_str() != owner && remote.as_str() == server && lease.id == id
+            })
+            .map(|((window, _), _)| window.clone())
+    }
+
+    pub async fn workbench_detach(
+        &self,
+        owner: &str,
+        server: &str,
+        id: String,
+        attachment_id: String,
+    ) -> Result<(), ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        self.detach_locked(owner, server, id, attachment_id).await
+    }
+
+    async fn detach_locked(
+        &self,
+        owner: &str,
+        server: &str,
+        id: String,
+        attachment_id: String,
+    ) -> Result<(), ApiError> {
+        if !self
+            .inner
+            .leases
+            .lock()
+            .get(&(owner.to_owned(), server.to_owned()))
+            .is_some_and(|lease| lease.id == id && lease.attachment_id == attachment_id)
+        {
+            return Ok(());
+        }
+        self.call_reply(
+            server,
+            Request::WorkbenchDetach {
+                id: id.clone(),
+                attachment_id: attachment_id.clone(),
+            },
+        )
+        .await?
+        .workbench_detach()
+        .map_err(ApiError::from)?;
+        self.inner.clear_lease(owner, server, &id, &attachment_id);
+        Ok(())
+    }
+
+    pub async fn workbench_transfer(
+        &self,
+        source_owner: &str,
+        target_owner: &str,
+        server: &str,
+        id: String,
+        attachment_id: String,
+    ) -> Result<WorkbenchAttached, ApiError> {
+        let transition = self.inner.transition(server);
+        let _guard = transition.lock().await;
+        self.inner.reconcile(server).await?;
+        let source = (source_owner.to_owned(), server.to_owned());
+        let target = (target_owner.to_owned(), server.to_owned());
+        let lease = {
+            let leases = self.inner.leases.lock();
+            if leases.contains_key(&target) {
+                return Err(ApiError::InvalidArgument(
+                    "Target window already owns a workbench on this remote".into(),
+                ));
+            }
+            leases
+                .get(&source)
+                .filter(|lease| lease.id == id && lease.attachment_id == attachment_id)
+                .cloned()
+                .ok_or_else(|| not_controller(&id))?
+        };
+        let client = self.inner.client(server).await?;
+        let attached = self
+            .inner
+            .recover_workbench(server, &client, id.clone(), attachment_id.clone())
+            .await?
+            .ok_or_else(|| not_controller(&id))?;
+        if !matches!(&attached, WorkbenchAttached::Ready { controller_token, attachment_id: current, .. }
+            if controller_token == &lease.controller_token && current == &attachment_id)
+        {
+            return Err(not_controller(&id));
+        }
+        self.inner.remote_runs.transfer_workbench(
+            &self.inner.host,
+            source_owner,
+            target_owner,
+            server,
+            &id,
+        )?;
+        let mut leases = self.inner.leases.lock();
+        leases.remove(&source);
+        leases.insert(target, lease);
+        Ok(attached)
+    }
+
+    /// Coordinator calls only after commit or rollback has reached its terminal
+    /// owner, so observers cannot discard source state needed for rollback.
+    pub fn notify_workbenches_changed(&self, server: &str) {
+        if let Err(error) = self.emit(HostEvent::RemoteWorkbenchesChanged {
+            server: server.to_owned(),
+        }) {
+            tracing::warn!(%server, %error, "local workbench transfer notification failed");
+        }
+    }
+
+    pub async fn workbench_save(
+        &self,
+        server: &str,
+        id: String,
+        snapshot: String,
+    ) -> Result<(), ApiError> {
+        self.call_reply(server, Request::WorkbenchSave { id, snapshot })
+            .await?
+            .workbench_save()
+            .map_err(ApiError::from)
+    }
+
+    pub fn release_workbench_owner(&self, owner: &str) {
+        let leases: Vec<_> = self
+            .inner
+            .leases
+            .lock()
+            .iter()
+            .filter(|((window, _), _)| window == owner)
+            .map(|((_, server), lease)| (server.clone(), lease.clone()))
+            .collect();
+        for (server, lease) in leases {
+            let router = self.clone();
+            let owner = owner.to_owned();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = router
+                    .workbench_detach(&owner, &server, lease.id, lease.attachment_id)
+                    .await
+                {
+                    tracing::warn!(%server, %error, "workbench detach on window close failed");
+                }
+            });
+        }
+    }
+
+    pub fn remote_runs_release(&self, owner: &str, run_ids: &[String]) -> Result<(), ApiError> {
+        self.inner
+            .remote_runs
+            .release(&self.inner.host, owner, run_ids)
     }
 
     /// A remote mutation runs inside the daemon's `Host`, whose `FileMoved`
@@ -811,26 +1275,23 @@ impl WorkspaceRouter {
         run_id: String,
         local_kind: RemoteRunKind,
     ) -> Result<(), ApiError> {
-        let Some(info) = self.inner.remote_runs.info(&run_id) else {
+        let Some(info) = self.inner.remote_runs.begin_stop(&run_id) else {
             return match local_kind {
                 RemoteRunKind::Session => self.inner.host.session_stop(run_id).await,
                 RemoteRunKind::Task => self.inner.host.tasks_stop(run_id).await,
             };
         };
-        info.stopping
-            .store(true, std::sync::atomic::Ordering::Release);
-        let (remote_result, local_result) =
-            tokio::join!(self.inner.stop_backend(&run_id, info.kind), async {
+        let (remote_result, local_result) = tokio::join!(
+            self.inner
+                .stop_backend_on(&info.server, &info.workbench, &run_id, info.kind),
+            async {
                 match info.kind {
                     RemoteRunKind::Session => self.inner.host.session_stop(run_id.clone()).await,
                     RemoteRunKind::Task => self.inner.host.tasks_stop(run_id.clone()).await,
                 }
-            });
+            }
+        );
         self.inner.remote_runs.cancel(&run_id, info.generation);
-        if let Err(error) = &remote_result {
-            self.inner
-                .remember_failed_stop(&info.server, &run_id, info.kind, error);
-        }
         remote_result.and(local_result)
     }
 
@@ -892,9 +1353,84 @@ impl RouterInner {
         )
     }
 
+    fn transition(&self, server: &str) -> Arc<AsyncMutex<()>> {
+        Arc::clone(
+            self.transitions
+                .lock()
+                .entry(server.to_owned())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(()))),
+        )
+    }
+
+    /// Caller holds this server's transition gate. Failed observations never
+    /// revoke local authority; only a successful list can prove it is gone.
+    async fn reconcile(&self, server: &str) -> Result<Vec<WorkbenchInfo>, ApiError> {
+        let rows = self
+            .call_reply(server, Request::WorkbenchList {})
+            .await?
+            .workbench_list()
+            .map_err(ApiError::from)?;
+        let mut leases = self.leases.lock();
+        leases.retain(|(_, remote), lease| {
+            remote != server || rows.iter().any(|row| row.id == lease.id && row.yours)
+        });
+        let mut pending = self.pending_stops.lock();
+        let before = pending.len();
+        pending.retain(|_, stop| {
+            stop.server != server
+                || rows.iter().any(|row| {
+                    row.id == stop.workbench
+                        && ((!row.connected && !row.yours) || stop_is_current(&leases, stop))
+                })
+        });
+        if pending.len() != before {
+            self.persist_pending_stops(&pending);
+        }
+        drop(pending);
+        self.stop_events_without_leases(server, leases);
+        Ok(rows)
+    }
+
     async fn call_reply(&self, server: &str, request: Request) -> Result<Reply, ApiError> {
+        self.call_reply_for(server, None, request).await
+    }
+
+    async fn recover_workbench(
+        &self,
+        server: &str,
+        client: &Arc<RemoteClient>,
+        id: String,
+        attachment_id: String,
+    ) -> Result<Option<WorkbenchAttached>, ApiError> {
+        match client
+            .call(&Request::WorkbenchRecover { id, attachment_id })
+            .await
+        {
+            Ok(reply) => reply.workbench_recover().map_err(ApiError::from),
+            Err(error) => {
+                if !matches!(&error, RemoteError::Wire(_)) {
+                    // Failed recovery leaves admission unknown. Retiring this
+                    // exact connection prevents untracked live control.
+                    client.close();
+                    self.evict(server, client).await;
+                }
+                Err(remote_error(server, error))
+            }
+        }
+    }
+
+    async fn call_reply_for(
+        &self,
+        server: &str,
+        workbench: Option<&str>,
+        request: Request,
+    ) -> Result<Reply, ApiError> {
         let client = self.client(server).await?;
-        match client.call(&request).await {
+        let result = match workbench {
+            Some(id) => client.call_workbench(id, &request).await,
+            None => client.call(&request).await,
+        };
+        match result {
             Ok(value) => return Ok(value),
             Err(error) if matches!(&error, RemoteError::Connection(_)) || client.is_closed() => {
                 self.evict(server, &client).await
@@ -903,33 +1439,122 @@ impl RouterInner {
         }
 
         let client = self.client(server).await?;
-        let result = client.call(&request).await;
+        let result = match workbench {
+            Some(id) => client.call_workbench(id, &request).await,
+            None => client.call(&request).await,
+        };
         if matches!(&result, Err(RemoteError::Connection(_))) || client.is_closed() {
             self.evict(server, &client).await;
         }
         result.map_err(|error| remote_error(server, error))
     }
 
-    pub(crate) async fn stop_backend(
+    fn clear_workbench(&self, server: &str, id: &str) {
+        let mut leases = self.leases.lock();
+        leases.retain(|(_, lease_server), lease| lease_server != server || lease.id != id);
+        self.drop_unleased_stops(server, id, &leases);
+        self.stop_events_without_leases(server, leases);
+    }
+
+    fn clear_lease(&self, owner: &str, server: &str, id: &str, attachment_id: &str) {
+        let mut leases = self.leases.lock();
+        let key = (owner.to_owned(), server.to_owned());
+        if leases
+            .get(&key)
+            .is_some_and(|current| current.id == id && current.attachment_id == attachment_id)
+        {
+            leases.remove(&key);
+            self.drop_unleased_stops(server, id, &leases);
+        }
+        self.stop_events_without_leases(server, leases);
+    }
+
+    fn drop_unleased_stops(
         &self,
+        server: &str,
+        id: &str,
+        leases: &HashMap<(String, String), WorkbenchLease>,
+    ) {
+        if is_leased(leases, server, id) {
+            return;
+        }
+        let mut pending = self.pending_stops.lock();
+        let before = pending.len();
+        // Runs remain listed in the workbench after this desktop releases its lease.
+        pending.retain(|_, stop| stop.server != server || stop.workbench != id);
+        if pending.len() != before {
+            self.persist_pending_stops(&pending);
+        }
+    }
+
+    fn stop_events_without_leases(
+        &self,
+        server: &str,
+        leases: parking_lot::MutexGuard<'_, HashMap<(String, String), WorkbenchLease>>,
+    ) {
+        let idle = !leases
+            .keys()
+            .any(|(_, lease_server)| lease_server == server);
+        drop(leases);
+        if idle {
+            if let Some(slot) = self.remotes.lock().get(server).cloned() {
+                if slot.claims.lock().is_empty() {
+                    slot.stop_events();
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn stop_backend(
+        self: &Arc<Self>,
         run_id: &str,
         kind: RemoteRunKind,
     ) -> Result<(), ApiError> {
-        let server = self
+        let (server, workbench) = self
             .remote_runs
-            .server_for(run_id)
+            .target_for(run_id)
             .ok_or_else(|| ApiError::NotFound(format!("Unknown remote run `{run_id}`")))?;
-        self.stop_backend_on(&server, run_id, kind).await
+        self.stop_backend_on(&server, &workbench, run_id, kind)
+            .await
     }
 
     async fn stop_backend_on(
+        self: &Arc<Self>,
+        server: &str,
+        workbench: &str,
+        run_id: &str,
+        kind: RemoteRunKind,
+    ) -> Result<(), ApiError> {
+        let transition = self.transition(server);
+        let _guard = transition.lock().await;
+        let result = async {
+            self.reconcile(server).await?;
+            if !is_leased(&self.leases.lock(), server, workbench) {
+                return Err(not_controller(workbench));
+            }
+            self.stop_backend_locked(server, workbench, run_id, kind)
+                .await
+        }
+        .await;
+        if let Err(error) = &result {
+            // Capture authority before releasing the transition gate. A later
+            // takeover must not relabel this old stop with its new token.
+            self.remember_failed_stop(server, workbench, run_id, kind, error);
+        }
+        result
+    }
+
+    async fn stop_backend_locked(
         &self,
         server: &str,
+        workbench: &str,
         run_id: &str,
         kind: RemoteRunKind,
     ) -> Result<(), ApiError> {
         let request = kind.stop_request(run_id.to_owned());
-        let reply = self.call_reply(server, request).await?;
+        let reply = self
+            .call_reply_for(server, Some(workbench), request)
+            .await?;
         match kind {
             RemoteRunKind::Session => reply.session_stop(),
             RemoteRunKind::Task => reply.tasks_stop(),
@@ -941,6 +1566,7 @@ impl RouterInner {
     pub(crate) fn remember_failed_stop(
         self: &Arc<Self>,
         server: &str,
+        workbench: &str,
         run_id: &str,
         kind: RemoteRunKind,
         error: &ApiError,
@@ -949,16 +1575,25 @@ impl RouterInner {
             // Neither the run nor the server exists any more: nothing to kill.
             return;
         }
+        let leases = self.leases.lock();
+        let Some(lease) = leases.iter().find_map(|((_, remote), lease)| {
+            (remote == server && lease.id == workbench).then_some(lease)
+        }) else {
+            return;
+        };
         let mut pending = self.pending_stops.lock();
         pending.insert(
             run_id.to_owned(),
             PendingStop {
+                workbench: workbench.to_owned(),
                 server: server.to_owned(),
                 run_id: run_id.to_owned(),
                 kind,
+                controller_token: lease.controller_token.clone(),
             },
         );
         self.persist_pending_stops(&pending);
+        drop(leases);
         drop(pending);
         self.drain_pending_stops();
     }
@@ -967,10 +1602,9 @@ impl RouterInner {
     /// was in flight: the old name failing says nothing about the run.
     fn forget_pending_stop(&self, stop: &PendingStop) {
         let mut pending = self.pending_stops.lock();
-        if pending
-            .get(&stop.run_id)
-            .is_some_and(|current| current.server == stop.server)
-        {
+        if pending.get(&stop.run_id).is_some_and(|current| {
+            current.server == stop.server && current.controller_token == stop.controller_token
+        }) {
             pending.remove(&stop.run_id);
             self.persist_pending_stops(&pending);
         }
@@ -992,17 +1626,26 @@ impl RouterInner {
     }
 
     fn drain_pending_stops(self: &Arc<Self>) {
-        if self.pending_stops.lock().is_empty() {
-            return;
+        let servers: HashSet<String> = {
+            let leases = self.leases.lock();
+            self.pending_stops
+                .lock()
+                .values()
+                .filter(|stop| stop_is_current(&leases, stop))
+                .map(|stop| stop.server.clone())
+                .collect()
+        };
+        let mut running = self.pending_stop_running.lock();
+        for server in servers {
+            if !running.insert(server.clone()) {
+                continue;
+            }
+            let router = Arc::downgrade(self);
+            // Tauri's runtime: the first drain runs from setup, outside tokio.
+            tauri::async_runtime::spawn(async move {
+                retry_pending_stops(router, server).await;
+            });
         }
-        if self.pending_stop_running.swap(true, AtomicOrdering::AcqRel) {
-            return;
-        }
-        let router = Arc::downgrade(self);
-        // Tauri's runtime: the first drain runs from setup, outside tokio.
-        tauri::async_runtime::spawn(async move {
-            retry_pending_stops(router).await;
-        });
     }
 
     pub(crate) async fn client(&self, server: &str) -> Result<Arc<RemoteClient>, ApiError> {
@@ -1375,9 +2018,10 @@ macro_rules! define_router_operation {
                     owner_id.as_deref(),
                 )?;
                 self.inner.remember_claim(server, path, None, false);
-                let result = self
-                    .call_reply(
+                let (reply, workbench, _guard) = self
+                    .call_run_reply(
                         server,
+                        owner_id.as_deref(),
                         Request::SessionStart {
                             run_id: $run_id.clone(),
                             folder_path: path.to_owned(),
@@ -1387,14 +2031,14 @@ macro_rules! define_router_operation {
                             rows: $rows,
                         },
                     )
-                    .await?
-                    .$method()
-                    .map_err(ApiError::from)?;
+                    .await?;
+                let result = reply.$method().map_err(ApiError::from)?;
                 self.inner.remote_runs.adopt(
                     Arc::downgrade(&self.inner),
                     &self.inner.host,
                     $run_id.clone(),
                     server.to_owned(),
+                    workbench,
                     RemoteRunKind::Session,
                     output,
                     events,
@@ -1449,9 +2093,10 @@ macro_rules! define_router_operation {
                     owner_id.as_deref(),
                 )?;
                 self.inner.remember_claim(server, path, None, false);
-                let result = self
-                    .call_reply(
+                let (reply, workbench, _guard) = self
+                    .call_run_reply(
                         server,
+                        owner_id.as_deref(),
                         Request::TasksStart {
                             run_id: $run_id.clone(),
                             folder_path: path.to_owned(),
@@ -1462,14 +2107,14 @@ macro_rules! define_router_operation {
                             attach_only: $attach_only,
                         },
                     )
-                    .await?
-                    .$method()
-                    .map_err(ApiError::from)?;
+                    .await?;
+                let result = reply.$method().map_err(ApiError::from)?;
                 self.inner.remote_runs.adopt(
                     Arc::downgrade(&self.inner),
                     &self.inner.host,
                     $run_id.clone(),
                     server.to_owned(),
+                    workbench,
                     RemoteRunKind::Task,
                     output,
                     events,
@@ -1561,9 +2206,13 @@ macro_rules! define_router_operation {
         #[route(folder_path)]
         FolderRelease => $method:ident($folder_path:ident: $folder_path_type:ty $(,)?) -> $return_type:ty;
     ) => {};
-    // Daemon-owned web workbench registry: handled only by server dispatch.
-    (#[route(none)] WorkbenchList => $($rest:tt)*) => {};
-    (#[route(none)] WorkbenchClose => $($rest:tt)*) => {};
+    // Workbench operations use required server names and a window-scoped lease.
+    (#[route(server)] WorkbenchList => $($rest:tt)*) => {};
+    (#[route(server)] WorkbenchClose => $($rest:tt)*) => {};
+    (#[route(server)] WorkbenchAttach => $($rest:tt)*) => {};
+    (#[route(server)] WorkbenchRecover => $($rest:tt)*) => {};
+    (#[route(server)] WorkbenchDetach => $($rest:tt)*) => {};
+    (#[route(server)] WorkbenchSave => $($rest:tt)*) => {};
     (
         #[route(none)]
         FolderPathRoot => $method:ident($path:ident: $path_type:ty $(,)?) -> $return_type:ty;
@@ -2084,41 +2733,60 @@ fn load_pending_stops(host: &Host) -> HashMap<String, PendingStop> {
         .collect()
 }
 
-/// Retry unacknowledged stops until every one lands. Backoff is shared with
-/// reconnects because an unreachable daemon is the usual reason one is here.
-async fn retry_pending_stops(router: Weak<RouterInner>) {
+/// Each server retries sequentially with its own backoff; an unavailable
+/// daemon cannot delay stops headed to another server.
+async fn retry_pending_stops(router: Weak<RouterInner>, server: String) {
     let mut delay = INITIAL_RECONNECT_DELAY;
     loop {
         let Some(inner) = router.upgrade() else {
             return;
         };
-        let entries: Vec<PendingStop> = inner.pending_stops.lock().values().cloned().collect();
-        if entries.is_empty() {
+        let entries: Vec<PendingStop> = {
+            let leases = inner.leases.lock();
             inner
-                .pending_stop_running
-                .store(false, AtomicOrdering::Release);
-            // An insert may have raced the exit above; it owns the flag now.
+                .pending_stops
+                .lock()
+                .values()
+                .filter(|stop| stop.server == server && stop_is_current(&leases, stop))
+                .cloned()
+                .collect()
+        };
+        if entries.is_empty() {
+            inner.pending_stop_running.lock().remove(&server);
             inner.drain_pending_stops();
             return;
         }
+        let mut failed = false;
         for entry in entries {
+            let transition = inner.transition(&server);
+            let _guard = transition.lock().await;
+            if let Err(error) = inner.reconcile(&server).await {
+                failed = true;
+                tracing::warn!(%server, %error, "pending stop reconciliation failed");
+                continue;
+            }
+            if !stop_is_current(&inner.leases.lock(), &entry) {
+                inner.forget_pending_stop(&entry);
+                continue;
+            }
             match inner
-                .stop_backend_on(&entry.server, &entry.run_id, entry.kind)
+                .stop_backend_locked(&server, &entry.workbench, &entry.run_id, entry.kind)
                 .await
             {
-                // A daemon that no longer knows the run has nothing left to kill.
                 Ok(()) | Err(ApiError::NotFound(_)) => inner.forget_pending_stop(&entry),
-                Err(error) => tracing::warn!(
-                    server = entry.server,
-                    run_id = entry.run_id,
-                    %error,
-                    "retrying remote stop"
-                ),
+                Err(error) => {
+                    failed = true;
+                    tracing::warn!(%server, run_id = entry.run_id, %error, "retrying remote stop");
+                }
             }
         }
         drop(inner);
-        sleep(delay).await;
-        delay = (delay * 2).min(MAX_RECONNECT_DELAY);
+        if failed {
+            sleep(delay).await;
+            delay = (delay * 2).min(MAX_RECONNECT_DELAY);
+        } else {
+            delay = INITIAL_RECONNECT_DELAY;
+        }
     }
 }
 
@@ -2148,6 +2816,13 @@ async fn run_events(router: Weak<RouterInner>, slot: Weak<RemoteSlot>, server: S
             continue;
         };
         restore_claims(&server, &slot_now, &client).await;
+        {
+            let transition = router_now.transition(&server);
+            let _guard = transition.lock().await;
+            if let Err(error) = router_now.reconcile(&server).await {
+                tracing::warn!(%server, %error, "workbench reconciliation after reconnect failed");
+            }
+        }
         reconnect_delay = INITIAL_RECONNECT_DELAY;
         drop(router_now);
         drop(slot_now);
@@ -2158,6 +2833,13 @@ async fn run_events(router: Weak<RouterInner>, slot: Weak<RemoteSlot>, server: S
                     Ok(HostEventFrame(event)) => {
                         if let Some(event) = remote_host_event(&server, event) {
                             let Some(router_now) = router.upgrade() else { return };
+                            if matches!(&event, HostEvent::RemoteWorkbenchesChanged { .. }) {
+                                let transition = router_now.transition(&server);
+                                let _guard = transition.lock().await;
+                                if let Err(error) = router_now.reconcile(&server).await {
+                                    tracing::warn!(%server, %error, "workbench change reconciliation failed");
+                                }
+                            }
                             if let Err(error) = (router_now.events)(event) {
                                 tracing::warn!(%server, %error, "remote host event delivery failed");
                             }
@@ -2252,6 +2934,9 @@ fn remote_host_event(server: &str, event: HostEventWire) -> Option<HostEvent> {
         HostEventWire::IssuesChanged(folder) => {
             HostEvent::IssuesChanged(Target::remote_uri(server, &folder))
         }
+        HostEventWire::WorkbenchesChanged(()) => HostEvent::RemoteWorkbenchesChanged {
+            server: server.into(),
+        },
         HostEventWire::RecentFoldersChanged(_) => return None,
     })
 }
@@ -2372,10 +3057,35 @@ pub fn reject_remote(command: &str, path: &str) -> Result<(), ApiError> {
     }
 }
 
+fn is_leased(
+    leases: &HashMap<(String, String), WorkbenchLease>,
+    server: &str,
+    workbench: &str,
+) -> bool {
+    leases
+        .iter()
+        .any(|((_, lease_server), lease)| lease_server == server && lease.id == workbench)
+}
+
+fn stop_is_current(leases: &HashMap<(String, String), WorkbenchLease>, stop: &PendingStop) -> bool {
+    leases.iter().any(|((_, server), lease)| {
+        server == &stop.server
+            && lease.id == stop.workbench
+            && lease.controller_token == stop.controller_token
+    })
+}
+
+fn not_controller(workbench: &str) -> ApiError {
+    ApiError::from(sworm_protocol::rpc::WireError::NotController {
+        workbench: workbench.to_owned(),
+    })
+}
+
 pub(crate) fn remote_error(server: &str, error: RemoteError) -> ApiError {
     match error {
         RemoteError::Wire(error) => ApiError::from(error),
         RemoteError::Connection(message)
+        | RemoteError::Timeout(message)
         | RemoteError::Transport(message)
         | RemoteError::Identity(message) => ApiError::Remote(format!("{server}: {message}")),
     }

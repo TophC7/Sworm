@@ -13,6 +13,7 @@ import {
   type Workbench
 } from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
+import { flushActiveGroups } from './groups.svelte'
 
 const WORKBENCH_DEBOUNCE_MS = 250
 
@@ -241,79 +242,89 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
 // Debounced persistence
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined
-let pending: (() => PersistedWorkbenchV4) | null = null
-// Session/task status ticks commit the workbench without changing the
-// persisted shape; skip the SQLite write when the blob is byte-identical.
-let lastWrittenJson: string | null = null
-// Web documents lose control on takeover/Close; nothing may write afterwards.
-let stopped = false
-// The one submitted `app_state_put`. The server does not order concurrent
-// requests, so overlapping writes could commit an older snapshot last.
-let inFlight: Promise<void> | null = null
+export interface WorkbenchWriter {
+  schedule(produce: () => PersistedWorkbenchV4): void
+  flush(): Promise<void>
+  stop(): void
+}
+
+/** One ordered, deduplicated writer per persistence key. */
+export function createWorkbenchWriter(save: (json: string) => Promise<void>): WorkbenchWriter {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let pending: (() => PersistedWorkbenchV4) | null = null
+  let lastWrittenJson: string | null = null
+  let stopped = false
+  let inFlight: Promise<void> | null = null
+
+  async function flush(): Promise<void> {
+    clearTimeout(timer)
+    timer = undefined
+    for (;;) {
+      if (stopped) throw new Error('Workbench is no longer controlled by this window')
+      if (inFlight) {
+        await inFlight
+        continue
+      }
+      const produce = pending
+      if (!produce) return
+      pending = null
+      const json = JSON.stringify(produce())
+      if (json === lastWrittenJson) continue
+      const write = save(json).then(
+        () => {
+          lastWrittenJson = json
+        },
+        (error) => {
+          if (pending === null && !stopped) pending = produce
+          throw error
+        }
+      )
+      inFlight = write
+      try {
+        await write
+      } finally {
+        if (inFlight === write) inFlight = null
+      }
+    }
+  }
+
+  return {
+    schedule(produce: () => PersistedWorkbenchV4) {
+      if (stopped) return
+      pending = produce
+      clearTimeout(timer)
+      timer = setTimeout(
+        () => void flush().catch((error) => console.warn('Workbench persist failed:', error)),
+        WORKBENCH_DEBOUNCE_MS
+      )
+    },
+    flush,
+    stop() {
+      stopped = true
+      pending = null
+      clearTimeout(timer)
+      timer = undefined
+    }
+  }
+}
+
+const localWriter = createWorkbenchWriter((json) => backend.app.statePut(`workbench:${localWorkbenchId}`, json))
+let localWorkbenchId = 'main'
 
 export function schedulePersistWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4): void {
-  if (stopped) return
-  pending = produce
-  clearTimeout(timer)
-  timer = setTimeout(() => {
-    // `flushWorkbench` requeues on failure, so the next scheduled
-    // mutation retries the write.
-    void flushWorkbench(workbenchId).catch((error) => console.warn('Workbench persist failed:', error))
-  }, WORKBENCH_DEBOUNCE_MS)
+  localWorkbenchId = workbenchId
+  localWriter.schedule(produce)
 }
 
-/**
- * Write pending mutations now (managed reload, app exit, page hide). Waits
- * for any in-flight write and drains through the latest producer, so callers
- * observe everything scheduled before they resolve. Rethrows on failure so
- * callers can refuse to proceed; the failed producer is requeued unless a
- * newer mutation was scheduled meanwhile, and is not retried until the next
- * mutation or explicit flush.
- */
 export async function flushWorkbench(workbenchId: string): Promise<void> {
-  clearTimeout(timer)
-  timer = undefined
-  for (;;) {
-    if (stopped) throw new Error('Workbench is no longer controlled by this page')
-    if (inFlight) {
-      await inFlight
-      continue
-    }
-    const produce = pending
-    if (!produce) return
-    pending = null
-    const json = JSON.stringify(produce())
-    if (json === lastWrittenJson) continue
-    const write = writeWorkbench(workbenchId, produce, json)
-    inFlight = write
-    try {
-      await write
-    } finally {
-      if (inFlight === write) inFlight = null
-    }
-  }
+  localWorkbenchId = workbenchId
+  await localWriter.flush()
+  await flushActiveGroups()
 }
 
-async function writeWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4, json: string): Promise<void> {
-  try {
-    await backend.app.statePut(`workbench:${workbenchId}`, json)
-    lastWrittenJson = json
-  } catch (error) {
-    if (pending === null && !stopped) pending = produce
-    throw error
-  }
-}
-
-/**
- * Permanently suspend this document's persistence (web takeover/Close). No
- * reset: a new document gets a fresh module instance. Desktop never calls it.
- */
+/** Permanently suspend this document's persistence after web takeover/Close. */
 export function stopWorkbenchPersistence(): void {
-  stopped = true
-  pending = null
-  clearTimeout(timer)
-  timer = undefined
+  localWriter.stop()
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +332,7 @@ export function stopWorkbenchPersistence(): void {
 // ---------------------------------------------------------------------------
 
 // Pre-release: any other version is treated as absent, no migration.
-function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV4 {
+export function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV4 {
   if (!value || typeof value !== 'object') return false
   const obj = value as Record<string, unknown>
   return obj.version === 4 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'

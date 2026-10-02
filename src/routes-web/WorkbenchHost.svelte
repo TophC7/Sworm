@@ -9,7 +9,10 @@
   import { backend } from '$lib/api/backend'
   import { setWorkbenchId } from '$lib/features/workbench/state.svelte'
   import { flushWorkbench, stopWorkbenchPersistence } from '$lib/features/workbench/persistence'
-  import { hasAnyDirtyTextSurfaces } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import {
+    getDirtyTextSurfaceCount,
+    hasAnyDirtyTextSurfaces
+  } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { registerHostTransport } from '$lib/api/transport'
@@ -25,8 +28,12 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { logClientError } from '$lib/utils/client-error'
+  import { consumeTakeover, takeOverWorkbench } from '$lib/features/home/workbenchLink'
+  import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
+  import { confirmAsync } from '$lib/features/confirm/service.svelte'
 
-  type Surface = 'connecting' | 'workbench' | 'busy' | 'revoked' | 'closed' | 'error'
+  // Busy (never controlled) and revoked (lost control) are one surface: open elsewhere, offer Take Over.
+  type Surface = 'connecting' | 'workbench' | 'elsewhere' | 'closed' | 'error'
 
   const props: { workbenchId: string } = $props()
   // Workbench identity is fixed for the document; capture it once so the
@@ -37,17 +44,19 @@
   let connectionState = $state<WebConnectionState>('connecting')
   let errorMessage = $state<string | null>(null)
   let actions = $state<HTMLDivElement>()
-  let tornDown = $state(false)
+  let tornDown = false
   let disposed = false
   // Set only after the Close Workbench confirmation, immediately before the request.
   let closeRequested = false
-  // This document is navigating away on purpose (own close or bfcache reload); skip the leave prompt.
+  let takeoverPending = false
+  // This document is navigating away on purpose after confirmation (or a bfcache reload); skip the leave prompt.
   let leaving = false
 
   const recovery = createWebRecovery(workbenchId)
   installPlatform(
     createWebPlatform(workbenchId, {
       closeCurrent,
+      takeOver: navigateTakeover,
       // Resolve lazily so takeover's replacement adapter serves media reads.
       readFileBytes: (request) => transport.readFileBytes(request)
     })
@@ -55,7 +64,7 @@
   // Adapters report state synchronously during construction; the attempt number
   // fences callbacks from a disposed busy adapter after Take Over.
   let attempt = 0
-  let transport = connect(false)
+  let transport = connect(consumeTakeover(workbenchId))
   setWorkbenchId(workbenchId)
 
   function connect(takeover: boolean): WebHostTransport {
@@ -125,7 +134,7 @@
     if (surface === 'workbench') teardown()
     connectionState = state
     if (state !== 'error') {
-      surface = state
+      surface = state === 'closed' ? 'closed' : 'elsewhere'
       return
     }
     surface = 'error'
@@ -167,7 +176,35 @@
     if (closeRequested) finishClose()
   }
 
-  function takeOver(): void {
+  async function navigateTakeover(id: string): Promise<void> {
+    if (leaving || disposed || takeoverPending) return
+    takeoverPending = true
+    try {
+      const count = getDirtyTextSurfaceCount()
+      if (count > 0) {
+        const noun = count === 1 ? 'file' : 'files'
+        const proceed = await confirmAsync({
+          title: 'Unsaved changes',
+          message: `You have ${count} unsaved ${noun}. Take over and lose changes?`,
+          confirmLabel: 'Take Over',
+          cancelLabel: 'Keep editing'
+        })
+        if (!proceed) return
+      }
+      if (leaving || disposed) return
+      // Native beforeunload cannot cancel after the intent is stored: the explicit prompt owns consent.
+      takeOverWorkbench(id, leave, id === workbenchId)
+    } finally {
+      takeoverPending = false
+    }
+  }
+
+  async function takeOver(): Promise<void> {
+    // A torn-down document cannot control again; hand the takeover to a fresh one.
+    if (tornDown) {
+      await navigateTakeover(workbenchId)
+      return
+    }
     transport.dispose()
     surface = 'connecting'
     connectionState = 'connecting'
@@ -178,8 +215,7 @@
     {
       connecting: '',
       workbench: '',
-      busy: 'Open Elsewhere',
-      revoked: 'Taken Over',
+      elsewhere: 'Open Elsewhere',
       closed: 'Workbench Closed',
       error: 'Connection Failed'
     }[surface]
@@ -270,20 +306,22 @@
 {:else}
   <div class="flex h-screen flex-col items-center justify-center gap-3 bg-ground p-6 text-center">
     <h1 class="text-3xl text-bright">{heading}</h1>
-    {#if surface === 'busy'}
-      <p class="text-base text-muted">This workbench is controlled by another page.</p>
-    {:else if surface === 'revoked'}
-      <p class="text-base text-muted">Another page controls this workbench.</p>
+    {#if surface === 'elsewhere'}
+      <p class="text-base text-muted">This workbench is open in another window or app.</p>
     {:else if surface === 'error'}
       <p role="alert" class="max-w-xl text-base break-words text-danger-bright">{errorMessage}</p>
     {/if}
     <div bind:this={actions} class="mt-2 flex gap-2.5">
-      {#if surface === 'busy' && !tornDown}
+      {#if surface === 'elsewhere'}
         <Button variant="accent" onclick={takeOver}>Take Over</Button>
-      {:else if surface === 'busy' || surface === 'revoked' || surface === 'error'}
+      {:else if surface === 'error'}
         <Button onclick={() => window.location.reload()}>Reload</Button>
       {/if}
       <Button onclick={() => window.location.assign('/')}>New Workbench</Button>
     </div>
   </div>
+{/if}
+
+{#if surface !== 'workbench'}
+  <ConfirmHost />
 {/if}

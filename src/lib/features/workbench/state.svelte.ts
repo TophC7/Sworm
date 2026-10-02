@@ -31,7 +31,8 @@ import type {
   ToolTab,
   Workbench
 } from '$lib/features/workbench/model'
-import { canLockTab } from '$lib/features/workbench/model'
+import { canLockTab, tabServer } from '$lib/features/workbench/model'
+import { getGroupRefs, isTabInert, restoreGroups, syncGroups } from './groups.svelte'
 import {
   loadPersistedWorkbench,
   flushWorkbench,
@@ -40,14 +41,14 @@ import {
   serializeWorkbench,
   tabToPersisted
 } from '$lib/features/workbench/persistence'
-import { computeTabInsertion } from './tabInsertion'
+import { clampTabInsertionToGroup, compactGroupTabs, computeTabInsertion, reorderWithinGroup } from './tabInsertion'
 import {
   ensureTextFileSyncListeners,
   openTextFile,
   revealTextTab,
   type TextRevealTarget
 } from '$lib/features/workbench/surfaces/text/service.svelte'
-import { basename, resolveProjectFile } from '$lib/utils/paths'
+import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 export type {
   DiffSource,
@@ -166,7 +167,8 @@ function findTab(tabId: TabId): Tab | undefined {
  */
 function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist = true): void {
   const previousFolders = new Set(workbench.tabs.map((tab) => tab.folderPath))
-  const tabs = next.tabs ?? workbench.tabs
+  const tabs =
+    next.tabs && platform.capabilities.remoteHosts ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
   const nextFolders = new Set(tabs.map((tab) => tab.folderPath))
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
   workbench = { tabs: [...tabs], activeTabId }
@@ -183,18 +185,33 @@ function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist
     if (!nextFolders.has(folderPath)) void queueFolderOp(folderPath, () => releaseFolder(folderPath))
   }
   if (persist) persistWorkbench()
+  if (restored) syncGroups()
 }
 
 export function persistWorkbench(): void {
-  if (restored)
-    schedulePersistWorkbench(workbenchId, () => {
-      const tabs = workbench.tabs.filter((tab) => !stagedTabIds.has(tab.id))
-      const activeTabId = workbench.activeTabId
-      return serializeWorkbench({
-        tabs,
-        activeTabId: activeTabId != null && stagedTabIds.has(activeTabId) ? (tabs[0]?.id ?? null) : activeTabId
-      })
-    })
+  if (!restored) return
+  schedulePersistWorkbench(workbenchId, () => {
+    const tabs = workbench.tabs.filter((tab) => !stagedTabIds.has(tab.id))
+    const local = platform.capabilities.remoteHosts ? tabs.filter((tab) => !tabServer(tab)) : tabs
+    const activeTabId = workbench.activeTabId
+    const active = tabs.find((tab) => tab.id === activeTabId)
+    const activeServer = active ? tabServer(active) : null
+    const groupTabs = activeServer ? tabs.filter((tab) => tabServer(tab) === activeServer) : []
+    return {
+      ...serializeWorkbench({
+        tabs: local,
+        activeTabId: activeTabId != null && stagedTabIds.has(activeTabId) ? (local[0]?.id ?? null) : activeTabId
+      }),
+      ...(platform.capabilities.remoteHosts
+        ? {
+            groups: getGroupRefs(),
+            ...(activeServer
+              ? { activeGroup: { server: activeServer, index: groupTabs.findIndex((tab) => tab.id === activeTabId) } }
+              : {})
+          }
+        : {})
+    }
+  })
 }
 
 /**
@@ -206,12 +223,13 @@ export function persistWorkbench(): void {
  * - Other-folder tabs open after that folder's existing tabs.
  */
 function insertTab(tab: Tab): TabId {
+  if (isTabInert(tab)) throw new Error('This server workbench is not controlled by this window')
   const placement = computeTabInsertion(workbench.tabs, workbench.activeTabId, tab)
   const tabs = [...workbench.tabs]
   if ('replaceIndex' in placement) {
     tabs[placement.replaceIndex] = tab
   } else {
-    tabs.splice(placement.insertIndex, 0, tab)
+    tabs.splice(clampTabInsertionToGroup(tabs, tab, placement.insertIndex), 0, tab)
   }
   commit({ tabs, activeTabId: tab.id })
   return tab.id
@@ -298,11 +316,8 @@ export function requestFocusTab(tabId: TabId, reveal?: TextRevealTarget | null):
 export function reorderTab(fromIndex: number, toIndex: number): void {
   const tabs = workbench.tabs
   if (fromIndex < 0 || toIndex < 0 || fromIndex >= tabs.length || toIndex >= tabs.length) return
-  if (fromIndex === toIndex) return
-  const next = [...tabs]
-  const [moved] = next.splice(fromIndex, 1)
-  next.splice(toIndex, 0, moved)
-  commit({ tabs: next })
+  const next = reorderWithinGroup(tabs, fromIndex, toIndex)
+  if (next) commit({ tabs: next })
 }
 /** Stage an imported tab without persisting it before the broker commits. */
 export function stageTransferredTab(tab: Tab, targetIndex: number): void {
@@ -310,7 +325,7 @@ export function stageTransferredTab(tab: Tab, targetIndex: number): void {
   transferringTabIds.add(tab.id)
   stagedTabIds.add(tab.id)
   const tabs = [...workbench.tabs]
-  tabs.splice(Math.max(0, Math.min(targetIndex, tabs.length)), 0, tab)
+  tabs.splice(clampTabInsertionToGroup(tabs, tab, Math.max(0, Math.min(targetIndex, tabs.length))), 0, tab)
   commit({ tabs, activeTabId: tab.id }, false)
 }
 
@@ -326,6 +341,21 @@ export function removeTransferredTab(tabId: TabId, persist = true): void {
     workbench.activeTabId === tabId ? ((tabs[index] ?? tabs[index - 1])?.id ?? null) : workbench.activeTabId
   if (lastActiveByFolder.get(tab.folderPath) === tabId) lastActiveByFolder.delete(tab.folderPath)
   commit({ tabs, activeTabId }, persist)
+}
+
+/** Replace one server's block without closing its runs (controller handoff). */
+export function replaceGroupTabs(server: string, replacement: Tab[], atIndex?: number, activeIndex = 0): void {
+  const first = workbench.tabs.findIndex((tab) => tabServer(tab) === server)
+  const existing = workbench.tabs.filter((tab) => tabServer(tab) === server)
+  const tabs = workbench.tabs.filter((tab) => tabServer(tab) !== server)
+  const index = Math.max(0, Math.min(atIndex ?? (first < 0 ? tabs.length : first), tabs.length))
+  tabs.splice(index, 0, ...replacement)
+  const wasActive = existing.some((tab) => tab.id === workbench.activeTabId)
+  const activeTabId =
+    wasActive || (!workbench.activeTabId && replacement.length)
+      ? (replacement[activeIndex]?.id ?? replacement[0]?.id ?? tabs[index]?.id ?? tabs[index - 1]?.id ?? null)
+      : workbench.activeTabId
+  commit({ tabs, activeTabId })
 }
 
 export function finalizeTransferredTab(tabId: TabId): void {
@@ -377,14 +407,17 @@ export async function restoreWorkbench(workbenchId: string): Promise<void> {
     await ensureTextFileSyncListeners()
     const persisted = await loadPersistedWorkbench(workbenchId)
     if (persisted) {
-      const folders = await filterExistingFolders([...new Set(persisted.tabs.map((t) => t.folderPath))])
+      const folders = await filterExistingFolders([
+        ...new Set(persisted.tabs.filter((t) => !splitRemotePath(t.folderPath)).map((t) => t.folderPath))
+      ])
       const alive = new Set(folders)
 
       // Claims run before commit, so a redirect that lands mid-restore is parked in pendingFocusTabId and applied at commit.
       // Keep original indices for nearest-neighbour fallback after drops.
       const candidates: Array<{ tab: Tab; index: number }> = []
       for (const [index, entry] of persisted.tabs.entries()) {
-        if (alive.has(entry.folderPath)) candidates.push({ tab: persistedToTab(entry, generateTabId()), index })
+        if (alive.has(entry.folderPath) || (platform.capabilities.remoteHosts && splitRemotePath(entry.folderPath)))
+          candidates.push({ tab: persistedToTab(entry, generateTabId()), index })
       }
 
       const results = await Promise.all(
@@ -415,11 +448,22 @@ export async function restoreWorkbench(workbenchId: string): Promise<void> {
       pendingFocusTabId = null
       commit({ tabs: survivors.map((candidate) => candidate.tab), activeTabId: active?.tab.id ?? null })
       await awaitFolderOps()
+      if (platform.capabilities.remoteHosts) {
+        await restoreGroups(persisted.groups ?? [])
+        const activeGroup = persisted.activeGroup
+        if (activeGroup) {
+          const tabs = workbench.tabs.filter((tab) => tabServer(tab) === activeGroup.server)
+          const tab = tabs[activeGroup.index]
+          if (tab) commit({ activeTabId: tab.id })
+        }
+      }
     }
   } catch (error) {
     console.warn('Workbench restore failed, starting empty:', error)
   } finally {
     restored = true
+    syncGroups()
+    persistWorkbench()
   }
 }
 
@@ -588,6 +632,7 @@ function addContentTab(
       : workbench.tabs.find((t) => t.kind === kind && t.kind !== 'session' && t.kind !== 'task' && t.temporary)
     if (existingTemp) {
       const newTab = makeTab(existingTemp.id)
+      if (isTabInert(newTab)) throw new Error('This server workbench is not controlled by this window')
       if (
         existingTemp.kind === 'text' &&
         existingTemp.filePath != null &&
@@ -619,7 +664,7 @@ function addContentTab(
       if ('replaceIndex' in placement) {
         remainingTabs[placement.replaceIndex] = newTab
       } else {
-        remainingTabs.splice(placement.insertIndex, 0, newTab)
+        remainingTabs.splice(clampTabInsertionToGroup(remainingTabs, newTab, placement.insertIndex), 0, newTab)
       }
       commit({ tabs: remainingTabs, activeTabId: newTab.id })
       return newTab.id
@@ -893,7 +938,7 @@ export function closeTab(tabId: TabId): void {
   const index = workbench.tabs.findIndex((t) => t.id === tabId)
   if (index < 0) return
   const tab = workbench.tabs[index]
-  if (tab.locked) return
+  if (tab.locked || isTabInert(tab)) return
 
   // Active local and remote tasks survive view teardown. Explicit close
   // stops them and intentionally omits them from reopen history.

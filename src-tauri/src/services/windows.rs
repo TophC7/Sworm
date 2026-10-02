@@ -16,6 +16,8 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
+mod groups;
+
 const MANIFEST_KEY: &str = "window_manifest";
 const MANIFEST_VERSION: u32 = 1;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -67,6 +69,10 @@ pub enum OpenTarget {
         folder_path: String,
         /// Project-relative to `folder_path`.
         file_path: String,
+    },
+    Workbench {
+        server: String,
+        workbench_id: String,
     },
 }
 
@@ -122,6 +128,7 @@ struct LiveWindowRecord {
 pub struct WindowCoordinatorService {
     records: Mutex<HashMap<String, LiveWindowRecord>>,
     active_transfers: Mutex<HashMap<String, ActiveTransfer>>,
+    group_transfers: Mutex<HashMap<String, Arc<groups::GroupTransfer>>>,
     exit_requested: Arc<AtomicBool>,
     pending_cleanup: Mutex<Vec<std::sync::mpsc::Receiver<()>>>,
 }
@@ -131,6 +138,7 @@ impl WindowCoordinatorService {
         Self {
             records: Mutex::new(HashMap::new()),
             active_transfers: Mutex::new(HashMap::new()),
+            group_transfers: Mutex::new(HashMap::new()),
             exit_requested: Arc::new(AtomicBool::new(false)),
             pending_cleanup: Mutex::new(Vec::new()),
         }
@@ -358,6 +366,7 @@ impl WindowCoordinatorService {
                 WindowEvent::Destroyed => {
                     // Runs after the frontend's CloseRequested handler confirmed
                     // and flushed, so a cancelled close never tears anything down.
+                    state.windows.cancel_groups_for_window(&event_label);
                     let discard_snapshot = state.windows.destroy_discards_snapshot();
                     let detach_runs = state.windows.destroy_detaches_runs();
                     let finished = state.windows.track_cleanup();
@@ -399,6 +408,7 @@ impl WindowCoordinatorService {
                 .emit_to(window.label(), "open-target", target)
                 .map_err(|error| format!("failed to emit open target to {label}: {error}"))?;
         }
+        self.request_ready_groups(app, label);
         crate::deep_links::notify(app);
         Ok(targets)
     }
@@ -1009,17 +1019,17 @@ impl WindowCoordinatorService {
                 if let Some((label, _)) = claimed {
                     self.queue_open_target(&label, target, app);
                 } else {
-                    self.create_window_with_target(app, target);
+                    self.open_window_with_target(app, target);
                 }
             }
             ExternalFileOpenMode::FocusedWindow => {
                 if let Some(label) = self.get_focused_window_label() {
                     self.queue_open_target(&label, target, app);
                 } else {
-                    self.create_window_with_target(app, target);
+                    self.open_window_with_target(app, target);
                 }
             }
-            ExternalFileOpenMode::NewWindow => self.create_window_with_target(app, target),
+            ExternalFileOpenMode::NewWindow => self.open_window_with_target(app, target),
         }
     }
 
@@ -1035,9 +1045,9 @@ impl WindowCoordinatorService {
         match mode {
             ExternalFolderOpenMode::FocusedWindow => match self.get_focused_window_label() {
                 Some(label) => self.queue_open_target(&label, target, app),
-                None => self.create_window_with_target(app, target),
+                None => self.open_window_with_target(app, target),
             },
-            ExternalFolderOpenMode::NewWindow => self.create_window_with_target(app, target),
+            ExternalFolderOpenMode::NewWindow => self.open_window_with_target(app, target),
         }
     }
 
@@ -1111,10 +1121,19 @@ impl WindowCoordinatorService {
             .saturating_add(1)
     }
 
-    fn create_window_with_target(&self, app: &tauri::AppHandle, target: OpenTarget) {
-        match self.create_workbench_window(app, None) {
-            Ok(window) => self.queue_open_target(window.label(), target, app),
-            Err(error) => tracing::error!("Failed to create window for open target: {error}"),
+    pub fn create_window_with_target(
+        &self,
+        app: &tauri::AppHandle,
+        target: OpenTarget,
+    ) -> Result<String, String> {
+        let window = self.create_workbench_window(app, None)?;
+        self.queue_open_target(window.label(), target, app);
+        Ok(window.label().to_owned())
+    }
+
+    fn open_window_with_target(&self, app: &tauri::AppHandle, target: OpenTarget) {
+        if let Err(error) = self.create_window_with_target(app, target) {
+            tracing::error!("Failed to create window for open target: {error}");
         }
     }
 
@@ -1171,6 +1190,7 @@ fn finish_window_close(
 ) {
     let state = app.state::<AppState>();
     state.windows.abort_transfers_for_window(app, label);
+    tauri::async_runtime::block_on(state.windows.abort_groups_for_window(app, label));
     release_window_resources(&state, label, detach_runs);
     state.router.release_file_reads(label);
     crate::deep_links::window_closed(app, label);
@@ -1208,6 +1228,7 @@ fn release_window_resources(state: &AppState, label: &str, detach_runs: bool) {
     // including a window that just adopted a transferred tab. PTY runs are
     // untouched: they may outlive the window.
     state.router.release_lsp_owner(label);
+    state.router.release_workbench_owner(label);
     for folder in final_folders {
         release_folder_resources(state, &folder);
     }

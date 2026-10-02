@@ -1,8 +1,8 @@
 <!--
   @component
-  Home — what an empty workbench shows. Continue lists other workbenches
-  worth returning to (durable workbenches only); Projects merges folders
-  opened in Sworm with folders where agent CLIs ran, newest first.
+  Home — what an empty window or workbench shows. Continue lists server
+  workbenches on desktop and other workbenches on web; Projects merges
+  opened folders with agent CLI activity, newest first.
 -->
 
 <script lang="ts">
@@ -36,19 +36,22 @@
   let {
     onOpenProject,
     actions,
-    workbenches,
+    sections,
     closing,
     closeErrors,
+    onOpenWorkbench,
+    onTakeOverWorkbench,
     onCloseWorkbench
   }: {
     onOpenProject: (path: string) => void
     /** Start controls beside the wordmark. */
     actions?: Snippet
-    /** Other durable workbenches for Continue. */
-    workbenches?: WorkbenchInfo[] | null
+    sections: { server?: string; workbenches: WorkbenchInfo[] }[]
     closing?: ReadonlySet<string>
     closeErrors?: Record<string, string>
-    onCloseWorkbench?: (workbench: WorkbenchInfo) => void
+    onOpenWorkbench?: (server: string, workbench: WorkbenchInfo) => void
+    onTakeOverWorkbench: (workbench: WorkbenchInfo, server?: string) => void
+    onCloseWorkbench?: (workbench: WorkbenchInfo, server?: string) => void
   } = $props()
 
   let projects = $derived(mergeProjects(getRecentFolders(), getDiscoveredProjects()))
@@ -56,10 +59,11 @@
   let visible = $derived(expanded ? projects : projects.slice(0, COLLAPSED_PROJECTS))
   let scanning = $derived(isActivityMapLoading())
   let highlightPath = $state<string | null>(null)
+  let hasContinue = $derived(sections.some(({ workbenches }) => workbenches.length > 0))
 
   let openCounts = $derived.by(() => {
     const counts = new Map<string, number>()
-    for (const workbench of workbenches ?? []) {
+    for (const workbench of sections.flatMap(({ workbenches }) => workbenches)) {
       for (const folder of workbench.folders) counts.set(folder, (counts.get(folder) ?? 0) + 1)
     }
     return counts
@@ -117,6 +121,17 @@
   <h2 class="m-0 text-xs tracking-widest text-muted uppercase">{label}</h2>
 {/snippet}
 
+{#snippet continueRow(workbench: WorkbenchInfo, server?: string)}
+  <ContinueRow
+    {workbench}
+    highlighted={highlightPath !== null && workbench.folders.includes(highlightPath)}
+    closing={closing?.has(`${server ?? ''}:${workbench.id}`) ?? false}
+    error={closeErrors?.[`${server ?? ''}:${workbench.id}`]}
+    onOpen={server ? () => onOpenWorkbench?.(server, workbench) : undefined}
+    onTakeOver={() => onTakeOverWorkbench(workbench, server)}
+    onClose={() => onCloseWorkbench?.(workbench, server)}
+  />
+{/snippet}
 <StageView>
   <div class="flex flex-col gap-8">
     <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
@@ -130,22 +145,20 @@
       </header>
     </BlurFade>
 
-    {#if workbenches && workbenches.length > 0}
+    {#if hasContinue}
       <BlurFade delay={0.12} duration={0.4} direction="up" offset={8}>
         <section class="flex flex-col gap-2">
           {@render heading('Continue')}
-          <!-- Rows bleed into the gutter so their text aligns with the column. -->
-          <ul class="-mx-3 my-0 flex list-none flex-col gap-0.5 p-0">
-            {#each workbenches as workbench (workbench.id)}
-              <ContinueRow
-                {workbench}
-                highlighted={highlightPath !== null && workbench.folders.includes(highlightPath)}
-                closing={closing?.has(workbench.id) ?? false}
-                error={closeErrors?.[workbench.id]}
-                onClose={() => onCloseWorkbench?.(workbench)}
-              />
-            {/each}
-          </ul>
+          {#each sections as { server, workbenches } (server ?? '')}
+            {#if workbenches.length > 0}
+              {#if server}<h3 class="m-0 pt-2 font-mono text-xs text-muted">{server}</h3>{/if}
+              <ul class="-mx-3 my-0 flex list-none flex-col gap-0.5 p-0">
+                {#each workbenches as workbench (workbench.id)}
+                  {@render continueRow(workbench, server)}
+                {/each}
+              </ul>
+            {/if}
+          {/each}
         </section>
       </BlurFade>
     {/if}

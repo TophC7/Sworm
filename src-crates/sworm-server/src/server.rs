@@ -351,6 +351,21 @@ async fn run_connection(
             tracing::error!(%error, "request stream task failed during connection shutdown");
         }
     }
+    let (leases, watchers) = {
+        let session = session.lock().await;
+        (session.leases.clone(), session.lease_watchers.clone())
+    };
+    let controls: Vec<_> = leases
+        .lock()
+        .await
+        .values()
+        .map(|lease| Arc::clone(&lease.control))
+        .collect();
+    for control in controls {
+        control.retire(crate::workbenches::Terminal::Disconnected);
+    }
+    watchers.close();
+    watchers.wait().await;
 
     if let Err(error) = cleanup_session(&host, &context, &session).await {
         tracing::error!(?error, "connection cleanup failed");
@@ -469,6 +484,49 @@ async fn process_stream(
                     return;
                 };
                 dispatch::handle(&host, &context, &session, request).await
+            };
+            let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
+            if !write_response(&mut send, &response).await {
+                return;
+            }
+            if unauthorized {
+                close_unauthorized(&connection, &mut send).await;
+            }
+        }
+        Open::WorkbenchRpc { workbench, request } => {
+            let response = if !session.lock().await.authorized {
+                Err(dispatch::unauthorized(
+                    "client is not paired with this server",
+                ))
+            } else if matches!(request, sworm_protocol::rpc::Request::WorkbenchClose { .. }) {
+                // Close cannot wait for its own admitted work to drain.
+                dispatch::handle(&host, &context, &session, request).await
+            } else {
+                let leases = session.lock().await.leases.clone();
+                let admitted = leases.lock().await.get(&workbench).and_then(|lease| {
+                    lease
+                        .control
+                        .track()
+                        .map(|tracking| (lease.owner.clone(), tracking))
+                });
+                if let Some((owner, _tracking)) = admitted {
+                    let Ok(_permit) = request_permits.acquire_owned().await else {
+                        return;
+                    };
+                    dispatch::handle_scoped(
+                        &host,
+                        &context,
+                        &session,
+                        dispatch::SessionScope::Workbench {
+                            id: workbench.clone(),
+                            owner,
+                        },
+                        request,
+                    )
+                    .await
+                } else {
+                    Err(WireError::NotController { workbench })
+                }
             };
             let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
             if !write_response(&mut send, &response).await {

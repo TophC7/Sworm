@@ -47,6 +47,7 @@ enum Upstream {
 
 struct RemoteRun {
     server: String,
+    workbench: String,
     kind: RemoteRunKind,
     generation: u64,
     // Outlives the stream: a killed run stays unstartable until its daemon
@@ -58,9 +59,9 @@ struct RemoteRun {
 
 pub(crate) struct RemoteRunInfo {
     pub server: String,
+    pub workbench: String,
     pub kind: RemoteRunKind,
     pub generation: u64,
-    pub stopping: Arc<AtomicBool>,
 }
 
 pub(crate) struct RemoteRunService {
@@ -94,6 +95,7 @@ impl RemoteRunService {
         host: &Arc<Host>,
         run_id: String,
         server: String,
+        workbench: String,
         kind: RemoteRunKind,
         output: EventSink<Vec<u8>>,
         events: EventSink<PtyEvent>,
@@ -158,6 +160,7 @@ impl RemoteRunService {
             run_id,
             RemoteRun {
                 server,
+                workbench,
                 kind,
                 generation,
                 stopping,
@@ -173,17 +176,105 @@ impl RemoteRunService {
         Ok(())
     }
 
-    pub fn info(&self, run_id: &str) -> Option<RemoteRunInfo> {
-        self.runs.lock().get(run_id).map(|run| RemoteRunInfo {
-            server: run.server.clone(),
-            kind: run.kind,
-            generation: run.generation,
-            stopping: Arc::clone(&run.stopping),
+    /// Detach the local proxy and stream; the daemon run stays live for handoff.
+    pub fn release(&self, host: &Host, owner: &str, run_ids: &[String]) -> Result<(), ApiError> {
+        let mut runs = self.runs.lock();
+        let mut released = std::collections::HashSet::new();
+        let mut first_error = None;
+        for run_id in run_ids {
+            if !released.insert(run_id) || !runs.contains_key(run_id) {
+                continue;
+            }
+            if runs
+                .get(run_id)
+                .is_some_and(|run| run.stopping.load(Ordering::Acquire))
+            {
+                first_error.get_or_insert(ApiError::Pty(format!(
+                    "remote PTY session is stopping: {run_id}"
+                )));
+                continue;
+            }
+            if host.pty.run_state(run_id).is_some() {
+                if let Err(error) = host.pty.detach_adopted(run_id, Some(owner)) {
+                    first_error.get_or_insert(ApiError::Pty(error));
+                    continue;
+                }
+            }
+            if let Some(task) = runs.remove(run_id).and_then(|run| run.stream) {
+                task.abort();
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    pub fn transfer_workbench(
+        &self,
+        host: &Host,
+        source: &str,
+        target: &str,
+        server: &str,
+        workbench: &str,
+    ) -> Result<(), ApiError> {
+        let runs = self.runs.lock();
+        if runs.values().any(|run| {
+            run.server == server
+                && run.workbench == workbench
+                && run.stopping.load(Ordering::Acquire)
+        }) {
+            return Err(ApiError::Pty(
+                "Cannot transfer a workbench while a remote run is stopping".into(),
+            ));
+        }
+        let ids: Vec<&str> = runs
+            .iter()
+            .filter(|(id, run)| {
+                run.server == server
+                    && run.workbench == workbench
+                    && host.pty.run_state(id).is_some()
+            })
+            .map(|(id, _)| id.as_str())
+            .collect();
+        for id in &ids {
+            host.pty
+                .ensure_owner(id, Some(source))
+                .map_err(ApiError::Pty)?;
+        }
+        for (index, id) in ids.iter().enumerate() {
+            if let Err(error) = host.pty.reassign_adopted(id, source, target) {
+                for moved in &ids[..index] {
+                    if let Err(rollback) = host.pty.reassign_adopted(moved, target, source) {
+                        tracing::error!(run_id = moved, %rollback, "remote proxy owner rollback failed");
+                    }
+                }
+                return Err(ApiError::Pty(error));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin_stop(&self, run_id: &str) -> Option<RemoteRunInfo> {
+        let runs = self.runs.lock();
+        runs.get(run_id).map(|run| {
+            run.stopping.store(true, Ordering::Release);
+            RemoteRunInfo {
+                server: run.server.clone(),
+                workbench: run.workbench.clone(),
+                kind: run.kind,
+                generation: run.generation,
+            }
         })
     }
 
     pub fn server_for(&self, run_id: &str) -> Option<String> {
         self.runs.lock().get(run_id).map(|run| run.server.clone())
+    }
+
+    /// The run's `(server, workbench)`, read under one lock.
+    pub fn target_for(&self, run_id: &str) -> Option<(String, String)> {
+        self.runs
+            .lock()
+            .get(run_id)
+            .map(|run| (run.server.clone(), run.workbench.clone()))
     }
 
     pub fn cancel(&self, run_id: &str, generation: u64) {
@@ -285,9 +376,6 @@ impl RunBackend for WireBackend {
         tauri::async_runtime::spawn(async move {
             if let Err(error) = router.stop_backend(&run_id, kind).await {
                 tracing::warn!(%run_id, %error, "failed to stop remote PTY");
-                if let Some(server) = router.remote_runs.server_for(&run_id) {
-                    router.remember_failed_stop(&server, &run_id, kind, &error);
-                }
             }
             router.remote_runs.cancel(&run_id, generation);
         });

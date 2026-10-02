@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { iconButtonVariants } from '$lib/components/ui/button'
+  import { Button, iconButtonVariants } from '$lib/components/ui/button'
   import {
     DropdownMenuContent,
     DropdownMenuItem,
@@ -13,12 +13,15 @@
   import { timeAgo } from '$lib/utils/date'
   import { basename } from '$lib/utils/paths'
   import { workbenchHref } from './workbenchLink'
+  import { onDestroy } from 'svelte'
 
   let {
     workbench,
     highlighted,
     closing,
     error,
+    onOpen,
+    onTakeOver,
     onClose
   }: {
     workbench: WorkbenchInfo
@@ -26,8 +29,23 @@
     highlighted: boolean
     closing: boolean
     error: string | undefined
+    onOpen?: () => void
+    onTakeOver: () => void
     onClose: () => void
   } = $props()
+
+  // Open elsewhere: the row never navigates. Clicking it flashes Take Over instead of asking in a dialog.
+  let hinting = $state(false)
+  let hintTimer: ReturnType<typeof setTimeout> | undefined
+  function hintTakeOver(): void {
+    clearTimeout(hintTimer)
+    hinting = false
+    requestAnimationFrame(() => {
+      hinting = true
+      hintTimer = setTimeout(() => (hinting = false), 900)
+    })
+  }
+  onDestroy(() => clearTimeout(hintTimer))
 
   interface RunChip {
     label: string
@@ -61,6 +79,36 @@
   let title = $derived(workbench.folders.map(basename).join(' · ') || 'Empty Workbench')
 </script>
 
+{#snippet rowContent()}
+  <div class="min-w-0 flex-1">
+    <div class="truncate text-base text-bright">{title}</div>
+    <div class="flex min-w-0 items-center gap-3 overflow-hidden text-xs text-muted">
+      {#each chips as chip (chip.label + chip.task)}
+        <span class="flex shrink-0 items-center gap-1">
+          {#if chip.icon}
+            <img src={chip.icon} alt="" class="size-3" />
+          {:else if chip.task}
+            <Play size={10} class="text-subtle" />
+          {/if}
+          <span class={cn(chip.task && 'font-mono')}>{chip.label}</span>
+          {#if chip.count > 1}
+            <span class="text-subtle">×{chip.count}</span>
+          {/if}
+        </span>
+      {:else}
+        <span class="text-subtle">Nothing running</span>
+      {/each}
+    </div>
+  </div>
+  {#if workbench.connected}
+    <span class={cn('duration-med shrink-0 text-xs transition-colors', hinting ? 'text-bright' : 'text-subtle')}
+      >{workbench.client ? `Active in ${workbench.client}` : 'Active elsewhere'}</span
+    >
+  {/if}
+  <span class="w-16 shrink-0 text-right text-xs text-subtle">
+    {closing ? 'Closing…' : timeAgo(workbench.last_seen_at)}
+  </span>
+{/snippet}
 <li class="flex flex-col">
   <div
     class={cn(
@@ -68,38 +116,32 @@
       highlighted && 'bg-accent-bg hover:bg-accent-bg'
     )}
   >
-    <a
-      href={workbenchHref(workbench.id)}
-      data-sveltekit-reload
-      class="flex min-w-0 flex-1 items-center gap-3 rounded-sm focus-visible:shadow-focus-ring focus-visible:outline-none"
-    >
-      <div class="min-w-0 flex-1">
-        <div class="truncate text-base text-bright">{title}</div>
-        <div class="flex min-w-0 items-center gap-3 overflow-hidden text-xs text-muted">
-          {#each chips as chip (chip.label + chip.task)}
-            <span class="flex shrink-0 items-center gap-1">
-              {#if chip.icon}
-                <img src={chip.icon} alt="" class="size-3" />
-              {:else if chip.task}
-                <Play size={10} class="text-subtle" />
-              {/if}
-              <span class={cn(chip.task && 'font-mono')}>{chip.label}</span>
-              {#if chip.count > 1}
-                <span class="text-subtle">×{chip.count}</span>
-              {/if}
-            </span>
-          {:else}
-            <span class="text-subtle">Nothing running</span>
-          {/each}
-        </div>
-      </div>
+    {#if workbench.connected || onOpen}
+      <button
+        type="button"
+        onclick={workbench.connected ? hintTakeOver : onOpen}
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-sm text-left focus-visible:shadow-focus-ring focus-visible:outline-none"
+      >
+        {@render rowContent()}
+      </button>
       {#if workbench.connected}
-        <span class="shrink-0 text-xs text-subtle">Active elsewhere</span>
+        <Button
+          size="xs"
+          variant={hinting ? 'accent' : 'outline'}
+          class="duration-med shrink-0"
+          disabled={closing}
+          onclick={onTakeOver}>Take Over</Button
+        >
       {/if}
-      <span class="w-16 shrink-0 text-right text-xs text-subtle">
-        {closing ? 'Closing…' : timeAgo(workbench.last_seen_at)}
-      </span>
-    </a>
+    {:else}
+      <a
+        href={workbenchHref(workbench.id)}
+        data-sveltekit-reload
+        class="flex min-w-0 flex-1 items-center gap-3 rounded-sm focus-visible:shadow-focus-ring focus-visible:outline-none"
+      >
+        {@render rowContent()}
+      </a>
+    {/if}
     <DropdownMenuRoot>
       <DropdownMenuTrigger
         aria-label="Workbench actions"

@@ -16,7 +16,7 @@
   } from '$lib/features/settings/state/diagnostics.svelte'
   import { AlertTriangle, FolderOpen } from '$lib/icons/lucideExports'
   import { folderCrumbs, splitRemotePath } from '$lib/utils/paths'
-  import { cn } from '$lib/utils/cn'
+  import { remoteDotClass } from '$lib/features/remotes/remoteDot'
   import { platform, requireNative } from '$lib/platform'
   import { openRemoteManager } from '$lib/features/remotes/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -77,7 +77,7 @@
         t.kind === 'session' && t.folderPath === folderPath && t.providerId !== 'terminal' && isProcessLive(t.status)
     ).length
   )
-  let remoteState = $derived(remoteStatus?.state ?? 'checking')
+  let remoteState = $derived<RemoteStatus['state'] | 'checking'>(remoteStatus?.state ?? 'checking')
   let settingsDiagnostics = $derived(getSettingsDiagnostics())
 
   $effect(() => {
@@ -107,18 +107,7 @@
         title={remoteStatus?.last_error ?? `${remoteServer}: ${remoteState}`}
         aria-label="Manage remote {remoteServer}: {remoteState}"
       >
-        <span
-          class={cn(
-            'size-1.5 shrink-0 rounded-full',
-            remoteState === 'connected'
-              ? 'bg-success'
-              : remoteState === 'error'
-                ? 'bg-danger'
-                : remoteState === 'reconnecting'
-                  ? 'bg-warning'
-                  : 'bg-muted'
-          )}
-        ></span>
+        <span class="size-1.5 shrink-0 rounded-full {remoteDotClass(remoteState)}"></span>
         <span class="font-mono">{remoteServer}</span>
       </StatusChip>
     {/if}

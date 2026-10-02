@@ -1,5 +1,6 @@
 import type { PtySinks, StreamHandle, Unsubscribe } from '$lib/api/transport'
 import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
+import type { Tab } from '$lib/features/workbench/model'
 import type {
   ClaimFileResult,
   FocusTabPayload,
@@ -12,7 +13,9 @@ import type {
   ShortcutsFileResult,
   TabTransferAbortedPayload,
   TabTransferExportPayload,
-  TabTransferInitiateParams
+  TabTransferInitiateParams,
+  TextModelTransferState,
+  WorkbenchAttached
 } from '$lib/types/backend'
 
 export type { Unsubscribe } from '$lib/api/transport'
@@ -53,6 +56,36 @@ export interface TransferFinalizedEvent {
 }
 export type TransferAbortedEvent = TabTransferAbortedPayload
 
+/** Router-coordinated local move; server control remains on the desktop connection. */
+export interface GroupHandoff {
+  transferId: string
+  sourceWindow: string
+  server: string
+  workbenchId: string
+  targetWindow: string
+  index: number
+}
+
+export interface GroupImport extends GroupHandoff {
+  tabs: Tab[]
+  activeTabId: string | null
+  modelStates: TextModelTransferState[]
+}
+
+export interface GroupFinalized extends GroupHandoff {
+  attached: Extract<WorkbenchAttached, { kind: 'ready' }>
+}
+
+export interface GroupAborted extends GroupHandoff {
+  reason: string
+}
+
+export type GroupSettled = GroupHandoff &
+  (
+    | { committed: true; attached: Extract<WorkbenchAttached, { kind: 'ready' }>; reason?: string }
+    | { committed: false; reason?: string }
+  )
+
 export type OsDropEvent =
   | { type: 'enter' | 'drop'; paths: string[]; position: { x: number; y: number } }
   | { type: 'over'; position: { x: number; y: number } }
@@ -60,7 +93,7 @@ export type OsDropEvent =
 
 export interface NativePlatform {
   window: {
-    create(): Promise<string>
+    create(target?: OpenTarget): Promise<string>
     ready(restoredTaskRuns: string[]): Promise<void>
     close(): Promise<void>
     onCloseRequested(handler: (event: { preventDefault(): void }) => void): Promise<Unsubscribe>
@@ -71,6 +104,28 @@ export interface NativePlatform {
     isMaximized(): Promise<boolean>
     onResized(handler: () => void): Promise<Unsubscribe>
     setDecorations(enabled: boolean): Promise<void>
+    groupHandoff(
+      sourceWindow: string,
+      server: string,
+      workbenchId: string,
+      index: number,
+      targetWindow?: string
+    ): Promise<void>
+    groupExported(
+      transferId: string,
+      attachmentId: string,
+      tabs: GroupImport['tabs'],
+      activeTabId: string | null,
+      modelStates: GroupImport['modelStates']
+    ): Promise<void>
+    groupStaged(transferId: string): Promise<void>
+    groupAbort(transferId: string, reason: string): Promise<void>
+    onGroupRequest(handler: (handoff: GroupHandoff) => void): Promise<Unsubscribe>
+    onGroupImport(handler: (handoff: GroupImport) => void): Promise<Unsubscribe>
+    onGroupCommitted(handler: (handoff: GroupHandoff) => void): Promise<Unsubscribe>
+    onGroupFinalized(handler: (handoff: GroupFinalized) => void): Promise<Unsubscribe>
+    onGroupAborted(handler: (handoff: GroupAborted) => void): Promise<Unsubscribe>
+    onGroupSettled(handler: (handoff: GroupSettled) => void): Promise<Unsubscribe>
   }
   dialogs: {
     selectDirectory(): Promise<string | null>
@@ -122,6 +177,7 @@ export interface NativePlatform {
     remove(server: string): Promise<void>
     onStatus(handler: (event: RemoteStatusEvent) => void): Promise<Unsubscribe>
     onRunStatus(handler: (event: RemoteRunStatusEvent) => void): Promise<Unsubscribe>
+    releaseRuns(runIds: string[]): Promise<void>
   }
   zoom: { setZoom(level: number): Promise<void> }
 }
@@ -132,7 +188,7 @@ export interface AssetHandle {
 }
 
 export interface Platform {
-  readonly workbench: { readonly id: string; closeCurrent?(): Promise<void> }
+  readonly workbench: { readonly id: string; closeCurrent?(): Promise<void>; takeOver?(id: string): Promise<void> }
   app: { version(): Promise<string> }
   clipboard: { readText(): Promise<string>; writeText(text: string): Promise<void> }
   links: { openExternal(url: string): Promise<void> }

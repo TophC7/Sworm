@@ -18,10 +18,13 @@ use std::{
 use sworm_protocol::{
     lsp::LspEvent,
     rpc::{
-        FileReadDown, LspDown, Open, PtyCursor, PtyDown, PtyUp, Reply, Request, Response,
-        WireError, WorkbenchInfo, WorkbenchRun, MAX_FILE_CHUNK_BYTES, MAX_REQUEST_FRAME_BYTES,
+        AttachMode, FileReadDown, LspDown, Open, PtyCursor, PtyDown, PtyUp, Reply, Request,
+        Response, WireError, WorkbenchInfo, WorkbenchRun, MAX_FILE_CHUNK_BYTES,
+        MAX_REQUEST_FRAME_BYTES,
     },
 };
+use sworm_remote::{Identity, RemoteClient, RemoteError};
+use sworm_server::auth;
 use sworm_server::{serve, ServeOptions, ServerHandle};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -104,38 +107,28 @@ impl Fixture {
         Ok(db)
     }
     /// Sends the exact first control frame and returns the daemon's answer.
-    async fn hello(
-        &self,
-        workbench: &str,
-        takeover: bool,
-        token: Option<&str>,
-    ) -> Result<(Socket, Value)> {
+    async fn hello(&self, workbench: &str, mode: AttachMode) -> Result<(Socket, Value)> {
         let mut ws = connect(self.addr(), "/ws", Some(&self.origin())).await?;
         ws.send(Message::Text(
-            json!({"hello":{"workbench_id":workbench,"takeover":takeover,"controller_token":token}})
+            json!({"hello":{"workbench_id":workbench,"mode":mode}})
                 .to_string()
                 .into(),
         ))
         .await?;
         let first = next_text(&mut ws).await.with_context(|| {
-            format!("hello workbench={workbench:?} takeover={takeover} awaiting first frame")
+            format!("hello workbench={workbench:?} mode={mode:?} awaiting first frame")
         })?;
         Ok((ws, first))
     }
-    async fn attach(
-        &self,
-        workbench: &str,
-        takeover: bool,
-        token: Option<&str>,
-    ) -> Result<Attached> {
-        let (ws, ready) = self.hello(workbench, takeover, token).await?;
+    async fn attach(&self, workbench: &str, mode: AttachMode) -> Result<Attached> {
+        let (ws, ready) = self.hello(workbench, mode).await?;
         admitted(ws, ready)
     }
     /// A fresh, empty workbench that only reaches the registry. Its page
     /// leaving prunes it; `release` waits for that so lists never count it.
     async fn observer(&self) -> Result<(Socket, String)> {
         let id = new_workbench();
-        Ok((self.attach(&id, false, None).await?.ws, id))
+        Ok((self.attach(&id, AttachMode::Open {}).await?.ws, id))
     }
     async fn release(&self, mut observer: Socket, id: &str) -> Result<()> {
         observer.close(None).await?;
@@ -191,7 +184,7 @@ impl Fixture {
     /// A fresh workbench with a fresh controller, for tests that only need
     /// ordinary shared-Host access.
     async fn control(&self) -> Result<(Socket, String)> {
-        let attached = self.attach(&new_workbench(), false, None).await?;
+        let attached = self.attach(&new_workbench(), AttachMode::Open {}).await?;
         Ok((attached.ws, attached.connection))
     }
     async fn stream(&self, id: &str, open: Open) -> Result<Socket> {
@@ -428,19 +421,14 @@ async fn retired(ws: &mut Socket, reason: &str) -> Result<()> {
     Ok(())
 }
 /// A hello answered by a terminal frame, followed only by a policy close.
-async fn denied(
-    f: &Fixture,
-    workbench: &str,
-    takeover: bool,
-    token: Option<&str>,
-) -> Result<Value> {
-    let (mut ws, first) = f.hello(workbench, takeover, token).await?;
+async fn denied(f: &Fixture, workbench: &str, mode: AttachMode) -> Result<Value> {
+    let (mut ws, first) = f.hello(workbench, mode).await?;
     assert!(first.get("ready").is_none(), "hello was admitted: {first}");
     assert_eq!(terminal(&mut ws).await?, None, "second terminal frame");
     Ok(first)
 }
 async fn invalid_id(f: &Fixture, workbench: &str) -> Result<()> {
-    let frame = denied(f, workbench, false, None).await?;
+    let frame = denied(f, workbench, AttachMode::Open {}).await?;
     assert_eq!(frame["error"]["kind"], "invalid_argument", "{frame}");
     assert_eq!(frame["error"]["message"], "Invalid workbench id", "{frame}");
     Ok(())
@@ -726,7 +714,7 @@ async fn delayed_start_and_disconnect(f: &Fixture) -> Result<()> {
         ws: mut control,
         token,
         ..
-    } = f.attach(&workbench, false, None).await?;
+    } = f.attach(&workbench, AttachMode::Open {}).await?;
     let request = |run: &str| Request::TasksStart {
         run_id: run.into(),
         folder_path: f.folder(),
@@ -808,7 +796,15 @@ async fn delayed_start_and_disconnect(f: &Fixture) -> Result<()> {
     control.close(None).await?;
     stalled.unblock()?;
     // Automatic reconnect of the same lease must own the start the old socket admitted.
-    let mut replacement = f.attach(&workbench, false, Some(&token)).await?.ws;
+    let mut replacement = f
+        .attach(
+            &workbench,
+            AttachMode::Resume {
+                controller_token: token.clone(),
+            },
+        )
+        .await?
+        .ws;
     timeout(WAIT, async {
         loop {
             if run_status(&mut replacement, "web-delayed-b").await?
@@ -1059,7 +1055,7 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         ws: mut control,
         connection: id,
         ..
-    } = f.attach(&workbench, false, None).await?;
+    } = f.attach(&workbench, AttachMode::Open {}).await?;
     success(
         &mut control,
         1,
@@ -1119,7 +1115,7 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         ws: mut replacement,
         connection: new_id,
         ..
-    } = f.attach(&workbench, false, None).await?;
+    } = f.attach(&workbench, AttachMode::Open {}).await?;
     assert!(
         run_status(&mut replacement, run).await?,
         "control loss killed retained PTY"
@@ -1292,7 +1288,7 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
         ws: mut owner,
         connection: id,
         token,
-    } = f.attach(&workbench, false, None).await?;
+    } = f.attach(&workbench, AttachMode::Open {}).await?;
     let (mut other, _) = f.control().await?;
     let pty_run = "web-lsp-surviving-pty";
     success(
@@ -1354,7 +1350,14 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
         ws: mut replacement,
         connection: new_id,
         ..
-    } = f.attach(&workbench, false, Some(&token)).await?;
+    } = f
+        .attach(
+            &workbench,
+            AttachMode::Resume {
+                controller_token: token.clone(),
+            },
+        )
+        .await?;
     assert!(
         run_status(&mut replacement, pty_run).await?,
         "LSP teardown killed simultaneously running PTY"
@@ -1714,6 +1717,223 @@ async fn detached_after(f: &Fixture, id: &str, seen: &str) -> Result<Option<Work
     .with_context(|| format!("workbench {id} never finished detaching"))?
 }
 
+async fn quic_workbench_interop(f: &Fixture) -> Result<()> {
+    use sworm_protocol::rpc::WorkbenchAttached;
+    let identity_dir = tempfile::tempdir()?;
+    let identity = Identity::load_or_generate(identity_dir.path(), "workbench test")?;
+    let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
+    let client = RemoteClient::connect(
+        &endpoint,
+        f.handle.local_addr,
+        &identity,
+        f.handle.fingerprint,
+    )
+    .await?;
+    let pair = auth::write_pairing_token(&f.home.join("server-config"))?;
+    client.pair(&pair, "desktop").await?;
+
+    let id = new_workbench();
+    let empty = r#"{"version":4,"activeTabIndex":-1,"tabs":[]}"#;
+    let first = client
+        .call(&Request::WorkbenchAttach {
+            id: id.clone(),
+            attachment_id: "first".into(),
+            mode: AttachMode::Open {},
+            client: "desktop".into(),
+        })
+        .await?
+        .workbench_attach()
+        .checked()?;
+    let token = match first {
+        WorkbenchAttached::Ready {
+            controller_token,
+            snapshot,
+            ..
+        } => {
+            assert_eq!(snapshot, empty);
+            controller_token
+        }
+        other => bail!("initial QUIC attach failed: {other:?}"),
+    };
+    let (mut busy, frame) = f.hello(&id, AttachMode::Open {}).await?;
+    assert!(frame.get("busy").is_some(), "{frame}");
+    retired(&mut busy, "busy").await?;
+    assert!(matches!(
+        client.call(&Request::WorkbenchSave { id: "unheld".into(), snapshot: empty.into() }).await,
+        Err(RemoteError::Wire(WireError::NotController { workbench })) if workbench == "unheld"
+    ));
+    let saved = v4(&[&f.folder()], 0);
+    client
+        .call(&Request::WorkbenchSave {
+            id: id.clone(),
+            snapshot: saved.clone(),
+        })
+        .await?
+        .workbench_save()
+        .checked()?;
+    let recovered = client
+        .call(&Request::WorkbenchRecover {
+            id: id.clone(),
+            attachment_id: "first".into(),
+        })
+        .await?
+        .workbench_recover()
+        .checked()?;
+    assert!(matches!(recovered,
+        Some(WorkbenchAttached::Ready { attachment_id, controller_token, snapshot })
+            if attachment_id == "first" && controller_token == token && snapshot == saved
+    ));
+    let mut web = f.attach(&id, AttachMode::Takeover {}).await?;
+    assert_eq!(
+        client
+            .call(&Request::WorkbenchRecover {
+                id: id.clone(),
+                attachment_id: "first".into(),
+            })
+            .await?
+            .workbench_recover()
+            .checked()?,
+        None
+    );
+    let listing = client
+        .call(&Request::WorkbenchList {})
+        .await?
+        .workbench_list()
+        .checked()?;
+    let info = listing
+        .iter()
+        .find(|info| info.id == id)
+        .context("missing takeover workbench")?;
+    assert!(
+        !info.yours && info.connected && info.client.as_deref() == Some("browser"),
+        "{info:?}"
+    );
+    assert!(matches!(
+        client.call_workbench(&id, &Request::AppStateGet { key: format!("workbench:{id}") }).await,
+        Err(RemoteError::Wire(WireError::NotController { workbench })) if workbench == id
+    ));
+    let stale = client
+        .call(&Request::WorkbenchAttach {
+            id: id.clone(),
+            attachment_id: "stale".into(),
+            mode: AttachMode::Resume {
+                controller_token: token,
+            },
+            client: "desktop".into(),
+        })
+        .await?
+        .workbench_attach()
+        .checked()?;
+    assert!(
+        matches!(stale, WorkbenchAttached::Revoked { client, snapshot }
+        if client.as_deref() == Some("browser") && snapshot == saved)
+    );
+
+    let second = client
+        .call(&Request::WorkbenchAttach {
+            id: id.clone(),
+            attachment_id: "takeover".into(),
+            mode: AttachMode::Takeover {},
+            client: "desktop".into(),
+        })
+        .await?
+        .workbench_attach()
+        .checked()?;
+    assert!(matches!(second, WorkbenchAttached::Ready { snapshot, .. } if snapshot == saved));
+    client
+        .call(&Request::WorkbenchDetach {
+            id: id.clone(),
+            attachment_id: "first".into(),
+        })
+        .await?
+        .workbench_detach()
+        .checked()?;
+    assert!(matches!(client
+        .call(&Request::WorkbenchRecover { id: id.clone(), attachment_id: "takeover".into() })
+        .await?
+        .workbench_recover()
+        .checked()?,
+        Some(WorkbenchAttached::Ready { attachment_id, snapshot, .. })
+            if attachment_id == "takeover" && snapshot == saved
+    ));
+    retired(&mut web.ws, "revoked").await?;
+    let run = new_run();
+    client
+        .call_workbench(&id, &terminal_start(f, &run))
+        .await?
+        .session_start()
+        .checked()?;
+    let listing = client
+        .call(&Request::WorkbenchList {})
+        .await?
+        .workbench_list()
+        .checked()?;
+    let info = listing
+        .iter()
+        .find(|info| info.id == id)
+        .context("missing scoped run workbench")?;
+    assert!(
+        info.yours
+            && info
+                .running
+                .iter()
+                .any(|entry| matches!(entry, WorkbenchRun::Session { .. })),
+        "{info:?}"
+    );
+    let mut web = f.attach(&id, AttachMode::Takeover {}).await?;
+    success(&mut web.ws, 54, terminal_start(f, &run))
+        .await?
+        .session_start()
+        .checked()?;
+    assert!(
+        run_status(&mut web.ws, &run).await?,
+        "web cannot access scoped QUIC run"
+    );
+    client
+        .call(&Request::WorkbenchClose { id: id.clone() })
+        .await?
+        .workbench_close()
+        .checked()?;
+    retired(&mut web.ws, "closed").await?;
+
+    let disposable = new_workbench();
+    let outcome = client
+        .call(&Request::WorkbenchAttach {
+            id: disposable.clone(),
+            attachment_id: "disposable".into(),
+            mode: AttachMode::Open {},
+            client: "desktop".into(),
+        })
+        .await?
+        .workbench_attach()
+        .checked()?;
+    assert!(matches!(outcome, WorkbenchAttached::Ready { .. }));
+    client
+        .call(&Request::WorkbenchDetach {
+            id: disposable.clone(),
+            attachment_id: "disposable".into(),
+        })
+        .await?
+        .workbench_detach()
+        .checked()?;
+    f.wait_pruned(&disposable).await?;
+    let disconnected = new_workbench();
+    let outcome = client
+        .call(&Request::WorkbenchAttach {
+            id: disconnected.clone(),
+            attachment_id: "disconnected".into(),
+            mode: AttachMode::Open {},
+            client: "desktop".into(),
+        })
+        .await?
+        .workbench_attach()
+        .checked()?;
+    assert!(matches!(outcome, WorkbenchAttached::Ready { .. }));
+    client.close();
+    f.wait_pruned(&disconnected).await?;
+    Ok(())
+}
+
 async fn handshake_modes(f: &Fixture) -> Result<()> {
     let probe = "web:unadmitted-probe";
     let put_probe = || Request::AppStatePut {
@@ -1724,22 +1944,23 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
     rejects_first_frame(f, request_frame(1, put_probe()), 1008).await?;
     let unused = new_workbench();
     for bad in [
-        // Every page names its workbench.
-        json!({"hello":{"takeover":false,"controller_token":null}}),
-        json!({"hello":{"workbench_id":null,"takeover":false,"controller_token":null}}),
-        json!({"hello":{"workbench_id":unused,"takeover":false}}),
-        json!({"hello":{"workbench_id":unused,"takeover":false,"controller_token":null,"extra":1}}),
-        json!({"hello":{"workbench_id":unused,"takeover":false,"controller_token":null},"id":1}),
-        json!({"hello":{"workbench_id":7,"takeover":false,"controller_token":null}}),
-        json!({"hello":{"workbench_id":unused,"takeover":"no","controller_token":null}}),
+        // Every page names its workbench and one explicit lease mode.
+        json!({"hello":{"mode":{"kind":"open"}}}),
+        json!({"hello":{"workbench_id":null,"mode":{"kind":"open"}}}),
+        json!({"hello":{"workbench_id":unused}}),
+        json!({"hello":{"workbench_id":unused,"mode":{"kind":"open"},"extra":1}}),
+        json!({"hello":{"workbench_id":unused,"mode":{"kind":"open"}},"id":1}),
+        json!({"hello":{"workbench_id":7,"mode":{"kind":"open"}}}),
+        json!({"hello":{"workbench_id":unused,"mode":{"kind":"invalid"}}}),
+        json!({"hello":{"workbench_id":unused,"mode":{"kind":"resume"}}}),
+        json!({"hello":{"workbench_id":unused,"mode":{"kind":"open","controller_token":"unused"}}}),
         json!({"hello":null}),
     ] {
         rejects_first_frame(f, hello_text(bad), 1008).await?;
     }
     rejects_first_frame(f, Message::Text("not json".into()), 1008).await?;
     let pinged = new_workbench();
-    let valid_hello =
-        json!({"hello":{"workbench_id":pinged,"takeover":false,"controller_token":null}});
+    let valid_hello = json!({"hello":{"workbench_id":pinged,"mode":{"kind":"open"}}});
     rejects_first_frame(
         f,
         Message::Binary(valid_hello.to_string().into_bytes().into()),
@@ -1750,8 +1971,7 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
         f,
         hello_text(json!({"hello":{
             "workbench_id":"x".repeat(MAX_REQUEST_FRAME_BYTES),
-            "takeover":false,
-            "controller_token":null
+            "mode":{"kind":"open"}
         }})),
         1009,
     )
@@ -1785,12 +2005,12 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
         invalid_id(f, &bad).await?;
     }
     let longest = "A-_9".repeat(16);
-    let edge = f.attach(&longest, false, None).await?.ws;
+    let edge = f.attach(&longest, AttachMode::Open {}).await?.ws;
     f.release(edge, &longest).await?;
 
     // A valid unknown id is created by its first hello and lists as connected.
     let workbench = new_workbench();
-    let mut control = f.attach(&workbench, false, None).await?;
+    let mut control = f.attach(&workbench, AttachMode::Open {}).await?;
     let listed = success(&mut control.ws, 12, Request::WorkbenchList {})
         .await?
         .workbench_list()
@@ -1805,7 +2025,7 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
     );
     // Any workbench may close another.
     let other = new_workbench();
-    let mut victim = f.attach(&other, false, None).await?;
+    let mut victim = f.attach(&other, AttachMode::Open {}).await?;
     close_workbench(&mut control.ws, 14, &other).await?;
     retired(&mut victim.ws, "closed").await?;
     assert!(f.listed(&other).await?.is_none());
@@ -1818,7 +2038,7 @@ async fn handshake_modes(f: &Fixture) -> Result<()> {
 /// pruned when its page leaves, and a recreated id starts a new incarnation.
 async fn workbench_lifecycle(f: &Fixture) -> Result<()> {
     let id = new_workbench();
-    let mut first = f.attach(&id, false, None).await?;
+    let mut first = f.attach(&id, AttachMode::Open {}).await?;
     let created = f
         .listed(&id)
         .await?
@@ -1828,7 +2048,14 @@ async fn workbench_lifecycle(f: &Fixture) -> Result<()> {
 
     // The same link recreates it, even from the page that still holds the old
     // lease after a network drop; its runs work and a live one keeps it.
-    let mut second = f.attach(&id, false, Some(&first.token)).await?;
+    let mut second = f
+        .attach(
+            &id,
+            AttachMode::Resume {
+                controller_token: first.token.clone(),
+            },
+        )
+        .await?;
     assert_ne!(second.token, first.token, "pruned lease resumed");
     let recreated = f
         .listed(&id)
@@ -1858,7 +2085,7 @@ async fn workbench_lifecycle(f: &Fixture) -> Result<()> {
     // closed owner, and Close ended the old run.
     let (mut observer, observer_id) = f.observer().await?;
     close_workbench(&mut observer, 1, &id).await?;
-    let mut third = f.attach(&id, false, None).await?;
+    let mut third = f.attach(&id, AttachMode::Open {}).await?;
     assert!(
         !live_for(&mut third.ws, &run).await?,
         "Close left its run live"
@@ -1901,8 +2128,8 @@ async fn workbench_lifecycle(f: &Fixture) -> Result<()> {
 
     // Two pages closing each other both close.
     let (a, b) = (new_workbench(), new_workbench());
-    let mut a1 = f.attach(&a, false, None).await?;
-    let mut b1 = f.attach(&b, false, None).await?;
+    let mut a1 = f.attach(&a, AttachMode::Open {}).await?;
+    let mut b1 = f.attach(&b, AttachMode::Open {}).await?;
     let (sent_a, sent_b) = tokio::join!(
         a1.ws
             .send(request_frame(1, Request::WorkbenchClose { id: b.clone() })),
@@ -1931,8 +2158,8 @@ async fn takeover_and_leases(f: &Fixture) -> Result<()> {
     let folder = f.folder();
     let a = new_workbench();
     let b = new_workbench();
-    let mut a1 = f.attach(&a, false, None).await?;
-    let mut b1 = f.attach(&b, false, None).await?;
+    let mut a1 = f.attach(&a, AttachMode::Open {}).await?;
+    let mut b1 = f.attach(&b, AttachMode::Open {}).await?;
     let key = format!("workbench:{}", a);
     let snapshot = v4(&[&folder], 0);
     claim_and_watch(&mut a1.ws, &folder).await?;
@@ -1976,12 +2203,15 @@ async fn takeover_and_leases(f: &Fixture) -> Result<()> {
     let b_pid = shell_pid(&mut b_pty, &mut b_cursor).await?;
 
     // A second fresh page is busy and leaves the controller untouched.
-    assert_eq!(denied(f, &a, false, None).await?, json!({"busy":true}));
+    assert_eq!(
+        denied(f, &a, AttachMode::Open {}).await?,
+        json!({"busy":true})
+    );
     raw(&mut old_pty, b"printf '%s\\n' 'STILL-A-5120'\n").await?;
     pty_until(&mut old_pty, &mut cursor, b"STILL-A-5120").await?;
     assert!(run_status(&mut a1.ws, &terminal_run).await?);
 
-    let mut a2 = f.attach(&a, true, None).await?;
+    let mut a2 = f.attach(&a, AttachMode::Takeover {}).await?;
     assert_ne!(a2.token, a1.token, "takeover reused the loser's lease");
     // Everything the loser sends after the replacement is ready is inert.
     let late_run = new_run();
@@ -2088,26 +2318,51 @@ async fn takeover_and_leases(f: &Fixture) -> Result<()> {
     a2.ws.close(None).await?;
     drop(new_pty);
     f.wait_detached(&a, 2).await?;
-    for takeover in [false, true] {
-        assert_eq!(
-            denied(f, &a, takeover, Some(&a1.token)).await?,
-            json!({"revoked":true}),
-            "stale token reclaimed A (takeover={takeover})"
-        );
-    }
+    assert_eq!(
+        denied(
+            f,
+            &a,
+            AttachMode::Resume {
+                controller_token: a1.token.clone()
+            }
+        )
+        .await?,
+        json!({"revoked":true}),
+        "stale token reclaimed A"
+    );
     // The legitimate last page resumes its lease, replacing a half-open socket without busy.
-    let a3 = f.attach(&a, false, Some(&a2.token)).await?;
+    let a3 = f
+        .attach(
+            &a,
+            AttachMode::Resume {
+                controller_token: a2.token.clone(),
+            },
+        )
+        .await?;
     assert_eq!(a3.token, a2.token);
-    let mut a4 = f.attach(&a, false, Some(&a2.token)).await?;
+    let mut a4 = f
+        .attach(
+            &a,
+            AttachMode::Resume {
+                controller_token: a2.token.clone(),
+            },
+        )
+        .await?;
     assert_eq!(a4.token, a2.token);
     assert_ne!(a4.connection, a3.connection);
     wait_revoked(f.addr(), &a3.connection).await?;
     assert!(run_status(&mut a4.ws, &terminal_run).await?);
     // A fresh reload is busy; takeover authority belongs to one hello only.
-    assert_eq!(denied(f, &a, false, None).await?, json!({"busy":true}));
-    let mut a5 = f.attach(&a, true, None).await?;
+    assert_eq!(
+        denied(f, &a, AttachMode::Open {}).await?,
+        json!({"busy":true})
+    );
+    let mut a5 = f.attach(&a, AttachMode::Takeover {}).await?;
     retired(&mut a4.ws, "revoked").await?;
-    assert_eq!(denied(f, &a, false, None).await?, json!({"busy":true}));
+    assert_eq!(
+        denied(f, &a, AttachMode::Open {}).await?,
+        json!({"busy":true})
+    );
     assert!(alive(pid), "takeovers stopped the terminal");
 
     let (mut observer, observer_id) = f.observer().await?;
@@ -2132,7 +2387,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
     let folder = f.folder();
     let other = new_workbench();
     let mut b = f
-        .attach(&other, false, None)
+        .attach(&other, AttachMode::Open {})
         .await
         .context("drain_races: attach B")?;
 
@@ -2140,7 +2395,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
     let a = new_workbench();
     let key = format!("workbench:{}", a);
     let mut a1 = f
-        .attach(&a, false, None)
+        .attach(&a, AttachMode::Open {})
         .await
         .context("drain_races: attach A1")?;
     let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
@@ -2151,7 +2406,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
     timeout(WAIT, reached)
         .await
         .context("start did not reach gated config read")??;
-    let takeover = f.attach(&a, true, None);
+    let takeover = f.attach(&a, AttachMode::Takeover {});
     tokio::pin!(takeover);
     assert!(
         timeout(Duration::from_millis(500), &mut takeover)
@@ -2249,7 +2504,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
     // Close during a stalled start, with its requester gone.
     let c = new_workbench();
     let mut c1 = f
-        .attach(&c, false, None)
+        .attach(&c, AttachMode::Open {})
         .await
         .context("drain_races: attach C1")?;
     let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
@@ -2267,7 +2522,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
         .await?;
     timeout(WAIT, async {
         loop {
-            let frame = denied(f, &c, false, None)
+            let frame = denied(f, &c, AttachMode::Open {})
                 .await
                 .context("drain_races: Close fence hello")?;
             if frame.get("error").is_some() {
@@ -2342,11 +2597,11 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
     let b = new_workbench();
     let (a_key, b_key) = (format!("workbench:{}", a), format!("workbench:{}", b));
     let mut a1 = f
-        .attach(&a, false, None)
+        .attach(&a, AttachMode::Open {})
         .await
         .context("detach_and_close: attach A1")?;
     let mut b1 = f
-        .attach(&b, false, None)
+        .attach(&b, AttachMode::Open {})
         .await
         .context("detach_and_close: attach B1")?;
     for (ws, key) in [(&mut a1.ws, &a_key), (&mut b1.ws, &b_key)] {
@@ -2488,7 +2743,7 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
         "detach stopped A's processes"
     );
     let mut a2 = f
-        .attach(&a, false, None)
+        .attach(&a, AttachMode::Open {})
         .await
         .context("detach_and_close: reattach A2")?;
     success(&mut a2.ws, 1, task_start(f, &a_task, true))
@@ -2576,7 +2831,7 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
     // Explicit Close of a detached workbench.
     let d = new_workbench();
     let mut d1 = f
-        .attach(&d, false, None)
+        .attach(&d, AttachMode::Open {})
         .await
         .context("detach_and_close: attach D1")?;
     let d_run = new_run();
@@ -2626,7 +2881,7 @@ async fn close_storage_failure(f: &Fixture) -> Result<()> {
     let e = new_workbench();
     let key = format!("workbench:{}", e);
     let snapshot = v4(&[&f.folder()], 0);
-    let mut e1 = f.attach(&e, false, None).await?;
+    let mut e1 = f.attach(&e, AttachMode::Open {}).await?;
     put_state(&mut e1.ws, 1, &key, &snapshot).await?;
     let run = new_run();
     success(&mut e1.ws, 2, terminal_start(f, &run))
@@ -2659,7 +2914,7 @@ async fn close_storage_failure(f: &Fixture) -> Result<()> {
     assert_eq!(stored(&db, &key)?.as_deref(), Some(snapshot.as_str()));
     assert!(manifest_ids(&db)?.contains(&e));
     assert_eq!(
-        denied(f, &e, false, None).await?["error"],
+        denied(f, &e, AttachMode::Open {}).await?["error"],
         json!({"kind":"invalid_argument","message":"Workbench is closing; retry Close Workbench"}),
         "failed Close reopened the workbench"
     );
@@ -2729,7 +2984,7 @@ async fn self_closed(ws: &mut Socket, close_id: u64) -> Result<()> {
 async fn reopen(f: &Fixture, id: &str) -> Result<Attached> {
     timeout(WAIT, async {
         loop {
-            let (ws, first) = f.hello(id, false, None).await?;
+            let (ws, first) = f.hello(id, AttachMode::Open {}).await?;
             if first.get("ready").is_some() {
                 return admitted(ws, first);
             }
@@ -2774,7 +3029,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     // Live own Close stops the runs and deletes the saved state.
     let a = new_workbench();
     let key = format!("workbench:{a}");
-    let mut a1 = f.attach(&a, false, None).await?;
+    let mut a1 = f.attach(&a, AttachMode::Open {}).await?;
     put_state(&mut a1.ws, 1, &key, &v4(&[&f.folder()], 0)).await?;
     let (term_run, task_run) = (new_run(), new_run());
     success(&mut a1.ws, 2, terminal_start(f, &term_run))
@@ -2847,7 +3102,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     let pids = f.repo.join("delayed-pids");
     let _ = fs::remove_file(&pids);
     let h = new_workbench();
-    let h1 = f.attach(&h, false, None).await?;
+    let h1 = f.attach(&h, AttachMode::Open {}).await?;
     let Attached {
         ws: mut h_ws,
         token: h_token,
@@ -2864,18 +3119,28 @@ async fn self_close(f: &Fixture) -> Result<()> {
         .await?;
     self_closed(&mut h_ws, 2).await?;
     timeout(WAIT, async {
-        while denied(f, &h, false, None).await?.get("error").is_none() {
+        while denied(f, &h, AttachMode::Open {})
+            .await?
+            .get("error")
+            .is_none()
+        {
             sleep(Duration::from_millis(25)).await;
         }
         Ok::<(), anyhow::Error>(())
     })
     .await
     .context("own Close never fenced the workbench")??;
-    for (takeover, token) in [(false, None), (true, None), (false, Some(h_token.as_str()))] {
+    for mode in [
+        AttachMode::Open {},
+        AttachMode::Takeover {},
+        AttachMode::Resume {
+            controller_token: h_token.clone(),
+        },
+    ] {
         assert_eq!(
-            denied(f, &h, takeover, token).await?["error"],
+            denied(f, &h, mode.clone()).await?["error"],
             closing_frame(),
-            "hello crossed the close fence (takeover={takeover}, token={token:?})"
+            "hello crossed the close fence (mode={mode:?})"
         );
     }
     sleep(Duration::from_millis(300)).await;
@@ -2908,7 +3173,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     let e = new_workbench();
     let key = format!("workbench:{e}");
     let snapshot = v4(&[&f.folder()], 0);
-    let mut e1 = f.attach(&e, false, None).await?;
+    let mut e1 = f.attach(&e, AttachMode::Open {}).await?;
     put_state(&mut e1.ws, 1, &key, &snapshot).await?;
     let run = new_run();
     success(&mut e1.ws, 2, terminal_start(f, &run))
@@ -2946,7 +3211,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     assert_eq!(stored(&db, &key)?.as_deref(), Some(snapshot.as_str()));
     assert!(manifest_ids(&db)?.contains(&e));
     assert_eq!(
-        denied(f, &e, false, None).await?["error"],
+        denied(f, &e, AttachMode::Open {}).await?["error"],
         closing_frame(),
         "failed self-close reopened the workbench"
     );
@@ -2968,8 +3233,8 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
     let root = home.join("registry");
     let f = Fixture::start(&root).await?;
     let (a, b) = (new_workbench(), new_workbench());
-    let mut a1 = f.attach(&a, false, None).await?;
-    let mut b1 = f.attach(&b, false, None).await?;
+    let mut a1 = f.attach(&a, AttachMode::Open {}).await?;
+    let mut b1 = f.attach(&b, AttachMode::Open {}).await?;
     let (mut observer, observer_id) = f.observer().await?;
     observer
         .send(request_frame(3, Request::WorkbenchList {}))
@@ -3083,8 +3348,8 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
     let (c, d) = (new_workbench(), new_workbench());
     let b_snapshot = v4(&["/tmp/project-b"], 0);
     let (c1, d1, saved_a, saved_b) = tokio::join!(
-        f.attach(&c, false, None),
-        f.attach(&d, false, None),
+        f.attach(&c, AttachMode::Open {}),
+        f.attach(&d, AttachMode::Open {}),
         put_state(&mut a1.ws, 30, &key, opaque),
         put_state(&mut b1.ws, 30, &b_key, &b_snapshot),
     );
@@ -3172,7 +3437,7 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
     })
     .await?;
     // Supersede a1's token, then leave everything detached.
-    let mut a2 = f.attach(&a, true, None).await?;
+    let mut a2 = f.attach(&a, AttachMode::Takeover {}).await?;
     retired(&mut a1.ws, "revoked").await?;
     a2.ws.close(None).await?;
     b1.ws.close(None).await?;
@@ -3189,9 +3454,29 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
         [v4(&["/tmp/leftover"], 0)],
     )?;
     let manifest = stored(&db, MANIFEST_KEY)?.context("manifest missing")?;
+    // A pre-client-label manifest still loads unchanged on restart.
+    let mut legacy: Vec<Value> = serde_json::from_str(&manifest)?;
+    let legacy_id = legacy[0]["id"]
+        .as_str()
+        .context("legacy workbench id")?
+        .to_owned();
+    legacy[0]
+        .as_object_mut()
+        .context("legacy workbench record")?
+        .remove("client");
+    db.execute(
+        "UPDATE app_state SET value_json = ?1 WHERE key = ?2",
+        rusqlite::params![serde_json::to_string(&legacy)?, MANIFEST_KEY],
+    )?;
 
     let f = Fixture::start(&root).await?;
     let after = f.list().await?;
+    assert!(after
+        .iter()
+        .find(|info| info.id == legacy_id)
+        .context("legacy record missing after restart")?
+        .client
+        .is_none());
     assert_eq!(after.len(), before.len(), "restart changed the registry");
     // A detach stamps last_seen_at after `connected` clears, so live timestamps
     // may predate the stored ones; restart must reproduce the stored manifest.
@@ -3223,10 +3508,24 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
     assert_eq!(f.list().await?.len(), after.len(), "leftover was imported");
     // Durable tokens survive restart: superseded stays revoked, last page resumes.
     assert_eq!(
-        denied(&f, &a, false, Some(&a1.token)).await?,
+        denied(
+            &f,
+            &a,
+            AttachMode::Resume {
+                controller_token: a1.token.clone()
+            }
+        )
+        .await?,
         json!({"revoked":true})
     );
-    let mut a3 = f.attach(&a, false, Some(&a2.token)).await?;
+    let mut a3 = f
+        .attach(
+            &a,
+            AttachMode::Resume {
+                controller_token: a2.token.clone(),
+            },
+        )
+        .await?;
     assert_eq!(a3.token, a2.token);
     assert_eq!(
         get_state(&mut a3.ws, 1, &key).await?.as_deref(),
@@ -3286,7 +3585,7 @@ async fn registry_and_restart(home: &Path) -> Result<()> {
         // Neither a known nor a new workbench opens, so nothing rewrites it.
         for id in [a.clone(), new_workbench()] {
             assert_eq!(
-                denied(&f, &id, false, None).await?["error"]["kind"],
+                denied(&f, &id, AttachMode::Open {}).await?["error"]["kind"],
                 "database",
                 "corrupt manifest {corrupt} admitted {id}"
             );
@@ -3409,6 +3708,9 @@ async fn run(home: &Path) -> Result<()> {
     takeover_and_leases(&f)
         .await
         .context("scenario takeover_and_leases")?;
+    quic_workbench_interop(&f)
+        .await
+        .context("scenario quic_workbench_interop")?;
     drain_races(&f).await.context("scenario drain_races")?;
     detach_and_close(&f)
         .await

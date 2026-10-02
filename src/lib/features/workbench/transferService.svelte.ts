@@ -6,7 +6,7 @@ import { notify } from '$lib/features/notifications/state.svelte'
 import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
-import type { Tab } from '$lib/features/workbench/model'
+import { tabServer, type Tab } from '$lib/features/workbench/model'
 import {
   getActiveTabId,
   getTabs,
@@ -26,15 +26,17 @@ import type {
   TransferAbortedEvent
 } from '$lib/platform'
 import type { Unsubscribe } from '$lib/api/transport'
+import { requestGroup } from './groups.svelte'
 
 const sourceTransfers = new Map<string, string>()
 const targetTransfers = new Map<string, { tab: Tab; staged: boolean }>()
+const groupTransfers = new Map<string, string[]>()
 const blockedEvents = ['beforeinput', 'keydown', 'paste', 'drop'] as const
 let initialized: Promise<Unsubscribe[]> | null = null
 let inputListenersActive = false
 
 function updateInputBlocking(): void {
-  const active = sourceTransfers.size > 0 || targetTransfers.size > 0
+  const active = sourceTransfers.size > 0 || targetTransfers.size > 0 || groupTransfers.size > 0
   if (active && !inputListenersActive) {
     for (const type of blockedEvents) globalThis.addEventListener(type, blockInput, true)
     inputListenersActive = true
@@ -70,14 +72,23 @@ function clearTargetTransfer(transferId: string): void {
   targetTransfers.delete(transferId)
   updateInputBlocking()
 }
+/** Freeze source/staged group input without discarding its views or dirty models. */
+export function setGroupTransferring(transferId: string, tabIds: string[] | null): void {
+  for (const tabId of groupTransfers.get(transferId) ?? []) setTabTransferring(tabId, false)
+  if (tabIds) {
+    groupTransfers.set(transferId, tabIds)
+    for (const tabId of tabIds) setTabTransferring(tabId, true)
+  } else groupTransfers.delete(transferId)
+  updateInputBlocking()
+}
 
-function cleanupRegistries(tab: Tab): void {
+export function cleanupRegistries(tab: Tab): void {
   if (tab.kind === 'session') sessionRegistry.detachForTransfer(tab.id)
   else if (tab.kind === 'task') taskRegistry.detachForTransfer(tab.runId)
   else if (tab.kind === 'text') modelCache.detachForTransfer(tab.id)
 }
 
-function isTab(value: unknown): value is Tab {
+export function isTab(value: unknown): value is Tab {
   if (!value || typeof value !== 'object') return false
   const tab = value as { id?: unknown; kind?: unknown; folderPath?: unknown }
   return (
@@ -95,12 +106,21 @@ async function abortLocally(transferId: string, reason: string): Promise<void> {
     .catch(() => {})
 }
 
+/** Server-workbench tabs move only with their whole group. */
+async function rejectServerTab(transferId: string, tab: Tab): Promise<boolean> {
+  if (tabServer(tab) === null) return false
+  notify.warning('Move the whole workbench', 'Tabs in a server workbench cannot move individually between windows.')
+  await abortLocally(transferId, 'Move the whole workbench instead of an individual tab')
+  return true
+}
+
 async function handleTransferRequest({ transferId, tabId }: TransferRequestEvent): Promise<void> {
   const tab = getTabs().find((candidate) => candidate.id === tabId)
   if (!tab) {
     await abortLocally(transferId, `Source tab ${tabId} no longer exists`)
     return
   }
+  if (await rejectServerTab(transferId, tab)) return
 
   setSourceTransfer(transferId, tabId)
   try {
@@ -129,6 +149,7 @@ async function handleTransferImport({ transferId, exportPayload, targetIndex }: 
   }
 
   const tab = exportPayload.tab
+  if (await rejectServerTab(transferId, tab)) return
   targetTransfers.set(transferId, { tab, staged: false })
   updateInputBlocking()
   try {
@@ -257,22 +278,30 @@ export function isForeignTabDrag(event: DragEvent): boolean {
   )
 }
 
-/** Initiate a cross-window transfer from a drop event. */
-export function dropForeignTab(event: DragEvent, targetIndex: number): boolean {
+/** Accept a tab or a whole group dragged in from another window. */
+export function dropFromOtherWindow(event: DragEvent, targetIndex: number): boolean {
   if (!platform.capabilities.tabTransfer) return false
-  const payload = parsePayload(event.dataTransfer?.getData(DND_MIME.SWORM_ITEM))
-  const item = payload?.items.find((candidate) => candidate.kind === 'tab')
+  const item = parsePayload(event.dataTransfer?.getData(DND_MIME.SWORM_ITEM))?.items[0]
   const targetWindow = getWorkbenchId()
-  if (!item?.sourceWindowLabel || item.sourceWindowLabel === targetWindow) return false
+  if (
+    (item?.kind !== 'tab' && item?.kind !== 'workbench') ||
+    !item.sourceWindowLabel ||
+    item.sourceWindowLabel === targetWindow
+  )
+    return false
 
   event.preventDefault()
-  void requireNative()
-    .transfers.initiate({
-      sourceWindow: item.sourceWindowLabel,
-      targetWindow,
-      tabId: item.tabId,
-      targetIndex
-    })
-    .catch((error) => notify.warning('Tab transfer failed', getErrorMessage(error)))
+  const request =
+    item.kind === 'workbench'
+      ? requestGroup(item.sourceWindowLabel, item.server, item.workbenchId, targetIndex)
+      : requireNative().transfers.initiate({
+          sourceWindow: item.sourceWindowLabel,
+          targetWindow,
+          tabId: item.tabId,
+          targetIndex
+        })
+  void request.catch((error) =>
+    notify.warning(item.kind === 'workbench' ? 'Move workbench failed' : 'Tab transfer failed', getErrorMessage(error))
+  )
   return true
 }

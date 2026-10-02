@@ -373,6 +373,13 @@ impl NixService {
             }
         }
 
+        // NixOS shell init re-sources set-environment, replacing PATH, unless
+        // this is set. Session-launched hosts pass it through `nix develop`; a
+        // systemd daemon has none, so its fish children would drop the devshell.
+        merged
+            .entry("__NIXOS_SET_ENVIRONMENT_DONE".to_string())
+            .or_insert_with(|| "1".to_string());
+
         merged
     }
 
@@ -522,6 +529,7 @@ mod tests {
         assert_eq!(merged.get("DISPLAY").unwrap(), ":0");
         assert_eq!(merged.get("CC").unwrap(), "/nix/store/.../cc");
         assert_eq!(merged.get("NEW_VAR").unwrap(), "from-nix");
+        assert_eq!(merged.get("__NIXOS_SET_ENVIRONMENT_DONE").unwrap(), "1");
     }
 
     #[test]

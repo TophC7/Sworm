@@ -21,6 +21,11 @@ import type {
   TabTransferInitiateParams
 } from '$lib/types/backend'
 import type {
+  GroupHandoff,
+  GroupImport,
+  GroupFinalized,
+  GroupAborted,
+  GroupSettled,
   NativePlatform,
   OsDropEvent,
   Platform,
@@ -41,7 +46,7 @@ function onWindowEvent<T>(name: string, handler: (payload: T) => void): Promise<
 
 const native: NativePlatform = {
   window: {
-    create: () => invoke<string>('window_create'),
+    create: (target) => invoke<string>('window_create', { target: target ?? null }),
     ready: (restoredTaskRuns) => invoke<void>('window_ready', { restoredTaskRuns }),
     close: () => invoke<void>('window_close'),
     onCloseRequested: (handler) => getCurrentWindow().onCloseRequested(handler),
@@ -51,7 +56,19 @@ const native: NativePlatform = {
     toggleMaximize: () => getCurrentWindow().toggleMaximize(),
     isMaximized: () => getCurrentWindow().isMaximized(),
     onResized: (handler) => getCurrentWindow().onResized(handler),
-    setDecorations: (enabled) => getCurrentWindow().setDecorations(enabled)
+    setDecorations: (enabled) => getCurrentWindow().setDecorations(enabled),
+    groupHandoff: (sourceWindow, server, workbenchId, index, targetWindow) =>
+      invoke<void>('window_group_handoff', { sourceWindow, server, workbenchId, index, targetWindow }),
+    groupExported: (transferId, attachmentId, tabs, activeTabId, modelStates) =>
+      invoke<void>('window_group_exported', { transferId, attachmentId, tabs, activeTabId, modelStates }),
+    groupStaged: (transferId) => invoke<void>('window_group_staged', { transferId }),
+    groupAbort: (transferId, reason) => invoke<void>('window_group_abort', { transferId, reason }),
+    onGroupRequest: (handler) => onWindowEvent<GroupHandoff>('group-transfer-request', handler),
+    onGroupImport: (handler) => onWindowEvent<GroupImport>('group-transfer-import', handler),
+    onGroupCommitted: (handler) => onWindowEvent<GroupHandoff>('group-transfer-committed', handler),
+    onGroupFinalized: (handler) => onWindowEvent<GroupFinalized>('group-transfer-finalized', handler),
+    onGroupAborted: (handler) => onWindowEvent<GroupAborted>('group-transfer-aborted', handler),
+    onGroupSettled: (handler) => onEvent<GroupSettled>('group-transfer-settled', handler)
   },
   dialogs: {
     selectDirectory: () => invoke<string | null>('folder_select_directory'),
@@ -102,7 +119,8 @@ const native: NativePlatform = {
     rename: (server, name) => invoke<void>('rename_remote', { server, name }),
     remove: (server) => invoke<void>('remove_remote', { server }),
     onStatus: (handler) => onEvent<RemoteStatusEvent>('remote-status', handler),
-    onRunStatus: (handler) => onEvent<RemoteRunStatusEvent>('remote-run-status', handler)
+    onRunStatus: (handler) => onEvent<RemoteRunStatusEvent>('remote-run-status', handler),
+    releaseRuns: (runIds) => invoke<void>('remote_runs_release', { runIds })
   },
   zoom: { setZoom: (level) => getCurrentWebview().setZoom(level) }
 }

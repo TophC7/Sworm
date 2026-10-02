@@ -21,6 +21,7 @@ pub(crate) fn to_wire(event: HostEvent) -> Option<HostEventWire> {
         HostEvent::FileMoved { .. }
         | HostEvent::FileDeleted(_)
         | HostEvent::RemoteStatus { .. }
+        | HostEvent::RemoteWorkbenchesChanged { .. }
         | HostEvent::RemoteRunStatus { .. } => None,
     }
 }
@@ -97,7 +98,9 @@ pub(crate) async fn run(
 
 pub(crate) async fn claimed(session: &Mutex<Session>, event: &HostEventWire) -> bool {
     let folder = match event {
-        HostEventWire::RecentFoldersChanged(_) => return true,
+        HostEventWire::RecentFoldersChanged(_) | HostEventWire::WorkbenchesChanged(()) => {
+            return true
+        }
         HostEventWire::FilesChanged(event) => Some(event.folder_path.as_str()),
         HostEventWire::GitChanged(event) => Some(event.folder_path.as_str()),
         HostEventWire::SettingsChanged(event) => match event.folder_path.as_deref() {

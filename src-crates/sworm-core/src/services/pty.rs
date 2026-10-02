@@ -1274,6 +1274,31 @@ impl PtyService {
         Ok(())
     }
 
+    /// Move an adopted proxy without a native subscriber transfer. Its daemon
+    /// retains the process; the target replaces the view from daemon replay.
+    pub fn reassign_adopted(&self, run_id: &str, source: &str, target: &str) -> Result<(), String> {
+        let entry = self.entry(run_id)?;
+        let live = Self::active_entry(&entry, run_id)?;
+        if !live.backend.detaches_on_shutdown() {
+            return Err(format!("PTY session is not adopted: {run_id}"));
+        }
+        let mut stream = live.event_sink.state.lock();
+        let mut state = entry.state.lock();
+        if state.owner_id.as_deref() != Some(source)
+            || !matches!(&state.run, RunSlot::Active(current) if Arc::ptr_eq(current, &live))
+        {
+            return Err(format!(
+                "PTY session belongs to a different owner: {run_id}"
+            ));
+        }
+        if stream.transfer_pending {
+            return Err(format!("PTY transfer is pending: {run_id}"));
+        }
+        stream.owner_id = Some(target.to_owned());
+        state.owner_id = Some(target.to_owned());
+        Ok(())
+    }
+
     /// Discard rollback data once a transfer no longer needs its original sink.
     pub fn commit_transfer(&self, run_id: &str) {
         if let Ok(entry) = self.entry(run_id) {
@@ -2606,6 +2631,46 @@ mod tests {
         sink.emit_output(b"late".to_vec());
         assert!(old_view.lock().is_empty());
         assert_eq!(service.run_state("proxy"), None);
+        assert!(!killed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn adopted_owner_reassignment_protects_target_from_source_cleanup() {
+        let service = PtyService::new();
+        let killed = Arc::new(AtomicBool::new(false));
+        service
+            .adopt(
+                "moved-proxy".into(),
+                Box::new(FakeBackend {
+                    killed: Arc::clone(&killed),
+                    detaches: true,
+                }),
+                Some(channels(Arc::new(Mutex::new(Vec::new())))),
+                Some("source".into()),
+            )
+            .unwrap();
+        assert!(service
+            .reassign_adopted("moved-proxy", "other", "target")
+            .is_err());
+        service
+            .reassign_adopted("moved-proxy", "source", "target")
+            .unwrap();
+        assert!(service
+            .detach_adopted("moved-proxy", Some("source"))
+            .is_err());
+        assert!(!service.stop_owned_run("moved-proxy", "source").unwrap());
+        service.ensure_owner("moved-proxy", Some("target")).unwrap();
+        service
+            .reassign_adopted("moved-proxy", "target", "source")
+            .unwrap();
+        service.pause_owned("moved-proxy", "source").unwrap();
+        assert!(service
+            .reassign_adopted("moved-proxy", "source", "target")
+            .is_err());
+        service.commit_transfer("moved-proxy");
+        service
+            .detach_adopted("moved-proxy", Some("source"))
+            .unwrap();
         assert!(!killed.load(Ordering::Acquire));
     }
 

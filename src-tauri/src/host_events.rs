@@ -25,6 +25,8 @@ pub fn host_event_sink(
         let result = match event {
             HostEvent::RemoteStatus { server, connected, last_error, state } =>
                 app.emit("remote-status", json!({ "server": server, "connected": connected, "last_error": last_error, "state": state })),
+            HostEvent::RemoteWorkbenchesChanged { server } =>
+                app.emit("workbenches-changed", json!({ "server": server })),
             HostEvent::RemoteRunStatus { run_id, state } =>
                 app.emit("remote-run-status", json!({ "runId": run_id, "state": state })),
             HostEvent::FilesChanged(payload) => app.emit(FILES_CHANGED_EVENT, payload),

@@ -65,7 +65,9 @@ export interface FilePathChangedPayload {
 }
 
 export type OpenTarget =
-  { type: 'folder'; folder_path: string } | { type: 'file'; folder_path: string; file_path: string }
+  | { type: 'folder'; folder_path: string }
+  | { type: 'file'; folder_path: string; file_path: string }
+  | { type: 'workbench'; server: string; workbench_id: string }
 
 export interface FolderInfo {
   path: string
@@ -94,16 +96,24 @@ export interface AppRuntimeInfo {
   file_descriptor_count: number | null
 }
 
-/** Durable web workbench on Home; `connected`/`running` are live observations. */
+/** Server-owned durable workbench; `connected`/`running` are live observations. */
 export interface WorkbenchInfo {
   id: string
   created_at: string
   last_seen_at: string
   connected: boolean
+  client: string | null
+  yours: boolean
   /** Tab folders from the saved layout, active tab's folder first. */
   folders: string[]
   running: WorkbenchRun[]
 }
+
+export type AttachMode = { kind: 'open' } | { kind: 'resume'; controller_token: string } | { kind: 'takeover' }
+
+export type WorkbenchAttached =
+  | { kind: 'ready'; attachment_id: string; controller_token: string; snapshot: string }
+  | { kind: 'busy' | 'revoked'; client: string | null; snapshot: string }
 
 /** A live process a workbench left running. */
 export type WorkbenchRun =

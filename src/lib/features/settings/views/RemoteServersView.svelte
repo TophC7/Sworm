@@ -8,6 +8,7 @@
   import { copyToClipboard } from '$lib/utils/clipboard'
   import RemotePairForm from '$lib/features/remotes/RemotePairForm.svelte'
   import { pairForm } from '$lib/features/remotes/state.svelte'
+  import { remoteDotClass } from '$lib/features/remotes/remoteDot'
   import type { RemoteSettings, RemoteStatus } from '$lib/types/backend'
 
   let remotes = $state<Record<string, RemoteSettings>>({})
@@ -134,15 +135,7 @@
       <div class="flex items-center justify-between gap-3">
         <h4 class="text-md text-bright">{server}</h4>
         <span class="flex items-center gap-1.5 text-sm text-muted">
-          <span
-            class="h-2 w-2 rounded-full {status?.state === 'connected'
-              ? 'bg-success'
-              : status?.state === 'error'
-                ? 'bg-danger'
-                : status?.state === 'reconnecting'
-                  ? 'bg-warning'
-                  : 'bg-muted'}"
-          ></span>
+          <span class="h-2 w-2 rounded-full {remoteDotClass(status?.state ?? 'disconnected')}"></span>
           {status?.state ?? 'disconnected'}
         </span>
       </div>

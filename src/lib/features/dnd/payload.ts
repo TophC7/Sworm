@@ -3,6 +3,7 @@ import type { TabId } from '$lib/features/workbench/model'
 export const DND_MIME = {
   SWORM_ITEM: 'application/vnd.sworm.item+json',
   SWORM_TAB: 'application/vnd.sworm.kind.tab',
+  SWORM_WORKBENCH: 'application/vnd.sworm.kind.workbench',
   SWORM_FILE: 'application/vnd.sworm.kind.file',
   SWORM_GIT_CHANGE: 'application/vnd.sworm.kind.git-change',
   TEXT: 'text/plain',
@@ -14,6 +15,14 @@ export interface TabDragItem {
   kind: 'tab'
   tabId: TabId
   sourceWindowLabel?: string
+}
+
+/** A window's whole server group, dragged by its server tab. */
+export interface WorkbenchDragItem {
+  kind: 'workbench'
+  server: string
+  workbenchId: string
+  sourceWindowLabel: string
 }
 
 export interface FileDragItem {
@@ -35,7 +44,7 @@ export interface OsFilesDragItem {
   paths: string[]
 }
 
-export type SwormDragKind = TabDragItem | FileDragItem | GitChangeDragItem | OsFilesDragItem
+export type SwormDragKind = TabDragItem | WorkbenchDragItem | FileDragItem | GitChangeDragItem | OsFilesDragItem
 
 export interface DragPayload {
   items: SwormDragKind[]
@@ -61,6 +70,9 @@ export function stampDataTransfer(dataTransfer: DataTransfer, payload: DragPaylo
   if (payload.items.some((item) => item.kind === 'tab')) {
     dataTransfer.setData(DND_MIME.SWORM_TAB, '')
   }
+  if (payload.items.some((item) => item.kind === 'workbench')) {
+    dataTransfer.setData(DND_MIME.SWORM_WORKBENCH, '')
+  }
   if (payload.items.some((item) => item.kind === 'file')) {
     dataTransfer.setData(DND_MIME.SWORM_FILE, '')
   }
@@ -81,6 +93,7 @@ export function hasKnownDragType(types: readonly string[]): boolean {
   return (
     types.includes(DND_MIME.SWORM_ITEM) ||
     types.includes(DND_MIME.SWORM_TAB) ||
+    types.includes(DND_MIME.SWORM_WORKBENCH) ||
     types.includes(DND_MIME.SWORM_FILE) ||
     types.includes(DND_MIME.SWORM_GIT_CHANGE) ||
     types.includes(DND_MIME.URI_LIST) ||
@@ -120,6 +133,13 @@ function isDragItem(value: unknown): value is SwormDragKind {
     return (
       typeof item.tabId === 'string' &&
       (item.sourceWindowLabel === undefined || typeof item.sourceWindowLabel === 'string')
+    )
+  }
+  if (item.kind === 'workbench') {
+    return (
+      typeof item.server === 'string' &&
+      typeof item.workbenchId === 'string' &&
+      typeof item.sourceWindowLabel === 'string'
     )
   }
   if (item.kind === 'file') {

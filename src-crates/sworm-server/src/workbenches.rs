@@ -1,14 +1,11 @@
-//! Durable web workbenches: the SQLite manifest, controller leases and the
+//! Durable workbenches: the SQLite manifest, controller leases and the
 //! serialized attach/takeover/close transitions for each workbench.
 //!
 //! The manifest is read and rewritten only inside writer transactions; no
 //! mutable copy is cached. Runtime slots hold what cannot survive a restart:
 //! the transition gate, the close fence and the current or draining control.
 
-use crate::{
-    dispatch::{ServerContext, Session, SessionScope},
-    web::{Control, Terminal},
-};
+use crate::dispatch::ServerContext;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,8 +14,8 @@ use std::{
     sync::Arc,
 };
 use sworm_core::{services::app_state_kv::AppStateKvService, Host};
-use sworm_protocol::rpc::{WireError, WorkbenchInfo, WorkbenchRun};
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use sworm_protocol::rpc::{AttachMode, WireError, WorkbenchInfo, WorkbenchRun};
+use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub(crate) const MANIFEST_KEY: &str = "web_workbench_manifest";
@@ -26,6 +23,82 @@ const SNAPSHOT_PREFIX: &str = "workbench:";
 const EMPTY_SNAPSHOT: &str = r#"{"version":4,"activeTabIndex":-1,"tabs":[]}"#;
 const CLEANUP_FAILED: &str = "Workbench cleanup failed; restart the server before retrying";
 const CLOSING: &str = "Workbench is closing; retry Close Workbench";
+
+/// Why a controller stopped admitting work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Terminal {
+    Revoked,
+    Closed,
+    Disconnected,
+}
+
+/// Admission and completion shared by browser sockets and QUIC leases.
+pub(crate) struct ControlLease {
+    tasks: TaskTracker,
+    pub(crate) stop: watch::Sender<bool>,
+    terminal: parking_lot::Mutex<Option<Terminal>>,
+    completion: watch::Sender<Option<Result<(), WireError>>>,
+}
+
+impl ControlLease {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            tasks: TaskTracker::new(),
+            stop: watch::channel(false).0,
+            terminal: parking_lot::Mutex::new(None),
+            completion: watch::channel(None).0,
+        })
+    }
+
+    pub(crate) fn retire(&self, terminal: Terminal) {
+        let mut current = self.terminal.lock();
+        if current.is_none() {
+            *current = Some(terminal);
+        }
+        self.tasks.close();
+        self.stop.send_replace(true);
+    }
+
+    pub(crate) fn admitted(&self) -> bool {
+        self.terminal.lock().is_none()
+    }
+
+    pub(crate) fn terminal(&self) -> Option<Terminal> {
+        *self.terminal.lock()
+    }
+
+    pub(crate) fn admit<T>(&self, track: impl FnOnce(&TaskTracker) -> T) -> Option<T> {
+        let current = self.terminal.lock();
+        current.is_none().then(|| track(&self.tasks))
+    }
+
+    pub(crate) fn track(&self) -> Option<tokio_util::task::task_tracker::TaskTrackerToken> {
+        self.admit(TaskTracker::token)
+    }
+
+    pub(crate) async fn drained(&self) {
+        self.tasks.wait().await;
+    }
+
+    pub(crate) fn complete(&self, result: Result<(), WireError>) {
+        self.completion.send_replace(Some(result));
+    }
+
+    pub(crate) async fn completion(&self) -> Result<(), WireError> {
+        let mut completion = self.completion.subscribe();
+        let result = completion
+            .wait_for(Option::is_some)
+            .await
+            .expect("lease owns its completion sender")
+            .clone();
+        result.expect("waited for completion")
+    }
+
+    pub(crate) async fn retired(&self) {
+        let mut stop = self.stop.subscribe();
+        let _ = stop.wait_for(|stopped| *stopped).await;
+    }
+}
 
 pub(crate) fn snapshot_id(key: &str) -> Option<&str> {
     key.strip_prefix(SNAPSHOT_PREFIX)
@@ -46,6 +119,8 @@ struct WorkbenchRecord {
     /// Run owner for this incarnation. The Host keeps closed owners closed,
     /// so a recreated id must not reuse its predecessor's.
     owner: String,
+    #[serde(default)]
+    client: Option<String>,
 }
 
 /// Ids come from page URLs: short, and safe in keys and logs.
@@ -68,10 +143,18 @@ where
 pub(crate) enum Attach {
     Ready {
         token: String,
-        control: Arc<Control>,
+        lease: Arc<ControlLease>,
+        owner: String,
+        snapshot: String,
     },
-    Busy,
-    Revoked,
+    Busy {
+        client: Option<String>,
+        snapshot: String,
+    },
+    Revoked {
+        client: Option<String>,
+        snapshot: String,
+    },
 }
 
 #[derive(Default)]
@@ -97,8 +180,8 @@ struct SlotState {
     /// Set under the transition gate; a waiter that finds it retries lookup
     /// instead of publishing into an orphaned slot.
     removed: bool,
-    /// Current or still-draining control. Late cleanup clears only itself.
-    control: Option<Arc<Control>>,
+    /// Current or still-draining lease. Late cleanup clears only itself.
+    control: Option<Arc<ControlLease>>,
 }
 
 impl Workbenches {
@@ -188,7 +271,7 @@ impl Workbenches {
 /// Wait for a retired control's admitted work and Session cleanup. A failed
 /// cleanup is sticky: its slot keeps the control, so every later transition
 /// observes the same result instead of repeating partial releases.
-async fn drain(slot: &Slot, control: &Arc<Control>) -> Result<(), WireError> {
+async fn drain(slot: &Slot, control: &Arc<ControlLease>) -> Result<(), WireError> {
     control
         .completion()
         .await
@@ -317,6 +400,7 @@ fn now() -> String {
 fn info(
     record: WorkbenchRecord,
     connected: bool,
+    yours: bool,
     folders: Vec<String>,
     running: Vec<WorkbenchRun>,
 ) -> WorkbenchInfo {
@@ -325,6 +409,8 @@ fn info(
         created_at: record.created_at,
         last_seen_at: record.last_seen_at,
         connected,
+        client: record.client,
+        yours,
         folders,
         running,
     }
@@ -385,6 +471,7 @@ fn folders(snapshot: &str) -> Vec<String> {
 pub(crate) async fn list(
     host: &Arc<Host>,
     context: &Arc<ServerContext>,
+    yours: &HashSet<String>,
 ) -> Result<Vec<WorkbenchInfo>, WireError> {
     let (records, mut running) = blocking(host, |host| {
         let db = host.db.read();
@@ -406,7 +493,8 @@ pub(crate) async fn list(
         .map(|(record, folders)| {
             let connected = context.workbenches.connected(&record.id);
             let running = running.remove(&record.owner).unwrap_or_default();
-            info(record, connected, folders, running)
+            let yours = yours.contains(&record.id);
+            info(record, connected, yours, folders, running)
         })
         .collect();
     // Validated on load; the parse cannot fail here.
@@ -421,6 +509,17 @@ async fn lookup(host: &Arc<Host>, id: &str) -> Result<Option<WorkbenchRecord>, W
         Ok(load(host.db.read().conn())?
             .into_iter()
             .find(|record| record.id == id))
+    })
+    .await
+}
+
+pub(crate) async fn snapshot(host: &Arc<Host>, id: &str) -> Result<String, WireError> {
+    let id = id.to_owned();
+    blocking(host, move |host| {
+        AppStateKvService::new()
+            .get(host.db.read().conn(), &snapshot_key(&id))
+            .map_err(database)?
+            .ok_or_else(|| not_found(&id))
     })
     .await
 }
@@ -454,9 +553,14 @@ pub(crate) async fn put_snapshot(
     .await
 }
 
-/// Commit an attach: refresh last-seen and, when given, the new lease token.
+/// Commit an attach: refresh last-seen, client and (when given) lease token.
 /// An unknown id is created in the same transaction. Returns the run owner.
-fn commit_attach(host: &Host, id: &str, token: Option<&str>) -> Result<String, WireError> {
+fn commit_attach(
+    host: &Host,
+    id: &str,
+    token: Option<&str>,
+    client: &str,
+) -> Result<String, WireError> {
     transaction(host, |conn| {
         let mut records = load(conn)?;
         let stamp = now();
@@ -472,6 +576,7 @@ fn commit_attach(host: &Host, id: &str, token: Option<&str>) -> Result<String, W
                     last_seen_at: stamp.clone(),
                     controller_token: None,
                     owner: uuid::Uuid::new_v4().to_string(),
+                    client: None,
                 });
                 records.len() - 1
             }
@@ -481,6 +586,7 @@ fn commit_attach(host: &Host, id: &str, token: Option<&str>) -> Result<String, W
             record.controller_token = Some(token.to_owned());
         }
         record.last_seen_at = stamp;
+        record.client = Some(client.to_owned());
         let owner = record.owner.clone();
         store(conn, &records)?;
         Ok(owner)
@@ -488,14 +594,14 @@ fn commit_attach(host: &Host, id: &str, token: Option<&str>) -> Result<String, W
 }
 
 /// Bind a new control as the workbench's controller, creating the workbench
-/// when the id is unknown. Lease rules: a matching token resumes, a stale one
-/// is revoked, an active controller is busy unless this hello takes over.
+/// when the id is unknown. A matching token resumes, a stale one is revoked,
+/// and an active controller is busy unless the caller takes over.
 pub(crate) async fn attach(
     host: &Arc<Host>,
     context: &Arc<ServerContext>,
     id: String,
-    takeover: bool,
-    token: Option<String>,
+    mode: AttachMode,
+    client: String,
 ) -> Result<Attach, WireError> {
     if !valid_id(&id) {
         return Err(WireError::InvalidArgument {
@@ -513,14 +619,23 @@ pub(crate) async fn attach(
             let record = lookup(&host, &id).await?;
             let existing = slot.state.lock().control.clone();
             // An unknown id has no lease to resume: it is created fresh.
-            let resume = token.filter(|_| record.is_some());
-            let (token, owner) = match resume {
-                Some(token) => {
-                    if record.and_then(|record| record.controller_token).as_deref()
+            let mode = match mode {
+                AttachMode::Resume { .. } if record.is_none() => AttachMode::Open {},
+                mode => mode,
+            };
+            let (token, owner) = match mode {
+                AttachMode::Resume {
+                    controller_token: token,
+                } => {
+                    if record
+                        .as_ref()
+                        .and_then(|record| record.controller_token.as_deref())
                         != Some(token.as_str())
                     {
+                        let client = record.as_ref().and_then(|record| record.client.clone());
+                        let snapshot = snapshot(&host, &id).await?;
                         workbenches.remove_if_idle(&id, &slot);
-                        return Ok(Attach::Revoked);
+                        return Ok(Attach::Revoked { client, snapshot });
                     }
                     // Same lease: a half-open predecessor is replaced, never busy.
                     if let Some(old) = existing {
@@ -528,17 +643,21 @@ pub(crate) async fn attach(
                         drain(&slot, &old).await?;
                     }
                     let attached = id.clone();
-                    let owner =
-                        blocking(&host, move |host| commit_attach(host, &attached, None)).await?;
+                    let label = client.clone();
+                    let owner = blocking(&host, move |host| {
+                        commit_attach(host, &attached, None, &label)
+                    })
+                    .await?;
                     (token, owner)
                 }
-                None if takeover => {
+                AttachMode::Takeover {} => {
                     // Persist first: a failed write leaves the old controller intact,
                     // and a restart can never restore the loser's token.
                     let token = uuid::Uuid::new_v4().to_string();
                     let (attached, lease) = (id.clone(), token.clone());
+                    let label = client.clone();
                     let owner = blocking(&host, move |host| {
-                        commit_attach(host, &attached, Some(&lease))
+                        commit_attach(host, &attached, Some(&lease), &label)
                     })
                     .await?;
                     if let Some(old) = existing {
@@ -547,29 +666,39 @@ pub(crate) async fn attach(
                     }
                     (token, owner)
                 }
-                None => {
+                AttachMode::Open {} => {
                     if let Some(old) = existing {
                         if old.admitted() {
-                            return Ok(Attach::Busy);
+                            let client = record.as_ref().and_then(|record| record.client.clone());
+                            return Ok(Attach::Busy {
+                                client,
+                                snapshot: snapshot(&host, &id).await?,
+                            });
                         }
                         drain(&slot, &old).await?;
                     }
                     let token = uuid::Uuid::new_v4().to_string();
                     let (attached, lease) = (id.clone(), token.clone());
+                    let label = client.clone();
                     let owner = blocking(&host, move |host| {
-                        commit_attach(host, &attached, Some(&lease))
+                        commit_attach(host, &attached, Some(&lease), &label)
                     })
                     .await?;
                     (token, owner)
                 }
             };
-            let control = Control::new(Session::new(
-                None,
-                true,
-                SessionScope::WebWorkbench { id, owner },
+            let snapshot = snapshot(&host, &id).await?;
+            let lease = ControlLease::new();
+            slot.state.lock().control = Some(Arc::clone(&lease));
+            let _ = context.host_events.send(Arc::new(
+                sworm_protocol::rpc::HostEventWire::WorkbenchesChanged(()),
             ));
-            slot.state.lock().control = Some(Arc::clone(&control));
-            Ok(Attach::Ready { token, control })
+            Ok(Attach::Ready {
+                token,
+                lease,
+                owner,
+                snapshot,
+            })
         })
         .await
 }
@@ -582,7 +711,7 @@ pub(crate) async fn detach(
     context: &Arc<ServerContext>,
     id: String,
     token: String,
-    control: &Arc<Control>,
+    control: &Arc<ControlLease>,
 ) {
     let slot = context.workbenches.slots.lock().get(&id).cloned();
     let cleaned = match slot {
@@ -623,15 +752,20 @@ pub(crate) async fn detach(
                     if empty {
                         let owner = record.owner.clone();
                         delete(conn, &detached)?;
-                        return Ok(Some(owner));
+                        return Ok(Some(Some(owner)));
                     }
                     record.last_seen_at = now();
                     store(conn, &records)?;
-                    Ok(None)
+                    Ok(Some(None))
                 })
             })
             .await?;
-            let Some(owner) = pruned else {
+            if pruned.is_some() {
+                let _ = context.host_events.send(Arc::new(
+                    sworm_protocol::rpc::HostEventWire::WorkbenchesChanged(()),
+                ));
+            }
+            let Some(Some(owner)) = pruned else {
                 workbenches.remove_if_idle(&id, &slot);
                 return Ok(());
             };
@@ -695,6 +829,9 @@ pub(crate) async fn close(
         })
         .await?;
         workbenches.remove(&id, &slot);
+        let _ = context.host_events.send(Arc::new(
+            sworm_protocol::rpc::HostEventWire::WorkbenchesChanged(()),
+        ));
         Ok(())
     });
     let Some(caller_closing) = caller_closing else {
@@ -742,12 +879,16 @@ mod tests {
         context: &Arc<ServerContext>,
         id: &str,
         token: Option<String>,
-    ) -> (String, Arc<Control>) {
-        match attach(host, context, id.to_owned(), false, token)
+    ) -> (String, Arc<ControlLease>) {
+        let mode = match token {
+            Some(controller_token) => AttachMode::Resume { controller_token },
+            None => AttachMode::Open {},
+        };
+        match attach(host, context, id.to_owned(), mode, "browser".into())
             .await
             .unwrap()
         {
-            Attach::Ready { token, control } => (token, control),
+            Attach::Ready { token, lease, .. } => (token, lease),
             _ => panic!("attach was not ready"),
         }
     }
@@ -758,7 +899,7 @@ mod tests {
         context: &Arc<ServerContext>,
         id: &str,
         token: String,
-        control: &Arc<Control>,
+        control: &Arc<ControlLease>,
     ) {
         control.retire(Terminal::Disconnected);
         control.complete(Ok(()));
@@ -766,7 +907,7 @@ mod tests {
     }
 
     /// Completes `control` once a transition retires it, as its socket would.
-    fn socket(control: &Arc<Control>) -> tokio::task::JoinHandle<()> {
+    fn socket(control: &Arc<ControlLease>) -> tokio::task::JoinHandle<()> {
         let control = Arc::clone(control);
         tokio::spawn(async move {
             control.retired().await;
@@ -831,7 +972,15 @@ mod tests {
                     .unwrap()
                     .is_some());
                 assert_eq!(
-                    attach(&host, &context, a.clone(), true, None).await.err(),
+                    attach(
+                        &host,
+                        &context,
+                        a.clone(),
+                        AttachMode::Takeover {},
+                        "browser".into()
+                    )
+                    .await
+                    .err(),
                     Some(closing())
                 );
                 external.execute_batch("DROP TRIGGER keep;").unwrap();
@@ -917,9 +1066,17 @@ mod tests {
                 }
                 assert!(is_registered(&host, &b).await.unwrap());
                 assert_eq!(
-                    attach(&host, &context, b.clone(), false, Some(token))
-                        .await
-                        .err(),
+                    attach(
+                        &host,
+                        &context,
+                        b.clone(),
+                        AttachMode::Resume {
+                            controller_token: token
+                        },
+                        "browser".into()
+                    )
+                    .await
+                    .err(),
                     Some(closing())
                 );
             });

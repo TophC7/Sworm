@@ -1,4 +1,9 @@
-use crate::{auth, events::HostEvents, pty_stream::RunFanout, workbenches};
+use crate::{
+    auth,
+    events::HostEvents,
+    pty_stream::RunFanout,
+    workbenches::{self, Attach, ControlLease, Terminal},
+};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -14,6 +19,7 @@ use sworm_remote::Fingerprint;
 use tokio::sync::{
     watch, Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
 };
+use tokio_util::task::TaskTracker;
 
 pub(crate) struct ServerContext {
     pub config_dir: PathBuf,
@@ -28,7 +34,7 @@ pub(crate) struct ServerContext {
     /// Per-connection LSP streams, keyed by session id. A session's stream
     /// owns its server: closing it kills the process.
     pub lsp: crate::lsp_stream::LspStreams,
-    /// Durable web workbench registry and its per-workbench transition slots.
+    /// Durable workbench registry and its per-workbench transition slots.
     pub(crate) workbenches: workbenches::Workbenches,
 }
 
@@ -241,14 +247,14 @@ fn folder_operation_join(error: tokio::task::JoinError) -> WireError {
     }
 }
 
-/// Which surface a connection controls. Only server hello processing assigns
-/// a web scope; no RPC payload can choose its run owner.
+/// Scope of a request. Only an admitted workbench control supplies its owner;
+/// an unscoped QUIC request cannot choose one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SessionScope {
     Quic,
     /// `owner` is the record's run-owner incarnation, resolved at attach: the
     /// Host tombstones closed owners, so a recreated id needs a fresh one.
-    WebWorkbench {
+    Workbench {
         id: String,
         owner: String,
     },
@@ -258,9 +264,40 @@ impl SessionScope {
     /// Stable PTY owner. LSP ownership stays connection-scoped (`subscriber_id`).
     fn run_owner(&self) -> Option<&str> {
         match self {
-            Self::WebWorkbench { owner, .. } => Some(owner),
+            Self::Workbench { owner, .. } => Some(owner),
             Self::Quic => None,
         }
+    }
+}
+
+pub(crate) struct Lease {
+    pub control: Arc<ControlLease>,
+    token: String,
+    attachment_id: String,
+    pub owner: String,
+}
+
+/// One retained attempt per workbench on this authenticated connection.
+/// Supersession wakes recovery immediately; the shared gate fences publication.
+struct AttachAttempt {
+    attachment_id: String,
+    gate: Arc<Mutex<()>>,
+    finished: watch::Sender<bool>,
+}
+
+struct FinishAttach(Arc<AttachAttempt>);
+
+impl Drop for FinishAttach {
+    fn drop(&mut self) {
+        self.0.finished.send_replace(true);
+    }
+}
+
+const MAX_CANCELLED_ATTACHMENTS: usize = 64;
+
+fn recovery_capacity() -> WireError {
+    WireError::InvalidArgument {
+        message: "Attach recovery capacity exhausted; reconnect before attaching".into(),
     }
 }
 
@@ -273,6 +310,13 @@ pub(crate) struct Session {
     pub next_events: u64,
     pub events: Option<(u64, watch::Sender<bool>)>,
     pub scope: SessionScope,
+    pub leases: Arc<Mutex<HashMap<String, Lease>>>,
+    attach_attempts: HashMap<String, Arc<AttachAttempt>>,
+    /// Unknown recovery cancels that exact late arrival. Never evict these
+    /// identities: at capacity, new attach/unknown recovery fails closed.
+    cancelled_attachments: HashMap<String, HashSet<String>>,
+    cancelled_attachment_count: usize,
+    pub lease_watchers: TaskTracker,
 }
 
 impl Session {
@@ -290,6 +334,11 @@ impl Session {
             next_events: 0,
             events: None,
             scope,
+            leases: Arc::new(Mutex::new(HashMap::new())),
+            attach_attempts: HashMap::new(),
+            cancelled_attachments: HashMap::new(),
+            cancelled_attachment_count: 0,
+            lease_watchers: TaskTracker::new(),
         }
     }
 }
@@ -298,6 +347,7 @@ struct DispatchRuntime<'a> {
     host: &'a Arc<Host>,
     context: &'a Arc<ServerContext>,
     session: &'a Mutex<Session>,
+    scope: SessionScope,
 }
 
 /// One daemon-side method per operation.
@@ -328,6 +378,10 @@ macro_rules! dispatch_operation {
     // Server registry operations; the Host has no workbench methods.
     (#[route($route:ident)] WorkbenchList => $($rest:tt)*) => {};
     (#[route($route:ident)] WorkbenchClose => $($rest:tt)*) => {};
+    (#[route($route:ident)] WorkbenchAttach => $($rest:tt)*) => {};
+    (#[route($route:ident)] WorkbenchDetach => $($rest:tt)*) => {};
+    (#[route($route:ident)] WorkbenchRecover => $($rest:tt)*) => {};
+    (#[route($route:ident)] WorkbenchSave => $($rest:tt)*) => {};
     (
         #[route(server)]
         SettingsPatchGlobalSection => $method:ident(
@@ -456,6 +510,17 @@ pub(crate) async fn handle(
     session: &Mutex<Session>,
     request: Request,
 ) -> Response {
+    let scope = session.lock().await.scope.clone();
+    handle_scoped(host, context, session, scope, request).await
+}
+
+pub(crate) async fn handle_scoped(
+    host: &Arc<Host>,
+    context: &Arc<ServerContext>,
+    session: &Mutex<Session>,
+    scope: SessionScope,
+    request: Request,
+) -> Response {
     {
         let session = session.lock().await;
         if !matches!(&request, Request::Pair { .. }) && !session.authorized {
@@ -466,12 +531,13 @@ pub(crate) async fn handle(
         host,
         context,
         session,
+        scope,
     }
     .dispatch(request)
     .await
 }
 
-/// Web workbenches act only on their own live runs; runs absent from memory
+/// Workbenches act only on their own live runs; runs absent from memory
 /// keep the existing UUID-only, read-only archive semantics. Caller holds the
 /// run gate.
 async fn check_run_owner(
@@ -519,13 +585,18 @@ pub(crate) async fn claim_file_read(
     session: &Mutex<Session>,
     project_path: &str,
 ) -> Result<(), WireError> {
-    if !session.lock().await.authorized {
-        return Err(unauthorized("client is not paired with this server"));
-    }
+    let scope = {
+        let session = session.lock().await;
+        if !session.authorized {
+            return Err(unauthorized("client is not paired with this server"));
+        }
+        session.scope.clone()
+    };
     DispatchRuntime {
         host,
         context,
         session,
+        scope,
     }
     .claim(project_path, "project_path")
     .await
@@ -707,7 +778,7 @@ impl DispatchRuntime<'_> {
         rows: u16,
     ) -> Result<SessionStartInfo, WireError> {
         let folder = self.claim(&folder_path, "folder_path").await?;
-        let owner = self.run_owner().await;
+        let owner = self.run_owner();
         // Once submitted, this owned operation finishes even if the RPC
         // stream disappears. Dropping a borrowed guard during Host's blocking
         // spawn would let Stop or a reused ID overtake the unfinished start.
@@ -752,7 +823,7 @@ impl DispatchRuntime<'_> {
         attach_only: bool,
     ) -> Result<(), WireError> {
         let folder = self.claim(&folder_path, "folder_path").await?;
-        let owner = self.run_owner().await;
+        let owner = self.run_owner();
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
@@ -783,7 +854,7 @@ impl DispatchRuntime<'_> {
     }
 
     async fn session_stop(&self, run_id: String) -> Result<(), WireError> {
-        let owner = self.run_owner().await;
+        let owner = self.run_owner();
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
@@ -799,7 +870,7 @@ impl DispatchRuntime<'_> {
     }
 
     async fn tasks_stop(&self, run_id: String) -> Result<(), WireError> {
-        let owner = self.run_owner().await;
+        let owner = self.run_owner();
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
@@ -815,36 +886,28 @@ impl DispatchRuntime<'_> {
     }
 
     async fn run_status(&self, run_id: String) -> Result<RunStatus, WireError> {
-        authorize_run(self.host, self.context, self.session, &run_id).await?;
+        let _operation = self.context.run_operation(&run_id).await;
+        check_run_owner(self.host, self.run_owner(), &run_id).await?;
         let host = Arc::clone(self.host);
         tokio::task::spawn_blocking(move || host.run_status(&run_id))
             .await
             .map_err(run_operation_join)?
             .map_err(Into::into)
     }
-
-    async fn run_owner(&self) -> Option<String> {
-        self.session
-            .lock()
-            .await
-            .scope
-            .run_owner()
-            .map(str::to_owned)
+    fn run_owner(&self) -> Option<String> {
+        self.scope.run_owner().map(str::to_owned)
     }
 
-    /// Reserved registry state is reachable only through registry code. A web
-    /// workbench may touch its own snapshot and scoped preferences only; QUIC
-    /// keeps arbitrary keys except registered web snapshots. Returns the
-    /// caller's workbench when `key` is its own snapshot.
+    /// Registry snapshots belong to their workbench; unscoped QUIC keeps
+    /// arbitrary keys except snapshots of registered workbenches.
     async fn app_state_scope(&self, key: &str, delete: bool) -> Result<Option<String>, WireError> {
         if key == workbenches::MANIFEST_KEY {
-            return Err(unauthorized("The web workbench manifest is reserved"));
+            return Err(unauthorized("The workbench manifest is reserved"));
         }
-        let scope = self.session.lock().await.scope.clone();
-        match scope {
-            SessionScope::WebWorkbench { id, .. } => {
+        match &self.scope {
+            SessionScope::Workbench { id, .. } => {
                 if let Some(target) = workbenches::snapshot_id(key) {
-                    if target != id {
+                    if target != id.as_str() {
                         return Err(unauthorized(
                             "Workbench snapshot belongs to another workbench",
                         ));
@@ -854,7 +917,7 @@ impl DispatchRuntime<'_> {
                             "Close Workbench is the only way to delete a workbench snapshot",
                         ));
                     }
-                    return Ok(Some(id));
+                    return Ok(Some(id.clone()));
                 }
                 // Legacy unscoped keys carry an absolute folder path.
                 if let Some(rest) = key.strip_prefix("branchesView:") {
@@ -867,7 +930,7 @@ impl DispatchRuntime<'_> {
             SessionScope::Quic => {
                 if let Some(target) = workbenches::snapshot_id(key) {
                     if workbenches::is_registered(self.host, target).await? {
-                        return Err(unauthorized("Web workbench snapshots are server-managed"));
+                        return Err(unauthorized("Workbench snapshots are server-managed"));
                     }
                 }
                 Ok(None)
@@ -897,15 +960,260 @@ impl DispatchRuntime<'_> {
     }
 
     async fn workbench_list(&self) -> Result<Vec<sworm_protocol::rpc::WorkbenchInfo>, WireError> {
-        workbenches::list(self.host, self.context).await
+        let yours: HashSet<String> = match &self.scope {
+            SessionScope::Workbench { id, .. } => [id.clone()].into(),
+            SessionScope::Quic => {
+                let leases = self.session.lock().await.leases.clone();
+                let held = leases.lock().await;
+                held.iter()
+                    .filter(|(_, lease)| lease.control.admitted())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            }
+        };
+        workbenches::list(self.host, self.context, &yours).await
     }
 
     async fn workbench_close(&self, id: String) -> Result<(), WireError> {
-        let caller = match &self.session.lock().await.scope {
-            SessionScope::WebWorkbench { id: own, .. } => Some(own.clone()),
+        let caller = match &self.scope {
+            SessionScope::Workbench { id, .. } => Some(id.as_str()),
             SessionScope::Quic => None,
         };
-        workbenches::close(self.host, self.context, id, caller.as_deref()).await
+        workbenches::close(self.host, self.context, id, caller).await
+    }
+
+    async fn workbench_attach(
+        &self,
+        id: String,
+        attachment_id: String,
+        mode: sworm_protocol::rpc::AttachMode,
+        client: String,
+    ) -> Result<sworm_protocol::rpc::WorkbenchAttached, WireError> {
+        if !matches!(self.scope, SessionScope::Quic) {
+            return Err(WireError::InvalidArgument {
+                message: "Workbench attach requires QUIC".into(),
+            });
+        }
+        let (attempt, leases, watcher) = {
+            let mut session = self.session.lock().await;
+            if session
+                .cancelled_attachments
+                .get(&id)
+                .is_some_and(|cancelled| cancelled.contains(&attachment_id))
+            {
+                return Err(WireError::NotController { workbench: id });
+            }
+            if session.cancelled_attachment_count == MAX_CANCELLED_ATTACHMENTS {
+                return Err(recovery_capacity());
+            }
+            let previous = session.attach_attempts.get(&id);
+            if previous.is_some_and(|previous| previous.attachment_id == attachment_id) {
+                return Err(WireError::InvalidArgument {
+                    message: "Attachment id already used; recover the existing attempt".into(),
+                });
+            }
+            let gate = previous.map_or_else(
+                || Arc::new(Mutex::new(())),
+                |previous| {
+                    previous.finished.send_replace(true);
+                    Arc::clone(&previous.gate)
+                },
+            );
+            let attempt = Arc::new(AttachAttempt {
+                attachment_id: attachment_id.clone(),
+                gate,
+                finished: watch::channel(false).0,
+            });
+            session
+                .attach_attempts
+                .insert(id.clone(), Arc::clone(&attempt));
+            (
+                attempt,
+                session.leases.clone(),
+                session.lease_watchers.clone(),
+            )
+        };
+        let _finish = FinishAttach(Arc::clone(&attempt));
+        let _gate = attempt.gate.lock().await;
+        if !self.current_attempt(&id, &attempt).await {
+            return Err(WireError::NotController { workbench: id });
+        }
+        let outcome =
+            workbenches::attach(self.host, self.context, id.clone(), mode, client).await?;
+        use sworm_protocol::rpc::WorkbenchAttached;
+        match outcome {
+            Attach::Busy { client, snapshot } => Ok(WorkbenchAttached::Busy { client, snapshot }),
+            Attach::Revoked { client, snapshot } => {
+                Ok(WorkbenchAttached::Revoked { client, snapshot })
+            }
+            Attach::Ready {
+                token,
+                lease,
+                owner,
+                snapshot,
+            } => {
+                let session = self.session.lock().await;
+                let current = session
+                    .attach_attempts
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &attempt));
+                if current {
+                    let previous = leases.lock().await.insert(
+                        id.clone(),
+                        Lease {
+                            control: Arc::clone(&lease),
+                            token: token.clone(),
+                            attachment_id: attachment_id.clone(),
+                            owner,
+                        },
+                    );
+                    if let Some(previous) = previous {
+                        previous.control.retire(Terminal::Disconnected);
+                    }
+                } else {
+                    lease.retire(Terminal::Disconnected);
+                }
+                drop(session);
+                let host = Arc::clone(self.host);
+                let context = Arc::clone(self.context);
+                let detach_token = token.clone();
+                let detach_id = id.clone();
+                // Teardown awaits every watcher so detach commits before shutdown.
+                watcher.spawn(async move {
+                    lease.retired().await;
+                    lease.drained().await;
+                    lease.complete(Ok(()));
+                    let mut leases = leases.lock().await;
+                    if leases.get(&detach_id).is_some_and(|current| {
+                        Arc::ptr_eq(&current.control, &lease) && current.token == detach_token
+                    }) {
+                        leases.remove(&detach_id);
+                    }
+                    drop(leases);
+                    workbenches::detach(&host, &context, detach_id, detach_token, &lease).await;
+                });
+                if !current {
+                    return Err(WireError::NotController { workbench: id });
+                }
+                Ok(WorkbenchAttached::Ready {
+                    attachment_id,
+                    controller_token: token,
+                    snapshot,
+                })
+            }
+        }
+    }
+
+    async fn current_attempt(&self, id: &str, attempt: &Arc<AttachAttempt>) -> bool {
+        self.session
+            .lock()
+            .await
+            .attach_attempts
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, attempt))
+    }
+
+    async fn workbench_recover(
+        &self,
+        id: String,
+        attachment_id: String,
+    ) -> Result<Option<sworm_protocol::rpc::WorkbenchAttached>, WireError> {
+        if !matches!(self.scope, SessionScope::Quic) {
+            return Err(WireError::InvalidArgument {
+                message: "Workbench recovery requires QUIC".into(),
+            });
+        }
+        let (attempt, leases) = {
+            let mut session = self.session.lock().await;
+            let attempt = session
+                .attach_attempts
+                .get(&id)
+                .filter(|attempt| attempt.attachment_id == attachment_id)
+                .cloned();
+            if attempt.is_none() {
+                if session
+                    .cancelled_attachments
+                    .get(&id)
+                    .is_some_and(|cancelled| cancelled.contains(&attachment_id))
+                {
+                    return Ok(None);
+                }
+                if session.cancelled_attachment_count == MAX_CANCELLED_ATTACHMENTS {
+                    return Err(recovery_capacity());
+                }
+                session
+                    .cancelled_attachments
+                    .entry(id)
+                    .or_default()
+                    .insert(attachment_id);
+                session.cancelled_attachment_count += 1;
+                return Ok(None);
+            }
+            (attempt, session.leases.clone())
+        };
+        let Some(attempt) = attempt else {
+            return Ok(None);
+        };
+        let mut finished = attempt.finished.subscribe();
+        let _ = finished.wait_for(|done| *done).await;
+        if !self.current_attempt(&id, &attempt).await {
+            return Ok(None);
+        }
+        let recovered = {
+            let leases = leases.lock().await;
+            leases
+                .get(&id)
+                .filter(|lease| lease.attachment_id == attachment_id && lease.control.admitted())
+                .map(|lease| (lease.token.clone(), Arc::clone(&lease.control)))
+        };
+        let Some((controller_token, control)) = recovered else {
+            return Ok(None);
+        };
+        let snapshot = workbenches::snapshot(self.host, &id).await;
+        // Close/takeover can retire the control while the snapshot is read.
+        if !self.current_attempt(&id, &attempt).await || !control.admitted() {
+            return Ok(None);
+        }
+        Ok(Some(sworm_protocol::rpc::WorkbenchAttached::Ready {
+            attachment_id,
+            controller_token,
+            snapshot: snapshot?,
+        }))
+    }
+
+    async fn workbench_detach(&self, id: String, attachment_id: String) -> Result<(), WireError> {
+        let leases = self.session.lock().await.leases.clone();
+        let lease = leases
+            .lock()
+            .await
+            .get(&id)
+            .filter(|lease| lease.attachment_id == attachment_id)
+            .map(|lease| Arc::clone(&lease.control));
+        if let Some(control) = lease {
+            control.retire(Terminal::Disconnected);
+        }
+        Ok(())
+    }
+
+    async fn workbench_save(&self, id: String, snapshot: String) -> Result<(), WireError> {
+        match &self.scope {
+            SessionScope::Workbench { id: own, .. } if *own == id => {
+                workbenches::put_snapshot(self.host, id, snapshot).await
+            }
+            SessionScope::Quic => {
+                let leases = self.session.lock().await.leases.clone();
+                let tracking = leases
+                    .lock()
+                    .await
+                    .get(&id)
+                    .and_then(|lease| lease.control.track());
+                let _tracking = tracking.ok_or_else(|| WireError::NotController {
+                    workbench: id.clone(),
+                })?;
+                workbenches::put_snapshot(self.host, id, snapshot).await
+            }
+            _ => Err(WireError::NotController { workbench: id }),
+        }
     }
 
     async fn lsp_start(
@@ -1122,16 +1430,364 @@ mod tests {
         );
     }
     fn paired_session(id: &str) -> Mutex<Session> {
-        Mutex::new(Session {
-            fingerprint: Some(Fingerprint([0; 32])),
-            authorized: true,
-            subscriber_id: id.into(),
-            folders: HashSet::new(),
-            folder_aliases: HashMap::new(),
-            next_events: 0,
-            events: None,
-            scope: SessionScope::Quic,
-        })
+        let mut session = Session::new(Some(Fingerprint([0; 32])), true, SessionScope::Quic);
+        session.subscriber_id = id.into();
+        Mutex::new(session)
+    }
+
+    #[test]
+    fn attach_recovery_is_connection_bound_and_supersession_safe() {
+        if std::env::var_os("SWORM_ATTACH_RECOVERY_CHILD").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("dispatch::tests::attach_recovery_is_connection_bound_and_supersession_safe")
+                .arg("--nocapture")
+                .env("SWORM_ATTACH_RECOVERY_CHILD", "1")
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join("config"))
+                .env("XDG_DATA_HOME", home.path().join("data"))
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated attach recovery test failed");
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                use std::{future::Future, task::Poll};
+                use sworm_protocol::rpc::{AttachMode, WorkbenchAttached};
+                let scratch = tempfile::tempdir().unwrap();
+                let host = Arc::new(
+                    Host::new(scratch.path().join("server.db"), Arc::new(|_| Ok(()))).unwrap(),
+                );
+                let (events, _) = tokio::sync::broadcast::channel(4);
+                let context = Arc::new(ServerContext::new(PathBuf::new(), None, events));
+                let session = paired_session("desktop");
+                let runtime = DispatchRuntime {
+                    host: &host,
+                    context: &context,
+                    session: &session,
+                    scope: SessionScope::Quic,
+                };
+                let id = "recovery".to_owned();
+                let gate = Arc::new(Mutex::new(()));
+                session.lock().await.attach_attempts.insert(
+                    id.clone(),
+                    Arc::new(AttachAttempt {
+                        attachment_id: "seed".into(),
+                        gate: Arc::clone(&gate),
+                        finished: watch::channel(true).0,
+                    }),
+                );
+                let blocked = gate.lock().await;
+                let attach = runtime.workbench_attach(
+                    id.clone(),
+                    "first".into(),
+                    AttachMode::Open {},
+                    "desktop".into(),
+                );
+                tokio::pin!(attach);
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(attach.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                let recover = runtime.workbench_recover(id.clone(), "first".into());
+                tokio::pin!(recover);
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(recover.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                drop(blocked);
+                let (attached, recovered) = tokio::join!(&mut attach, &mut recover);
+                let attached = attached.unwrap();
+                assert_eq!(recovered.unwrap(), Some(attached.clone()));
+                let WorkbenchAttached::Ready {
+                    controller_token, ..
+                } = attached
+                else {
+                    panic!("not ready")
+                };
+
+                let saved = r#"{"version":4,"activeTabIndex":0,"tabs":[{"folderPath":"/tmp"}]}"#;
+                runtime
+                    .workbench_save(id.clone(), saved.into())
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    runtime.workbench_recover(id.clone(), "first".into()).await.unwrap(),
+                    Some(WorkbenchAttached::Ready { snapshot, controller_token: token, .. })
+                        if snapshot == saved && token == controller_token
+                ));
+                let other = paired_session("other");
+                assert_eq!(
+                    handle(
+                        &host,
+                        &context,
+                        &other,
+                        Request::WorkbenchRecover {
+                            id: id.clone(),
+                            attachment_id: "first".into(),
+                        }
+                    )
+                    .await
+                    .unwrap()
+                    .workbench_recover()
+                    .unwrap(),
+                    None
+                );
+                other.lock().await.authorized = false;
+                assert!(matches!(
+                    handle(
+                        &host,
+                        &context,
+                        &other,
+                        Request::WorkbenchRecover {
+                            id: id.clone(),
+                            attachment_id: "first".into(),
+                        }
+                    )
+                    .await,
+                    Err(WireError::Unauthorized { .. })
+                ));
+
+                let resumed = runtime
+                    .workbench_attach(
+                        id.clone(),
+                        "resumed".into(),
+                        AttachMode::Resume {
+                            controller_token: controller_token.clone(),
+                        },
+                        "desktop".into(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(resumed, WorkbenchAttached::Ready { controller_token: token, .. }
+                    if token == controller_token)
+                );
+                runtime
+                    .workbench_detach(id.clone(), "first".into())
+                    .await
+                    .unwrap();
+                assert!(runtime
+                    .workbench_recover(id.clone(), "resumed".into())
+                    .await
+                    .unwrap()
+                    .is_some());
+                assert_eq!(
+                    runtime
+                        .workbench_recover(id.clone(), "first".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+
+                // Hold admitted work so takeover has retired the old controller
+                // but cannot yet publish. A later attempt supersedes its recovery.
+                let old = {
+                    let leases = session.lock().await.leases.clone();
+                    let held = leases.lock().await;
+                    Arc::clone(&held.get(&id).unwrap().control)
+                };
+                let tracking = old.track().unwrap();
+                let first = runtime.workbench_attach(
+                    id.clone(),
+                    "superseded".into(),
+                    AttachMode::Takeover {},
+                    "desktop".into(),
+                );
+                tokio::pin!(first);
+                tokio::select! {
+                    _ = old.retired() => {}
+                    result = &mut first => panic!("takeover escaped drain: {result:?}"),
+                }
+                let lost = runtime.workbench_recover(id.clone(), "superseded".into());
+                tokio::pin!(lost);
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(lost.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                let second = runtime.workbench_attach(
+                    id.clone(),
+                    "winner".into(),
+                    AttachMode::Takeover {},
+                    "desktop".into(),
+                );
+                tokio::pin!(second);
+                assert!(
+                    std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx)))
+                        .await
+                        .is_pending()
+                );
+                assert_eq!(lost.await.unwrap(), None);
+                drop(tracking);
+                let (first, second) = tokio::join!(&mut first, &mut second);
+                assert_eq!(
+                    first.unwrap_err(),
+                    WireError::NotController {
+                        workbench: id.clone()
+                    }
+                );
+                assert!(
+                    matches!(second.unwrap(), WorkbenchAttached::Ready { attachment_id, .. }
+                    if attachment_id == "winner")
+                );
+                assert_eq!(session.lock().await.attach_attempts.len(), 1);
+                runtime
+                    .workbench_detach(id.clone(), "superseded".into())
+                    .await
+                    .unwrap();
+                assert!(runtime
+                    .workbench_recover(id.clone(), "winner".into())
+                    .await
+                    .unwrap()
+                    .is_some());
+                runtime
+                    .workbench_detach(id.clone(), "winner".into())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    runtime
+                        .workbench_recover(id.clone(), "winner".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+                assert_eq!(
+                    runtime
+                        .workbench_recover("unknown".into(), "unknown".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+                assert!(!workbenches::is_registered(&host, "unknown").await.unwrap());
+                // Recovery may reach dispatch before the original attach has
+                // acquired its RPC permit. Its None fences that late arrival,
+                // even after a newer operation takes control.
+                let late_id = "late-arrival".to_owned();
+                assert_eq!(
+                    runtime
+                        .workbench_recover(late_id.clone(), "late".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+                runtime
+                    .workbench_attach(
+                        late_id.clone(),
+                        "newer".into(),
+                        AttachMode::Open {},
+                        "desktop".into(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    runtime
+                        .workbench_attach(
+                            late_id.clone(),
+                            "late".into(),
+                            AttachMode::Takeover {},
+                            "desktop".into(),
+                        )
+                        .await
+                        .unwrap_err(),
+                    WireError::NotController {
+                        workbench: late_id.clone()
+                    }
+                );
+                assert!(runtime
+                    .workbench_recover(late_id.clone(), "newer".into())
+                    .await
+                    .unwrap()
+                    .is_some());
+                assert_eq!(
+                    runtime
+                        .workbench_recover(late_id.clone(), "another-unknown".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+                assert!(runtime
+                    .workbench_recover(late_id.clone(), "newer".into())
+                    .await
+                    .unwrap()
+                    .is_some());
+
+                // Saturation preserves cancellation identities and admitted
+                // controls; no unsafe eviction permits a cancelled takeover.
+                while session.lock().await.cancelled_attachment_count < MAX_CANCELLED_ATTACHMENTS {
+                    let count = session.lock().await.cancelled_attachment_count;
+                    assert_eq!(
+                        runtime
+                            .workbench_recover(late_id.clone(), format!("cancelled-{count}"))
+                            .await
+                            .unwrap(),
+                        None
+                    );
+                }
+                assert_eq!(
+                    runtime
+                        .workbench_recover(late_id.clone(), "overflow".into())
+                        .await
+                        .unwrap_err(),
+                    recovery_capacity()
+                );
+                assert_eq!(
+                    runtime
+                        .workbench_attach(
+                            late_id.clone(),
+                            "overflow".into(),
+                            AttachMode::Takeover {},
+                            "desktop".into(),
+                        )
+                        .await
+                        .unwrap_err(),
+                    recovery_capacity()
+                );
+                assert_eq!(
+                    runtime
+                        .workbench_attach(
+                            late_id.clone(),
+                            "late".into(),
+                            AttachMode::Takeover {},
+                            "desktop".into(),
+                        )
+                        .await
+                        .unwrap_err(),
+                    WireError::NotController {
+                        workbench: late_id.clone()
+                    }
+                );
+                assert_eq!(
+                    runtime
+                        .workbench_recover(late_id.clone(), "late".into())
+                        .await
+                        .unwrap(),
+                    None
+                );
+                assert!(runtime
+                    .workbench_recover(late_id.clone(), "newer".into())
+                    .await
+                    .unwrap()
+                    .is_some());
+                runtime
+                    .workbench_detach(late_id, "newer".into())
+                    .await
+                    .unwrap();
+                let watchers = session.lock().await.lease_watchers.clone();
+                watchers.close();
+                watchers.wait().await;
+                context.workbenches.shutdown().await;
+            });
     }
 
     // Run in a child so HOME/XDG never mutate the lib-test process shared by
@@ -1409,6 +2065,7 @@ mod tests {
                     host: &host,
                     context: &context,
                     session: &b,
+                    scope: SessionScope::Quic,
                 };
                 let publication = runtime.claim(&path, "folder_path").await.unwrap();
                 // Already-owned operations share the fence; a queued release

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version selected during the QUIC TLS handshake. Bump on any
 /// wire-incompatible change once released; there is no negotiation.
-pub const ALPN: &[u8] = b"sworm/3";
+pub const ALPN: &[u8] = b"sworm/1";
 pub const DEFAULT_SERVER_PORT: u16 = 7420;
 /// Maximum encoded `Open` frame body accepted before a connection is paired,
 /// and the ceiling every non-RPC open is written with: pairing metadata,
@@ -42,19 +42,60 @@ pub struct RunStatus {
     pub exited: Option<Option<i32>>,
 }
 
-/// A durable web workbench as the Home screen lists it. `connected` and `running`
-/// are live observations, never persisted.
+/// A durable workbench as Home lists it. `connected` and `running` are live
+/// observations, never persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkbenchInfo {
     pub id: String,
     pub created_at: String,
     pub last_seen_at: String,
     pub connected: bool,
+    /// Label of the client that last attached (`"browser"` or a desktop's
+    /// host name); with `connected`, the one controlling it now.
+    pub client: Option<String>,
+    /// The caller itself holds the live lease.
+    pub yours: bool,
     /// Distinct tab folder paths from the saved V4 snapshot: the active tab's
     /// folder first, then tab order. Empty when malformed/unrecognized.
     pub folders: Vec<String>,
     /// Live, noncompleted runs owned by this workbench.
     pub running: Vec<WorkbenchRun>,
+}
+
+/// How a client asks for a workbench's controller lease. Braced variants so
+/// `deny_unknown_fields` rejects a token sent with `open`/`takeover`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AttachMode {
+    /// Take control if nobody holds it; otherwise Busy.
+    Open {},
+    /// Reclaim this client's own lease after a reconnect; Revoked if superseded.
+    Resume { controller_token: String },
+    /// Revoke the current controller. A taker has no authority to prove.
+    Takeover {},
+}
+
+/// Outcome of a desktop's workbench attach. Every outcome carries the saved
+/// V4 snapshot, so a window can show the tabs it does not control.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkbenchAttached {
+    Ready {
+        /// Caller-generated identity of this connection's attach operation.
+        attachment_id: String,
+        controller_token: String,
+        snapshot: String,
+    },
+    /// Another client holds the lease; Takeover revokes it.
+    Busy {
+        client: Option<String>,
+        snapshot: String,
+    },
+    /// The supplied lease token was superseded while this client was away.
+    Revoked {
+        client: Option<String>,
+        snapshot: String,
+    },
 }
 
 /// A live run owned by a durable web workbench.
@@ -109,10 +150,38 @@ macro_rules! sworm_rpc_ops {
             AppStatePut => app_state_put(key: String, value_json: String) -> ();
             #[route(none)]
             AppStateDelete => app_state_delete(key: String) -> ();
-            #[route(none)]
+            #[route(server)]
             WorkbenchList => workbench_list() -> Vec<$crate::rpc::WorkbenchInfo>;
-            #[route(none)]
+            #[route(server)]
             WorkbenchClose => workbench_close(id: String) -> ();
+            // Desktop lease: binds `id` to this QUIC connection until
+            // matching `workbench_detach`, a takeover, Close, or disconnect.
+            // Use a fresh attachment_id per operation; recover a lost response
+            // on this same connection instead of replaying the attach.
+            // Web pages attach through their socket hello instead.
+            #[route(server)]
+            WorkbenchAttach => workbench_attach(
+                id: String,
+                attachment_id: String,
+                mode: $crate::rpc::AttachMode,
+                client: String,
+            ) -> $crate::rpc::WorkbenchAttached;
+            #[route(server)]
+            WorkbenchDetach => workbench_detach(id: String, attachment_id: String) -> ();
+            // Wait for the matching pending attempt. Return Ready with the
+            // current snapshot only while its control remains admitted;
+            // unknown, superseded or retired attempts return None. Never attach.
+            // Unknown recovery fences that exact late attach on this connection.
+            // Bounded cancellation state never evicts identities: reconnect if
+            // its capacity error rejects new attaches or unknown recovery.
+            #[route(server)]
+            WorkbenchRecover => workbench_recover(
+                id: String,
+                attachment_id: String,
+            ) -> Option<$crate::rpc::WorkbenchAttached>;
+            // Store the snapshot of a workbench this connection controls.
+            #[route(server)]
+            WorkbenchSave => workbench_save(id: String, snapshot: String) -> ();
             #[route(none)]
             AppRuntimeInfo => app_runtime_info() -> $crate::app::AppRuntimeInfo;
             #[route(none)]
@@ -774,6 +843,12 @@ pub type Response = Result<Reply, WireError>;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Open {
     Rpc(Request),
+    /// An RPC under a workbench lease this connection holds: runs it starts
+    /// belong to that workbench.
+    WorkbenchRpc {
+        workbench: String,
+        request: Request,
+    },
     Events,
     Pty {
         run_id: String,
@@ -813,6 +888,24 @@ impl<'a> OpenRpc<'a> {
     pub fn new(request: &'a Request) -> Self {
         Self {
             kind: "rpc",
+            request,
+        }
+    }
+}
+
+/// `Open::WorkbenchRpc` without owning the request; same bytes as the owned frame.
+#[derive(Debug, Serialize)]
+pub struct OpenWorkbenchRpc<'a> {
+    kind: &'static str,
+    workbench: &'a str,
+    request: &'a Request,
+}
+
+impl<'a> OpenWorkbenchRpc<'a> {
+    pub fn new(workbench: &'a str, request: &'a Request) -> Self {
+        Self {
+            kind: "workbench_rpc",
+            workbench,
             request,
         }
     }
@@ -889,6 +982,8 @@ pub enum HostEventWire {
     NixChanged(String),
     IssuesChanged(String),
     RecentFoldersChanged(Vec<RecentFolder>),
+    /// The workbench registry changed: an attach, takeover, detach, or Close.
+    WorkbenchesChanged(()),
 }
 
 /// Wire mirror of `sworm_core::errors::ApiError` plus transport-level auth.
@@ -944,11 +1039,40 @@ pub enum WireError {
         size: u64,
         limit: u64,
     },
+    /// A workbench-scoped request found no live lease for `workbench` on this
+    /// connection: it was taken over, closed, or never attached.
+    NotController {
+        workbench: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attach_identity_is_required_at_control_boundaries() {
+        for method in ["workbench_attach", "workbench_detach", "workbench_recover"] {
+            let mut params = serde_json::json!({ "id": "workbench" });
+            if method == "workbench_attach" {
+                params["mode"] = serde_json::json!({ "kind": "open" });
+                params["client"] = serde_json::json!("desktop");
+            }
+            let mut request = serde_json::json!({ "method": method, "params": params });
+            assert!(serde_json::from_value::<Request>(request.clone()).is_err());
+            request["params"]["attachment_id"] = serde_json::json!("operation");
+            assert!(serde_json::from_value::<Request>(request).is_ok());
+        }
+        let mut ready = serde_json::json!({
+            "kind": "ready", "controller_token": "token", "snapshot": "{}"
+        });
+        assert!(serde_json::from_value::<WorkbenchAttached>(ready.clone()).is_err());
+        ready["attachment_id"] = serde_json::json!("operation");
+        assert!(matches!(
+            serde_json::from_value::<WorkbenchAttached>(ready).unwrap(),
+            WorkbenchAttached::Ready { attachment_id, .. } if attachment_id == "operation"
+        ));
+    }
 
     #[test]
     fn run_status_preserves_unknown_and_completed_without_exit_code() {
@@ -1096,5 +1220,23 @@ mod tests {
             encoded,
             "the borrowed envelope the client writes must match the owned frame"
         );
+    }
+
+    #[test]
+    fn open_workbench_rpc_borrowed_envelope_matches_owned_frame() {
+        let request = Request::WorkbenchList {};
+        let open = Open::WorkbenchRpc {
+            workbench: "wb-1".to_owned(),
+            request: request.clone(),
+        };
+        let encoded = serde_json::to_value(&open).unwrap();
+        assert_eq!(
+            serde_json::to_value(OpenWorkbenchRpc::new("wb-1", &request)).unwrap(),
+            encoded
+        );
+        assert!(matches!(
+            serde_json::from_value::<Open>(encoded).unwrap(),
+            Open::WorkbenchRpc { workbench, request: Request::WorkbenchList {} } if workbench == "wb-1"
+        ));
     }
 }

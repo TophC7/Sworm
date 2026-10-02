@@ -2,14 +2,14 @@ use crate::{
     dispatch, events, file_stream, lsp_stream, pty_stream,
     server::cleanup_session,
     stream::{StreamReader, StreamWriter},
-    workbenches::{self, Attach},
+    workbenches::{self, Attach, ControlLease, Terminal},
 };
 use axum::{
     extract::{
         ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::{header, uri::Authority, HeaderMap, StatusCode},
+    http::{header, uri::Authority, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -38,7 +38,10 @@ use tokio::{
     time::{interval_at, timeout, Instant, MissedTickBehavior},
 };
 use tokio_util::task::TaskTracker;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeader,
+};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -61,88 +64,27 @@ struct Registry {
     controls: HashMap<String, Arc<Control>>,
 }
 
-/// Why a control stopped admitting work.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Terminal {
-    Revoked,
-    Closed,
-    Disconnected,
-}
-
 pub(crate) struct Control {
     session: Arc<Mutex<dispatch::Session>>,
+    lease: Arc<ControlLease>,
     admitted: Arc<Semaphore>,
-    tasks: TaskTracker,
-    stop: watch::Sender<bool>,
-    live_ids: Arc<StdMutex<HashSet<u64>>>,
+    live_ids: StdMutex<HashSet<u64>>,
     close_code: AtomicU16,
-    /// `None` while admitted. Admission and retirement share this lock, so no
-    /// request or stream is tracked after retirement closes the tracker.
-    terminal: StdMutex<Option<Terminal>>,
-    /// Set once all admitted work and Session cleanup drained; every waiter,
-    /// including a retried Close, observes the retained result.
-    completion: watch::Sender<Option<Result<(), WireError>>>,
 }
 
 impl Control {
-    pub(crate) fn new(session: dispatch::Session) -> Arc<Self> {
+    fn new(id: String, owner: String, lease: Arc<ControlLease>) -> Arc<Self> {
         Arc::new(Self {
-            session: Arc::new(Mutex::new(session)),
+            session: Arc::new(Mutex::new(dispatch::Session::new(
+                None,
+                true,
+                dispatch::SessionScope::Workbench { id, owner },
+            ))),
+            lease,
             admitted: Arc::new(Semaphore::new(MAX_STREAMS_PER_CONNECTION as usize)),
-            tasks: TaskTracker::new(),
-            stop: watch::channel(false).0,
-            live_ids: Arc::new(StdMutex::new(HashSet::new())),
+            live_ids: StdMutex::new(HashSet::new()),
             close_code: AtomicU16::new(close_code::NORMAL),
-            terminal: StdMutex::new(None),
-            completion: watch::channel(None).0,
         })
-    }
-
-    /// Close admission, stop children and event forwarding. The first reason wins.
-    pub(crate) fn retire(&self, terminal: Terminal) {
-        let mut current = self.terminal.lock().expect("control authority poisoned");
-        if current.is_none() {
-            *current = Some(terminal);
-        }
-        self.tasks.close();
-        self.stop.send_replace(true);
-    }
-
-    pub(crate) fn admitted(&self) -> bool {
-        self.terminal
-            .lock()
-            .expect("control authority poisoned")
-            .is_none()
-    }
-
-    fn terminal(&self) -> Option<Terminal> {
-        *self.terminal.lock().expect("control authority poisoned")
-    }
-
-    /// Run `track` only while admitted, atomically with retirement.
-    fn admit<T>(&self, track: impl FnOnce() -> T) -> Option<T> {
-        let current = self.terminal.lock().expect("control authority poisoned");
-        current.is_none().then(track)
-    }
-
-    pub(crate) fn complete(&self, result: Result<(), WireError>) {
-        self.completion.send_replace(Some(result));
-    }
-
-    pub(crate) async fn completion(&self) -> Result<(), WireError> {
-        let mut completion = self.completion.subscribe();
-        let result = completion
-            .wait_for(Option::is_some)
-            .await
-            .expect("control owns its completion sender")
-            .clone();
-        result.expect("waited for completion")
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn retired(&self) {
-        let mut stop = self.stop.subscribe();
-        let _ = stop.wait_for(|stopped| *stopped).await;
     }
 }
 
@@ -175,9 +117,7 @@ struct HelloEnvelope {
 #[serde(deny_unknown_fields)]
 struct Hello {
     workbench_id: String,
-    takeover: bool,
-    #[serde(deserialize_with = "workbenches::explicit")]
-    controller_token: Option<String>,
+    mode: sworm_protocol::rpc::AttachMode,
 }
 
 #[derive(Serialize)]
@@ -234,7 +174,7 @@ impl WebState {
         registry.closing = true;
         self.closing.send_replace(true);
         for control in registry.controls.values() {
-            control.retire(Terminal::Disconnected);
+            control.lease.retire(Terminal::Disconnected);
         }
     }
 }
@@ -249,9 +189,13 @@ pub(crate) async fn run(
     let routes = Router::new()
         .route("/ws", get(control_upgrade))
         .route("/ws/stream", get(stream_upgrade))
-        .fallback_service(
+        // Revalidate every load: a heuristically cached shell from an older
+        // build speaks a stale wire protocol and never gets past the hello.
+        .fallback_service(SetResponseHeader::overriding(
             ServeDir::new(&assets).fallback(ServeFile::new(assets.join("index.html"))),
-        )
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .with_state(state.clone());
     let server = axum::serve(listener, routes)
         .with_graceful_shutdown({
@@ -382,14 +326,14 @@ async fn stream_upgrade(
         let Some(control) = registry.controls.get(id).cloned() else {
             return StatusCode::FORBIDDEN.into_response();
         };
-        let admitted = control.admit(|| {
-            if *control.stop.borrow() {
+        let admitted = control.lease.admit(|tasks| {
+            if *control.lease.stop.borrow() {
                 return Err(StatusCode::FORBIDDEN);
             }
             let permit = Arc::clone(&control.admitted)
                 .try_acquire_owned()
                 .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-            Ok((permit, control.tasks.token()))
+            Ok((permit, tasks.token()))
         });
         match admitted {
             Some(Ok((permit, token))) => (control, permit, token),
@@ -467,14 +411,19 @@ async fn control_socket(socket: WebSocket, state: WebState) {
         &state.host,
         &state.context,
         workbench.clone(),
-        hello.takeover,
-        hello.controller_token,
+        hello.mode,
+        "browser".to_owned(),
     )
     .await
     {
-        Ok(Attach::Ready { token, control }) => (token, control),
-        Ok(Attach::Busy) => return terminate(sink, BUSY.to_owned()).await,
-        Ok(Attach::Revoked) => return terminate(sink, REVOKED.to_owned()).await,
+        Ok(Attach::Ready {
+            token,
+            lease,
+            owner,
+            ..
+        }) => (token, Control::new(workbench.clone(), owner, lease)),
+        Ok(Attach::Busy { .. }) => return terminate(sink, BUSY.to_owned()).await,
+        Ok(Attach::Revoked { .. }) => return terminate(sink, REVOKED.to_owned()).await,
         Err(error) => {
             let frame = serde_json::to_string(&HandshakeError { error: &error })
                 .expect("handshake error is serializable");
@@ -485,7 +434,7 @@ async fn control_socket(socket: WebSocket, state: WebState) {
     {
         let mut registry = state.controls.lock().expect("web registry poisoned");
         if registry.closing {
-            control.retire(Terminal::Disconnected);
+            control.lease.retire(Terminal::Disconnected);
         } else {
             registry.controls.insert(id.clone(), Arc::clone(&control));
         }
@@ -498,7 +447,7 @@ async fn control_socket(socket: WebSocket, state: WebState) {
         },
     })
     .expect("ready is serializable");
-    let mut stop_rx = control.stop.subscribe();
+    let mut stop_rx = control.lease.stop.subscribe();
     let ready_sent = if *stop_rx.borrow() {
         false
     } else {
@@ -523,7 +472,7 @@ async fn control_socket(socket: WebSocket, state: WebState) {
     };
     // Retirement closes admission and stream lookup before the drain; late
     // cleanup removes only this connection's entry.
-    control.retire(Terminal::Disconnected);
+    control.lease.retire(Terminal::Disconnected);
     {
         let mut registry = state.controls.lock().expect("web registry poisoned");
         if registry
@@ -534,13 +483,20 @@ async fn control_socket(socket: WebSocket, state: WebState) {
             registry.controls.remove(&id);
         }
     }
-    control.tasks.wait().await;
+    control.lease.drained().await;
     let result = cleanup_session(&state.host, &state.context, &control.session).await;
     if let Err(error) = &result {
         tracing::error!(?error, "web connection cleanup failed");
     }
-    control.complete(result);
-    workbenches::detach(&state.host, &state.context, workbench, token, &control).await;
+    control.lease.complete(result);
+    workbenches::detach(
+        &state.host,
+        &state.context,
+        workbench,
+        token,
+        &control.lease,
+    )
+    .await;
     // The old browser's acknowledgement never gates replacement readiness.
     if let Some(writer) = writer {
         if let Err(error) = writer.await {
@@ -581,11 +537,11 @@ async fn write_control(
             break;
         }
     }
-    control.stop.send_replace(true);
+    control.lease.stop.send_replace(true);
     // Terminal state outranks the ordinary queue: queued events and replies
     // are discarded and their senders fail fast.
     drop(rx);
-    let terminal = match control.terminal() {
+    let terminal = match control.lease.terminal() {
         Some(Terminal::Revoked) => Some(REVOKED),
         Some(Terminal::Closed) => Some(CLOSED),
         Some(Terminal::Disconnected) | None => None,
@@ -606,7 +562,7 @@ async fn execute(
     request: impl Future<Output = RpcResponse>,
 ) -> Option<RpcResponse> {
     let _execution = requests.acquire_owned().await.ok()?;
-    if !control.admitted() {
+    if !control.lease.admitted() {
         return Some(Err(dispatch::unauthorized("Workbench control was retired")));
     }
     Some(request.await)
@@ -619,7 +575,7 @@ async fn read_control(
     state: &WebState,
     control: &Arc<Control>,
 ) -> u16 {
-    let mut stop = control.stop.subscribe();
+    let mut stop = control.lease.stop.subscribe();
     if *stop.borrow() {
         return close_code::NORMAL;
     }
@@ -683,7 +639,7 @@ async fn read_control(
                 let requests = Arc::clone(&state.requests);
                 let tx = tx.clone();
                 let reply_control = Arc::clone(control);
-                let admitted = control.admit(|| control.tasks.spawn(async move {
+                let admitted = control.lease.admit(|tasks| tasks.spawn(async move {
                     let dispatched = dispatch::handle(&host, &context, &session, envelope.request);
                     let Some(response) = execute(&reply_control, requests, dispatched).await else { return; };
                     match serde_json::to_string(&ReplyEnvelope { id: envelope.id, response: &response }) {
@@ -692,11 +648,11 @@ async fn read_control(
                         }
                         Ok(_) => {
                             reply_control.close_code.store(close_code::SIZE, Ordering::Relaxed);
-                            reply_control.stop.send_replace(true);
+                            reply_control.lease.stop.send_replace(true);
                         }
                         Err(_) => {
                             reply_control.close_code.store(close_code::ERROR, Ordering::Relaxed);
-                            reply_control.stop.send_replace(true);
+                            reply_control.lease.stop.send_replace(true);
                         }
                     }
                 }));
@@ -707,7 +663,7 @@ async fn read_control(
 }
 
 async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Control>) {
-    let mut stop = control.stop.subscribe();
+    let mut stop = control.lease.stop.subscribe();
     if *stop.borrow() {
         return;
     }
@@ -767,7 +723,10 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
         .await;
         return;
     };
-    if matches!(open, Open::Rpc(_) | Open::Events) {
+    if matches!(
+        open,
+        Open::Rpc(_) | Open::WorkbenchRpc { .. } | Open::Events
+    ) {
         let _ = timeout(
             IO_TIMEOUT,
             socket.send(close(close_code::POLICY, "unsupported stream open")),
@@ -776,7 +735,7 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
         return;
     }
     // Authority may have been retired while the open frame was in flight.
-    if *stop.borrow() || !control.admitted() {
+    if *stop.borrow() || !control.lease.admitted() {
         return;
     }
     let (sink, stream) = socket.split();
@@ -849,7 +808,7 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
             )
             .await;
         }
-        Open::Rpc(_) | Open::Events => unreachable!(),
+        Open::Rpc(_) | Open::WorkbenchRpc { .. } | Open::Events => unreachable!(),
     }
 }
 
@@ -860,14 +819,7 @@ mod tests {
     use sworm_protocol::rpc::Reply;
 
     fn workbench_control() -> Arc<Control> {
-        Control::new(dispatch::Session::new(
-            None,
-            true,
-            dispatch::SessionScope::WebWorkbench {
-                id: "a".into(),
-                owner: "a".into(),
-            },
-        ))
+        Control::new("a".into(), "a".into(), ControlLease::new())
     }
 
     async fn pending(future: &mut (impl Future + Unpin)) -> bool {
@@ -906,17 +858,16 @@ mod tests {
             "request did not enter dispatch"
         );
 
-        control.retire(Terminal::Revoked);
-        other.retire(Terminal::Revoked);
+        control.lease.retire(Terminal::Revoked);
+        other.lease.retire(Terminal::Revoked);
         assert!(
-            control.admit(|| ()).is_none(),
+            control.lease.admit(|_| ()).is_none(),
             "retired control admitted work"
         );
-        assert!(control.tasks.is_closed());
-        assert_eq!(control.terminal(), Some(Terminal::Revoked));
-        control.retire(Terminal::Disconnected);
+        assert_eq!(control.lease.terminal(), Some(Terminal::Revoked));
+        control.lease.retire(Terminal::Disconnected);
         assert_eq!(
-            control.terminal(),
+            control.lease.terminal(),
             Some(Terminal::Revoked),
             "first reason must win"
         );
@@ -941,15 +892,15 @@ mod tests {
 
     #[tokio::test]
     async fn completion_is_retained_for_every_waiter() {
-        let control = workbench_control();
-        let mut early = Box::pin(control.completion());
+        let lease = ControlLease::new();
+        let mut early = Box::pin(lease.completion());
         assert!(pending(&mut early).await);
         let failure = WireError::Internal {
             message: "folder operation task failed".into(),
         };
-        control.complete(Err(failure.clone()));
+        lease.complete(Err(failure.clone()));
         assert_eq!(early.await, Err(failure.clone()));
         // A retried Close observes the same result rather than a consumed signal.
-        assert_eq!(control.completion().await, Err(failure));
+        assert_eq!(lease.completion().await, Err(failure));
     }
 }
