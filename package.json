@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "dev:web": "SWORM_TARGET=web vite dev",
     "build": "vite build",
     "build:web": "SWORM_TARGET=web vite build",
     "preview": "vite preview",

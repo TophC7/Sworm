@@ -5,6 +5,7 @@ import { defineConfig } from 'vite'
 
 // Tauri expects a fixed port during dev
 const host = process.env.TAURI_DEV_HOST
+const web = process.env.SWORM_TARGET === 'web'
 const rootDir = process.cwd()
 const uiWatchRoots = ['src', 'static'].map((path) => resolve(rootDir, path))
 
@@ -24,6 +25,9 @@ export default defineConfig({
 
   // Prevent vite from obscuring Rust errors
   clearScreen: false,
+
+  // Desktop and web dev servers run side by side; never share a dep cache.
+  cacheDir: web ? 'node_modules/.vite-web' : undefined,
 
   // Pre-bundle Monaco worker entry points so dev doesn't re-scan them on each load.
   optimizeDeps: {
@@ -54,7 +58,7 @@ export default defineConfig({
   },
 
   server: {
-    port: 1420,
+    port: web ? 1430 : 1420,
     strictPort: true,
     host: host || '127.0.0.1',
     hmr: host

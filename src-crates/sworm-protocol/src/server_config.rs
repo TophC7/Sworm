@@ -44,6 +44,10 @@ pub struct WebConfig {
     /// Built frontend directory; relative paths resolve against this file's
     /// directory. Packaged launchers supply a default.
     pub assets_dir: Option<PathBuf>,
+    /// Origins (`http(s)://host[:port]`) trusted besides the page's own, for a
+    /// frontend served elsewhere such as the Vite dev server. Anything listed
+    /// gets the same unauthenticated authority as the page.
+    pub allowed_origins: Vec<String>,
 }
 
 impl Default for WebConfig {
@@ -51,6 +55,7 @@ impl Default for WebConfig {
         Self {
             listen: SocketAddr::from(([127, 0, 0, 1], 7421)),
             assets_dir: None,
+            allowed_origins: Vec::new(),
         }
     }
 }

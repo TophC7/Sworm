@@ -37,6 +37,8 @@ use tokio_tungstenite::{
 };
 
 const WAIT: Duration = Duration::from_secs(8);
+/// The fixture's `web.allowed_origins` entry, standing in for the Vite dev server.
+const TRUSTED_ORIGIN: &str = "http://trusted.example:1430";
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 struct Fixture {
@@ -61,8 +63,12 @@ impl Fixture {
         fs::write(assets.join("app.js"), "window.swormAsset = 7751;")?;
         fs::write(
             config.join("server.jsonc"),
-            serde_json::json!({ "web": { "listen": "127.0.0.1:0", "assets_dir": assets } })
-                .to_string(),
+            serde_json::json!({ "web": {
+                "listen": "127.0.0.1:0",
+                "assets_dir": assets,
+                "allowed_origins": [TRUSTED_ORIGIN],
+            } })
+            .to_string(),
         )?;
         init_repo(&repo)?;
         let handle = serve(serve_dirs(&config, &data)).await?;
@@ -598,10 +604,13 @@ async fn startup_and_policy(f: &Fixture) -> Result<()> {
         Some("null"),
         Some("https://foreign.example"),
         Some("not-an-origin"),
+        Some("http://trusted.example"),
+        Some("https://trusted.example:1430"),
     ] {
         rejected(f.addr(), "/ws", origin, 403).await?;
         rejected(f.addr(), "/ws/stream?connection_id=unknown", origin, 403).await?;
     }
+    connect(f.addr(), "/ws", Some(TRUSTED_ORIGIN)).await?;
     let (mut owner, id) = f.control().await?;
     assert!(matches!(
         rpc(
@@ -3278,6 +3287,15 @@ async fn run(home: &Path) -> Result<()> {
     assert!(
         serve(options()).await.is_err(),
         "missing web assets started successfully"
+    );
+    write_web(serde_json::json!({
+        "listen": "127.0.0.1:0",
+        "assets_dir": home.join("assets"),
+        "allowed_origins": ["http://127.0.0.1:1430/"],
+    }))?;
+    assert!(
+        serve(options()).await.is_err(),
+        "malformed allowed origin started successfully"
     );
     let occupied = TcpListener::bind("127.0.0.1:0")?;
     write_web(serde_json::json!({

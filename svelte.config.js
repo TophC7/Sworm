@@ -12,16 +12,18 @@ const routes = `src/routes-${target}`
 if (!existsSync(resolve(routes))) {
   throw new Error(`SWORM_TARGET=${target} requires ${routes}; web routes are not available until Phase 2`)
 }
-const output = target === 'desktop' ? 'build' : 'build-web'
+// Targets run side by side in dev, so each keeps its own generated route manifest.
+const suffix = target === 'desktop' ? '' : `-${target}`
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
   preprocess: vitePreprocess(),
   kit: {
     files: { routes },
+    outDir: `.svelte-kit${suffix}`,
     adapter: adapter({
-      pages: output,
-      assets: output,
+      pages: `build${suffix}`,
+      assets: `build${suffix}`,
       fallback: 'index.html'
     })
   }

@@ -68,10 +68,19 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
             &config_path,
             options.web_assets_dir.as_deref(),
         )?;
+        let allowed_origins = web_config
+            .allowed_origins
+            .iter()
+            .map(|origin| {
+                web::parse_origin(origin).with_context(|| {
+                    format!("web.allowed_origins entry {origin:?} is not http(s)://host[:port]")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let listener = tokio::net::TcpListener::bind(web_config.listen)
             .await
             .with_context(|| format!("bind web server to {}", web_config.listen))?;
-        Some((listener, assets))
+        Some((listener, assets, allowed_origins))
     } else {
         None
     };
@@ -116,7 +125,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     let request_permits = Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS));
     let web_addr = web
         .as_ref()
-        .map(|(listener, _)| listener.local_addr())
+        .map(|(listener, _, _)| listener.local_addr())
         .transpose()?;
     let (shutdown, shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(supervise(
@@ -141,7 +150,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
 
 async fn supervise(
     endpoint: quinn::Endpoint,
-    web_listener: Option<(tokio::net::TcpListener, PathBuf)>,
+    web_listener: Option<(tokio::net::TcpListener, PathBuf, Vec<web::Origin>)>,
     host: Arc<Host>,
     context: Arc<dispatch::ServerContext>,
     permits: Arc<Semaphore>,
@@ -158,7 +167,7 @@ async fn supervise(
         stop.clone(),
         shutdown.clone(),
     ));
-    if let Some((listener, assets)) = web_listener {
+    if let Some((listener, assets, allowed_origins)) = web_listener {
         let mut web = tokio::spawn(web::run(
             listener,
             assets,
@@ -167,6 +176,7 @@ async fn supervise(
                 Arc::clone(&context),
                 permits,
                 request_permits,
+                allowed_origins,
             ),
             stop.clone(),
             shutdown,

@@ -19,6 +19,7 @@ bun.lockb
 .netlify
 .wrangler
 /.svelte-kit
+/.svelte-kit-web
 /build
 /build-web
 /dist

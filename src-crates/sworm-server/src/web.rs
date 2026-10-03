@@ -56,7 +56,11 @@ pub(crate) struct WebState {
     upgrades: TaskTracker,
     /// Wakes sockets still waiting for their hello when the server stops.
     closing: Arc<watch::Sender<bool>>,
+    allowed_origins: Arc<[Origin]>,
 }
+
+/// `(scheme, host, port)` of an `http(s)://host[:port]` origin.
+pub(crate) type Origin = (String, String, u16);
 
 #[derive(Default)]
 struct Registry {
@@ -157,6 +161,7 @@ impl WebState {
         context: Arc<dispatch::ServerContext>,
         connections: Arc<Semaphore>,
         requests: Arc<Semaphore>,
+        allowed_origins: Vec<Origin>,
     ) -> Self {
         Self {
             host,
@@ -166,6 +171,7 @@ impl WebState {
             controls: Arc::new(StdMutex::new(Registry::default())),
             upgrades: TaskTracker::new(),
             closing: Arc::new(watch::channel(false).0),
+            allowed_origins: allowed_origins.into(),
         }
     }
 
@@ -235,7 +241,22 @@ fn authority(value: &str, scheme: &str) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port))
 }
 
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(crate) fn parse_origin(value: &str) -> Option<Origin> {
+    let (scheme, raw_authority) = value.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https")
+        || raw_authority
+            .chars()
+            .any(|ch| matches!(ch, '/' | '?' | '#' | '\\'))
+    {
+        return None;
+    }
+    let (host, port) = authority(raw_authority, &scheme)?;
+    Some((scheme, host, port))
+}
+
+/// The page's own origin, or one `web.allowed_origins` trusts.
+fn trusted_origin(headers: &HeaderMap, allowed: &[Origin]) -> bool {
     if headers.get_all(header::ORIGIN).iter().count() != 1
         || headers.get_all(header::HOST).iter().count() != 1
     {
@@ -244,30 +265,19 @@ fn same_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
+        .and_then(parse_origin)
     else {
         return false;
     };
-    let Some((scheme, raw_authority)) = origin.split_once("://") else {
-        return false;
-    };
-    let scheme = scheme.to_ascii_lowercase();
-    if !matches!(scheme.as_str(), "http" | "https")
-        || raw_authority
-            .chars()
-            .any(|ch| matches!(ch, '/' | '?' | '#' | '\\'))
-    {
-        return false;
+    if allowed.contains(&origin) {
+        return true;
     }
-    let Some(host) = headers
+    let (scheme, host, port) = origin;
+    headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    match (authority(raw_authority, &scheme), authority(host, &scheme)) {
-        (Some(origin), Some(host)) => origin == host,
-        _ => false,
-    }
+        .and_then(|value| authority(value, &scheme))
+        == Some((host, port))
 }
 
 fn upgrade_limits(ws: WebSocketUpgrade) -> WebSocketUpgrade {
@@ -280,7 +290,7 @@ async fn control_upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !same_origin(&headers) {
+    if !trusted_origin(&headers, &state.allowed_origins) {
         return StatusCode::FORBIDDEN.into_response();
     }
     if state
@@ -310,7 +320,7 @@ async fn stream_upgrade(
     Query(query): Query<HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !same_origin(&headers) {
+    if !trusted_origin(&headers, &state.allowed_origins) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Some(id) = query.get("connection_id") else {
