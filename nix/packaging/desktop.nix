@@ -16,6 +16,14 @@ let
     .${pkgs.stdenv.hostPlatform.system}
       or (throw "Unsupported architecture for deb: ${pkgs.stdenv.hostPlatform.system}");
 
+  rpmArch =
+    {
+      "x86_64-linux" = "x86_64";
+      "aarch64-linux" = "aarch64";
+    }
+    .${pkgs.stdenv.hostPlatform.system}
+      or (throw "Unsupported architecture for rpm: ${pkgs.stdenv.hostPlatform.system}");
+
   # Clean version string suitable for Debian package
   debVersion = builtins.replaceStrings [ "-" ] [ "." ] version;
 
@@ -93,6 +101,106 @@ let
 
     meta = {
       description = "Self-contained Debian package for Sworm desktop";
+      license = lib.licenses.agpl3Plus;
+      platforms = lib.platforms.linux;
+    };
+  };
+
+  rpm = pkgs.stdenv.mkDerivation {
+    pname = "sworm-rpm";
+    inherit version;
+
+    nativeBuildInputs = [
+      pkgs.rpm
+      pkgs.gnused
+    ];
+
+    dontUnpack = true;
+
+    buildPhase = ''
+            runHook preBuild
+
+            topdir="$TMPDIR/rpmbuild"
+            mkdir -p "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS,rpmdb}
+            pkgdir="$topdir/pkg"
+            mkdir -p "$pkgdir/usr/bin"
+            mkdir -p "$pkgdir/usr/share/applications"
+            mkdir -p "$pkgdir/usr/share/icons"
+            mkdir -p "$pkgdir/usr/share/doc/sworm"
+            mkdir -p "$pkgdir/nix/store"
+
+            # 1. Populate complete runtime closure so it runs standalone on any Fedora host
+            while IFS= read -r storePath; do
+              cp -a "$storePath" "$pkgdir/nix/store/"
+            done < "${closure}/store-paths"
+
+            # 2. Launcher in /usr/bin
+            cat > "$pkgdir/usr/bin/sworm" <<'EOF'
+      #!/bin/sh
+      exec ${sworm}/bin/sworm "$@"
+      EOF
+            chmod 0755 "$pkgdir/usr/bin/sworm"
+
+            # 3. Desktop entry and icons
+            if [ -f "${sworm}/share/applications/sworm.desktop" ]; then
+              cp "${sworm}/share/applications/sworm.desktop" "$pkgdir/usr/share/applications/"
+              sed -i 's|^Exec=sworm|Exec=/usr/bin/sworm|' "$pkgdir/usr/share/applications/sworm.desktop"
+            fi
+
+            if [ -d "${sworm}/share/icons" ]; then
+              cp -r "${sworm}/share/icons/"* "$pkgdir/usr/share/icons/"
+            fi
+
+            # 4. License
+            install -Dm644 ${src}/LICENSE "$pkgdir/usr/share/doc/sworm/LICENSE"
+
+            # 5. RPM spec file
+            cat > "$topdir/SPECS/sworm.spec" <<EOF
+      %define _binary_payload w3T.zstdio
+      %define __strip /bin/true
+      %define __brp_strip /bin/true
+      %define __brp_ldconfig /bin/true
+      %define _build_id_links none
+      AutoReqProv: no
+
+      Name: sworm
+      Version: ${debVersion}
+      Release: 1
+      Summary: Linux-first desktop app for coding-agent CLIs
+      License: AGPL-3.0-or-later
+      URL: ${homepage}
+      Packager: ${maintainer}
+      Requires: git
+      Conflicts: nix
+
+      %description
+      Sworm is a Linux-first desktop development environment for working with coding-agent CLIs.
+
+      %files
+      %defattr(-,root,root,-)
+      /usr/bin/sworm
+      /usr/share/applications/sworm.desktop
+      /usr/share/icons/hicolor/*/*/*
+      /usr/share/doc/sworm
+      /nix/store/*
+      EOF
+
+            # 6. Build the RPM package
+            rpmbuild -bb \
+              --target "${rpmArch}" \
+              --define "_topdir $topdir" \
+              --define "_dbpath $topdir/rpmdb" \
+              --buildroot "$pkgdir" \
+              "$topdir/SPECS/sworm.spec"
+
+            mkdir -p "$out"
+            cp "$topdir"/RPMS/*/*.rpm "$out/"
+
+            runHook postBuild
+    '';
+
+    meta = {
+      description = "Self-contained RPM package for Sworm desktop";
       license = lib.licenses.agpl3Plus;
       platforms = lib.platforms.linux;
     };
@@ -200,5 +308,5 @@ let
   '';
 in
 {
-  inherit deb generate-aur;
+  inherit deb rpm generate-aur;
 }

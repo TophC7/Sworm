@@ -21,7 +21,7 @@ nix run github:tophc7/Sworm
 Install and authenticate whichever agent CLI you want to use separately. Sworm detects supported installed agents; you can also open a regular terminal using your login shell.
 
 <details>
-<summary>Install on Debian or Arch</summary>
+<summary>Install on Debian, Fedora, or Arch</summary>
 
 ### Debian
 
@@ -32,6 +32,16 @@ sudo apt install ./sworm_*_$(dpkg --print-architecture).deb
 ```
 
 Available for Debian 12 on `amd64` and `arm64`. To update, install a newer release with the same command.
+
+### Fedora
+
+Download the `.rpm` for your architecture from [GitHub Releases](https://github.com/TophC7/Sworm/releases/latest), then install:
+
+```sh
+sudo dnf install ./sworm-*-1.$(uname -m).rpm
+```
+
+Supports Fedora on `x86_64` and `aarch64`. To update, install a newer release with the same command.
 
 ### Arch
 

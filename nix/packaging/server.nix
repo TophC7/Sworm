@@ -18,6 +18,13 @@ let
     .${pkgs.stdenv.hostPlatform.system}
       or (throw "Unsupported architecture for deb: ${pkgs.stdenv.hostPlatform.system}");
 
+  rpmArch =
+    {
+      "x86_64-linux" = "x86_64";
+      "aarch64-linux" = "aarch64";
+    }
+    .${pkgs.stdenv.hostPlatform.system}
+      or (throw "Unsupported architecture for rpm: ${pkgs.stdenv.hostPlatform.system}");
   tarArch =
     {
       "x86_64-linux" = "x86_64";
@@ -151,6 +158,81 @@ let
     };
   };
 
+  rpm = pkgs.stdenv.mkDerivation {
+    pname = "sworm-server-rpm";
+    inherit version;
+    nativeBuildInputs = [ pkgs.rpm ];
+    dontUnpack = true;
+
+    buildPhase = ''
+            runHook preBuild
+
+            topdir="$TMPDIR/rpmbuild"
+            mkdir -p "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS,rpmdb}
+            pkgdir="$topdir/pkg"
+            mkdir -p "$pkgdir/usr/bin" "$pkgdir/usr/lib/sworm-server/bin" "$pkgdir/usr/lib/sworm-server/lib" "$pkgdir/usr/lib/systemd/user" "$pkgdir/usr/share/doc/sworm-server"
+
+            cp -r "${bundle}/bin/." "$pkgdir/usr/lib/sworm-server/bin/"
+            cp -r "${bundle}/lib/." "$pkgdir/usr/lib/sworm-server/lib/"
+            mkdir -p "$pkgdir/usr/lib/sworm-server/share/sworm/web"
+            cp -r "${bundle}/share/sworm/web/." "$pkgdir/usr/lib/sworm-server/share/sworm/web/"
+
+            cat > "$pkgdir/usr/bin/sworm-server" <<'EOF'
+      #!/bin/sh
+      exec /usr/lib/sworm-server/bin/sworm-server "$@"
+      EOF
+            chmod +x "$pkgdir/usr/bin/sworm-server"
+            cp "${bundle}/share/systemd/user/sworm-server.service" "$pkgdir/usr/lib/systemd/user/"
+            cp "${bundle}/share/doc/sworm-server/LICENSE" "$pkgdir/usr/share/doc/sworm-server/"
+
+            cat > "$topdir/SPECS/sworm-server.spec" <<EOF
+      %define _binary_payload w3T.zstdio
+      %define __strip /bin/true
+      %define __brp_strip /bin/true
+      %define __brp_ldconfig /bin/true
+      %define _build_id_links none
+      AutoReqProv: no
+
+      Name: sworm-server
+      Version: ${cleanVersion}
+      Release: 1
+      Summary: Headless Sworm daemon for remote workspaces
+      License: AGPL-3.0-or-later
+      URL: ${homepage}
+      Packager: ${maintainer}
+      Requires: git
+
+      %description
+      Sworm server is a headless daemon for running coding-agent CLIs in remote workspaces.
+
+      %files
+      %defattr(-,root,root,-)
+      /usr/bin/sworm-server
+      /usr/lib/sworm-server
+      /usr/lib/systemd/user/sworm-server.service
+      /usr/share/doc/sworm-server/LICENSE
+      EOF
+
+            rpmbuild -bb \
+              --target "${rpmArch}" \
+              --define "_topdir $topdir" \
+              --define "_dbpath $topdir/rpmdb" \
+              --buildroot "$pkgdir" \
+              "$topdir/SPECS/sworm-server.spec"
+
+            mkdir -p "$out"
+            cp "$topdir"/RPMS/*/*.rpm "$out/"
+
+            runHook postBuild
+    '';
+
+    meta = {
+      description = "Self-contained RPM package for Sworm server";
+      license = lib.licenses.agpl3Plus;
+      platforms = lib.platforms.linux;
+    };
+  };
+
   tarball = pkgs.stdenv.mkDerivation {
     pname = "sworm-server-tarball";
     inherit version;
@@ -214,5 +296,10 @@ let
   };
 in
 {
-  inherit bundle deb tarball;
+  inherit
+    bundle
+    deb
+    rpm
+    tarball
+    ;
 }

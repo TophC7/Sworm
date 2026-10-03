@@ -32,17 +32,19 @@ jobs:
       - name: Run workspace tests
         run: nix develop --command cargo test --workspace -- --quiet
 
-  deb:
-    name: Debian (${{ matrix.arch }})
+  packages:
+    name: Packages (${{ matrix.arch }})
     needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
+            rpm_arch: x86_64
             system: x86_64-linux
             runner: ubuntu-24.04
           - arch: arm64
+            rpm_arch: aarch64
             system: aarch64-linux
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -57,19 +59,23 @@ jobs:
           mkdir -p dist
           nix build \
             .#packages.${{ matrix.system }}.deb \
+            .#packages.${{ matrix.system }}.rpm \
             .#packages.${{ matrix.system }}.server-deb \
+            .#packages.${{ matrix.system }}.server-rpm \
             .#packages.${{ matrix.system }}.server-tarball \
             --impure --out-link result
-          cp -L result*/*.deb result*/*.tar.gz dist/
+          cp -L result*/*.deb result*/*.rpm result*/*.tar.gz dist/
       - name: Install and smoke test packages on runner
         run: |
-          sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils
+          sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils rpm
           sudo dpkg -i dist/sworm_*.deb dist/sworm-server_*.deb
           desktop-file-validate /usr/share/applications/sworm.desktop
           dbus-run-session -- xvfb-run -a sh nix/packaging/smoke.sh
           sworm-server --help
           sworm-server fingerprint --help
-          # Smoke test standalone tarball
+          # Smoke test RPM package metadata
+          rpm -qp --requires dist/sworm-*.${{ matrix.rpm_arch }}.rpm
+          rpm -qp --requires dist/sworm-server-*.${{ matrix.rpm_arch }}.rpm
           mkdir -p test-tarball
           tar -xzf dist/sworm-server-*.tar.gz -C test-tarball
           test-tarball/*/bin/sworm-server --help
@@ -79,12 +85,13 @@ jobs:
           name: packages-${{ matrix.arch }}
           path: |
             dist/*.deb
+            dist/*.rpm
             dist/*.tar.gz
           if-no-files-found: error
 
   release:
     name: Assemble and release
-    needs: [version, deb]
+    needs: [version, packages]
     runs-on: ubuntu-24.04
     concurrency:
       group: github-release
@@ -110,12 +117,13 @@ jobs:
       - name: Compute checksums
         run: |
           cd dist
-          sha256sum *.deb *.tar.gz > SHA256SUMS
+          sha256sum *.deb *.rpm *.tar.gz > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release
           path: |
             dist/*.deb
+            dist/*.rpm
             dist/*.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
@@ -135,4 +143,4 @@ jobs:
           gh release create "$COMMIT_HASH" --target "$GITHUB_SHA" \
             "$latest_flag" \
             --title "$COMMIT_HASH" --generate-notes \
-            dist/*.deb dist/*.tar.gz dist/SHA256SUMS
+            dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS

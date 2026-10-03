@@ -98,8 +98,10 @@
             ;
           frontend-web = webFrontend;
           deb = desktopPackaging.deb;
+          rpm = desktopPackaging.rpm;
           generate-aur = desktopPackaging.generate-aur;
           server-deb = serverPackaging.deb;
+          server-rpm = serverPackaging.rpm;
           server-tarball = serverPackaging.tarball;
           default = sworm;
         }
