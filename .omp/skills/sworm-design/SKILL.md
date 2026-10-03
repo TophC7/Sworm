@@ -174,17 +174,16 @@ All sizes ship as Tailwind utilities (`text-2xs` … `text-5xl`). Use the named 
 
 ### 4.2 Brand SVGs
 
-Bundled under `static/svg/` (and mirrored into `extensions/Sworm Design System/assets/` for external mocks):
+Raw assets live under `src/lib/assets/` and are imported (`?url`), never served from a public folder, so Vite hashes them and a missing file fails the build. There is no `static/` directory.
 
-- `worm.svg`, `sworm.svg` — app logo; worm is 18px titlebar, 30px empty-state.
-- Provider marks: `claudecode.svg`, `codex.svg`, `omp.svg`, `gemini.svg`, `fresh.svg`.
-- `nixos.svg`, `terminal.svg`.
+- `sworm.svg` — app logo. `github.svg`, `nixos.svg`.
+- Provider marks and wordmarks: `providers/*.svg`, wired in `src/lib/features/sessions/providers/catalog.ts`.
 
 **Provider presence rule.** Provider logos render full-color when the provider is detected, `grayscale + 50% opacity` when not. This is how Sworm communicates "connected vs not available" — no extra dot, no extra label.
 
 ### 4.3 File-type icons
 
-`static/icons/bearded/*.svg` (Bearded Icons, ~400 files) map to extensions via `src/lib/icons/fileIconMap.ts`. Used exclusively by the file tree.
+`src/lib/assets/bearded/*.svg` (Bearded Icons, ~400 files). `src/lib/icons/fileIconMap.ts` resolves a filename to an icon name; `FileIcon` maps the name to its bundled URL. Used exclusively by the file tree.
 
 ### 4.4 Emoji ban
 

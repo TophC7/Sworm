@@ -132,13 +132,14 @@
 }
 
 /* ── Bundled fonts ────────────────────────────── */
+/* Relative URLs: Vite hashes and emits these with the build. */
 
 @font-face {
   font-family: 'Lexend';
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url('/fonts/Lexend-Variable.woff2') format('woff2');
+  src: url('./lib/assets/fonts/Lexend-Variable.woff2') format('woff2');
 }
 
 @font-face {
@@ -149,23 +150,7 @@
   src:
     local('Monocraft Nerd Font'),
     local('Monocraft'),
-    url('/fonts/Monocraft-nerd-fonts-patched.ttc') format('collection');
-}
-
-@font-face {
-  font-family: 'SF Mono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/SFMono-Regular.otf') format('opentype');
-}
-
-@font-face {
-  font-family: 'SF Mono';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/SFMono-Bold.otf') format('opentype');
+    url('./lib/assets/fonts/Monocraft-nerd-fonts-patched.ttc') format('collection');
 }
 
 @font-face {
@@ -173,7 +158,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('/fonts/plantin-mt-pro/PlantinMTProSmBd.TTF') format('truetype');
+  src: url('./lib/assets/fonts/plantin-mt-pro/PlantinMTProSmBd.TTF') format('truetype');
 }
 
 /* ── Component classes ────────────────────────── */

@@ -8,7 +8,7 @@ Tabs can belong to different repositories. Switch tabs, and the file tree and Gi
 
 Sworm is a passion project in active development, built around a simple idea: keep the agent's own interface, and make the work around it easier.
 
-![Sworm in action: switching tabs, editing files, reviewing diffs, and launching agents](static/readme/tab-driven-workflow.webp)
+![Sworm in action: switching tabs, editing files, reviewing diffs, and launching agents](docs/readme/tab-driven-workflow.webp)
 
 ## Try it
 
@@ -85,9 +85,9 @@ The home dashboard reads local Claude Code, Codex, and OMP histories to show pro
 <details>
 <summary>📷 See the dashboard and an agent workspace</summary>
 
-![Project dashboard with seven-day agent activity](static/readme/home.png)
+![Project dashboard with seven-day agent activity](docs/readme/home.png)
 
-![An OMP session beside Sworm's Git changes and commit graph](static/readme/git-gragh-diff_omp-session.png)
+![An OMP session beside Sworm's Git changes and commit graph](docs/readme/git-gragh-diff_omp-session.png)
 
 </details>
 
@@ -105,13 +105,13 @@ Browse files, edit code, and review changes before committing:
 <details>
 <summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>
 
-![Sworm showing a split commit diff beside the file changes and Git graph](static/readme/commit-diff.png)
+![Sworm showing a split commit diff beside the file changes and Git graph](docs/readme/commit-diff.png)
 
-![Code editing in Sworm](static/readme/monaco-file.png)
+![Code editing in Sworm](docs/readme/monaco-file.png)
 
-![Markdown source and live preview in Sworm](static/readme/markdown-split.png)
+![Markdown source and live preview in Sworm](docs/readme/markdown-split.png)
 
-![Workbench command palette](static/readme/pallete.png)
+![Workbench command palette](docs/readme/pallete.png)
 
 </details>
 
@@ -126,7 +126,7 @@ The status bar shows the current folder, Git branch, Nix environment status, and
 <details>
 <summary>📷 See a terminal session</summary>
 
-![Terminal session with the project environment status visible](static/readme/terminal.png)
+![Terminal session with the project environment status visible](docs/readme/terminal.png)
 
 </details>
 
@@ -137,7 +137,7 @@ Track issues with priorities, group them into epics, and see progress in the sid
 <details>
 <summary>📷 See the session launcher and issues sidebar</summary>
 
-![Agent session launcher beside the local issues sidebar](static/readme/new-session.png)
+![Agent session launcher beside the local issues sidebar](docs/readme/new-session.png)
 
 </details>
 

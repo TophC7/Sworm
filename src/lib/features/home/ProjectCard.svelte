@@ -3,7 +3,7 @@
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { providerById } from '$lib/features/sessions/providers/catalog'
   import { GitBranchIcon } from '$lib/icons/lucideExports'
-  import appIconUrl from '$lib/icons/sworm.svg?url'
+  import appIconUrl from '$lib/assets/sworm.svg?url'
   import type { GitBrief } from '$lib/types/backend'
   import { cn } from '$lib/utils/cn'
   import { timeAgo } from '$lib/utils/date'

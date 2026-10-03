@@ -26,7 +26,6 @@ pkgs.stdenv.mkDerivation {
       (src + "/vite.config.ts")
       (src + "/tsconfig.json")
       (src + "/src")
-      (src + "/static")
     ];
   };
 

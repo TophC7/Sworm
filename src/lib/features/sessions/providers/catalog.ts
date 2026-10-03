@@ -5,6 +5,14 @@
  * or plain text (textLabel + textFont).
  */
 
+import antigravityTextUrl from '$lib/assets/providers/antigravity-text.svg?url'
+import antigravityUrl from '$lib/assets/providers/antigravity.svg?url'
+import claudeCodeTextUrl from '$lib/assets/providers/claudecode-text.svg?url'
+import claudeCodeUrl from '$lib/assets/providers/claudecode.svg?url'
+import codexTextUrl from '$lib/assets/providers/codex-text.svg?url'
+import codexUrl from '$lib/assets/providers/codex.svg?url'
+import ompUrl from '$lib/assets/providers/omp.svg?url'
+import terminalUrl from '$lib/assets/providers/terminal.svg?url'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 
 export interface ProviderMeta {
@@ -26,8 +34,8 @@ export const allProviders: ProviderMeta[] = [
   {
     id: 'claude_code',
     label: 'Claude Code',
-    icon: '/svg/claudecode.svg',
-    textIcon: '/svg/claudecode-text.svg',
+    icon: claudeCodeUrl,
+    textIcon: claudeCodeTextUrl,
     textAspect: 91 / 11,
     gradientFrom: '#f29d84',
     gradientTo: '#763724'
@@ -35,8 +43,8 @@ export const allProviders: ProviderMeta[] = [
   {
     id: 'codex',
     label: 'Codex',
-    icon: '/svg/codex.svg',
-    textIcon: '/svg/codex-text.svg',
+    icon: codexUrl,
+    textIcon: codexTextUrl,
     textAspect: 91 / 24,
     gradientFrom: '#6ee7b7',
     gradientTo: '#065f46'
@@ -44,7 +52,7 @@ export const allProviders: ProviderMeta[] = [
   {
     id: 'omp',
     label: 'OMP',
-    icon: '/svg/omp.svg',
+    icon: ompUrl,
     textLabel: 'OMP',
     textFont: 'var(--font-plantin)',
     gradientFrom: '#ed4abf',
@@ -53,8 +61,8 @@ export const allProviders: ProviderMeta[] = [
   {
     id: 'antigravity',
     label: 'Antigravity',
-    icon: '/svg/antigravity.svg',
-    textIcon: '/svg/antigravity-text.svg',
+    icon: antigravityUrl,
+    textIcon: antigravityTextUrl,
     textAspect: 422 / 88,
     gradientFrom: '#a78bfa',
     gradientTo: '#312e81'
@@ -66,7 +74,7 @@ export const directOptions: ProviderMeta[] = [
   {
     id: 'terminal',
     label: 'Terminal',
-    icon: '/svg/terminal.svg',
+    icon: terminalUrl,
     textLabel: 'Terminal',
     textFont: MONO_FONT_FAMILY,
     gradientFrom: '#a1a1aa',

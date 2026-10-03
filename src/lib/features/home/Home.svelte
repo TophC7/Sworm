@@ -23,7 +23,7 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import { RefreshCw } from '$lib/icons/lucideExports'
-  import appIconUrl from '$lib/icons/sworm.svg?url'
+  import appIconUrl from '$lib/assets/sworm.svg?url'
   import type { GitBrief, WorkbenchInfo } from '$lib/types/backend'
   import ContinueRow from './ContinueRow.svelte'
   import ProjectCard from './ProjectCard.svelte'

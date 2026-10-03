@@ -16,6 +16,7 @@
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
+  import nixosUrl from '$lib/assets/nixos.svg?url'
   import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
   import { notify, dismissNotification } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -151,6 +152,9 @@
         return detection.selected.nix_file
     }
   }
+
+  // Quoted: Vite inlines small SVGs as data URIs that contain quotes.
+  const nixMask = `url("${nixosUrl}") no-repeat center / contain`
 </script>
 
 {#if hasNixFiles}
@@ -161,7 +165,7 @@
       {:else}
         <span
           class="h-[10px] w-[10px] shrink-0 bg-current"
-          style="-webkit-mask: url(/svg/nixos.svg) no-repeat center / contain; mask: url(/svg/nixos.svg) no-repeat center / contain;"
+          style="-webkit-mask: {nixMask}; mask: {nixMask};"
           role="img"
           aria-label="Nix"
         ></span>

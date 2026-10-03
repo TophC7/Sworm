@@ -7,7 +7,7 @@
  *   3. Simple extension match (e.g. ".rs" → rust)
  *   4. Fallback to generic "file" icon
  *
- * Icon SVGs live in /static/icons/bearded/.
+ * Returns icon names; FileIcon maps them to the SVGs in $lib/assets/bearded/.
  */
 
 import { basename, dirname } from '$lib/utils/paths'
@@ -394,10 +394,8 @@ const extMap: Record<string, string> = {
 // names are VS Code icon-definition stubs that all fall back to the
 // generic folder icon. We use folder.svg / folder_open.svg directly.
 
-const ICON_BASE = '/icons/bearded'
-
 /**
- * Resolve the icon path for a given filename or relative path.
+ * Resolve the Bearded icon name for a given filename or relative path.
  *
  * Accepts either a bare basename (`tasks.json`) or a path-like value
  * (`.sworm/tasks.json`). When a path is given, parent-directory rules
@@ -418,14 +416,14 @@ export function resolveFileIcon(filename: string): string {
     const ext = lastDot !== -1 ? lower.slice(lastDot + 1) : ''
     for (const rule of parentDirRules) {
       if (parent === rule.parent && ext === rule.ext) {
-        return `${ICON_BASE}/${rule.icon}.svg`
+        return rule.icon
       }
     }
   }
 
   // 1. Exact filename match
   if (fileNameMap[lower]) {
-    return `${ICON_BASE}/${fileNameMap[lower]}.svg`
+    return fileNameMap[lower]
   }
 
   // 2. Compound extension match (greedy: check longest suffix first)
@@ -433,14 +431,14 @@ export function resolveFileIcon(filename: string): string {
   if (dotIndex !== -1) {
     const afterFirstDot = lower.slice(dotIndex + 1)
     if (compoundExtMap[afterFirstDot]) {
-      return `${ICON_BASE}/${compoundExtMap[afterFirstDot]}.svg`
+      return compoundExtMap[afterFirstDot]
     }
     // Also check from the second dot for patterns like "foo.spec.ts"
     const secondDot = afterFirstDot.indexOf('.')
     if (secondDot !== -1) {
       const compoundExt = afterFirstDot.slice(secondDot + 1)
       if (compoundExtMap[compoundExt]) {
-        return `${ICON_BASE}/${compoundExtMap[compoundExt]}.svg`
+        return compoundExtMap[compoundExt]
       }
     }
   }
@@ -450,18 +448,18 @@ export function resolveFileIcon(filename: string): string {
   if (lastDot !== -1) {
     const ext = lower.slice(lastDot + 1)
     if (extMap[ext]) {
-      return `${ICON_BASE}/${extMap[ext]}.svg`
+      return extMap[ext]
     }
   }
 
   // 4. Fallback
-  return `${ICON_BASE}/file.svg`
+  return 'file'
 }
 
 /**
- * Resolve folder icon path.
+ * Resolve the Bearded folder icon name.
  * Uses the generic bearded folder / folder_open SVGs.
  */
 export function resolveFolderIcon(_folderName: string, expanded: boolean): string {
-  return expanded ? `${ICON_BASE}/folder_open.svg` : `${ICON_BASE}/folder.svg`
+  return expanded ? 'folder_open' : 'folder'
 }

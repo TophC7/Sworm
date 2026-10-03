@@ -7,7 +7,7 @@ import { defineConfig } from 'vite'
 const host = process.env.TAURI_DEV_HOST
 const web = process.env.SWORM_TARGET === 'web'
 const rootDir = process.cwd()
-const uiWatchRoots = ['src', 'static'].map((path) => resolve(rootDir, path))
+const uiWatchRoots = [resolve(rootDir, 'src')]
 
 function isUiWatchPath(path: string): boolean {
   const absPath = resolve(path)

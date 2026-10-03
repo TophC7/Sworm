@@ -39,12 +39,13 @@
         <img src={provider.icon} alt="" class="h-12 w-12 shrink-0 {connected ? '' : 'opacity-50 grayscale'}" />
         <div class="flex min-w-0 flex-col gap-1">
           {#if provider.textIcon && provider.textAspect}
+            {@const mask = `url("${provider.textIcon}") no-repeat center / contain`}
             <span
               class="h-5 shrink-0 self-start {connected ? 'bg-fg' : 'bg-muted'}"
               style="
                 width: {Math.round(20 * provider.textAspect)}px;
-                -webkit-mask: url({provider.textIcon}) no-repeat center / contain;
-                mask: url({provider.textIcon}) no-repeat center / contain;
+                -webkit-mask: {mask};
+                mask: {mask};
               "
               role="img"
               aria-label={provider.label}
