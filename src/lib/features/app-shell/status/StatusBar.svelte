@@ -7,7 +7,7 @@
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { isFolderSwitcherOpen, toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
+  import { isBrowserOpen, toggleBrowser } from '$lib/features/browser/state.svelte'
   import StatusBarAppInfo from '$lib/features/app-shell/status/StatusBarAppInfo.svelte'
   import {
     ensureSettingsDiagnosticsListener,
@@ -113,12 +113,12 @@
     {/if}
     {#if folderPath}
       <StatusChip
-        data-folder-switcher-toggle="true"
-        aria-label="Switch folder"
+        data-browser-toggle="true"
+        aria-label="Browse Folder"
         aria-haspopup="dialog"
-        aria-expanded={isFolderSwitcherOpen()}
+        aria-expanded={isBrowserOpen()}
         title={folderPath}
-        onclick={toggleFolderSwitcher}
+        onclick={() => toggleBrowser({ path: folderPath })}
         class="max-w-[min(32rem,40vw)]"
       >
         <FolderOpen size={10} class="shrink-0" />

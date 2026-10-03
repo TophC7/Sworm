@@ -76,9 +76,9 @@ export interface ToolTab extends TabBase {
   temporary: boolean
 }
 
-export interface LauncherTab extends TabBase {
-  kind: 'launcher'
-  temporary: false
+export interface NewTab extends TabBase {
+  kind: 'new-tab'
+  temporary: true
 }
 
 export type TaskRunStatus = 'starting' | 'running' | 'exited' | 'failed'
@@ -97,7 +97,7 @@ export interface TaskTab extends TabBase {
   label: string
   /** Cached Lucide icon name. */
   icon: string | null
-  /** Optional group label used by the launcher and menus. */
+  /** Optional group label used by the command palette and menus. */
   group: string | null
   status: TaskRunStatus
   exitCode: number | null
@@ -119,7 +119,7 @@ export interface EpicTab extends TabBase {
   temporary: boolean
 }
 
-export type Tab = SessionTab | DiffTab | TextTab | ToolTab | LauncherTab | TaskTab | IssueTab | EpicTab
+export type Tab = SessionTab | DiffTab | TextTab | ToolTab | NewTab | TaskTab | IssueTab | EpicTab
 
 export function tabServer(tab: Tab): string | null {
   return splitRemotePath(tab.folderPath)?.server ?? null
@@ -183,7 +183,7 @@ export type PersistedTab = { folderPath: string } & (
       locked: boolean
     }
   | {
-      kind: 'launcher'
+      kind: 'new-tab'
       locked: boolean
     }
   | {

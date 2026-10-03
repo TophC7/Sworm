@@ -4,6 +4,7 @@
   import { providerById } from '$lib/features/sessions/providers/catalog'
   import { GitBranchIcon } from '$lib/icons/lucideExports'
   import appIconUrl from '$lib/assets/sworm.svg?url'
+  import ProviderIcon from '$lib/features/sessions/providers/ProviderIcon.svelte'
   import type { GitBrief } from '$lib/types/backend'
   import { cn } from '$lib/utils/cn'
   import { timeAgo } from '$lib/utils/date'
@@ -81,7 +82,7 @@
     {#each project.providers as activity (activity.provider_id)}
       {@const provider = providerById[activity.provider_id]}
       {#if provider}
-        <img src={provider.icon} alt={provider.label} class="size-3.5 shrink-0 rounded-sm" />
+        <ProviderIcon icon={provider.icon} size={14} alt={provider.label} class="rounded-sm" />
       {/if}
     {/each}
     <span class="ml-auto shrink-0 text-2xs text-subtle" title={provenance}>{timeAgo(project.lastActive)}</span>

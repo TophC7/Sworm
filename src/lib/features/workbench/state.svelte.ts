@@ -3,7 +3,7 @@
 // Every tab carries its own `folderPath`; the active tab decides which
 // folder the sidebar, status bar, and folder-scoped commands operate on.
 // There is no project lifecycle: opening a folder either focuses one of
-// its tabs or seeds a launcher tab for it.
+// its tabs or seeds a new tab page for it.
 
 import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
@@ -19,7 +19,7 @@ import type {
   DiffTab,
   EpicTab,
   IssueTab,
-  LauncherTab,
+  NewTab,
   PersistedTab,
   SessionStatus,
   SessionTab,
@@ -55,7 +55,7 @@ export type {
   DiffTab,
   EpicTab,
   IssueTab,
-  LauncherTab,
+  NewTab,
   PersistedTab,
   SessionStatus,
   SessionTab,
@@ -216,9 +216,8 @@ export function persistWorkbench(): void {
 
 /**
  * Insert and activate a tab.
- * - Launcher tabs are transient: the first real tab opened replaces that
- *   folder's launcher in-place.
- * - Brand-new launcher tabs represent a new folder workspace and append to the end.
+ * - New tabs are transient: the first real tab opened replaces that
+ *   folder's new tab page in-place.
  * - Same-folder tabs open directly next to the active tab to keep folder tabs grouped.
  * - Other-folder tabs open after that folder's existing tabs.
  */
@@ -374,7 +373,7 @@ export function toggleTabLocked(tabId: TabId): void {
 // FOLDER ENTRY //
 /**
  * Open a folder: canonicalize, remember it, then focus its most recently
- * active tab or seed a launcher tab when the folder has none.
+ * active tab or seed a new tab page when the folder has none.
  */
 export async function openFolder(path: string): Promise<void> {
   let folderPath: string
@@ -394,7 +393,40 @@ export async function openFolder(path: string): Promise<void> {
     setActiveTab(existing)
     return
   }
-  openLauncherTab(folderPath)
+  openNewTab(folderPath)
+}
+
+/** Turn the originating new tab page into another folder without adding a tab. */
+export async function retargetNewTab(tabId: TabId, path: string): Promise<void> {
+  let folderPath: string
+  try {
+    folderPath = (await backend.folders.resolve(path)).path
+  } catch (error) {
+    notify.error('Open folder failed', getErrorMessage(error))
+    return
+  }
+  pushRecentFolder(folderPath)
+
+  const tab = findTab(tabId)
+  if (tab?.kind !== 'new-tab') {
+    await openFolder(folderPath)
+    return
+  }
+  if (tab.folderPath === folderPath) {
+    setActiveTab(tabId)
+    return
+  }
+  const replacement: NewTab = { ...tab, folderPath }
+  if (isTabInert(tab) || isTabInert(replacement)) {
+    notify.error('Open folder failed', 'This server workbench is not controlled by this window')
+    return
+  }
+  const tabs = workbench.tabs
+    .filter(
+      (candidate) => candidate.id === tabId || candidate.kind !== 'new-tab' || candidate.folderPath !== folderPath
+    )
+    .map((candidate) => (candidate.id === tabId ? replacement : candidate))
+  commit({ tabs, activeTabId: tabId })
 }
 
 // RESTORE //
@@ -857,14 +889,14 @@ export function addReadonlyTextTab(
   )
 }
 
-/** Focus the folder's launcher tab, or create one. One launcher per folder. */
-export function openLauncherTab(folderPath: string): TabId {
-  const existing = workbench.tabs.find((t) => t.kind === 'launcher' && t.folderPath === folderPath)
+/** Focus the folder's new tab page, or create one. One new tab page per folder. */
+export function openNewTab(folderPath: string): TabId {
+  const existing = workbench.tabs.find((t) => t.kind === 'new-tab' && t.folderPath === folderPath)
   if (existing) {
     setActiveTab(existing.id)
     return existing.id
   }
-  const tab: LauncherTab = { kind: 'launcher', id: generateTabId(), folderPath, locked: false, temporary: false }
+  const tab: NewTab = { kind: 'new-tab', id: generateTabId(), folderPath, locked: false, temporary: true }
   return insertTab(tab)
 }
 
@@ -922,7 +954,7 @@ export function updateEpicTabTitle(folderPath: string, epicId: string, title: st
 // PROMOTION //
 export function promoteTab(tabId: TabId): void {
   updateTab(tabId, (t) =>
-    t.kind === 'session' || t.kind === 'launcher' || t.kind === 'task' || !t.temporary ? t : { ...t, temporary: false }
+    t.kind === 'session' || t.kind === 'new-tab' || t.kind === 'task' || !t.temporary ? t : { ...t, temporary: false }
   )
 }
 
@@ -1015,8 +1047,8 @@ export async function reopenLastClosedTab(): Promise<TabId | null> {
             return _exhaustive
           }
         }
-      case 'launcher':
-        return openLauncherTab(head.folderPath)
+      case 'new-tab':
+        return openNewTab(head.folderPath)
       case 'issue':
         return addIssueTab(head.folderPath, head.issueId, head.title, false)
       case 'epic':

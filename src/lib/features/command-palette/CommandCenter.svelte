@@ -22,6 +22,9 @@
     type Command as CommandType
   } from '$lib/features/command-palette/commands/index.svelte'
   import { getFilePaletteGroups } from '$lib/features/command-palette/commands/files.svelte'
+  import { getPlaceCommandGroups } from '$lib/features/command-palette/commands/places.svelte'
+  import { refreshPlaces, watchPlaces } from '$lib/features/browser/places.svelte'
+  import { remoteDotClass } from '$lib/features/remotes/remoteDot'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/features/command-palette/commands/recents.svelte'
   import {
     consumePendingInitialSearch,
@@ -63,13 +66,12 @@
   let suppressPointerSelection = $state(false)
   let lastPointerPosition = $state<{ x: number; y: number } | null>(null)
 
-  // Prefix modes: `>` routes to editor commands, `!` routes to tasks,
-  // `/` routes to active-folder file lookup (Quick Open). Default (no
-  // prefix) shows app commands + Recent.
+  // Prefix modes share one palette; the default mode shows app commands.
   const PREFIX_MODES = {
     '>': 'editor',
     '!': 'task',
-    '/': 'files'
+    '/': 'files',
+    '@': 'places'
   } as const
   type PrefixChar = keyof typeof PREFIX_MODES
   type PaletteMode = (typeof PREFIX_MODES)[PrefixChar] | 'default'
@@ -77,6 +79,7 @@
     editor: 'Editor command...',
     task: 'Run task...',
     files: 'Search files... (path:line)',
+    places: 'Go to workbench, folder, or server…',
     default: 'Type a command...'
   }
 
@@ -89,6 +92,13 @@
   let taskGroups = $derived(getTaskCommandGroups())
   let activeFolderPath = $derived(getActiveFolderPath())
   let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeFolderPath, filterQuery) : [])
+  let placeGroups = $derived(paletteMode === 'places' ? getPlaceCommandGroups() : [])
+
+  $effect(() => {
+    if (!open) return
+    if (paletteMode === 'places') return watchPlaces()
+    if (paletteMode === 'default') void refreshPlaces()
+  })
 
   // Files mode reads from a per-folder cache; warm it on entry so the
   // first keystroke after typing `/` already sees results.
@@ -99,12 +109,13 @@
   let scheduledRun = 0
   const COMMAND_NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'])
 
-  // Filter commands by the query (case-insensitive substring on label, keywords, id)
-  function matchesQuery(query: string, label: string, keywords: string[], id: string): boolean {
+  // Match labels, details, keywords, and ids across every palette group.
+  function matchesQuery(query: string, label: string, keywords: string[], id: string, subtitle = ''): boolean {
     if (!query) return true
     const q = query.toLowerCase()
     if (label.toLowerCase().includes(q)) return true
     if (id.toLowerCase().includes(q)) return true
+    if (subtitle.toLowerCase().includes(q)) return true
     return keywords.some((kw) => kw.toLowerCase().includes(q))
   }
 
@@ -138,14 +149,21 @@
     // work). Skip the substring filter that the other modes use.
     if (paletteMode === 'files') return fileGroups
 
-    const source = paletteMode === 'editor' ? editorGroups : paletteMode === 'task' ? taskGroups : appGroups
+    const source =
+      paletteMode === 'editor'
+        ? editorGroups
+        : paletteMode === 'task'
+          ? taskGroups
+          : paletteMode === 'places'
+            ? placeGroups
+            : appGroups
     const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
     if (!filterQuery) return withRecents
 
     return withRecents
       .map((g) => ({
         ...g,
-        commands: g.commands.filter((cmd) => matchesQuery(filterQuery, cmd.label, cmd.keywords, cmd.id))
+        commands: g.commands.filter((cmd) => matchesQuery(filterQuery, cmd.label, cmd.keywords, cmd.id, cmd.subtitle))
       }))
       .filter((g) => g.commands.length > 0)
   })
@@ -336,6 +354,12 @@
                            than layout shift. -->
                       <LucideIcon name={cmd.lucideIcon} size={16} class="shrink-0 opacity-60" />
                     {/if}
+                    {#if cmd.serverState}
+                      <span
+                        class="size-2 shrink-0 rounded-full {remoteDotClass(cmd.serverState)}"
+                        aria-label={cmd.serverState}
+                      ></span>
+                    {/if}
                     {#if cmd.subtitle}
                       <span class="truncate">{cmd.label}</span>
                       <span class="ml-auto truncate text-xs text-subtle">{cmd.subtitle}</span>
@@ -383,7 +407,7 @@
         <div
           class="flex items-center justify-between gap-4 border-t border-edge bg-surface/60 px-3 py-2 text-xs text-muted"
         >
-          <div class="flex items-center gap-4">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
             <span class="flex items-center gap-1.5">
               <Kbd>↑</Kbd>
               <Kbd>↓</Kbd>
@@ -405,6 +429,10 @@
               <span class="flex items-center gap-1.5">
                 <Kbd>/</Kbd>
                 files
+              </span>
+              <span class="flex items-center gap-1.5">
+                <Kbd>@</Kbd>
+                places
               </span>
             {/if}
           </div>

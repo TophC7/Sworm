@@ -1,9 +1,9 @@
+import type { ProviderIconSource } from '$lib/features/sessions/providers/catalog'
 import { canLockTab, type Tab } from '$lib/features/workbench/model'
 import { getSurfaceKind, isSurfacePreview, type SurfaceKind } from '$lib/features/workbench/surfaces'
 import { getDiffTabTitle } from '$lib/features/workbench/surfaces/diff/service.svelte'
 import { getEpicTabTitle } from '$lib/features/workbench/surfaces/epic/service.svelte'
 import { getIssueTabTitle } from '$lib/features/workbench/surfaces/issue/service.svelte'
-import { getLauncherTitle } from '$lib/features/workbench/surfaces/launcher/service.svelte'
 import { getSessionProviderIcon, getSessionTabTitle } from '$lib/features/workbench/surfaces/session/service.svelte'
 import { getTaskTabIcon, getTaskTabTitle } from '$lib/features/workbench/surfaces/task/service.svelte'
 import { getTextTabFileName, getTextTabTitle } from '$lib/features/workbench/surfaces/text/service.svelte'
@@ -13,8 +13,8 @@ export interface TabPresentation {
   surfaceKind: SurfaceKind
   title: string
   preview: boolean
-  /** Image URL for session provider icons (rendered via `<img>`). */
-  providerIcon: string | null
+  /** Session provider icon (rendered via ProviderIcon). */
+  providerIcon: ProviderIconSource | null
   /** Kebab-case Lucide icon name for task tabs (rendered via LucideIcon). */
   lucideIcon: string | null
   fileName: string | null
@@ -25,11 +25,11 @@ export function getTabPresentation(tab: Tab): TabPresentation {
   const surfaceKind = getSurfaceKind(tab)
 
   switch (surfaceKind) {
-    case 'launcher':
+    case 'new-tab':
       return {
         surfaceKind,
-        title: getLauncherTitle(),
-        preview: false,
+        title: 'New',
+        preview: isSurfacePreview(tab),
         providerIcon: null,
         lucideIcon: null,
         fileName: null,

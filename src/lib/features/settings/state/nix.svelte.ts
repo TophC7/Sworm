@@ -19,6 +19,33 @@ export function isNixEvaluating(folderPath: string): boolean {
   return evaluating.has(folderPath)
 }
 
+export interface NixStatus {
+  label: string
+  /** Text-color utility for the status tone. */
+  tone: string
+}
+
+/** What the folder's Nix environment reads as at a glance; null when it has no Nix files. */
+export function getNixStatus(folderPath: string): NixStatus | null {
+  const detection = getNixDetection(folderPath)
+  if (!detection?.detected_files.length) return null
+  if (isNixEvaluating(folderPath)) return { label: 'Evaluating...', tone: 'text-warning' }
+  const selected = detection.selected
+  if (!selected) return { label: 'Nix available', tone: 'text-subtle' }
+  switch (selected.status) {
+    case 'ready':
+      return { label: selected.nix_file, tone: 'text-success' }
+    case 'evaluating':
+      return { label: 'Evaluating...', tone: 'text-muted' }
+    case 'error':
+      return { label: 'Error', tone: 'text-danger' }
+    case 'timeout':
+      return { label: 'Timeout', tone: 'text-danger' }
+    default:
+      return { label: selected.nix_file, tone: 'text-muted' }
+  }
+}
+
 export async function detectNix(folderPath: string): Promise<NixDetection> {
   const generation = folderGenerations.get(folderPath) ?? 0
   const detection = await backend.nix.detect(folderPath)

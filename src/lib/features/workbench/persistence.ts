@@ -96,10 +96,10 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
         temporary: tab.temporary,
         locked: tab.locked
       }
-    case 'launcher':
-      // Persisted so a folder whose only tab is the launcher survives a
+    case 'new-tab':
+      // Persisted so a folder whose only tab is the new tab page survives a
       // restart instead of silently vanishing from the tab strip.
-      return { kind: 'launcher', folderPath: tab.folderPath, locked: tab.locked }
+      return { kind: 'new-tab', folderPath: tab.folderPath, locked: tab.locked }
     case 'task':
       // Only active runs belong in the snapshot, regardless of host type.
       if (!isProcessLive(tab.status)) return null
@@ -209,8 +209,8 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
         temporary: persisted.temporary,
         locked: persisted.locked
       }
-    case 'launcher':
-      return { kind: 'launcher', id, folderPath: persisted.folderPath, locked: persisted.locked, temporary: false }
+    case 'new-tab':
+      return { kind: 'new-tab', id, folderPath: persisted.folderPath, locked: persisted.locked, temporary: true }
     case 'issue':
       return {
         kind: 'issue',
@@ -332,18 +332,28 @@ export function stopWorkbenchPersistence(): void {
 // ---------------------------------------------------------------------------
 
 // Pre-release: any other version is treated as absent, no migration.
-export function isPersistedWorkbenchShape(value: unknown): value is PersistedWorkbenchV4 {
-  if (!value || typeof value !== 'object') return false
+export function parsePersistedWorkbench(value: unknown): PersistedWorkbenchV4 | null {
+  if (!value || typeof value !== 'object') return null
   const obj = value as Record<string, unknown>
-  return obj.version === 4 && Array.isArray(obj.tabs) && typeof obj.activeTabIndex === 'number'
+  if (obj.version !== 4 || !Array.isArray(obj.tabs) || typeof obj.activeTabIndex !== 'number') return null
+  const snapshot = obj as unknown as PersistedWorkbenchV4
+  // Drop unknown tab kinds at the shared local/server restore boundary.
+  // Preserve the active tab, or choose its next surviving neighbour.
+  let activeTabIndex = snapshot.activeTabIndex < 0 ? -1 : 0
+  const tabs = snapshot.tabs.filter((tab, index) => {
+    if (!tab || !['session', 'task', 'text', 'diff', 'new-tab', 'issue', 'epic'].includes(tab.kind)) return false
+    if (index < snapshot.activeTabIndex) activeTabIndex += 1
+    return true
+  })
+  return { ...snapshot, tabs, activeTabIndex: Math.min(activeTabIndex, tabs.length - 1) }
 }
 
 export async function loadPersistedWorkbench(workbenchId: string): Promise<PersistedWorkbenchV4 | null> {
   try {
     const raw = await backend.app.stateGet(`workbench:${workbenchId}`)
     if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!isPersistedWorkbenchShape(parsed)) {
+    const parsed = parsePersistedWorkbench(JSON.parse(raw))
+    if (!parsed) {
       console.warn('Discarding malformed workbench blob')
       return null
     }

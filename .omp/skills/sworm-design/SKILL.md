@@ -57,8 +57,8 @@ Four steps, darkest to lightest. Every element sits on exactly one.
 | Token     | Hex       | Where it lives                                                                                           |
 | --------- | --------- | -------------------------------------------------------------------------------------------------------- |
 | `ground`  | `#131313` | App background, terminal pane, editor canvas, active project tab fuses with this.                        |
-| `surface` | `#201c1a` | Title bar, status bar, sidebars, panel headers, inputs.                                                  |
-| `raised`  | `#2f2926` | Default buttons, active sidebar tabs, command palette body, cards inside a panel, tooltip/dropdown body. |
+| `surface` | `#201c1a` | Title bar, status bar, sidebars, panel headers, inputs, default buttons, Home project cards.             |
+| `raised`  | `#2f2926` | Active sidebar tabs, command palette body, cards inside a panel, tooltip/dropdown body.                   |
 | `overlay` | `#3c3532` | Menus, context menus, tooltips when they need extra lift above a `raised` surface.                       |
 
 **Stepping rule.** Step up or down when you nest. Never same-level nesting (`raised` inside `raised`). If the container is `raised`, children step to `surface` (down) or `overlay` (up). Feature cards inside a `bg-raised` dialog go to `bg-overlay`; an input inside an `bg-overlay` card goes to `bg-surface`.
@@ -178,6 +178,8 @@ Raw assets live under `src/lib/assets/` and are imported (`?url`), never served 
 
 - `sworm.svg` — app logo. `github.svg`, `nixos.svg`.
 - Provider marks and wordmarks: `providers/*.svg`, wired in `src/lib/features/sessions/providers/catalog.ts`.
+- Monochrome marks (wordmarks, Nix) paint through `MaskIcon` so they take the text color.
+- Generic options are not brands: Terminal and New File use Lucide (`TerminalIcon`, `FilePlusCornerIcon`) via `ProviderIcon`, colored by tokens like any other UI icon.
 
 **Provider presence rule.** Provider logos render full-color when the provider is detected, `grayscale + 50% opacity` when not. This is how Sworm communicates "connected vs not available" — no extra dot, no extra label.
 
@@ -202,7 +204,7 @@ Sworm is flat by default. Rounding exists only where a surface visibly _floats_ 
 | `rounded`      | 4px    | Inputs, small buttons, the command pill. The lightest rounding that reads as "this element is a control."       |
 | `rounded-md`   | 6px    | Kbd chips, code blocks, secondary buttons.                                                                      |
 | `rounded-lg`   | 8px    | Default buttons, primary CTAs, dialog content, dropdown content, context menu content. Floating surfaces.       |
-| `rounded-xl`   | 12px   | Command palette, provider cards, markdown-rendered `kbd`. The largest used anywhere in chrome.                  |
+| `rounded-xl`   | 12px   | Command palette, markdown-rendered `kbd`. The largest used anywhere in chrome.                                  |
 | `rounded-full` | 9999px | Status dots, avatars, and status-bar chips (§11.15). Never on other buttons or pills.                          |
 
 **Rule.** Chrome (title bar, sidebars, tabs, status bar) is square. Only things that _detach from_ the chrome — buttons, dialogs, menus, tooltips, the command palette, the command pill — carry rounding. Status dots are circles because they are dots.
@@ -412,7 +414,7 @@ Rules:
 
 | Variant     | Classes                                                                           |
 | ----------- | --------------------------------------------------------------------------------- |
-| default     | `bg-raised border border-edge text-fg hover:border-accent hover:text-bright`      |
+| default     | `bg-surface border border-edge text-fg hover:border-accent/40 hover:text-bright` (matches the Home project card) |
 | ghost       | `bg-transparent border-none text-muted hover:bg-surface hover:text-bright`        |
 | outline     | `bg-transparent border border-edge text-fg hover:border-accent hover:text-bright` |
 | destructive | `bg-danger-bg border border-danger-border text-danger hover:text-danger-bright`   |
@@ -498,9 +500,9 @@ Separator = `mx-2 my-1 h-px bg-edge`.
 
 ### 11.11 MagicCard (exception)
 
-`src/lib/components/ui/magic-card/magic-card.svelte` is the **one** decorative surface in the system. Cursor-following radial peach gradient overlay.
+`src/lib/components/ui/magic-card/magic-card.svelte` is the **one** decorative surface in the system. At rest it is the Home project card: `bg-surface`, 1px `edge` border, `rounded-lg`, no scale. On hover its border lights with a cursor-following radial gradient in the option's own colors (`gradientFrom` → `gradientTo`), and the fill lifts toward `raised` around the cursor.
 
-**Scope is tight:** currently used only on the New Session provider picker. Do not extend to other surfaces without updating this doc first. If a new use case appears, propose it.
+**Scope is tight:** currently used only on the new tab page's start options (providers, Terminal, New File). Do not extend to other surfaces without updating this doc first. If a new use case appears, propose it.
 
 ### 11.12 Command palette
 

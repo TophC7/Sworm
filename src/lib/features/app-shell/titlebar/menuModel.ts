@@ -9,6 +9,7 @@ import {
   newWindow,
   openActiveFolderInExternalTerminal,
   openFolderSettingsFile,
+  openSettings,
   reopenTab,
   revealActiveFolderInFileManager
 } from '$lib/features/app-actions/actions.svelte'
@@ -68,6 +69,7 @@ export function buildAppMenu(): MenuEntry[] {
       disabled: !hasActive,
       onSelect: () => void openFolderSettingsFile()
     },
+    { kind: 'item', label: 'Settings…', shortcut: 'Ctrl+,', onSelect: openSettings },
     { kind: 'separator' },
     {
       kind: 'item',

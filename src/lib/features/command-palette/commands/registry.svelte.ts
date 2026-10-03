@@ -6,11 +6,15 @@ import {
   isNotificationCenterOpen,
   setNotificationCenterOpen
 } from '$lib/features/notifications/state.svelte'
-import { allProviders, directOptions } from '$lib/features/sessions/providers/catalog'
+import { allProviders } from '$lib/features/sessions/providers/catalog'
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-import { toggleFolderSwitcher } from '$lib/features/folders/switcher.svelte'
+import { browseServer, localHostLabel, openBrowser } from '$lib/features/browser/state.svelte'
+import { getServers } from '$lib/features/browser/places.svelte'
+import { openRemoteManager } from '$lib/features/remotes/state.svelte'
+import { getGroups, getTabGroup, retryGroup } from '$lib/features/workbench/groups.svelte'
+import { openCommandPaletteWithSearch } from '$lib/features/command-palette/state.svelte'
 import {
   isIndentRainbowEnabled,
   toggleIndentRainbow
@@ -33,7 +37,10 @@ import {
   rerunLastFolderTask,
   revealActiveFolderInFileManager,
   showFiles,
-  showTasks
+  showTasks,
+  takeOverServerWorkbench,
+  moveServerWorkbenchToNewWindow,
+  removeServerWorkbenchFromWindow
 } from '$lib/features/app-actions/actions.svelte'
 import {
   fetchActiveFolder,
@@ -45,12 +52,18 @@ import {
 import { getGitSummary } from '$lib/features/git/state.svelte'
 import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
-import { addNotificationToolTab, getActiveFolderPath, hasClosedTabs } from '$lib/features/workbench/state.svelte'
+import {
+  addNotificationToolTab,
+  getActiveFolderPath,
+  getActiveTab,
+  hasClosedTabs
+} from '$lib/features/workbench/state.svelte'
 import {
   ArrowDownToLineIcon,
   ArrowUpFromLineIcon,
   BellIcon,
-  FilePlusIcon,
+  CompassIcon,
+  FilePlusCornerIcon,
   FolderOpenIcon,
   PaintbrushIcon,
   PanelLeftIcon,
@@ -63,6 +76,7 @@ import {
   ShieldAlertIcon,
   SquareArrowOutUpRight,
   TerminalIcon,
+  ServerIcon,
   Undo2Icon,
   XIcon,
   ZoomInIcon,
@@ -141,8 +155,57 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
     })
   )
 
-  const terminalIcon = directOptions.find((provider) => provider.id === 'terminal')?.icon ?? ''
-
+  const serverCommands = platform.native
+    ? getServers().map(({ name }) =>
+        appCommand({
+          id: `browse-server-${name}`,
+          label: `Browse ${name}`,
+          group: 'Places',
+          icon: ServerIcon,
+          keywords: ['browse', 'remote', 'server', name],
+          run: () => browseServer(name)
+        })
+      )
+    : []
+  const activeTab = getActiveTab()
+  const activeGroup = activeTab ? getTabGroup(activeTab) : null
+  const groupCommands = getGroups().flatMap((group) => [
+    appCommand({
+      id: `workbench-take-over-${group.server}`,
+      label: `Take Over ${group.server} Workbench`,
+      group: 'Workbenches',
+      icon: ServerIcon,
+      keywords: ['take', 'over', 'workbench', 'remote', group.server],
+      visible: () => group.state === 'busy' || group.state === 'revoked',
+      run: () => takeOverServerWorkbench(group.server)
+    }),
+    appCommand({
+      id: `workbench-reconnect-${group.server}`,
+      label: `Reconnect ${group.server} Workbench`,
+      group: 'Workbenches',
+      icon: RefreshCwIcon,
+      keywords: ['reconnect', 'retry', 'offline', 'workbench', group.server],
+      visible: () => group.state === 'offline',
+      run: () => retryGroup(group.server)
+    }),
+    appCommand({
+      id: `workbench-move-to-new-window-${group.server}`,
+      label: `Move ${group.server} Workbench to New Window`,
+      group: 'Workbenches',
+      keywords: ['move', 'new', 'window', 'workbench', group.server],
+      visible: () => group.state === 'active' && activeGroup?.server === group.server,
+      run: () => moveServerWorkbenchToNewWindow(group.server)
+    }),
+    appCommand({
+      id: `workbench-remove-from-window-${group.server}`,
+      label: `Remove ${group.server} Workbench from Window`,
+      group: 'Workbenches',
+      icon: XIcon,
+      keywords: ['remove', 'window', 'workbench', group.server],
+      visible: () => group.state !== 'active',
+      run: () => removeServerWorkbenchFromWindow(group.server)
+    })
+  ])
   return [
     appCommand({
       id: 'toggle-command-palette',
@@ -158,7 +221,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       id: 'new-file',
       label: 'New File',
       group: 'File',
-      icon: FilePlusIcon,
+      icon: FilePlusCornerIcon,
       keywords: ['new', 'empty', 'untitled', 'file', 'create'],
       capability: 'saveAsDialog',
       defaultKeybindings: ['Ctrl+N'],
@@ -180,9 +243,18 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       label: 'Open Folder',
       group: 'File',
       icon: FolderOpenIcon,
-      keywords: ['open', 'folder', 'directory'],
-      capability: 'nativeDirectoryPicker',
+      keywords: ['open', 'folder', 'directory', 'places', 'workbench', 'remote', 'server', 'recent', 'browse'],
       defaultKeybindings: ['Ctrl+O'],
+      terminalPolicy: 'skip-shell-keeps-modals',
+      run: () => openBrowser()
+    }),
+    appCommand({
+      id: 'open-folder-native',
+      label: 'Open Folder with System Dialog…',
+      group: 'File',
+      icon: FolderOpenIcon,
+      keywords: ['open', 'folder', 'directory', 'native', 'system', 'dialog'],
+      capability: 'nativeDirectoryPicker',
       run: openFolderPicker
     }),
     appCommand({
@@ -196,14 +268,31 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       run: closeCurrentWorkbench
     }),
     appCommand({
-      id: 'switch-folder',
-      label: 'Switch Folder',
-      group: 'File',
-      icon: FolderOpenIcon,
-      keywords: ['switch', 'folder', 'directory', 'browse', 'recent'],
-      defaultKeybindings: ['Ctrl+Shift+O'],
-      terminalPolicy: 'skip-shell-keeps-modals',
-      run: toggleFolderSwitcher
+      id: 'places.show',
+      label: 'Go to Place…',
+      group: 'Places',
+      icon: CompassIcon,
+      keywords: ['places', 'workbench', 'folder', 'remote', 'server', 'recent', 'browse', '@'],
+      run: () => openCommandPaletteWithSearch('@ ')
+    }),
+    appCommand({
+      id: 'browse-local',
+      label: `Browse ${localHostLabel()}`,
+      group: 'Places',
+      icon: CompassIcon,
+      keywords: ['browse', 'local', 'folder', localHostLabel()],
+      run: () => browseServer(null)
+    }),
+    ...serverCommands,
+    ...groupCommands,
+    appCommand({
+      id: 'manage-servers',
+      label: 'Manage Servers…',
+      group: 'Places',
+      icon: ServerIcon,
+      keywords: ['manage', 'pair', 'remote', 'server'],
+      visible: () => platform.capabilities.remoteHosts,
+      run: openRemoteManager
     }),
     appCommand({
       id: 'settings',
@@ -211,6 +300,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'General',
       icon: SettingsIcon,
       keywords: ['preferences', 'config', 'options'],
+      defaultKeybindings: ['Ctrl+,'],
+      terminalPolicy: 'skip-shell',
       run: openSettings
     }),
     appCommand({
@@ -256,7 +347,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       id: 'new-terminal',
       label: 'New Terminal',
       group: 'Sessions',
-      iconSrc: terminalIcon,
+      icon: TerminalIcon,
       keywords: ['terminal', 'shell', 'console'],
       // Web: Ctrl+T/W/Shift+T belong to browser tab management.
       defaultKeybindings: platform.native ? ['Ctrl+T'] : [],

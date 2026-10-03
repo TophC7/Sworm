@@ -95,7 +95,7 @@ export function isTab(value: unknown): value is Tab {
     typeof tab.id === 'string' &&
     typeof tab.folderPath === 'string' &&
     typeof tab.kind === 'string' &&
-    ['session', 'diff', 'text', 'tool', 'launcher', 'task', 'issue', 'epic'].includes(tab.kind)
+    ['session', 'diff', 'text', 'tool', 'new-tab', 'task', 'issue', 'epic'].includes(tab.kind)
   )
 }
 

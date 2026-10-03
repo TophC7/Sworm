@@ -12,6 +12,7 @@
   import { getBuiltinSettingsPages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import nixosUrl from '$lib/assets/nixos.svg?url'
+  import MaskIcon from '$lib/icons/MaskIcon.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { DialogContent, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { ScrollArea } from '$lib/components/ui/scroll-area'
@@ -148,9 +149,6 @@
   let saveTooltip = $derived(
     pending > 0 ? 'Saving changes…' : savedFlash ? 'All changes saved' : 'Changes autosave 400ms after you stop typing.'
   )
-
-  // Quoted: Vite inlines small SVGs as data URIs that contain quotes.
-  const nixMask = `url("${nixosUrl}") no-repeat center / contain`
 </script>
 
 <DialogRoot
@@ -191,12 +189,7 @@
                 {:else if item.icon.kind === 'file'}
                   <FileIcon filename={item.icon.filename} size={14} />
                 {:else}
-                  <span
-                    class="h-[14px] w-[14px] shrink-0 bg-current"
-                    style="-webkit-mask: {nixMask}; mask: {nixMask};"
-                    role="img"
-                    aria-label="Nix"
-                  ></span>
+                  <MaskIcon src={nixosUrl} width={14} label="Nix" />
                 {/if}
                 <span class="flex-1">{item.label}</span>
                 {#if active === item.id}

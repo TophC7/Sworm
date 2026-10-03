@@ -6,9 +6,11 @@
   import TitleTabStrip from './TitleTabStrip.svelte'
   import WindowControls from './WindowControls.svelte'
   import { setCommandPaletteOpen } from '$lib/features/command-palette/state.svelte'
-  import { SettingsIcon } from '$lib/icons/lucideExports'
+  import { CompassIcon } from '$lib/icons/lucideExports'
+  import { isBrowserOpen, toggleBrowser } from '$lib/features/browser/state.svelte'
+  import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
 
-  let { onSettings }: { onSettings: () => void } = $props()
+  let placesShortcut = $derived(getEffectiveSpec('open-folder', 'Ctrl+O'))
 
   function openPalette() {
     setCommandPaletteOpen(true)
@@ -18,8 +20,15 @@
 <header class="flex min-h-9 shrink-0 items-center border-b border-edge bg-surface">
   <div class="flex shrink-0 items-center gap-0.5 self-stretch border-r border-edge px-1">
     <TitleBarMenu />
-    <IconButton size="md" tooltip="Settings" onclick={onSettings}>
-      <SettingsIcon size={14} />
+    <IconButton
+      size="md"
+      tooltip="Places"
+      shortcut={placesShortcut}
+      data-browser-toggle="true"
+      aria-expanded={isBrowserOpen()}
+      onclick={() => toggleBrowser()}
+    >
+      <CompassIcon size={14} />
     </IconButton>
   </div>
 

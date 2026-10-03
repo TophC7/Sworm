@@ -7,7 +7,7 @@ import { backend } from '$lib/api/backend'
 import { platform, requireNative } from '$lib/platform'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
 import { startSession } from '$lib/features/sessions/service.svelte'
 import { setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
@@ -29,6 +29,7 @@ import {
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
+import { takeBackGroup, moveGroupToNewWindow, removeGroupFromWindow } from '$lib/features/workbench/groups.svelte'
 import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
@@ -96,6 +97,27 @@ export async function closeCurrentWorkbench(): Promise<void> {
 
 export async function newWindow(): Promise<void> {
   await requireNative().window.create()
+}
+
+export function takeOverServerWorkbench(server: string) {
+  return runNotifiedTask(() => takeBackGroup(server), {
+    loading: { title: 'Taking back workbench', description: server },
+    error: { title: 'Take back failed' }
+  })
+}
+
+export function moveServerWorkbenchToNewWindow(server: string) {
+  return runNotifiedTask(() => moveGroupToNewWindow(server), {
+    loading: { title: 'Moving workbench', description: server },
+    error: { title: 'Move workbench failed' }
+  })
+}
+
+export function removeServerWorkbenchFromWindow(server: string) {
+  return runNotifiedTask(() => removeGroupFromWindow(server), {
+    loading: { title: 'Removing workbench', description: server },
+    error: { title: 'Remove workbench failed' }
+  })
 }
 
 export function newEmptyFile(): void {

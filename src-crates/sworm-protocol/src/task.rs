@@ -17,7 +17,7 @@ pub struct TasksFile {
     /// Schema version. Current: 1.
     pub version: u32,
 
-    /// Task entries shown in the launcher, command palette, and title-bar menu.
+    /// Task entries shown in the new tab page, command palette, and title-bar menu.
     pub tasks: Vec<TaskDefinition>,
 }
 
@@ -52,7 +52,7 @@ pub struct TaskDefinition {
     pub icon: Option<String>,
 
     /// Optional group label. Tasks sharing a group appear together
-    /// in the launcher.
+    /// in the command palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
 

@@ -146,6 +146,33 @@ macro_rules! define_router_operation {
         }
     };
     (
+        #[route(path)]
+        FolderPathRoot => $method:ident($path:ident: $path_type:ty $(,)?) -> $return_type:ty;
+    ) => {
+        pub async fn $method(&self, $path: $path_type) -> Result<$return_type, ApiError> {
+            if let Target::Remote {
+                server,
+                path: remote_path,
+            } = Target::parse(&$path)?
+            {
+                // Browsing claims nothing; the root names a place on that server.
+                let mut root = self
+                    .call_reply(
+                        server,
+                        Request::FolderPathRoot {
+                            path: remote_path.to_owned(),
+                        },
+                    )
+                    .await?
+                    .$method()
+                    .map_err(ApiError::from)?;
+                root.path = Target::remote_uri(server, &root.path);
+                return Ok(root);
+            }
+            self.local(move |host| host.$method($path)).await
+        }
+    };
+    (
         #[route(folder_path)]
         SessionStart => $method:ident(
             $run_id:ident: $run_id_type:ty,

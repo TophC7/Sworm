@@ -9,7 +9,9 @@
 			"**/Thumbs.db": true,
 			"**/.bun": true,
 			".svelte-kit": true,
+			".svelte-kit-web": true,
 			"build": true,
+			"build-web": true,
 			"dist": true,
 			"node_modules": true,
 			"target": true

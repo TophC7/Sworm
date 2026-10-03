@@ -717,7 +717,7 @@ impl DispatchRuntime<'_> {
         .await
     }
 
-    /// Browsing is not ownership: the folder switcher walks directories the
+    /// Browsing is not ownership: the browser walks directories the
     /// desktop never opens, so this claims nothing.
     async fn folder_list_entries(
         &self,

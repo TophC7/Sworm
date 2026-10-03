@@ -54,6 +54,8 @@ setpriv --pdeathsig TERM $server \
     --data-dir $server_data_dir \
     serve --listen 127.0.0.1:7420 &
 
-SWORM_TARGET=web setpriv --pdeathsig TERM ./node_modules/.bin/vite dev &
+# Through bun: the devshell has no node for vite's shebang, and running the
+# file in-process keeps --pdeathsig on vite itself.
+SWORM_TARGET=web setpriv --pdeathsig TERM bun ./node_modules/.bin/vite dev &
 
 XDG_CONFIG_HOME=$desktop_config_home XDG_DATA_HOME=$desktop_data_home exec bun app:dev

@@ -1454,7 +1454,7 @@ mod tests {
                 source.label(),
                 TabTransferExportPayload {
                     transfer_id: transfer_id.clone(),
-                    tab: serde_json::json!({ "id": "tab-1", "kind": "launcher" }),
+                    tab: serde_json::json!({ "id": "tab-1", "kind": "new-tab" }),
                     terminal_state: None,
                     model_state: None,
                 },

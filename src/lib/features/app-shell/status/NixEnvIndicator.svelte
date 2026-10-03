@@ -4,9 +4,12 @@
     detectNix,
     evaluateNix,
     getNixDetection,
+    getNixStatus,
     isNixEvaluating,
     selectNixFile
   } from '$lib/features/settings/state/nix.svelte'
+  import nixosUrl from '$lib/assets/nixos.svg?url'
+  import MaskIcon from '$lib/icons/MaskIcon.svelte'
   import { loadProvidersForFolder } from '$lib/features/sessions/providers/state.svelte'
   import {
     DropdownMenuRoot,
@@ -16,7 +19,6 @@
     DropdownMenuSeparator
   } from '$lib/components/ui/dropdown-menu'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
-  import nixosUrl from '$lib/assets/nixos.svg?url'
   import { LoaderCircle, Check, X, CircleAlert } from '$lib/icons/lucideExports'
   import { notify, dismissNotification } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
@@ -24,7 +26,7 @@
   let { folderPath }: { folderPath: string } = $props()
   let detection = $derived(getNixDetection(folderPath))
   let evaluatingNow = $derived(isNixEvaluating(folderPath))
-  let hasNixFiles = $derived(detection && detection.detected_files.length > 0)
+  let status = $derived(getNixStatus(folderPath))
 
   // Fence detection and its follow-on work when the active folder changes or closes.
   let folderGeneration = 0
@@ -120,57 +122,17 @@
       }
     }
   }
-
-  function statusColor(): string {
-    if (evaluatingNow) return 'text-warning'
-    if (!detection?.selected) return 'text-subtle'
-    switch (detection.selected.status) {
-      case 'ready':
-        return 'text-success'
-      case 'error':
-      case 'timeout':
-        return 'text-danger'
-      default:
-        return 'text-muted'
-    }
-  }
-
-  function statusLabel(): string {
-    if (evaluatingNow) return 'Evaluating...'
-    if (!detection?.selected) return 'Nix available'
-    switch (detection.selected.status) {
-      case 'ready':
-      case 'pending':
-        return detection.selected.nix_file
-      case 'evaluating':
-        return 'Evaluating...'
-      case 'error':
-        return 'Error'
-      case 'timeout':
-        return 'Timeout'
-      default:
-        return detection.selected.nix_file
-    }
-  }
-
-  // Quoted: Vite inlines small SVGs as data URIs that contain quotes.
-  const nixMask = `url("${nixosUrl}") no-repeat center / contain`
 </script>
 
-{#if hasNixFiles}
+{#if status}
   <DropdownMenuRoot>
-    <DropdownMenuTrigger class={statusChipVariants({ class: statusColor() })}>
+    <DropdownMenuTrigger class={statusChipVariants({ class: status.tone })}>
       {#if evaluatingNow}
         <LoaderCircle size={10} class="animate-spin" />
       {:else}
-        <span
-          class="h-[10px] w-[10px] shrink-0 bg-current"
-          style="-webkit-mask: {nixMask}; mask: {nixMask};"
-          role="img"
-          aria-label="Nix"
-        ></span>
+        <MaskIcon src={nixosUrl} width={10} label="Nix" />
       {/if}
-      {statusLabel()}
+      {status.label}
       {#if detection?.selected?.status === 'ready'}
         <Check size={8} />
       {:else if detection?.selected?.status === 'error' || detection?.selected?.status === 'timeout'}

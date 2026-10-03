@@ -7,7 +7,12 @@
 
 <script lang="ts">
   import { platform } from '$lib/platform'
-  import { confirmCloseWorkbench } from '$lib/features/app-actions/actions.svelte'
+  import {
+    confirmCloseWorkbench,
+    takeOverServerWorkbench,
+    moveServerWorkbenchToNewWindow,
+    removeServerWorkbenchFromWindow
+  } from '$lib/features/app-actions/actions.svelte'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
   import {
     ContextMenuRoot,
@@ -38,10 +43,7 @@
     getTabGroup,
     moveGroup,
     isTabInert,
-    takeBackGroup,
     retryGroup,
-    removeGroupFromWindow,
-    moveGroupToNewWindow,
     closeGroupWorkbench,
     type WorkbenchGroup
   } from '$lib/features/workbench/groups.svelte'
@@ -60,6 +62,7 @@
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
   import { dropFromOtherWindow } from '$lib/features/workbench/transferService.svelte'
   import { startSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
+  import ProviderIcon from '$lib/features/sessions/providers/ProviderIcon.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
@@ -75,7 +78,7 @@
   import { getSurfaceKind } from '$lib/features/workbench/surfaces'
   import { getSettings } from '$lib/features/settings/state/settings.svelte'
   import { getPathColor } from '$lib/utils/pathColor'
-  import NewTabMenu from './NewTabMenu.svelte'
+  import NewTabButton from './NewTabButton.svelte'
 
   let tabs = $derived(getTabs())
   let blocks = $derived.by(() => {
@@ -326,7 +329,7 @@
         title="{tab.folderPath} — {presentation.title}"
         onclick={() => setActiveTab(tab.id)}
         ondblclick={() => {
-          if (surfaceKind !== 'session' && surfaceKind !== 'launcher' && presentation.preview) {
+          if (surfaceKind !== 'session' && surfaceKind !== 'new-tab' && presentation.preview) {
             promoteTab(tab.id)
           }
         }}
@@ -349,7 +352,7 @@
                      directory-aware rules (e.g. .sworm/*.json → sworm icon).
                      Falls back to the basename for unsaved "Untitled" tabs. -->
             <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
-          {:else if surfaceKind === 'launcher'}
+          {:else if surfaceKind === 'new-tab'}
             <Plus size={14} class="shrink-0 text-accent" />
           {:else if surfaceKind === 'task'}
             <!-- Task icon comes from .sworm/tasks.jsonc. Any Lucide name
@@ -361,7 +364,7 @@
               <TerminalIcon size={14} class="shrink-0 text-accent" />
             {/if}
           {:else if presentation.providerIcon}
-            <img src={presentation.providerIcon} alt="" width={14} height={14} class="shrink-0" />
+            <ProviderIcon icon={presentation.providerIcon} size={14} />
           {/if}
           {#if tab.locked}
             <Lock size={11} class="shrink-0 text-muted" />
@@ -387,7 +390,7 @@
       {/if}
       {#if canLockTab(tab)}
         <!-- Lock only makes sense on content tabs where accidental input
-                 can cause damage (session terminals, Monaco text tabs). Launcher
+                 can cause damage (session terminals, Monaco text tabs). New tab pages
                  and diff tabs skip this affordance entirely. -->
         <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
           {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
@@ -415,32 +418,14 @@
 
 {#snippet groupActions(group: WorkbenchGroup, Item: typeof ContextMenuItem, Separator: typeof ContextMenuSeparator)}
   {#if group.state === 'busy' || group.state === 'revoked'}
-    <Item
-      onclick={() =>
-        void runNotifiedTask(() => takeBackGroup(group.server), {
-          loading: { title: 'Taking back workbench', description: group.server },
-          error: { title: 'Take back failed' }
-        })}>Take Back</Item
-    >
+    <Item onclick={() => void takeOverServerWorkbench(group.server)}>Take Back</Item>
   {:else if group.state === 'offline'}
     <Item onclick={() => void retryGroup(group.server)}>Retry</Item>
   {:else if group.state === 'active'}
-    <Item
-      onclick={() =>
-        void runNotifiedTask(() => moveGroupToNewWindow(group.server), {
-          loading: { title: 'Moving workbench', description: group.server },
-          error: { title: 'Move workbench failed' }
-        })}>Move to New Window</Item
-    >
+    <Item onclick={() => void moveServerWorkbenchToNewWindow(group.server)}>Move to New Window</Item>
   {/if}
   {#if group.state !== 'active'}
-    <Item
-      onclick={() =>
-        void runNotifiedTask(() => removeGroupFromWindow(group.server), {
-          loading: { title: 'Removing workbench', description: group.server },
-          error: { title: 'Remove workbench failed' }
-        })}>Remove from Window</Item
-    >
+    <Item onclick={() => void removeServerWorkbenchFromWindow(group.server)}>Remove from Window</Item>
   {/if}
   <Separator />
   <Item destructive onclick={() => void confirmCloseGroup(group.server)}>Close Workbench…</Item>
@@ -531,7 +516,7 @@
       {/if}
 
       {#snippet trailing()}
-        <NewTabMenu />
+        <NewTabButton />
       {/snippet}
     </TabStrip>
   </div>

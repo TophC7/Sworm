@@ -6,13 +6,14 @@
     DropdownMenuRoot,
     DropdownMenuTrigger
   } from '$lib/components/ui/dropdown-menu'
-  import { providerById } from '$lib/features/sessions/providers/catalog'
+  import { providerById, type ProviderIconSource } from '$lib/features/sessions/providers/catalog'
+  import ProviderIcon from '$lib/features/sessions/providers/ProviderIcon.svelte'
   import { MoreHorizontalIcon, Play } from '$lib/icons/lucideExports'
   import type { WorkbenchInfo } from '$lib/types/backend'
   import { cn } from '$lib/utils/cn'
   import { timeAgo } from '$lib/utils/date'
-  import { basename } from '$lib/utils/paths'
   import { workbenchHref } from './workbenchLink'
+  import { workbenchTitle } from '$lib/features/browser/places.svelte'
   import { onDestroy } from 'svelte'
 
   let {
@@ -49,7 +50,7 @@
 
   interface RunChip {
     label: string
-    icon: string | null
+    icon: ProviderIconSource | null
     task: boolean
     count: number
   }
@@ -76,7 +77,7 @@
     }
     return [...byKey.values()]
   })
-  let title = $derived(workbench.folders.map(basename).join(' · ') || 'Empty Workbench')
+  let title = $derived(workbenchTitle(workbench))
 </script>
 
 {#snippet rowContent()}
@@ -86,7 +87,7 @@
       {#each chips as chip (chip.label + chip.task)}
         <span class="flex shrink-0 items-center gap-1">
           {#if chip.icon}
-            <img src={chip.icon} alt="" class="size-3" />
+            <ProviderIcon icon={chip.icon} size={12} />
           {:else if chip.task}
             <Play size={10} class="text-subtle" />
           {/if}

@@ -4,12 +4,15 @@
 
   let {
     children,
+    footer,
     // Mirrors --color-accent (src/app.css). Particles' canvas needs a
     // literal hex; kept in sync with the accent token.
     particleColor = '#ffb59f',
     particleQuantity = 75
   }: {
     children: Snippet
+    /** Sits at the stage bottom while content fits, after the content once it scrolls. */
+    footer?: Snippet
     particleColor?: string
     particleQuantity?: number
   } = $props()
@@ -29,4 +32,8 @@
   <div class="relative z-10 m-auto w-full max-w-2xl px-8 py-10">
     {@render children()}
   </div>
+
+  {#if footer}
+    <div class="relative z-10 flex shrink-0 justify-center px-8 pb-6">{@render footer()}</div>
+  {/if}
 </div>

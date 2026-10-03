@@ -6,7 +6,7 @@ pub struct FolderInfo {
     pub name: String,
 }
 
-/// Where the folder switcher's path bar starts: Home, or a volume (a
+/// Where the browser's path bar starts: Home, or a volume (a
 /// user-visible mount or the root filesystem) with its display label.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathRoot {

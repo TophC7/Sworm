@@ -8,7 +8,7 @@ import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
 import { tabServer, type PersistedGroupRef, type PersistedTab, type PersistedWorkbenchV4, type Tab } from './model'
 import {
   createWorkbenchWriter,
-  isPersistedWorkbenchShape,
+  parsePersistedWorkbench,
   persistedToTab,
   serializeWorkbench,
   type WorkbenchWriter
@@ -160,8 +160,8 @@ async function releaseViews(group: OwnedGroup): Promise<void> {
 }
 
 function hydrate(group: OwnedGroup, json: string, index?: number): void {
-  const parsed: unknown = JSON.parse(json)
-  if (!isPersistedWorkbenchShape(parsed)) throw new Error('Malformed server workbench snapshot')
+  const parsed = parsePersistedWorkbench(JSON.parse(json))
+  if (!parsed) throw new Error('Malformed server workbench snapshot')
   const snapshot = mapGroupSnapshot(parsed, group.server, 'toWindow')
   const tabs = snapshot.tabs.map((tab) => persistedToTab(tab, generateTabId()))
   group.lastActiveTabId = tabs[snapshot.activeTabIndex]?.id ?? null

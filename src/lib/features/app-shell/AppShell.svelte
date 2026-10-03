@@ -10,7 +10,7 @@
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
-  import FolderSwitcher from '$lib/features/folders/FolderSwitcher.svelte'
+  import Browser from '$lib/features/browser/Browser.svelte'
   import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
   import { loadSettings } from '$lib/features/settings/state/settings.svelte'
@@ -21,7 +21,6 @@
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/setup.svelte'
-  import { openSettings } from '$lib/features/app-actions/actions.svelte'
   import { initProjectSchemas } from '$lib/features/project-config/bootstrap'
   import {
     getDirtyTextSurfaceCount,
@@ -160,7 +159,7 @@
 
 <TooltipProvider delayDuration={300}>
   <div class="flex h-screen flex-col overflow-hidden">
-    <TitleBar onSettings={openSettings} />
+    <TitleBar />
 
     <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {@render children()}
@@ -176,6 +175,6 @@
   <CommandCenter />
   <SettingsDialog open={isSettingsOpen()} onClose={() => setSettingsOpen(false)} />
   <NotificationsSurface />
-  <FolderSwitcher />
+  <Browser />
   <ConfirmHost />
 </TooltipProvider>

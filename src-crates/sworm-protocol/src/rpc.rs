@@ -192,8 +192,10 @@ macro_rules! sworm_rpc_ops {
             FolderClaim => folder_claim(folder_path: String) -> ();
             #[route(folder_path)]
             FolderRelease => folder_release(folder_path: String) -> ();
-            #[route(none)]
+            #[route(path)]
             FolderPathRoot => folder_path_root(path: String) -> $crate::folder::PathRoot;
+            #[route(server)]
+            FolderHome => folder_home() -> String;
             #[route(none)]
             ProviderList => provider_list() -> Vec<$crate::provider::ProviderStatus>;
             #[route(none)]

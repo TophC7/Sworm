@@ -5,6 +5,8 @@
  * or plain text (textLabel + textFont).
  */
 
+import type { IconProps } from '@lucide/svelte'
+import type { Component } from 'svelte'
 import antigravityTextUrl from '$lib/assets/providers/antigravity-text.svg?url'
 import antigravityUrl from '$lib/assets/providers/antigravity.svg?url'
 import claudeCodeTextUrl from '$lib/assets/providers/claudecode-text.svg?url'
@@ -12,13 +14,16 @@ import claudeCodeUrl from '$lib/assets/providers/claudecode.svg?url'
 import codexTextUrl from '$lib/assets/providers/codex-text.svg?url'
 import codexUrl from '$lib/assets/providers/codex.svg?url'
 import ompUrl from '$lib/assets/providers/omp.svg?url'
-import terminalUrl from '$lib/assets/providers/terminal.svg?url'
 import { MONO_FONT_FAMILY } from '$lib/fonts'
+import { TerminalIcon } from '$lib/icons/lucideExports'
+
+/** A brand mark's image URL, or a Lucide icon for generic options such as Terminal. */
+export type ProviderIconSource = string | Component<IconProps>
 
 export interface ProviderMeta {
   id: string
   label: string
-  icon: string
+  icon: ProviderIconSource
   gradientFrom: string
   gradientTo: string
   // SVG text mode
@@ -29,8 +34,11 @@ export interface ProviderMeta {
   textFont?: string
 }
 
+/** Agent CLIs always ship a brand mark. */
+export type AgentProviderMeta = ProviderMeta & { icon: string }
+
 /** Agent CLI providers — detected and managed by the backend. */
-export const allProviders: ProviderMeta[] = [
+export const allProviders: AgentProviderMeta[] = [
   {
     id: 'claude_code',
     label: 'Claude Code',
@@ -74,11 +82,11 @@ export const directOptions: ProviderMeta[] = [
   {
     id: 'terminal',
     label: 'Terminal',
-    icon: terminalUrl,
+    icon: TerminalIcon,
     textLabel: 'Terminal',
     textFont: MONO_FONT_FAMILY,
-    gradientFrom: '#a1a1aa',
-    gradientTo: '#3f3f46'
+    gradientFrom: 'var(--color-muted)',
+    gradientTo: 'var(--color-edge-strong)'
   }
 ]
 

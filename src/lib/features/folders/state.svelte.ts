@@ -1,6 +1,6 @@
 // Recent folders — canonical folder paths opened in Sworm, managed and
-// broadcast by the backend. Feeds Home's project cards, the "Open Recent"
-// menus, and the folder switcher's starting point.
+// broadcast by the backend. Feeds Home's project cards and the browser's
+// places list and starting point.
 
 import { backend } from '$lib/api/backend'
 import type { RecentFolder } from '$lib/types/backend'

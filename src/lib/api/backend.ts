@@ -149,9 +149,14 @@ export const backend = {
     listEntries(path: string, showHidden: boolean): Promise<FolderEntry[]> {
       return invoke<FolderEntry[]>('folder_list_entries', { path, showHidden })
     },
-    /** Where the folder switcher's path bar starts for a local folder. */
+    /** Where the browser's path bar starts for a folder; remote roots come back as `sworm://` paths. */
     pathRoot(path: string): Promise<PathRoot> {
       return invoke<PathRoot>('folder_path_root', { path })
+    },
+    /** Canonical home folder of `server`, or of this host when omitted. */
+    async home(server?: string): Promise<string> {
+      const home = await invoke<string>('folder_home', { folderPath: server ? `sworm://${server}/` : null })
+      return server ? `sworm://${server}${home}` : home
     },
     /** Drop backend resources scoped to a folder that no longer has any open tab. */
     release(folderPath: string): Promise<void> {

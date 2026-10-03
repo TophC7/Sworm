@@ -2,7 +2,7 @@ use crate::errors::ApiError;
 use crate::events::HostEvent;
 use crate::host::Host;
 use crate::services::app_state_kv::AppStateKvService;
-use crate::services::folders::{find_path_root, folder_name, resolve_folder};
+use crate::services::folders::{find_path_root, folder_name, home_dir, resolve_folder};
 use rusqlite::Connection;
 use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
 use sworm_protocol::rpc::RecentFolder;
@@ -22,6 +22,14 @@ impl Host {
     /// The path-root anchor is for browsing, not folder ownership.
     pub fn folder_path_root(&self, path: String) -> Result<PathRoot, ApiError> {
         Ok(find_path_root(&resolve_folder(&path)?))
+    }
+
+    /// Canonical `$HOME`, where browsing a host starts.
+    pub fn folder_home(&self) -> Result<String, ApiError> {
+        let home = home_dir().ok_or_else(|| ApiError::NotFound("HOME is not set".to_owned()))?;
+        Ok(resolve_folder(&home.to_string_lossy())?
+            .to_string_lossy()
+            .into_owned())
     }
 
     pub fn recent_folders_list(&self) -> Result<Vec<RecentFolder>, ApiError> {

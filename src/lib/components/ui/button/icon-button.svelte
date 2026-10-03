@@ -59,6 +59,7 @@
   import TooltipContent from '../tooltip/tooltip-content.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
+  import type { HTMLButtonAttributes } from 'svelte/elements'
 
   let {
     tooltip,
@@ -71,8 +72,10 @@
     class: className,
     children,
     onclick,
-    disabled = false
-  }: {
+    disabled = false,
+    ...rest
+  }: Pick<HTMLButtonAttributes, 'aria-expanded' | 'aria-haspopup' | 'aria-controls'> & {
+    [key: `data-${string}`]: string | undefined
     tooltip?: string
     ariaLabel?: string
     shortcut?: string
@@ -97,7 +100,7 @@
 
 {#if tooltip}
   <Tooltip.Root>
-    <Tooltip.Trigger class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled}>
+    <Tooltip.Trigger class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled} {...rest}>
       {#if children}{@render children()}{/if}
     </Tooltip.Trigger>
     <TooltipContent side={tooltipSide}>
@@ -108,7 +111,7 @@
     </TooltipContent>
   </Tooltip.Root>
 {:else}
-  <button type="button" class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled}>
+  <button type="button" class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled} {...rest}>
     {#if children}{@render children()}{/if}
   </button>
 {/if}

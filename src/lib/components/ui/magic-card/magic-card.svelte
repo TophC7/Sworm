@@ -7,7 +7,7 @@
     class: className,
     gradientSize = 200,
     // Defaults track design tokens — see src/app.css (@theme).
-    gradientColor = 'var(--color-ground)',
+    gradientColor = 'var(--color-raised)',
     gradientOpacity = 0.8,
     gradientFrom = 'var(--color-accent)',
     gradientTo = 'var(--color-warm)',
@@ -49,10 +49,11 @@
   )
 </script>
 
+<!-- The button's own fill is the resting 1px border; the inner layer covers all but that line. -->
 <button
   class={cn(
-    'group relative rounded-xl text-left transition-transform',
-    disabled ? 'cursor-default opacity-40' : 'cursor-pointer hover:scale-[1.02] active:scale-[0.98]',
+    'group relative rounded-lg bg-edge text-left focus-visible:shadow-focus-ring focus-visible:outline-none',
+    disabled ? 'cursor-default opacity-40 grayscale' : 'cursor-pointer',
     className
   )}
   type="button"
@@ -61,7 +62,7 @@
   onpointerleave={reset}
   onclick={() => onclick?.()}
 >
-  <!-- Animated border gradient -->
+  <!-- Border gradient: lights the 1px edge near the cursor -->
   <div
     class="pointer-events-none absolute inset-0 rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
     style="background: {borderBg};"
@@ -69,9 +70,9 @@
   ></div>
 
   <!-- Inner background -->
-  <div class="absolute inset-px rounded-[inherit] bg-raised" aria-hidden="true"></div>
+  <div class="absolute inset-px rounded-[inherit] bg-surface" aria-hidden="true"></div>
 
-  <!-- Gradient overlay on hover -->
+  <!-- Spotlight on hover: lifts the fill toward `gradientColor` around the cursor -->
   <div
     class="pointer-events-none absolute inset-px rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
     style="background: {overlayBg}; opacity: {mouseX > 0 ? gradientOpacity : 0};"

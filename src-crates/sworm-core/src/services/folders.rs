@@ -50,7 +50,7 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
-/// Where the folder switcher's path bar starts for the canonical `path`,
+/// Where the browser's path bar starts for the canonical `path`,
 /// following Nautilus: a user-visible mount, else Home, else the root
 /// filesystem named by its label.
 pub fn find_path_root(path: &Path) -> PathRoot {

@@ -135,9 +135,9 @@ The status bar shows the current folder, Git branch, Nix environment status, and
 Track issues with priorities, group them into epics, and see progress in the sidebar. Agents can query, create, and update issues through a local socket API rather than editing the database directly.
 
 <details>
-<summary>📷 See the session launcher and issues sidebar</summary>
+<summary>📷 See the new tab page and issues sidebar</summary>
 
-![Agent session launcher beside the local issues sidebar](docs/readme/new-session.png)
+![New tab page beside the local issues sidebar](docs/readme/new-session.png)
 
 </details>
 

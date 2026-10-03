@@ -5,7 +5,7 @@
     base: 'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium cursor-pointer transition-colors focus-visible:shadow-focus-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
     variants: {
       variant: {
-        default: 'bg-raised border border-edge text-fg hover:border-accent hover:text-bright',
+        default: 'bg-surface border border-edge text-fg hover:border-accent/40 hover:text-bright',
         ghost: 'bg-transparent border-none text-muted hover:text-bright hover:bg-surface',
         outline: 'bg-transparent border border-edge text-fg hover:border-accent hover:text-bright',
         destructive: 'bg-danger-bg border border-danger-border text-danger hover:text-danger-bright',
