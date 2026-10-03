@@ -166,6 +166,12 @@ nix build
 nix run .
 ```
 
+Build Fedora desktop and server RPMs for the native architecture:
+
+```sh
+nix build .#rpm .#server-rpm
+```
+
 Sworm uses [Tauri v2](https://tauri.app/) and Rust for the desktop runtime, with the system Git CLI and SQLite. The interface is built with Svelte 5, SvelteKit, and Tailwind CSS v4; editing uses Monaco and Shiki, and terminals use xterm.js. Nix defines the development environment and packaging.
 
 Backend ownership:

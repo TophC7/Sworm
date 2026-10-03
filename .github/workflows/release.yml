@@ -40,11 +40,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            rpm_arch: x86_64
             system: x86_64-linux
             runner: ubuntu-24.04
           - arch: arm64
-            rpm_arch: aarch64
             system: aarch64-linux
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -67,19 +65,26 @@ jobs:
           cp -L result*/*.deb result*/*.rpm result*/*.tar.gz dist/
       - name: Install and smoke test packages on runner
         run: |
-          sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils rpm
+          sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils
           sudo dpkg -i dist/sworm_*.deb dist/sworm-server_*.deb
           desktop-file-validate /usr/share/applications/sworm.desktop
           dbus-run-session -- xvfb-run -a sh nix/packaging/smoke.sh
           sworm-server --help
           sworm-server fingerprint --help
-          # Smoke test RPM package metadata
-          rpm -qp --requires dist/sworm-*.${{ matrix.rpm_arch }}.rpm
-          rpm -qp --requires dist/sworm-server-*.${{ matrix.rpm_arch }}.rpm
+          # Smoke test standalone tarball
           mkdir -p test-tarball
           tar -xzf dist/sworm-server-*.tar.gz -C test-tarball
           test-tarball/*/bin/sworm-server --help
           test-tarball/*/bin/sworm-server fingerprint --help
+      - name: Install and verify RPMs on Fedora
+        run: |
+          docker run --rm --volume "$PWD:/work:ro" --workdir /work fedora:44 sh -ec '
+            dnf install --assumeyes desktop-file-utils /work/dist/*.rpm
+            desktop-file-validate /usr/share/applications/sworm.desktop
+            rpm --verify sworm sworm-server
+            sworm-server --help
+            sworm-server fingerprint --help
+          '
       - uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.arch }}

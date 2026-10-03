@@ -213,9 +213,11 @@ let
       /usr/share/doc/sworm-server/LICENSE
       EOF
 
+            # RPM defaults to /var/tmp, which is not writable in the Nix sandbox.
             rpmbuild -bb \
               --target "${rpmArch}" \
               --define "_topdir $topdir" \
+              --define "_tmppath $TMPDIR" \
               --define "_dbpath $topdir/rpmdb" \
               --buildroot "$pkgdir" \
               "$topdir/SPECS/sworm-server.spec"

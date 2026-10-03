@@ -186,9 +186,11 @@ let
       EOF
 
             # 6. Build the RPM package
+            # RPM defaults to /var/tmp, which is not writable in the Nix sandbox.
             rpmbuild -bb \
               --target "${rpmArch}" \
               --define "_topdir $topdir" \
+              --define "_tmppath $TMPDIR" \
               --define "_dbpath $topdir/rpmdb" \
               --buildroot "$pkgdir" \
               "$topdir/SPECS/sworm.spec"
