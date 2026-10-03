@@ -4,7 +4,8 @@ use super::queries::{
     append_event, ensure_issue_exists, list_dependencies_conn, would_create_cycle,
 };
 use super::validators::actor;
-use super::IssueService;
+use super::{db_error, IssueService};
+use crate::errors::ApiError;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
@@ -19,36 +20,38 @@ impl IssueService {
         &self,
         project_path: &Path,
         input: IssueDependencyInput,
-    ) -> Result<IssueDependency, String> {
+    ) -> Result<IssueDependency, ApiError> {
         let actor = actor(input.actor.as_deref());
         let db = self.db(project_path)?;
         let mut conn = db.write();
         let tx = conn
             .transaction()
-            .map_err(|e| format!("Failed to start dependency tx: {}", e))?;
+            .map_err(db_error("Failed to start dependency tx"))?;
         ensure_issue_exists(&tx, &input.issue_id)?;
         ensure_issue_exists(&tx, &input.depends_on_issue_id)?;
         if input.issue_id == input.depends_on_issue_id {
-            return Err("Issue cannot depend on itself".to_string());
+            return Err(ApiError::InvalidArgument(
+                "Issue cannot depend on itself".to_string(),
+            ));
         }
         let existing: Option<String> = tx.query_row("SELECT id FROM issue_dependencies WHERE issue_id = ?1 AND depends_on_issue_id = ?2", params![input.issue_id, input.depends_on_issue_id], |row| row.get(0))
-            .optional().map_err(|e| format!("Failed to check dependency: {}", e))?;
+            .optional().map_err(db_error("Failed to check dependency"))?;
         if existing.is_some() {
-            return Err(format!(
+            return Err(ApiError::InvalidArgument(format!(
                 "Dependency already exists: {} → {}",
                 input.issue_id, input.depends_on_issue_id
-            ));
+            )));
         }
         if would_create_cycle(&tx, &input.issue_id, &input.depends_on_issue_id)? {
-            return Err(format!(
+            return Err(ApiError::InvalidArgument(format!(
                 "Adding dependency would create a cycle: {} → {}",
                 input.issue_id, input.depends_on_issue_id
-            ));
+            )));
         }
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         tx.execute("INSERT INTO issue_dependencies(id, issue_id, depends_on_issue_id, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, input.issue_id, input.depends_on_issue_id, actor, now])
-            .map_err(|e| format!("Failed to add dependency: {}", e))?;
+            .map_err(db_error("Failed to add dependency"))?;
         append_event(
             &tx,
             actor,
@@ -59,7 +62,7 @@ impl IssueService {
             None,
         )?;
         tx.commit()
-            .map_err(|e| format!("Failed to commit dependency add: {}", e))?;
+            .map_err(db_error("Failed to commit dependency add"))?;
         Ok(IssueDependency {
             id,
             issue_id: input.issue_id,
@@ -75,15 +78,15 @@ impl IssueService {
         &self,
         project_path: &Path,
         input: IssueDependencyInput,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         let actor = actor(input.actor.as_deref());
         let db = self.db(project_path)?;
         let mut conn = db.write();
         let tx = conn
             .transaction()
-            .map_err(|e| format!("Failed to start dependency remove tx: {}", e))?;
+            .map_err(db_error("Failed to start dependency remove tx"))?;
         let dep_id: String = tx.query_row("SELECT id FROM issue_dependencies WHERE issue_id = ?1 AND depends_on_issue_id = ?2", params![input.issue_id, input.depends_on_issue_id], |row| row.get(0))
-            .optional().map_err(|e| format!("Failed to load dependency: {}", e))?.ok_or_else(|| format!("Dependency not found: {} → {}", input.issue_id, input.depends_on_issue_id))?;
+            .optional().map_err(db_error("Failed to load dependency"))?.ok_or_else(|| ApiError::NotFound(format!("Dependency not found: {} → {}", input.issue_id, input.depends_on_issue_id)))?;
         append_event(
             &tx,
             actor,
@@ -97,9 +100,9 @@ impl IssueService {
             "DELETE FROM issue_dependencies WHERE id = ?1",
             params![dep_id],
         )
-        .map_err(|e| format!("Failed to remove dependency: {}", e))?;
+        .map_err(db_error("Failed to remove dependency"))?;
         tx.commit()
-            .map_err(|e| format!("Failed to commit dependency remove: {}", e))
+            .map_err(db_error("Failed to commit dependency remove"))
     }
 
     /// Outgoing dependency edges from an issue (i.e. issues it
@@ -108,7 +111,7 @@ impl IssueService {
         &self,
         project_path: &Path,
         issue_id: &str,
-    ) -> Result<Vec<IssueDependency>, String> {
+    ) -> Result<Vec<IssueDependency>, ApiError> {
         let db = self.db(project_path)?;
         let conn = db.read();
         ensure_issue_exists(&conn, issue_id)?;

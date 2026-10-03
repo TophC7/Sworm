@@ -29,7 +29,7 @@ pub struct PtySubscriber {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunRetention {
+enum RunRetention {
     Retained,
     Ephemeral,
 }
@@ -101,7 +101,6 @@ struct Retained {
 
 struct PtyStreamState {
     subscriber: SubscriberState,
-    owner_id: Option<String>,
     original: Option<(PtySubscriber, PtyCursor)>,
     target_cursor: Option<PtyCursor>,
     delivered_cursor: PtyCursor,
@@ -110,10 +109,10 @@ struct PtyStreamState {
     retained_bytes: usize,
     overflow_warned: bool,
     last_dispatched: u64,
+    sequence: u64,
     output_offset: u64,
     event_sequence: u64,
     retention: RunRetention,
-    completed: bool,
     exit_code: Option<Option<i32>>,
 }
 
@@ -195,7 +194,6 @@ impl PtyStreamState {
 /// attached subscriber and queues events while no subscriber is attached.
 #[derive(Clone)]
 pub struct PtyEventSink {
-    sequence: Arc<AtomicU64>,
     run_id: String,
     state: Arc<Mutex<PtyStreamState>>,
 }
@@ -204,9 +202,7 @@ impl PtyEventSink {
     fn new(run_id: String, subscriber: Option<PtySubscriber>, retention: RunRetention) -> Self {
         Self {
             run_id,
-            sequence: Arc::new(AtomicU64::new(1)),
             state: Arc::new(Mutex::new(PtyStreamState {
-                owner_id: None,
                 subscriber: subscriber.map_or(SubscriberState::Paused, |channels| {
                     SubscriberState::Active(Subscriber::Channels(channels))
                 }),
@@ -218,17 +214,13 @@ impl PtyEventSink {
                 retained_bytes: 0,
                 overflow_warned: false,
                 last_dispatched: 0,
+                sequence: 1,
                 output_offset: 0,
                 event_sequence: 0,
                 retention,
-                completed: false,
                 exit_code: None,
             })),
         }
-    }
-
-    fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn emit_output(&self, bytes: Vec<u8>) {
@@ -259,7 +251,11 @@ impl PtyEventSink {
     }
 
     fn emit_payload_locked(&self, state: &mut PtyStreamState, payload: Payload) {
-        let sequence = self.next_sequence();
+        let sequence = state.sequence;
+        state.sequence = state
+            .sequence
+            .checked_add(1)
+            .expect("PTY sequence overflow");
         let (start_offset, event_sequence) = match &payload {
             Payload::Output(bytes) => {
                 let start_offset = state.output_offset;
@@ -286,19 +282,33 @@ impl PtyEventSink {
         let SubscriberState::Active(subscriber) = &state.subscriber else {
             unreachable!("paused subscriber handled above");
         };
-        let subscriber = subscriber.clone();
-        let delivered = payload
-            .clone()
-            .send(&subscriber, start_offset, event_sequence)
-            .is_ok();
+        let mut delivered_cursor = state.delivered_cursor;
+        match &payload {
+            Payload::Output(bytes) => {
+                delivered_cursor.output_offset = start_offset + bytes.len() as u64;
+            }
+            Payload::Event(_) => delivered_cursor.event_sequence = event_sequence,
+        }
+        let retained = transferring || state.retention == RunRetention::Retained;
+        let (delivered, payload) = if retained {
+            (
+                payload
+                    .clone()
+                    .send(subscriber, start_offset, event_sequence)
+                    .is_ok(),
+                Some(payload),
+            )
+        } else {
+            (
+                payload
+                    .send(subscriber, start_offset, event_sequence)
+                    .is_ok(),
+                None,
+            )
+        };
         if delivered {
             state.last_dispatched = sequence;
-            match &payload {
-                Payload::Output(bytes) => {
-                    state.delivered_cursor.output_offset = start_offset + bytes.len() as u64
-                }
-                Payload::Event(_) => state.delivered_cursor.event_sequence = event_sequence,
-            }
+            state.delivered_cursor = delivered_cursor;
             if transferring {
                 state.target_cursor = Some(state.delivered_cursor);
             }
@@ -306,20 +316,21 @@ impl PtyEventSink {
             state.subscriber = SubscriberState::Paused;
             warn!("PTY subscriber channel closed");
         }
-        if transferring || state.retention == RunRetention::Retained {
+        if let Some(payload) = payload {
             state.retain(sequence, start_offset, event_sequence, payload);
         }
     }
 
-    fn complete(&self, event: PtyEvent) -> bool {
-        let exit_code = match &event {
-            PtyEvent::Exit { code, .. } => Some(*code),
-            _ => None,
-        };
+    fn complete(&self, code: Option<i32>) -> bool {
         let mut state = self.state.lock();
-        state.completed = true;
-        state.exit_code = exit_code;
-        self.emit_payload_locked(&mut state, Payload::Event(event));
+        state.exit_code = Some(code);
+        self.emit_payload_locked(
+            &mut state,
+            Payload::Event(PtyEvent::Exit {
+                run_id: self.run_id.clone(),
+                code,
+            }),
+        );
         state.retention == RunRetention::Retained
             || state.transfer_pending
             || matches!(&state.subscriber, SubscriberState::Paused)
@@ -363,19 +374,15 @@ impl PtyEventSink {
         current
     }
 
-    fn synced_event(&self) -> PtyEvent {
-        PtyEvent::Synced {
-            run_id: self.run_id.clone(),
-            sequence: self.sequence.load(Ordering::Acquire).saturating_sub(1),
-        }
-    }
-
     fn emit_synced(
         &self,
         state: &mut PtyStreamState,
         subscriber: &Subscriber,
     ) -> Result<(), String> {
-        let event = self.synced_event();
+        let event = PtyEvent::Synced {
+            run_id: self.run_id.clone(),
+            sequence: state.sequence.saturating_sub(1),
+        };
         let result = match subscriber {
             Subscriber::Channels(channels) => (channels.events)(event),
             Subscriber::Replay { sink, .. } => (sink)(PtyReplay::Event {
@@ -459,21 +466,12 @@ impl PtyEventSink {
             return Err(error);
         }
         self.emit_synced(&mut state, &subscriber)?;
-        Ok(self.sequence.load(Ordering::Acquire).saturating_sub(1))
+        Ok(state.sequence.saturating_sub(1))
     }
 
     fn attach_from(&self, sink: EventSink<PtyReplay>, cursor: PtyCursor) -> Result<u64, String> {
-        self.attach_from_with_channels(sink, cursor, None)
-    }
-
-    fn attach_from_with_channels(
-        &self,
-        sink: EventSink<PtyReplay>,
-        cursor: PtyCursor,
-        channels: Option<PtySubscriber>,
-    ) -> Result<u64, String> {
         let mut state = self.state.lock();
-        self.attach_from_state(&mut state, sink, cursor, channels)
+        self.attach_from_state(&mut state, sink, cursor, None)
     }
 
     fn attach_from_state(
@@ -536,7 +534,7 @@ impl PtyEventSink {
         if state.retention == RunRetention::Ephemeral {
             state.clear_retained();
         }
-        Ok(self.sequence.load(Ordering::Acquire).saturating_sub(1))
+        Ok(state.sequence.saturating_sub(1))
     }
 
     fn abort_transfer_detached(&self) -> Result<(), String> {
@@ -562,7 +560,7 @@ impl PtyEventSink {
     }
 
     fn is_completed(&self) -> bool {
-        self.state.lock().completed
+        self.state.lock().exit_code.is_some()
     }
 
     fn exit_code(&self) -> Option<Option<i32>> {
@@ -679,6 +677,13 @@ struct LivePty {
     event_sink: PtyEventSink,
 }
 
+impl LivePty {
+    fn fence(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.finalized.store(true, Ordering::Release);
+    }
+}
+
 /// PTY service managing live runs and completed retained transcripts.
 pub struct PtyService {
     sessions: Arc<Mutex<HashMap<String, Arc<RunEntry>>>>,
@@ -789,9 +794,13 @@ impl PtyService {
         Ok(())
     }
 
-    fn remove_if_current(&self, run_id: &str, entry: &Arc<RunEntry>) -> Option<Arc<LivePty>> {
+    fn remove_if_current(
+        sessions: &Mutex<HashMap<String, Arc<RunEntry>>>,
+        run_id: &str,
+        entry: &Arc<RunEntry>,
+    ) -> Option<Arc<LivePty>> {
         let mut state = entry.state.lock();
-        let mut sessions = self.sessions.lock();
+        let mut sessions = sessions.lock();
         if !sessions
             .get(run_id)
             .is_some_and(|current| Arc::ptr_eq(current, entry))
@@ -818,7 +827,6 @@ impl PtyService {
         rows: u16,
         subscriber: Option<PtySubscriber>,
         owner_id: Option<String>,
-        retention: RunRetention,
         on_exit: Option<Box<dyn FnOnce(&str, Option<i32>) + Send>>,
         completed: Option<CompletedRunSink>,
     ) -> Result<PtyEventSink, String> {
@@ -891,9 +899,7 @@ impl PtyService {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let finalized = Arc::new(AtomicBool::new(false));
-        let event_sink = PtyEventSink::new(run_id.clone(), subscriber, retention);
-        let owner = entry.state.lock().owner_id.clone();
-        event_sink.state.lock().owner_id = owner;
+        let event_sink = PtyEventSink::new(run_id.clone(), subscriber, RunRetention::Retained);
         let live = Arc::new(LivePty {
             backend: Arc::new(LocalBackend {
                 master: Mutex::new(pair.master),
@@ -1002,10 +1008,7 @@ impl PtyService {
                     callback(&sid_for_thread, exit_code);
                 }
 
-                let retain = sink_for_thread.complete(PtyEvent::Exit {
-                    run_id: sid_for_thread.clone(),
-                    code: exit_code,
-                });
+                let retain = sink_for_thread.complete(exit_code);
                 if retain {
                     if let Some(archive) = completed {
                         archive(sink_for_thread.take_completed());
@@ -1016,15 +1019,7 @@ impl PtyService {
                     }
                 }
 
-                let mut state = entry_for_thread.state.lock();
-                let mut sessions = sessions_for_thread.lock();
-                if sessions
-                    .get(&sid_for_thread)
-                    .is_some_and(|current| Arc::ptr_eq(current, &entry_for_thread))
-                {
-                    state.run = RunSlot::Retired;
-                    sessions.remove(&sid_for_thread);
-                }
+                Self::remove_if_current(&sessions_for_thread, &sid_for_thread, &entry_for_thread);
             });
         if let Err(error) = started {
             let _ = live.backend.kill();
@@ -1034,8 +1029,7 @@ impl PtyService {
             return Err(format!("Failed to spawn reader thread: {error}"));
         }
         if let Err(error) = self.publish(&run_id, &entry, Arc::clone(&live)) {
-            live.shutdown.store(true, Ordering::Release);
-            live.finalized.store(true, Ordering::Release);
+            live.fence();
             let _ = live.backend.kill();
             if let Some(mut child) = child_holder.lock().take() {
                 let _ = child.wait();
@@ -1063,8 +1057,6 @@ impl PtyService {
     ) -> Result<PtyEventSink, String> {
         let entry = self.reserve(&run_id, owner_id)?;
         let event_sink = PtyEventSink::new(run_id.clone(), subscriber, RunRetention::Ephemeral);
-        let owner = entry.state.lock().owner_id.clone();
-        event_sink.state.lock().owner_id = owner;
         let live = Arc::new(LivePty {
             backend: Arc::from(backend),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -1133,21 +1125,11 @@ impl PtyService {
         rows: u16,
     ) -> Result<PtyRunState, String> {
         let entry = self.entry(run_id)?;
-        let live = {
-            let state = entry.state.lock();
-            if state.owner_id.as_deref() != owner_id {
-                return Err(format!(
-                    "PTY session belongs to a different owner: {run_id}"
-                ));
-            }
-            match &state.run {
-                RunSlot::Active(live) => Arc::clone(live),
-                _ => return Err(format!("No active PTY session: {run_id}")),
-            }
-        };
+        let live = Self::active_entry(&entry, run_id)?;
         let event_sink = &live.event_sink;
         let status = {
             let state = event_sink.state.lock();
+            Self::validate_owner(&entry, &live, run_id, owner_id)?;
             if state.transfer_pending {
                 return Err(format!("PTY transfer is pending: {run_id}"));
             }
@@ -1172,11 +1154,7 @@ impl PtyService {
             PtyReplay::Event { event, .. } => (subscriber.events)(event),
         });
         let mut state = event_sink.state.lock();
-        if state.owner_id.as_deref() != owner_id || state.transfer_pending {
-            return Err(format!(
-                "PTY session belongs to a different owner or transfer pending: {run_id}"
-            ));
-        }
+        Self::validate_owner(&entry, &live, run_id, owner_id)?;
         event_sink.attach_from_state(
             &mut state,
             replay,
@@ -1229,12 +1207,9 @@ impl PtyService {
         if live.finalized.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let retain = live.event_sink.complete(PtyEvent::Exit {
-            run_id: run_id.to_string(),
-            code,
-        });
+        let retain = live.event_sink.complete(code);
         if !retain {
-            self.remove_if_current(run_id, &entry);
+            Self::remove_if_current(&self.sessions, run_id, &entry);
         }
         Ok(())
     }
@@ -1245,7 +1220,7 @@ impl PtyService {
         let sink = Self::active_entry(&entry, run_id)?.event_sink.clone();
         sink.resume_original()?;
         if sink.is_completed() && sink.state.lock().retention == RunRetention::Ephemeral {
-            self.remove_if_current(run_id, &entry);
+            Self::remove_if_current(&self.sessions, run_id, &entry);
         }
         Ok(())
     }
@@ -1261,7 +1236,7 @@ impl PtyService {
     pub fn transfer_owner(&self, run_id: &str, new_owner_id: &str) -> Result<(), String> {
         let entry = self.entry(run_id)?;
         let live = Self::active_entry(&entry, run_id)?;
-        let mut stream = live.event_sink.state.lock();
+        let stream = live.event_sink.state.lock();
         let mut state = entry.state.lock();
         if !matches!(&state.run, RunSlot::Active(current) if Arc::ptr_eq(current, &live)) {
             return Err(format!("No active PTY session: {run_id}"));
@@ -1269,7 +1244,6 @@ impl PtyService {
         if !stream.transfer_pending {
             return Err(format!("PTY transfer is not pending: {run_id}"));
         }
-        stream.owner_id = Some(new_owner_id.to_string());
         state.owner_id = Some(new_owner_id.to_string());
         Ok(())
     }
@@ -1282,7 +1256,7 @@ impl PtyService {
         if !live.backend.detaches_on_shutdown() {
             return Err(format!("PTY session is not adopted: {run_id}"));
         }
-        let mut stream = live.event_sink.state.lock();
+        let stream = live.event_sink.state.lock();
         let mut state = entry.state.lock();
         if state.owner_id.as_deref() != Some(source)
             || !matches!(&state.run, RunSlot::Active(current) if Arc::ptr_eq(current, &live))
@@ -1294,7 +1268,6 @@ impl PtyService {
         if stream.transfer_pending {
             return Err(format!("PTY transfer is pending: {run_id}"));
         }
-        stream.owner_id = Some(target.to_owned());
         state.owner_id = Some(target.to_owned());
         Ok(())
     }
@@ -1307,7 +1280,7 @@ impl PtyService {
                 if live.event_sink.is_completed()
                     && live.event_sink.state.lock().retention == RunRetention::Ephemeral
                 {
-                    self.remove_if_current(run_id, &entry);
+                    Self::remove_if_current(&self.sessions, run_id, &entry);
                 }
             }
         }
@@ -1366,17 +1339,16 @@ impl PtyService {
         stream.subscriber = SubscriberState::Paused;
         stream.clear_retained();
         drop(stream);
-        live.shutdown.store(true, Ordering::Release);
-        live.finalized.store(true, Ordering::Release);
+        live.fence();
         Ok(())
     }
 
     /// Kill a run explicitly. This always kills an adopted backend.
     pub fn kill(&self, run_id: &str) -> Result<(), String> {
-        let entry = self
-            .entry(run_id)
-            .map_err(|_| format!("No active PTY session: {run_id}"))?;
-        if let Some(live) = self.remove_if_current(run_id, &entry) {
+        let Ok(entry) = self.entry(run_id) else {
+            return Ok(());
+        };
+        if let Some(live) = Self::remove_if_current(&self.sessions, run_id, &entry) {
             Self::stop_live(&live, true)?;
         }
         info!("PTY session {run_id} killed");
@@ -1384,8 +1356,7 @@ impl PtyService {
     }
 
     fn stop_live(live: &LivePty, kill_adopted: bool) -> Result<(), String> {
-        live.shutdown.store(true, Ordering::Release);
-        live.finalized.store(true, Ordering::Release);
+        live.fence();
         if (kill_adopted || !live.backend.detaches_on_shutdown()) && !live.event_sink.is_completed()
         {
             live.backend.kill()?;
@@ -1525,8 +1496,7 @@ impl PtyService {
                     }
                 }
             }
-            live.shutdown.store(true, Ordering::Release);
-            live.finalized.store(true, Ordering::Release);
+            live.fence();
         }
         // Retire only the exact incarnation observed above; a natural exit may
         // already have removed it. A retired reservation cancels its start.
@@ -1594,20 +1564,6 @@ impl PtyService {
             .any(|(_, entry)| Self::live_owner(entry).as_deref() == Some(owner_id))
     }
 
-    pub fn kill_owner(&self, owner_id: &str, protected: &HashSet<String>) -> Vec<String> {
-        self.owner_run_ids(owner_id, protected)
-            .into_iter()
-            .filter(|id| self.kill_owned_run(id, owner_id, protected))
-            .collect()
-    }
-
-    pub fn detach_owner(&self, owner_id: &str, protected: &HashSet<String>) -> Vec<String> {
-        self.owner_run_ids(owner_id, protected)
-            .into_iter()
-            .filter(|id| self.detach_owned_run(id, owner_id, protected))
-            .collect()
-    }
-
     /// Shut down locals and detach adopted runs. Returns count of local entries.
     pub fn kill_all(&self) -> usize {
         let entries: Vec<_> = self
@@ -1650,6 +1606,28 @@ impl PtyService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spawn_sh(
+        service: &PtyService,
+        id: &str,
+        script: &str,
+        owner: Option<&str>,
+        subscriber: Option<PtySubscriber>,
+    ) -> Result<PtyEventSink, String> {
+        service.spawn(
+            id.to_string(),
+            "sh",
+            &["-c", script],
+            None,
+            None,
+            80,
+            24,
+            subscriber,
+            owner.map(str::to_string),
+            None,
+            None,
+        )
+    }
 
     #[derive(Debug, PartialEq)]
     enum Delivery {
@@ -1833,10 +1811,7 @@ mod tests {
         let sink = sink(Arc::clone(&deliveries));
 
         sink.emit_output(b"tail".to_vec());
-        assert!(!sink.complete(PtyEvent::Exit {
-            run_id: "run".to_string(),
-            code: Some(0),
-        }));
+        assert!(!sink.complete(Some(0)));
 
         assert_eq!(
             *deliveries.lock(),
@@ -1870,10 +1845,7 @@ mod tests {
         let sink = sink(Arc::clone(&original));
         sink.pause();
         sink.emit_output(b"tail".to_vec());
-        assert!(sink.complete(PtyEvent::Exit {
-            run_id: "run".to_string(),
-            code: Some(0),
-        }));
+        assert!(sink.complete(Some(0)));
         assert!(original.lock().is_empty());
 
         let attached = Arc::new(Mutex::new(Vec::new()));
@@ -2013,10 +1985,7 @@ mod tests {
         sink.pause();
         let attached = Arc::new(Mutex::new(Vec::new()));
         sink.attach(channels(Arc::clone(&attached))).unwrap();
-        assert!(sink.complete(PtyEvent::Exit {
-            run_id: "run".to_string(),
-            code: Some(0),
-        }));
+        assert!(sink.complete(Some(0)));
         sink.resume_original().unwrap();
         assert_eq!(
             *original.lock(),
@@ -2159,10 +2128,7 @@ mod tests {
             sink.emit_output(b"tail".to_vec());
             let target = Arc::new(Mutex::new(Vec::new()));
             sink.attach(channels(Arc::clone(&target))).unwrap();
-            assert!(sink.complete(PtyEvent::Exit {
-                run_id: "run".to_string(),
-                code: Some(0),
-            }));
+            assert!(sink.complete(Some(0)));
             if commit {
                 sink.commit_transfer();
             } else {
@@ -2202,10 +2168,7 @@ mod tests {
         );
         sink.pause();
         sink.emit_output(b"tail".to_vec());
-        sink.complete(PtyEvent::Exit {
-            run_id: "run".to_string(),
-            code: Some(0),
-        });
+        sink.complete(Some(0));
         assert!(sink.resume_original().is_err());
         sink.abort_transfer_detached().unwrap();
         let replay = Arc::new(Mutex::new(Vec::new()));
@@ -2319,10 +2282,7 @@ mod tests {
     fn completed_retained_run_replays_tail_before_exit() {
         let sink = retained_sink(Arc::new(Mutex::new(Vec::new())));
         sink.emit_output(b"tail".to_vec());
-        assert!(sink.complete(PtyEvent::Exit {
-            run_id: "run".to_string(),
-            code: Some(0),
-        }));
+        assert!(sink.complete(Some(0)));
 
         let replay = Arc::new(Mutex::new(Vec::new()));
         sink.attach_from(replay_sink(Arc::clone(&replay)), PtyCursor::default())
@@ -2340,22 +2300,7 @@ mod tests {
     #[test]
     fn retained_replay_does_not_block_writes_to_other_runs() {
         let service = PtyService::new();
-        let replay = service
-            .spawn(
-                "replay".into(),
-                "sh",
-                &["-c", "sleep 30"],
-                None,
-                None,
-                80,
-                24,
-                None,
-                Some("owner".into()),
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        let replay = spawn_sh(&service, "replay", "sleep 30", Some("owner"), None).unwrap();
         replay.emit_output(b"retained".to_vec());
         service
             .adopt(
@@ -2425,7 +2370,6 @@ mod tests {
     #[test]
     fn adopted_run_kill_all_detaches() {
         let service = PtyService::new();
-        let cwd = std::env::temp_dir();
         let adopted_killed = Arc::new(AtomicBool::new(false));
         let (output, events) = noop_channels();
         service
@@ -2441,29 +2385,21 @@ mod tests {
             .unwrap();
 
         let (output, events) = noop_channels();
-        service
-            .spawn(
-                "local".to_string(),
-                "sh",
-                &["-c", "sleep 60"],
-                Some(cwd.to_str().unwrap()),
-                None,
-                80,
-                24,
-                Some(PtySubscriber { output, events }),
-                None,
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        spawn_sh(
+            &service,
+            "local",
+            "sleep 60",
+            None,
+            Some(PtySubscriber { output, events }),
+        )
+        .unwrap();
 
         assert_eq!(service.kill_all(), 1);
         assert!(!adopted_killed.load(Ordering::Acquire));
     }
 
     #[test]
-    fn adopted_run_kill_owner_kills() {
+    fn adopted_run_kill_owned_run_kills() {
         let service = PtyService::new();
         let killed = Arc::new(AtomicBool::new(false));
         let (output, events) = noop_channels();
@@ -2479,10 +2415,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            service.kill_owner("owner", &HashSet::new()),
-            vec!["adopted".to_string()]
-        );
+        assert!(service.kill_owned_run("adopted", "owner", &HashSet::new()));
         assert!(killed.load(Ordering::Acquire));
     }
 
@@ -2515,7 +2448,7 @@ mod tests {
             .event_sink
             .state
             .lock()
-            .completed = true;
+            .exit_code = Some(None);
 
         assert_eq!(
             service.live_owner_runs(),
@@ -2569,7 +2502,7 @@ mod tests {
             .event_sink
             .state
             .lock()
-            .completed = true;
+            .exit_code = Some(None);
         assert_eq!(service.stop_owned_run("done", "owner"), Ok(true));
         assert!(
             !done_killed.load(Ordering::Acquire),
@@ -2579,7 +2512,7 @@ mod tests {
     }
 
     #[test]
-    fn detach_owner_detaches_adopted_and_kills_local() {
+    fn detach_owned_run_detaches_adopted_and_kills_local() {
         let service = PtyService::new();
         let adopted_killed = Arc::new(AtomicBool::new(false));
         let local_killed = Arc::new(AtomicBool::new(false));
@@ -2598,9 +2531,9 @@ mod tests {
                 .unwrap();
         }
 
-        let mut released = service.detach_owner("owner", &HashSet::new());
-        released.sort();
-        assert_eq!(released, vec!["adopted".to_string(), "local".to_string()]);
+        for id in ["adopted", "local"] {
+            assert!(service.detach_owned_run(id, "owner", &HashSet::new()));
+        }
         assert!(!adopted_killed.load(Ordering::Acquire));
         assert!(local_killed.load(Ordering::Acquire));
         assert_eq!(service.run_state("adopted"), None);
@@ -2709,20 +2642,7 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    service.spawn(
-                        "duplicate".to_string(),
-                        "sh",
-                        &["-c", "sleep 60"],
-                        None,
-                        None,
-                        80,
-                        24,
-                        None,
-                        None,
-                        RunRetention::Retained,
-                        None,
-                        None,
-                    )
+                    spawn_sh(&service, "duplicate", "sleep 60", None, None)
                 })
             })
             .collect::<Vec<_>>();
@@ -2739,22 +2659,7 @@ mod tests {
     #[test]
     fn detached_retained_run_replays_started_tail_exit_without_respawning() {
         let service = PtyService::new();
-        service
-            .spawn(
-                "detached".to_string(),
-                "sh",
-                &["-c", "printf tail"],
-                None,
-                None,
-                80,
-                24,
-                None,
-                Some("owner".to_string()),
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        spawn_sh(&service, "detached", "printf tail", Some("owner"), None).unwrap();
         for _ in 0..200 {
             if service.run_state("detached") == Some(PtyRunState::Completed(Some(0))) {
                 break;
@@ -2816,7 +2721,6 @@ mod tests {
                 24,
                 None,
                 None,
-                RunRetention::Retained,
                 None,
                 Some(archive),
             )
@@ -2846,22 +2750,14 @@ mod tests {
     fn pending_transfer_rejects_ordinary_reattach() {
         let service = PtyService::new();
         let original = Arc::new(Mutex::new(Vec::new()));
-        let sink = service
-            .spawn(
-                "transfer".to_string(),
-                "sh",
-                &["-c", "sleep 60"],
-                None,
-                None,
-                80,
-                24,
-                Some(channels(Arc::clone(&original))),
-                Some("owner".to_string()),
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        let sink = spawn_sh(
+            &service,
+            "transfer",
+            "sleep 60",
+            Some("owner"),
+            Some(channels(Arc::clone(&original))),
+        )
+        .unwrap();
         assert!(service
             .attach_same_owner(
                 "transfer",
@@ -2892,22 +2788,14 @@ mod tests {
     fn completed_local_transfer_keeps_run_for_new_owner_replay() {
         let service = PtyService::new();
         let source = Arc::new(Mutex::new(Vec::new()));
-        service
-            .spawn(
-                "completed-transfer".to_string(),
-                "sh",
-                &["-c", "sleep 0.1; printf tail"],
-                None,
-                None,
-                80,
-                24,
-                Some(channels(Arc::clone(&source))),
-                Some("source".to_string()),
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        spawn_sh(
+            &service,
+            "completed-transfer",
+            "sleep 0.1; printf tail",
+            Some("source"),
+            Some(channels(Arc::clone(&source))),
+        )
+        .unwrap();
         service.pause_owned("completed-transfer", "source").unwrap();
         assert!(service
             .ensure_transfer_owner("completed-transfer", "other")
@@ -2972,60 +2860,17 @@ mod tests {
             }
         }));
         std::thread::scope(|scope| {
-            let held = scope.spawn(|| {
-                service.spawn(
-                    "held".into(),
-                    "sh",
-                    &["-c", "sleep 60"],
-                    None,
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner".into()),
-                    RunRetention::Retained,
-                    None,
-                    None,
-                )
-            });
+            let held = scope.spawn(|| spawn_sh(&service, "held", "sleep 60", Some("owner"), None));
             if entered_rx.recv_timeout(Duration::from_secs(5)).is_err() {
                 let _ = release_tx.send(());
                 panic!("reserved startup did not reach barrier");
             }
-            assert!(service
-                .spawn(
-                    "held".into(),
-                    "sh",
-                    &["-c", "exit 0"],
-                    None,
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner".into()),
-                    RunRetention::Retained,
-                    None,
-                    None
-                )
-                .is_err());
+            assert!(spawn_sh(&service, "held", "exit 0", Some("owner"), None).is_err());
             let (progress_tx, progress_rx) = std::sync::mpsc::channel();
             let service = &service;
             scope.spawn(move || {
                 let result = (|| {
-                    service.spawn(
-                        "other".into(),
-                        "sh",
-                        &["-c", "sleep 60"],
-                        None,
-                        None,
-                        80,
-                        24,
-                        None,
-                        None,
-                        RunRetention::Retained,
-                        None,
-                        None,
-                    )?;
+                    spawn_sh(service, "other", "sleep 60", None, None)?;
                     let operations = (|| {
                         service.write("other", b"echo independent\n")?;
                         service.resize("other", 100, 30)
@@ -3070,27 +2915,13 @@ mod tests {
                 }
             }));
             std::thread::scope(|scope| {
-                let held = scope.spawn(|| {
-                    service.spawn(
-                        "held".into(),
-                        "sh",
-                        &["-c", "sleep 60"],
-                        None,
-                        None,
-                        80,
-                        24,
-                        None,
-                        Some("owner".into()),
-                        RunRetention::Retained,
-                        None,
-                        None,
-                    )
-                });
+                let held =
+                    scope.spawn(|| spawn_sh(&service, "held", "sleep 60", Some("owner"), None));
                 let pid = entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                 assert!(pid > 0);
                 match mode {
                     0 => service.kill("held").unwrap(),
-                    1 => assert_eq!(service.kill_owner("owner", &HashSet::new()), vec!["held"]),
+                    1 => assert!(service.kill_owned_run("held", "owner", &HashSet::new())),
                     _ => assert_eq!(service.kill_all(), 1),
                 }
                 release_tx.send(()).unwrap();
@@ -3165,22 +2996,7 @@ mod tests {
     #[test]
     fn stale_stream_cannot_pause_new_incarnation_with_same_run_id() {
         let service = PtyService::new();
-        service
-            .spawn(
-                "same".into(),
-                "sh",
-                &["-c", "sleep 60"],
-                None,
-                None,
-                80,
-                24,
-                None,
-                None,
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        spawn_sh(&service, "same", "sleep 60", None, None).unwrap();
         let old = service
             .attach_from(
                 "same",
@@ -3189,22 +3005,7 @@ mod tests {
             )
             .unwrap();
         service.kill("same").unwrap();
-        service
-            .spawn(
-                "same".into(),
-                "sh",
-                &["-c", "sleep 60"],
-                None,
-                None,
-                80,
-                24,
-                None,
-                None,
-                RunRetention::Retained,
-                None,
-                None,
-            )
-            .unwrap();
+        spawn_sh(&service, "same", "sleep 60", None, None).unwrap();
         let current = service
             .attach_from(
                 "same",

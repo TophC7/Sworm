@@ -1,9 +1,7 @@
 use crate::{
     errors::ApiError,
-    events::HostEvent,
     services::{
         settings::SettingsService,
-        settings_patch::patch_top_level_section,
         settings_resolution::{
             parse_error_diagnostic, provider_binary_overrides, provider_config_record,
             resolve_effective_settings_for_folder_path, SettingsLayerLoad,
@@ -11,32 +9,23 @@ use crate::{
     },
     Host,
 };
-use serde::Serialize;
-use serde_json::{json, Map, Value};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use sworm_protocol::settings::{
-    EffectiveSettingsInput, EffectiveSettingsPayload, FolderSettingsFileInput, FormattingSettings,
-    NixSettings, PatchSettingsSectionInput, ProviderConfigRecord, ProviderSettingsEntry,
-    SaveProviderConfigInput, SettingsChangedEvent, SettingsDiagnostic, SettingsFileResult,
-    SettingsLayerKind, SettingsLayerPayload, SettingsPayload, TerminalSettings, WindowSettings,
+    EffectiveSettingsPayload, FormattingSettings, NixSettings, PatchSettingsSectionInput,
+    ProviderConfigRecord, ProviderSettingsEntry, SettingsFileResult, SettingsLayerKind,
+    SettingsLayerPayload, SettingsPayload, TerminalSettings, WindowSettings,
 };
 
 impl Host {
-    pub async fn settings_get(&self) -> Result<SettingsPayload, ApiError> {
+    pub fn settings_get(&self) -> Result<SettingsPayload, ApiError> {
         self.watch_settings_paths(None);
         let resolved =
             resolve_effective_settings_for_folder_path(None).map_err(ApiError::Internal)?;
         let overrides = provider_binary_overrides(&resolved.settings);
         let providers = self
             .providers
-            .detect_all(
-                &self.env.merged_path,
-                &overrides,
-                Some(&self.env.detected_shell),
-            )
+            .detect_all(self.env.path(), &overrides, Some(&self.env.detected_shell))
             .into_iter()
             .map(|provider| {
                 let config = provider_config_record(&resolved.settings, &provider.id.to_string());
@@ -53,14 +42,13 @@ impl Host {
         })
     }
 
-    pub async fn settings_get_effective(
+    pub fn settings_get_effective(
         &self,
-        input: EffectiveSettingsInput,
+        folder_path: Option<String>,
     ) -> Result<EffectiveSettingsPayload, ApiError> {
         // Remote workspaces have no local folder layer: the daemon owns their
         // files, and the desktop's own settings still govern this window.
-        let folder_path = input
-            .folder_path
+        let folder_path = folder_path
             .filter(|path| !path.starts_with("sworm://"))
             .map(PathBuf::from);
         self.watch_settings_paths(folder_path.as_deref());
@@ -72,18 +60,16 @@ impl Host {
         })
     }
 
-    pub async fn settings_get_global_layer(&self) -> Result<SettingsLayerPayload, ApiError> {
+    pub fn settings_get_global_layer(&self) -> Result<SettingsLayerPayload, ApiError> {
         self.watch_settings_paths(None);
         global_layer_payload()
     }
 
-    pub async fn settings_patch_global_section(
+    pub fn settings_patch_global_section(
         &self,
         input: PatchSettingsSectionInput,
     ) -> Result<SettingsLayerPayload, ApiError> {
-        let payload = patch_global_section(&input.section, input.value)?;
-        self.emit_settings_changed(SettingsLayerKind::Global, payload.diagnostics.clone());
-        Ok(payload)
+        self.settings_update_global_section(&input.section, |_| Ok(input.value))
     }
 
     /// Atomically update a section against its latest committed value.
@@ -91,86 +77,88 @@ impl Host {
         &self,
         section: &str,
         update: impl FnOnce(Value) -> Result<Value, ApiError>,
-    ) -> Result<(), ApiError> {
-        let path = SettingsService::ensure_global_settings_parent().map_err(ApiError::Internal)?;
-        let payload = update_section_file(&path, section, update)?;
-        self.emit_settings_changed(SettingsLayerKind::Global, payload.diagnostics);
-        Ok(())
+    ) -> Result<SettingsLayerPayload, ApiError> {
+        let path = SettingsService::global_settings_path().map_err(ApiError::Internal)?;
+        let payload = SettingsService::update_section(&path, section, update)?;
+        self.settings_watchers
+            .notify(SettingsLayerKind::Global, None);
+        Ok(payload)
     }
 
-    pub async fn settings_create_global_file(&self) -> Result<SettingsFileResult, ApiError> {
-        let path = ensure_global_settings_file()?;
+    pub fn settings_create_global_file(&self) -> Result<SettingsFileResult, ApiError> {
+        let path = SettingsService::global_settings_path().map_err(ApiError::Internal)?;
+        SettingsService::ensure_file(&path)?;
         Ok(SettingsFileResult {
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    pub async fn settings_open_folder_file(
+    pub fn settings_open_folder_file(
         &self,
-        input: FolderSettingsFileInput,
+        folder_path: String,
     ) -> Result<SettingsFileResult, ApiError> {
-        let path = ensure_folder_settings_file(PathBuf::from(input.folder_path))?;
+        let path = SettingsService::folder_settings_path(Path::new(&folder_path));
+        SettingsService::ensure_file(&path)?;
         Ok(SettingsFileResult {
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    pub async fn settings_set_window(
+    pub fn settings_set_window(
         &self,
         settings: WindowSettings,
     ) -> Result<WindowSettings, ApiError> {
-        self.patch_and_emit_global_section("window", &settings)?;
+        let value = serde_json::to_value(&settings)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.settings_update_global_section("window", |_| Ok(value))?;
         Ok(settings)
     }
 
-    pub async fn settings_set_terminal(
+    pub fn settings_set_terminal(
         &self,
         settings: TerminalSettings,
     ) -> Result<TerminalSettings, ApiError> {
-        self.patch_and_emit_global_section("terminal", &settings)?;
+        let value = serde_json::to_value(&settings)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.settings_update_global_section("terminal", |_| Ok(value))?;
         Ok(settings)
     }
 
-    pub async fn settings_set_nix(&self, settings: NixSettings) -> Result<NixSettings, ApiError> {
-        self.patch_and_emit_global_section("nix", &settings)?;
+    pub fn settings_set_nix(&self, settings: NixSettings) -> Result<NixSettings, ApiError> {
+        let value = serde_json::to_value(&settings)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.settings_update_global_section("nix", |_| Ok(value))?;
         Ok(settings)
     }
 
-    pub async fn settings_set_formatting(
+    pub fn settings_set_formatting(
         &self,
         formatting: FormattingSettings,
     ) -> Result<FormattingSettings, ApiError> {
-        self.patch_and_emit_global_section("formatting", &formatting)?;
+        let value = serde_json::to_value(&formatting)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.settings_update_global_section("formatting", |_| Ok(value))?;
         Ok(formatting)
     }
 
-    pub async fn settings_set_provider_config(
+    pub fn settings_set_provider_config(
         &self,
-        config: SaveProviderConfigInput,
+        config: ProviderConfigRecord,
     ) -> Result<ProviderConfigRecord, ApiError> {
-        let record = ProviderConfigRecord {
-            provider_id: config.provider_id,
-            enabled: config.enabled,
-            binary_path_override: config.binary_path_override,
-            extra_args: config.extra_args,
-        };
-        let payload = patch_global_provider(&record)?;
-        self.emit_settings_changed(SettingsLayerKind::Global, payload.diagnostics);
-        Ok(record)
-    }
-
-    fn patch_and_emit_global_section<T: Serialize>(
-        &self,
-        section: &str,
-        settings: &T,
-    ) -> Result<(), ApiError> {
-        let payload = patch_global_section(
-            section,
-            serde_json::to_value(settings)
-                .map_err(|error| ApiError::Internal(error.to_string()))?,
-        )?;
-        self.emit_settings_changed(SettingsLayerKind::Global, payload.diagnostics);
-        Ok(())
+        self.settings_update_global_section("providers", |providers| {
+            let mut root = json!({ "providers": providers });
+            let providers = SettingsService::object_property(&mut root, "providers")?;
+            providers.insert(
+                config.provider_id.clone(),
+                json!({
+                    "enabled": config.enabled,
+                    "binary_path_override": config.binary_path_override,
+                    "extra_args": config.extra_args,
+                }),
+            );
+            Ok(Value::Object(std::mem::take(providers)))
+        })?;
+        Ok(config)
     }
 
     pub fn settings_paths_watched(&self, folder_path: &Path) -> bool {
@@ -178,43 +166,14 @@ impl Host {
     }
 
     pub fn watch_settings_paths(&self, folder_path: Option<&Path>) {
-        let generation = Arc::clone(&self.settings_generation);
-        if let Err(error) = self
-            .settings_watchers
-            .watch_global(Arc::clone(&self.events), generation)
-        {
+        if let Err(error) = self.settings_watchers.watch_global() {
             tracing::warn!("settings global watcher failed: {error}");
         }
 
         if let Some(folder_path) = folder_path {
-            let generation = Arc::clone(&self.settings_generation);
-            if let Err(error) = self.settings_watchers.watch_folder(
-                Arc::clone(&self.events),
-                folder_path,
-                generation,
-            ) {
+            if let Err(error) = self.settings_watchers.watch_folder(folder_path) {
                 tracing::warn!("settings folder watcher failed: {error}");
             }
-        }
-    }
-
-    fn emit_settings_changed(
-        &self,
-        layer: SettingsLayerKind,
-        diagnostics: Vec<SettingsDiagnostic>,
-    ) {
-        let generation = {
-            let mut generation = self.settings_generation.lock();
-            *generation += 1;
-            *generation
-        };
-        if let Err(error) = (self.events)(HostEvent::SettingsChanged(SettingsChangedEvent {
-            layer,
-            folder_path: None,
-            generation,
-            diagnostics,
-        })) {
-            tracing::warn!("Failed to emit settings-changed after commit: {error}");
         }
     }
 }
@@ -246,232 +205,10 @@ fn layer_payload(layer: SettingsLayerLoad) -> SettingsLayerPayload {
     }
 }
 
-fn patch_global_section(section: &str, value: Value) -> Result<SettingsLayerPayload, ApiError> {
-    let path = SettingsService::ensure_global_settings_parent().map_err(ApiError::Internal)?;
-    patch_section_file(&path, section, value)
-}
-
-fn patch_section_file(
-    path: &PathBuf,
-    section: &str,
-    value: Value,
-) -> Result<SettingsLayerPayload, ApiError> {
-    update_section_file(path, section, |_| Ok(value))
-}
-
-fn update_section_file(
-    path: &Path,
-    section: &str,
-    update: impl FnOnce(Value) -> Result<Value, ApiError>,
-) -> Result<SettingsLayerPayload, ApiError> {
-    validate_top_level_section(section)?;
-    let _guard = SettingsService::mutation_lock();
-    let original = match std::fs::read_to_string(path) {
-        Ok(original) => original,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{\n}\n".to_string(),
-        Err(error) => {
-            return Err(ApiError::Io(format!(
-                "Failed to read settings file {}: {error}",
-                path.display()
-            )))
-        }
-    };
-    let mut root = if original.trim().is_empty() {
-        json!({})
-    } else {
-        jsonc_parser::parse_to_serde_value::<Value>(&original, &Default::default())
-            .map_err(|error| ApiError::Internal(format!("Invalid settings JSONC: {error}")))?
-    };
-    let previous = root
-        .get_mut(section)
-        .map(Value::take)
-        .unwrap_or(Value::Null);
-    if root.is_null() {
-        root = json!({});
-    }
-    let value = update(previous)?;
-    let patched =
-        patch_top_level_section(&original, section, &value).map_err(ApiError::Internal)?;
-    root.as_object_mut()
-        .ok_or_else(|| ApiError::InvalidArgument("Settings root must be an object".to_string()))?
-        .insert(section.to_string(), value);
-    SettingsService::write_atomic(path, &patched).map_err(ApiError::Io)?;
-    Ok(SettingsLayerPayload {
-        path: path.to_string_lossy().into_owned(),
-        loaded: true,
-        value: root,
-        diagnostics: Vec::new(),
-    })
-}
-
-fn patch_global_provider(record: &ProviderConfigRecord) -> Result<SettingsLayerPayload, ApiError> {
-    let path = SettingsService::ensure_global_settings_parent().map_err(ApiError::Internal)?;
-    patch_provider_file(&path, record)
-}
-
-fn patch_provider_file(
-    path: &PathBuf,
-    record: &ProviderConfigRecord,
-) -> Result<SettingsLayerPayload, ApiError> {
-    update_section_file(path, "providers", |providers| {
-        let mut root = json!({ "providers": providers });
-        let providers = ensure_object_property(&mut root, "providers")?;
-        providers.insert(
-            record.provider_id.clone(),
-            json!({
-                "enabled": record.enabled,
-                "binary_path_override": record.binary_path_override,
-                "extra_args": record.extra_args,
-            }),
-        );
-        Ok(Value::Object(std::mem::take(providers)))
-    })
-}
-
-pub(crate) fn ensure_object_property<'a>(
-    root: &'a mut Value,
-    key: &str,
-) -> Result<&'a mut Map<String, Value>, ApiError> {
-    if root.is_null() {
-        *root = json!({});
-    }
-    let object = root
-        .as_object_mut()
-        .ok_or_else(|| ApiError::InvalidArgument("Settings root must be an object".to_string()))?;
-    let value = object.entry(key.to_string()).or_insert_with(|| json!({}));
-    if value.is_null() {
-        *value = json!({});
-    }
-    value.as_object_mut().ok_or_else(|| {
-        ApiError::InvalidArgument(format!("Settings `{key}` section must be an object"))
-    })
-}
-
-fn validate_top_level_section(section: &str) -> Result<(), ApiError> {
-    if matches!(
-        section,
-        "window" | "terminal" | "nix" | "explorer" | "formatting" | "providers" | "lsp" | "remotes"
-    ) {
-        Ok(())
-    } else {
-        Err(ApiError::InvalidArgument(format!(
-            "Unsupported settings section `{section}`"
-        )))
-    }
-}
-
-pub(crate) fn ensure_global_settings_file() -> Result<PathBuf, ApiError> {
-    let path = SettingsService::ensure_global_settings_parent().map_err(ApiError::Internal)?;
-    ensure_file_exists(&path)?;
-    Ok(path)
-}
-
-fn ensure_folder_settings_file(folder_path: PathBuf) -> Result<PathBuf, ApiError> {
-    let path =
-        SettingsService::ensure_folder_settings_parent(&folder_path).map_err(ApiError::Io)?;
-    ensure_file_exists(&path)?;
-    Ok(path)
-}
-
-fn ensure_file_exists(path: &PathBuf) -> Result<(), ApiError> {
-    let _guard = SettingsService::mutation_lock();
-    if path.exists() {
-        return Ok(());
-    }
-    SettingsService::write_atomic(path, "{\n}\n").map_err(ApiError::Io)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use sworm_protocol::settings::{EffectiveSettings, ProviderSettings};
-    use uuid::Uuid;
-
-    fn temp_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("sworm-settings-commands-{name}-{}", Uuid::new_v4()))
-    }
-
-    #[test]
-    fn concurrent_section_updates_keep_every_entry() {
-        let root = temp_root("concurrent");
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("settings.jsonc");
-        let barrier = std::sync::Barrier::new(16);
-        std::thread::scope(|scope| {
-            for index in 0..16 {
-                let path = &path;
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    barrier.wait();
-                    update_section_file(path, "remotes", |value| {
-                        let mut entries = value.as_object().cloned().unwrap_or_default();
-                        entries.insert(index.to_string(), json!({ "hostname": index.to_string() }));
-                        Ok(Value::Object(entries))
-                    })
-                    .unwrap();
-                });
-            }
-        });
-        let layer = SettingsService::read_jsonc_layer_or_empty(&path).unwrap();
-        for index in 0..16 {
-            assert_eq!(
-                layer.value["remotes"][index.to_string()]["hostname"],
-                index.to_string()
-            );
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn rejected_mutation_leaves_settings_unchanged() {
-        let root = temp_root("rejected");
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("settings.jsonc");
-        let original = "{ /* keep */ \"remotes\": { \"existing\": {} } }\n";
-        fs::write(&path, original).unwrap();
-        let result = update_section_file(&path, "remotes", |_| {
-            Err(ApiError::InvalidArgument("duplicate remote".to_string()))
-        });
-        assert!(result.is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), original);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn validates_known_top_level_sections() {
-        for section in [
-            "window",
-            "terminal",
-            "nix",
-            "explorer",
-            "formatting",
-            "providers",
-            "lsp",
-            "remotes",
-        ] {
-            validate_top_level_section(section).expect("section valid");
-        }
-        assert!(validate_top_level_section("nope").is_err());
-    }
-
-    #[test]
-    fn provider_record_maps_effective_provider_config() {
-        let mut settings = EffectiveSettings::default();
-        settings.providers.insert(
-            "claude_code".to_string(),
-            ProviderSettings {
-                enabled: false,
-                binary_path_override: Some("/bin/claude".to_string()),
-                extra_args: vec!["--debug".to_string()],
-            },
-        );
-        let record = provider_config_record(&settings, "claude_code");
-        assert_eq!(record.provider_id, "claude_code");
-        assert!(!record.enabled);
-        assert_eq!(record.binary_path_override.as_deref(), Some("/bin/claude"));
-        assert_eq!(record.extra_args, vec!["--debug"]);
-    }
 
     #[test]
     fn binary_overrides_skip_empty_paths() {
@@ -498,65 +235,5 @@ mod tests {
             Some(&"/bin/claude".to_string())
         );
         assert!(!overrides.contains_key("codex"));
-    }
-
-    #[test]
-    fn ensure_folder_settings_file_creates_parent_and_file() {
-        let root = temp_root("folder-file");
-        fs::create_dir_all(&root).expect("folder root created");
-        let path = ensure_folder_settings_file(root.clone()).expect("settings file created");
-        assert_eq!(path, root.join(".sworm/settings.jsonc"));
-        assert_eq!(fs::read_to_string(&path).expect("file read"), "{\n}\n");
-        fs::remove_dir_all(root).expect("temp dir removed");
-    }
-
-    #[test]
-    fn patch_section_file_updates_jsonc_and_preserves_unknown_top_level() {
-        let root = temp_root("patch-section");
-        fs::create_dir_all(&root).expect("temp dir created");
-        let path = root.join("settings.jsonc");
-        fs::write(
-            &path,
-            "{\n  \"future_top\": true,\n  \"terminal\": { \"font_size\": 13 }\n}\n",
-        )
-        .expect("settings file written");
-        patch_section_file(&path, "terminal", json!({ "font_size": 16 })).expect("section patched");
-        let patched = fs::read_to_string(&path).expect("patched file read");
-        let parsed = jsonc_parser::parse_to_serde_value::<Value>(&patched, &Default::default())
-            .expect("patched parses");
-        assert_eq!(parsed["future_top"], json!(true));
-        assert_eq!(parsed["terminal"]["font_size"], json!(16));
-        fs::remove_dir_all(root).expect("temp dir removed");
-    }
-
-    #[test]
-    fn patch_provider_file_merges_one_provider_into_providers_section() {
-        let root = temp_root("patch-provider");
-        fs::create_dir_all(&root).expect("temp dir created");
-        let path = root.join("settings.jsonc");
-        fs::write(
-            &path,
-            "{\n  \"providers\": {\n    \"codex\": { \"enabled\": false }\n  }\n}\n",
-        )
-        .expect("settings file written");
-        patch_provider_file(
-            &path,
-            &ProviderConfigRecord {
-                provider_id: "claude_code".to_string(),
-                enabled: true,
-                binary_path_override: Some("/bin/claude".to_string()),
-                extra_args: vec!["--debug".to_string()],
-            },
-        )
-        .expect("provider patched");
-        let patched = fs::read_to_string(&path).expect("patched file read");
-        let parsed = jsonc_parser::parse_to_serde_value::<Value>(&patched, &Default::default())
-            .expect("patched parses");
-        assert_eq!(parsed["providers"]["codex"]["enabled"], json!(false));
-        assert_eq!(
-            parsed["providers"]["claude_code"]["binary_path_override"],
-            json!("/bin/claude")
-        );
-        fs::remove_dir_all(root).expect("temp dir removed");
     }
 }

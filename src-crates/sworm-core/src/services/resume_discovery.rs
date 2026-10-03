@@ -35,7 +35,7 @@ pub struct PendingRun {
     pub spawned_at: SystemTime,
     pub event_sink: PtyEventSink,
     /// Keep the Host's current token independent of any attached stream.
-    pub on_bound: Option<Box<dyn FnOnce(String) + Send>>,
+    pub on_bound: Box<dyn FnOnce(String) + Send>,
 }
 
 #[derive(Clone)]
@@ -125,6 +125,15 @@ impl ResumeDiscoveryService {
     pub fn cancel(&self, run_id: &str) {
         self.inner.pending.lock().retain(|run| run.run_id != run_id);
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_pending(&self, run_id: &str) -> bool {
+        self.inner
+            .pending
+            .lock()
+            .iter()
+            .any(|run| run.run_id == run_id)
+    }
 }
 
 fn worker_loop(inner: Arc<Inner>) {
@@ -169,36 +178,30 @@ fn worker_loop(inner: Arc<Inner>) {
                 .map(|run| run.spawned_at)
                 .unwrap_or(earliest_pending);
             let mut bindings = Vec::new();
-            scan_created_since(
-                provider,
-                cwd,
-                since,
-                &claimed_snapshot,
-                |created_at, token| {
-                    if claimed_snapshot.contains(&token) {
-                        return true;
-                    }
-                    let Some(index) = eligible_run_index(&group.runs, provider, created_at) else {
-                        return true;
-                    };
-                    let reserved = {
-                        let mut claimed = inner.claimed.lock();
-                        match claimed.entry(token.clone()) {
-                            Entry::Vacant(entry) => {
-                                entry.insert(SystemTime::now());
-                                true
-                            }
-                            Entry::Occupied(_) => false,
+            scan_created_since(provider, cwd, since, |created_at, token| {
+                if claimed_snapshot.contains(&token) {
+                    return true;
+                }
+                let Some(index) = eligible_run_index(&group.runs, provider, created_at) else {
+                    return true;
+                };
+                let reserved = {
+                    let mut claimed = inner.claimed.lock();
+                    match claimed.entry(token.clone()) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(SystemTime::now());
+                            true
                         }
-                    };
-                    if !reserved {
-                        return true;
+                        Entry::Occupied(_) => false,
                     }
-                    let run = group.runs.remove(index);
-                    bindings.push((run.run_id, token));
-                    !group.runs.is_empty()
-                },
-            );
+                };
+                if !reserved {
+                    return true;
+                }
+                let run = group.runs.remove(index);
+                bindings.push((run.run_id, token));
+                !group.runs.is_empty()
+            });
 
             for (run_id, token) in bindings {
                 // Claim before removing the run: a conversation this run
@@ -211,13 +214,11 @@ fn worker_loop(inner: Arc<Inner>) {
                         .position(|run| run.run_id == run_id)
                         .map(|index| pending.remove(index))
                 };
-                let Some(mut run) = run else {
+                let Some(run) = run else {
                     continue;
                 };
                 info!("Bound {provider} conversation {token} to run {run_id}");
-                if let Some(on_bound) = run.on_bound.take() {
-                    on_bound(token.clone());
-                }
+                (run.on_bound)(token.clone());
                 run.event_sink
                     .emit(PtyEvent::ResumeTokenBound { run_id, token });
             }
@@ -279,7 +280,6 @@ fn scan_created_since(
     provider: ProviderId,
     cwd: &str,
     since: SystemTime,
-    claimed: &HashSet<String>,
     mut visit: impl FnMut(SystemTime, String) -> bool,
 ) {
     match provider {
@@ -297,9 +297,6 @@ fn scan_created_since(
                 cwd,
                 since_unix,
                 |token, created_at| {
-                    if claimed.contains(&token) {
-                        return true;
-                    }
                     let Some(created_at) = u64::try_from(created_at)
                         .ok()
                         .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds)))
@@ -313,10 +310,10 @@ fn scan_created_since(
             }
         }
         ProviderId::Antigravity => {
-            antigravity_visit_conversations_created_since(since, claimed, &mut visit);
+            antigravity_visit_conversations_created_since(since, &mut visit);
         }
         ProviderId::Omp => {
-            omp::visit_sessions_created_since(cwd, since, claimed, &mut visit);
+            omp::visit_sessions_created_since(cwd, since, &mut visit);
         }
         ProviderId::ClaudeCode | ProviderId::Terminal => {}
     }

@@ -1,6 +1,9 @@
 //! Row-to-DTO mappers for the issue store.
 
+use crate::errors::ApiError;
 use sworm_protocol::issues::*;
+
+pub(super) const ISSUE_COLUMNS: &str = "i.id, i.epic_id, i.parent_issue_id, i.title, i.description, i.status, i.priority, i.assignee_kind, i.assignee_id, i.created_by, i.updated_by, i.tags_json, i.context_json, i.created_at, i.updated_at";
 
 pub(super) fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let tags_json: String = row.get(11)?;
@@ -23,6 +26,8 @@ pub(super) fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
         updated_at: row.get(14)?,
     })
 }
+
+pub(super) const EPIC_COLUMNS: &str = "e.id, e.title, e.description, e.status, e.priority, e.created_by, e.updated_by, e.created_at, e.updated_at";
 
 pub(super) fn row_to_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<IssueEpic> {
     Ok(IssueEpic {
@@ -77,7 +82,7 @@ pub(super) fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<IssueEve
 pub(super) fn collect_rows<T>(
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>>,
     label: &str,
-) -> Result<Vec<T>, String> {
+) -> Result<Vec<T>, ApiError> {
     let mut out = Vec::new();
     for row in rows {
         match row {

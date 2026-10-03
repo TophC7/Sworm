@@ -1,3 +1,4 @@
+use crate::services::codex_state::CodexStateReader;
 use crate::services::folders::{folder_name, home_dir};
 use chrono::{Local, TimeZone};
 use rusqlite::{Connection, OpenFlags};
@@ -17,19 +18,42 @@ const PROVIDER_CLAUDE_CODE: &str = "claude_code";
 const PROVIDER_CODEX: &str = "codex";
 const PROVIDER_OMP: &str = "omp";
 
+#[derive(Default)]
+struct Tally {
+    last: i64,
+    daily: [u32; WINDOW_DAYS],
+}
+
+impl Tally {
+    fn record(&mut self, ts: i64, starts: &[i64; WINDOW_DAYS]) {
+        self.last = self.last.max(ts);
+        if let Some(day) = bucket_timestamp(ts, starts) {
+            self.daily[day] += 1;
+        }
+    }
+
+    fn into_activity(self, provider: &str) -> DiscoveredProviderActivity {
+        DiscoveredProviderActivity {
+            provider_id: provider.into(),
+            last_active: ts_to_iso(self.last),
+            daily_counts: self.daily,
+        }
+    }
+}
+
 pub struct ActivityMapService;
 
 impl ActivityMapService {
     /// Scan all external agent CLIs for project history and merge the
     /// results per project folder.
     pub fn scan() -> Vec<DiscoveredProject> {
-        let (day_starts, _) = day_boundaries();
+        let day_starts = day_boundaries();
 
         // Collect (path, activity) pairs from each provider
         let mut by_path: HashMap<String, Vec<DiscoveredProviderActivity>> = HashMap::new();
 
-        let scanners: Vec<fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>> =
-            vec![scan_claude_code, scan_codex, scan_omp];
+        let scanners: [fn(&[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)>; 3] =
+            [scan_claude_code, scan_codex, scan_omp];
         for scanner in scanners {
             for (path, activity) in scanner(&day_starts) {
                 by_path.entry(path).or_default().push(activity);
@@ -70,31 +94,25 @@ impl ActivityMapService {
 // -- Timestamp helpers --
 
 /// Compute the start-of-day boundary for each of the trailing 7 days.
-/// Returns (day_starts, window_start) where day_starts[0] is 6 days ago
-/// and day_starts[6] is today.
-fn day_boundaries() -> ([i64; WINDOW_DAYS], i64) {
+/// day_starts[0] is 6 days ago and day_starts[6] is today.
+fn day_boundaries() -> [i64; WINDOW_DAYS] {
     let today = Local::now().date_naive();
     let mut starts = [0i64; WINDOW_DAYS];
-    for i in 0..WINDOW_DAYS {
+    for (i, start) in starts.iter_mut().enumerate() {
         let date = today - chrono::Duration::days((WINDOW_DAYS - 1 - i) as i64);
         if let Some(dt) = date.and_hms_opt(0, 0, 0) {
             if let Some(local) = Local.from_local_datetime(&dt).earliest() {
-                starts[i] = local.timestamp();
+                *start = local.timestamp();
             }
         }
     }
-    (starts, starts[0])
+    starts
 }
 
 /// Bucket a unix timestamp into the 7-day window, returning the day index (0-6)
 /// or None if outside the window.
 fn bucket_timestamp(ts: i64, day_starts: &[i64; WINDOW_DAYS]) -> Option<usize> {
-    for i in (0..WINDOW_DAYS).rev() {
-        if ts >= day_starts[i] {
-            return Some(i);
-        }
-    }
-    None
+    day_starts.iter().rposition(|&start| ts >= start)
 }
 
 /// Format a unix timestamp as ISO 8601.
@@ -133,8 +151,7 @@ fn scan_claude_code(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredP
             };
 
             // Stat all .jsonl files for timestamps
-            let mut max_ts: i64 = 0;
-            let mut daily = [0u32; WINDOW_DAYS];
+            let mut tally = Tally::default();
 
             if let Ok(files) = fs::read_dir(entry.path()) {
                 for file in files.flatten() {
@@ -148,26 +165,14 @@ fn scan_claude_code(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredP
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs() as i64;
-                            if ts > max_ts {
-                                max_ts = ts;
-                            }
-                            if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                                daily[idx] += 1;
-                            }
+                            tally.record(ts, day_starts);
                         }
                     }
                 }
             }
 
-            if max_ts > 0 {
-                results.push((
-                    path,
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_CLAUDE_CODE.into(),
-                        last_active: ts_to_iso(max_ts),
-                        daily_counts: daily,
-                    },
-                ));
+            if tally.last > 0 {
+                results.push((path, tally.into_activity(PROVIDER_CLAUDE_CODE)));
             }
         }
 
@@ -264,10 +269,7 @@ fn unmunge_claude_path(dir_name: &str) -> Option<String> {
 
 fn scan_codex(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderActivity)> {
     let inner = || -> Option<Vec<(String, DiscoveredProviderActivity)>> {
-        let db_path = home_dir()?.join(".codex/state_5.sqlite");
-        if !db_path.exists() {
-            return None;
-        }
+        let db_path = CodexStateReader::db_path()?;
 
         let conn = Connection::open_with_flags(
             &db_path,
@@ -278,51 +280,32 @@ fn scan_codex(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProvide
         // Codex stores updated_at as unix epoch milliseconds
         let mut stmt = conn
             .prepare(
-                "SELECT cwd, created_at, updated_at
+                "SELECT cwd, updated_at
                  FROM threads
                  WHERE archived = 0 AND cwd IS NOT NULL AND cwd != ''",
             )
             .ok()?;
 
         // Group by cwd
-        let mut by_cwd: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
+        let mut by_cwd: HashMap<String, Tally> = HashMap::new();
 
         let rows = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
             .ok()?;
 
         for row in rows.flatten() {
-            let (cwd, _created, updated) = row;
+            let (cwd, updated) = row;
             // Codex timestamps are milliseconds
             let ts = updated / 1000;
-            let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
-            if ts > entry.0 {
-                entry.0 = ts;
-            }
-            if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                entry.1[idx] += 1;
-            }
+            by_cwd.entry(cwd).or_default().record(ts, day_starts);
         }
 
         let results = by_cwd
             .into_iter()
-            .filter(|(_, (max_ts, _))| *max_ts > 0)
-            .map(|(cwd, (max_ts, daily))| {
-                (
-                    cwd,
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_CODEX.into(),
-                        last_active: ts_to_iso(max_ts),
-                        daily_counts: daily,
-                    },
-                )
-            })
+            .filter(|(_, tally)| tally.last > 0)
+            .map(|(cwd, tally)| (cwd, tally.into_activity(PROVIDER_CODEX)))
             .collect();
 
         Some(results)
@@ -336,7 +319,7 @@ fn scan_omp(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderA
         let home = home_dir()?;
         let sessions_dir = home.join(".omp/agent/sessions");
 
-        let mut by_cwd: HashMap<String, (i64, [u32; WINDOW_DAYS])> = HashMap::new();
+        let mut by_cwd: HashMap<String, Tally> = HashMap::new();
 
         let Ok(dir_entries) = fs::read_dir(&sessions_dir) else {
             return Some(Vec::new());
@@ -370,29 +353,14 @@ fn scan_omp(day_starts: &[i64; WINDOW_DAYS]) -> Vec<(String, DiscoveredProviderA
                     continue;
                 };
 
-                let entry = by_cwd.entry(cwd).or_insert((0, [0u32; WINDOW_DAYS]));
-                if ts > entry.0 {
-                    entry.0 = ts;
-                }
-                if let Some(idx) = bucket_timestamp(ts, day_starts) {
-                    entry.1[idx] += 1;
-                }
+                by_cwd.entry(cwd).or_default().record(ts, day_starts);
             }
         }
 
         let results = by_cwd
             .into_iter()
-            .filter(|(_, (max_ts, _))| *max_ts > 0)
-            .map(|(cwd, (max_ts, daily))| {
-                (
-                    cwd,
-                    DiscoveredProviderActivity {
-                        provider_id: PROVIDER_OMP.into(),
-                        last_active: ts_to_iso(max_ts),
-                        daily_counts: daily,
-                    },
-                )
-            })
+            .filter(|(_, tally)| tally.last > 0)
+            .map(|(cwd, tally)| (cwd, tally.into_activity(PROVIDER_OMP)))
             .collect();
 
         Some(results)
@@ -483,7 +451,7 @@ mod tests {
 
     #[test]
     fn bucket_timestamp_edges() {
-        let (starts, _) = day_boundaries();
+        let starts = day_boundaries();
         // A timestamp before the window returns None
         assert_eq!(bucket_timestamp(0, &starts), None);
         // A timestamp at the last day boundary returns index 6

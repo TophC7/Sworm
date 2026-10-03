@@ -24,18 +24,6 @@ pub struct CompletedRun {
     pub events: Vec<(u64, PtyEvent)>,
 }
 
-impl CompletedRun {
-    /// Offset one past the last retained output byte.
-    pub fn output_end(&self) -> u64 {
-        self.output_start.saturating_add(self.output.len() as u64)
-    }
-
-    /// Highest event sequence in the transcript.
-    pub fn event_sequence(&self) -> u64 {
-        self.events.last().map_or(0, |(sequence, _)| *sequence)
-    }
-}
-
 /// Transcript store, pruned by age and count on every insert.
 pub struct CompletedRunStore {
     db: Arc<DatabaseService>,
@@ -205,9 +193,7 @@ mod tests {
         let stored = store.get("one").expect("get").expect("stored run");
         assert_eq!(stored.exit_code, Some(7));
         assert_eq!(stored.output_start, 4);
-        assert_eq!(stored.output_end(), 8);
         assert_eq!(stored.output, b"tail");
-        assert_eq!(stored.event_sequence(), 3);
 
         store.delete("one");
         assert!(store.get("one").expect("get").is_none());

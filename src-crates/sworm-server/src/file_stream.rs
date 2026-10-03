@@ -1,6 +1,6 @@
 use crate::stream::{StreamReader, StreamWriter};
 use std::sync::Arc;
-use sworm_core::Host;
+use sworm_core::{errors::ApiError, Host};
 use sworm_protocol::rpc::{FileReadDown, WireError, MAX_FILE_CHUNK_BYTES};
 use tokio::{sync::watch, task::JoinSet};
 
@@ -41,7 +41,13 @@ async fn produce(
         biased;
         _ = shutdown.changed() => return,
         _ = send.stopped() => return,
-        result = host.file_open_read_stream(project_path, file_path, version) => result,
+        result = async move {
+            tokio::task::spawn_blocking(move || {
+                host.file_open_read_stream(project_path, file_path, version)
+            })
+            .await
+            .map_err(ApiError::from)?
+        } => result,
     };
     let terminal = match result {
         Err(error) => FileReadDown::Error {

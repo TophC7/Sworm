@@ -1,4 +1,4 @@
-use crate::router::RouterInner;
+use super::{remotes::Backoff, RouterInner};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -18,9 +18,7 @@ use sworm_protocol::{
     rpc::{Open, PtyCursor, PtyDown, PtyUp, Request},
 };
 use sworm_remote::wire::{read_tagged_frame, write_frame, write_raw_frame, Frame};
-use tokio::{sync::mpsc, task::JoinHandle, time::sleep};
-
-use crate::router::{INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY};
+use tokio::{sync::mpsc, task::JoinHandle};
 
 const INPUT_QUEUE_CAPACITY: usize = 256;
 
@@ -399,7 +397,7 @@ async fn run_stream(
     mut up_rx: mpsc::Receiver<Upstream>,
 ) {
     let mut pending = None;
-    let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
+    let mut backoff = Backoff::default();
     loop {
         if stopping.load(Ordering::Acquire) {
             break;
@@ -407,14 +405,13 @@ async fn run_stream(
         let Some(router_now) = router.upgrade() else {
             break;
         };
-        router_now.run_status(&run_id, "reconnecting");
+        router_now.emit_run_status(&run_id, "reconnecting");
         let client = match router_now.client(&server).await {
             Ok(client) => client,
             Err(error) => {
                 tracing::warn!(%server, %run_id, %error, "remote PTY reconnect failed");
                 drop(router_now);
-                sleep(reconnect_delay).await;
-                reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                backoff.wait().await;
                 continue;
             }
         };
@@ -431,21 +428,19 @@ async fn run_stream(
             Err(error) => {
                 evict_failed(&router, &server, &client).await;
                 tracing::warn!(%server, %run_id, %error, "remote PTY stream open failed");
-                sleep(reconnect_delay).await;
-                reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                backoff.wait().await;
                 continue;
             }
         };
         if let Some(router) = router.upgrade() {
-            router.run_status(&run_id, "connected");
+            router.emit_run_status(&run_id, "connected");
         }
-        reconnect_delay = INITIAL_RECONNECT_DELAY;
+        backoff.reset();
         if let Some(message) = pending.take() {
             if send_upstream(&mut send, &message).await.is_err() {
                 pending = Some(message);
                 evict_failed(&router, &server, &client).await;
-                sleep(reconnect_delay).await;
-                reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                backoff.wait().await;
                 continue;
             }
         }
@@ -543,14 +538,13 @@ async fn run_stream(
             break;
         }
         if let Some(router) = router.upgrade() {
-            router.run_status(&run_id, "reconnecting");
+            router.emit_run_status(&run_id, "reconnecting");
         }
         evict_failed(&router, &server, &client).await;
-        sleep(reconnect_delay).await;
-        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+        backoff.wait().await;
     }
     if let Some(router) = router.upgrade() {
-        router.run_status(&run_id, "disconnected");
+        router.emit_run_status(&run_id, "disconnected");
     }
 }
 async fn send_upstream(

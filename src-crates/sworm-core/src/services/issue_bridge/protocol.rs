@@ -1,6 +1,7 @@
 //! NDJSON RPC envelope: request/response shape, error classification,
 //! and parameter helpers shared by the dispatch table.
 
+use crate::errors::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -54,14 +55,12 @@ impl BridgeResponse {
     }
 }
 
-/// Pick a stable error code for the bridge envelope based on the
-/// service-layer message shape. Mirrors `operations::issues::map_issue_error`
-/// so the OMP client can branch on the same categories the frontend sees.
-pub(super) fn classify_error(message: &str) -> &'static str {
-    match crate::services::issues::classify_issue_error(message) {
-        crate::services::issues::IssueErrorKind::NotFound => "not_found",
-        crate::services::issues::IssueErrorKind::Validation => "invalid_argument",
-        crate::services::issues::IssueErrorKind::Domain => "domain_error",
+/// Keep bridge error codes aligned with the host's typed domain errors.
+pub(super) fn classify_error(error: &ApiError) -> &'static str {
+    match error {
+        ApiError::NotFound(_) => "not_found",
+        ApiError::InvalidArgument(_) => "invalid_argument",
+        _ => "domain_error",
     }
 }
 
@@ -69,13 +68,13 @@ pub(super) fn to_value<T: Serialize>(value: T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
-pub(super) fn required_string(params: &Value, key: &str) -> Result<String, String> {
+pub(super) fn required_string(params: &Value, key: &str) -> Result<String, ApiError> {
     params
         .get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
-        .ok_or_else(|| format!("Missing required param: {}", key))
+        .ok_or_else(|| ApiError::InvalidArgument(format!("Missing required param: {}", key)))
 }
 
 pub(super) fn optional_i64(params: &Value, key: &str) -> Option<i64> {

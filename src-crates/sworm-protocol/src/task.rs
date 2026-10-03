@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub const TASKS_CHANGED_EVENT: &str = "tasks-changed";
-
 /// Root shape of `.sworm/tasks.jsonc`. Committed to the repo and
 /// shared by the whole team.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

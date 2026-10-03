@@ -46,23 +46,3 @@ pub enum ProviderConnectionStatus {
     Missing,
     Error,
 }
-
-#[derive(Debug, Clone)]
-pub enum ResumeMode {
-    None,
-    SessionId {
-        session_flag: &'static str,
-        continue_flags: &'static [&'static str],
-    },
-    /// Resume by thread/session id: emits `<resume_command> <id>`, where
-    /// `resume_command` is the flag or subcommand preceding the id
-    /// (`codex resume <id>`, `omp --resume <id>`).
-    ThreadId {
-        resume_command: &'static str,
-    },
-    /// Resume by conversation id (e.g. `agy --conversation <id>`).
-    /// Appended only when a resume token is supplied.
-    ConversationId {
-        flag: &'static str,
-    },
-}

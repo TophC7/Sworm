@@ -3,15 +3,16 @@ use crate::services::{
     settings::{SettingsJsoncLayer, SettingsService},
 };
 use jsonschema::{error::ValidationErrorKind, Validator};
-use serde_json::Value;
+use schemars::schema_for;
+use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use sworm_protocol::settings::{
-    is_global_only_pointer, settings_layer_schema, EffectiveSettings, LspServerConfigRecord,
-    LspServerSettings, ProviderConfigRecord, ProviderSettings, SettingsDiagnostic,
-    SettingsDiagnosticCode, SettingsDiagnosticSeverity, SettingsLayerKind, SettingsOrigin,
+    EffectiveSettings, LspServerConfigRecord, LspServerSettings, ProviderConfigRecord,
+    ProviderSettings, SettingsDiagnostic, SettingsDiagnosticCode, SettingsDiagnosticSeverity,
+    SettingsLayerKind, SettingsOrigin, CANONICAL_PROVIDER_IDS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,10 +34,7 @@ pub struct ResolvedSettings {
 pub fn resolve_effective_settings_for_folder_path(
     folder_path: Option<&Path>,
 ) -> Result<ResolvedSettings, String> {
-    let lsp_server_ids = BuiltinCatalogService::list_server_definitions()?
-        .into_iter()
-        .map(|server| server.server_definition_id)
-        .collect::<Vec<_>>();
+    let lsp_server_ids = BuiltinCatalogService::server_definition_ids();
     let global_path = SettingsService::global_settings_path()?;
     let global = load_settings_layer(SettingsLayerKind::Global, global_path);
     let folder = folder_path.map(|folder_path| {
@@ -74,8 +72,6 @@ pub fn lsp_config_record(settings: &EffectiveSettings, server_id: &str) -> LspSe
         server_definition_id: server_id.to_string(),
         enabled: config.enabled,
         binary_path_override: config.binary_path_override,
-        runtime_path_override: config.runtime_path_override,
-        runtime_args: config.runtime_args,
         extra_args: config.extra_args,
         trace: config.trace,
         settings: config.settings,
@@ -322,11 +318,117 @@ fn json_pointer(parts: &[&str]) -> String {
     pointer
 }
 
+/// JSON Pointer prefixes of settings that are strictly `GlobalOnly` and cannot be
+/// configured in project folder settings.
+pub(crate) const GLOBAL_ONLY_POINTERS: &[&str] = &["/window", "/remotes"];
+
+pub(crate) fn is_global_only_pointer(pointer: &str) -> bool {
+    GLOBAL_ONLY_POINTERS.iter().any(|prefix| {
+        pointer == *prefix
+            || (pointer.starts_with(prefix) && pointer[prefix.len()..].starts_with('/'))
+    })
+}
+
+/// Runtime + editor JSON Schema for a settings layer file. Derived from the
+/// model; only the map key sets (provider ids, LSP server ids) are injected
+/// because they come from runtime catalogs, not types.
+///
+/// When generated for `SettingsLayerKind::Folder`, settings with global-only scope
+/// (defined in `GLOBAL_ONLY_POINTERS`) are pruned from the schema so that editors omit
+/// them from autocomplete and layer validation rejects them.
+pub(crate) fn settings_layer_schema(layer: SettingsLayerKind, lsp_server_ids: &[String]) -> Value {
+    let mut schema =
+        serde_json::to_value(schema_for!(EffectiveSettings)).expect("settings schema serializes");
+    restrict_map_keys(
+        &mut schema,
+        &["providers"],
+        CANONICAL_PROVIDER_IDS
+            .iter()
+            .map(|provider_id| provider_id.to_string())
+            .collect(),
+    );
+    restrict_map_keys(&mut schema, &["lsp", "servers"], lsp_server_ids.to_vec());
+
+    if layer == SettingsLayerKind::Folder {
+        for pointer in GLOBAL_ONLY_POINTERS {
+            let segments: Vec<&str> = pointer.trim_start_matches('/').split('/').collect();
+            if segments.len() == 1 {
+                if let Some(props) = schema
+                    .pointer_mut("/properties")
+                    .and_then(Value::as_object_mut)
+                {
+                    props.remove(segments[0]);
+                }
+            } else {
+                let field_path = &segments[..segments.len() - 1];
+                let prop_name = segments.last().unwrap();
+                let p = resolve_schema_pointer(&schema, field_path);
+                if let Some(props) = schema
+                    .pointer_mut(&format!("{p}/properties"))
+                    .and_then(Value::as_object_mut)
+                {
+                    props.remove(*prop_name);
+                }
+            }
+        }
+    }
+
+    schema
+}
+
+/// Pins the accepted key set of a map-valued setting. Struct-typed fields are
+/// `$ref`s into `definitions` (wrapped in `allOf` when schemars attaches field
+/// metadata), so each step dereferences before descending.
+pub(crate) fn restrict_map_keys(schema: &mut Value, field_path: &[&str], keys: Vec<String>) {
+    let pointer = resolve_schema_pointer(schema, field_path);
+    schema
+        .pointer_mut(&pointer)
+        .and_then(Value::as_object_mut)
+        .unwrap_or_else(|| panic!("settings schema exposes {pointer}"))
+        .insert("propertyNames".to_string(), json!({ "enum": keys }));
+}
+
+pub(crate) fn resolve_schema_pointer(schema: &Value, field_path: &[&str]) -> String {
+    let mut pointer = String::new();
+    for field in field_path {
+        while let Some(reference) = schema.pointer(&pointer).and_then(field_ref) {
+            pointer = reference.trim_start_matches('#').to_string();
+        }
+        pointer.push_str("/properties/");
+        pointer.push_str(field);
+    }
+    while let Some(reference) = schema.pointer(&pointer).and_then(field_ref) {
+        pointer = reference.trim_start_matches('#').to_string();
+    }
+    pointer
+}
+
+pub(crate) fn field_ref(node: &Value) -> Option<&str> {
+    node.get("$ref")
+        .or_else(|| node.pointer("/allOf/0/$ref"))?
+        .as_str()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use sworm_protocol::settings::{FormatterSelection, TabBeamPosition};
+    #[test]
+    fn global_schema_includes_global_only_settings() {
+        let schema = settings_layer_schema(SettingsLayerKind::Global, &[]);
+        assert!(schema.pointer("/properties/window").is_some());
+        assert!(schema.pointer("/properties/remotes").is_some());
+    }
+
+    #[test]
+    fn folder_schema_prunes_global_only_settings() {
+        let schema = settings_layer_schema(SettingsLayerKind::Folder, &[]);
+        assert!(schema.pointer("/properties/window").is_none());
+        assert!(schema.pointer("/properties/remotes").is_none());
+        assert!(schema.pointer("/properties/terminal").is_some());
+        assert!(schema.pointer("/properties/nix").is_some());
+    }
 
     fn loaded(layer: SettingsLayerKind, name: &str, value: Value) -> SettingsLayerLoad {
         SettingsLayerLoad::Loaded(SettingsJsoncLayer {

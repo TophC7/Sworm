@@ -8,7 +8,7 @@
 // PTY spawn itself is driven by Host task operations; this service is purely
 // config loading and bookkeeping.
 
-use crate::events::{EventSink, HostEvent};
+use crate::events::{deliver, EventSink, HostEvent};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -208,7 +208,7 @@ impl TaskService {
             if event.paths.iter().any(|path| {
                 is_tasks_event_path(path, &sworm_dir_for_events, &tasks_file_for_events)
             }) {
-                let _ = events(HostEvent::TasksChanged(payload.clone()));
+                deliver(&events, HostEvent::TasksChanged(payload.clone()));
             }
         })
         .map_err(|e| format!("Failed to create watcher: {}", e))?;

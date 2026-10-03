@@ -7,6 +7,8 @@
 //! Each project DB carries one writer connection and a small reader pool
 //! mirroring [`crate::services::db::DatabaseService`], so list/search/get
 //! never serialize behind a long write.
+//! Domain failures retain their [`ApiError`] variants. Mutation results
+//! describe the committed transaction, without a later reader-pool lookup.
 //!
 //! The implementation is split across submodules so each domain — issues,
 //! epics, comments, dependencies, config — owns its own file. They all
@@ -22,6 +24,7 @@ mod queries;
 mod rows;
 mod validators;
 
+use crate::errors::ApiError;
 use db::{open_issue_connection, IssueProjectDb, ISSUE_DB_REL, READ_POOL_SIZE, SCHEMA_SQL};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -29,7 +32,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-pub(super) const DEFAULT_LIMIT: i64 = 100;
+fn db_error(context: &'static str) -> impl FnOnce(rusqlite::Error) -> ApiError {
+    move |error| ApiError::Database(format!("{context}: {error}"))
+}
 
 /// Project-aware facade over [`IssueProjectDb`] handles. All public
 /// methods are sync; operations that need to avoid blocking the async
@@ -45,9 +50,8 @@ impl IssueService {
         }
     }
 
-    /// Path to the issue DB inside `project_path`. Public so tests and
-    /// startup code can verify the file location without opening the DB.
-    pub fn issue_db_path(project_path: &Path) -> PathBuf {
+    /// Path to the project-local SQLite issue store.
+    fn issue_db_path(project_path: &Path) -> PathBuf {
         project_path.join(ISSUE_DB_REL)
     }
 
@@ -63,7 +67,7 @@ impl IssueService {
     pub(in crate::services::issues) fn db(
         &self,
         project_path: &Path,
-    ) -> Result<Arc<IssueProjectDb>, String> {
+    ) -> Result<Arc<IssueProjectDb>, ApiError> {
         let db_path = Self::issue_db_path(project_path);
         let slot = {
             let mut dbs = self.dbs.lock();
@@ -79,18 +83,18 @@ impl IssueService {
 
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                format!(
+                ApiError::Io(format!(
                     "Failed to create issue db directory {}: {}",
                     parent.display(),
                     e
-                )
+                ))
             })?;
         }
 
         let writer = open_issue_connection(&db_path, false)?;
         writer
             .execute_batch(SCHEMA_SQL)
-            .map_err(|e| format!("Failed to initialize issue db {}: {}", db_path.display(), e))?;
+            .map_err(db_error("Failed to initialize issue db"))?;
 
         let mut readers = Vec::with_capacity(READ_POOL_SIZE);
         for _ in 0..READ_POOL_SIZE {
@@ -105,50 +109,6 @@ impl IssueService {
         *cached = Some(Arc::clone(&db));
         Ok(db)
     }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IssueErrorKind {
-    NotFound,
-    Validation,
-    Domain,
-}
-
-pub(crate) fn classify_issue_error(message: &str) -> IssueErrorKind {
-    if message.contains("not found")
-        || message.contains("not Found")
-        || message.contains("Not found")
-    {
-        IssueErrorKind::NotFound
-    } else if is_validation_message(message) {
-        IssueErrorKind::Validation
-    } else {
-        IssueErrorKind::Domain
-    }
-}
-
-fn is_validation_message(message: &str) -> bool {
-    const PATTERNS: &[&str] = &[
-        "must not be empty",
-        "must be between",
-        "Invalid issue status",
-        "Invalid epic status",
-        "Invalid assignee kind",
-        "assigneeId required",
-        "Invalid issue config key",
-        "Prefix must",
-        "Sub-issues are one level deep",
-        "must belong to an epic",
-        "Sub-issue epic must match",
-        "cannot depend on itself",
-        "already exists",
-        "would create a cycle",
-        "Cannot delete epic while it has issues",
-        "Tags must not be empty",
-        "Issue must belong",
-        "Value must not",
-        "Missing required param",
-    ];
-    PATTERNS.iter().any(|pattern| message.contains(pattern))
 }
 
 #[cfg(test)]
@@ -248,7 +208,7 @@ mod tests {
                 actor: None,
             },
         );
-        assert!(rootless.is_err());
+        assert!(matches!(rootless, Err(ApiError::InvalidArgument(_))));
 
         let parent = service
             .create(
@@ -345,26 +305,44 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(service
-            .add_dependency(
+        assert!(matches!(
+            service.add_dependency(
                 &project,
                 IssueDependencyInput {
                     issue_id: b.id.clone(),
                     depends_on_issue_id: a.id.clone(),
                     actor: None
                 }
-            )
-            .is_err());
-        assert!(service
-            .add_dependency(
+            ),
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            service.add_dependency(
                 &project,
                 IssueDependencyInput {
                     issue_id: a.id.clone(),
                     depends_on_issue_id: b.id.clone(),
                     actor: None
                 }
-            )
-            .is_err());
+            ),
+            Err(ApiError::InvalidArgument(_))
+        ));
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn missing_comment_update_returns_not_found() {
+        let service = IssueService::new();
+        let project = temp_project("missing-comment");
+        let result = service.update_comment(
+            &project,
+            "NOTE-missing",
+            IssueCommentUpdateInput {
+                body: "Replacement".into(),
+                actor: None,
+            },
+        );
+        assert!(matches!(result, Err(ApiError::NotFound(_))));
         let _ = std::fs::remove_dir_all(project);
     }
 
@@ -488,7 +466,7 @@ mod tests {
             )
             .unwrap();
         let results = service
-            .search(&project, "100%", IssueSearchFilters::default())
+            .search(&project, "100%", IssueListFilters::default())
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, literal.id);

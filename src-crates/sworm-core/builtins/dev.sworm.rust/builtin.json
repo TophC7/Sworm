@@ -15,10 +15,7 @@
         "id": "rust-analyzer",
         "label": "rust-analyzer",
         "applies_to_languages": ["rust"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "rust-analyzer"
-        },
+        "command": "rust-analyzer",
         "args": [],
         "install_hint": "Install `rust-analyzer` and ensure `rust-analyzer` and `cargo` are on PATH.",
         "document_selectors": [

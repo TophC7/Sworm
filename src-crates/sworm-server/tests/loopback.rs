@@ -1,20 +1,21 @@
+mod support;
 use anyhow::{bail, Context, Result};
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
-    sync::mpsc,
     time::Duration,
 };
+use support::{
+    enable_fake_lsp, init_repo, mkfifo, once_task, Daemon, StalledTask, FAKE_LSP_SERVER_ID,
+};
 use sworm_protocol::{
-    files::{DirEntry, FileContent},
+    files::DirEntry,
     git::GitSummary,
     lsp::LspEvent,
     pty::PtyEvent,
     rpc::{
-        HostEventFrame, HostEventWire, LspDown, LspUp, Open, PtyCursor, PtyDown, Request, Response,
+        HostEventWire, LspDown, LspUp, Open, PtyCursor, PtyDown, Reply, Request, Response,
         RunStatus, WireError, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
         MAX_WHOLE_FILE_BYTES,
     },
@@ -23,114 +24,11 @@ use sworm_remote::{
     wire::{read_frame, read_tagged_frame, write_frame, write_raw_frame, Frame},
     Fingerprint, Identity, RemoteClient, RemoteError,
 };
-use sworm_server::{auth, serve, ServeOptions, ServerHandle};
-use tempfile::TempDir;
+use sworm_server::auth;
 use tokio::time::{sleep, timeout};
 
 const SHORT_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Any builtin definition works: the test overrides its binary.
-const FAKE_LSP_SERVER_ID: &str = "dev.sworm.nix::nil";
-
-struct Fixture {
-    config: TempDir,
-    data: TempDir,
-    repo: TempDir,
-    client_identity: Identity,
-    endpoint: quinn::Endpoint,
-    handle: ServerHandle,
-}
-
-impl Fixture {
-    async fn start(server_config: Option<serde_json::Value>) -> Result<Self> {
-        let config = tempfile::tempdir()?;
-        let data = tempfile::tempdir()?;
-        let repo = tempfile::tempdir()?;
-        let client_dir = tempfile::tempdir()?;
-        if let Some(contents) = server_config {
-            fs::write(config.path().join("server.jsonc"), contents.to_string())?;
-        }
-        init_repo(repo.path())?;
-        let client_identity = Identity::load_or_generate(client_dir.path(), "client")?;
-        let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
-        let handle = serve(ServeOptions {
-            config_dir: config.path().to_path_buf(),
-            data_dir: data.path().to_path_buf(),
-            listen: Some("127.0.0.1:0".parse()?),
-            config_file: None,
-            web_assets_dir: None,
-        })
-        .await?;
-        Ok(Self {
-            config,
-            data,
-            repo,
-            client_identity,
-            endpoint,
-            handle,
-        })
-    }
-
-    async fn client(&self) -> Result<RemoteClient, RemoteError> {
-        RemoteClient::connect(
-            &self.endpoint,
-            self.handle.local_addr,
-            &self.client_identity,
-            self.handle.fingerprint,
-        )
-        .await
-    }
-
-    async fn paired_client(&self) -> Result<RemoteClient> {
-        let token = auth::write_pairing_token(self.config.path())?;
-        let client = self.client().await?;
-        client.pair(&token, "test client").await?;
-        Ok(client)
-    }
-
-    /// Restart the daemon on the same config and data directories, as a
-    /// service restart or host reboot would.
-    async fn restart(&mut self) -> Result<()> {
-        let handle = serve(ServeOptions {
-            config_dir: self.config.path().to_path_buf(),
-            data_dir: self.data.path().to_path_buf(),
-            listen: Some("127.0.0.1:0".parse()?),
-            config_file: None,
-            web_assets_dir: None,
-        })
-        .await?;
-        let previous = std::mem::replace(&mut self.handle, handle);
-        previous.shutdown().await;
-        Ok(())
-    }
-
-    fn repo_path(&self) -> String {
-        self.repo.path().to_string_lossy().into_owned()
-    }
-}
-
-fn init_repo(path: &Path) -> Result<()> {
-    let status = Command::new("git")
-        .args(["-c", "init.defaultBranch=main", "init"])
-        .current_dir(path)
-        .status()
-        .context("launch git init")?;
-    if !status.success() {
-        bail!("git init failed with {status}");
-    }
-    fs::write(path.join("hello.txt"), "sentinel\n")?;
-    fs::create_dir(path.join("src"))?;
-    fs::write(path.join("src/lib.rs"), "pub fn sentinel() {}\n")?;
-    let sworm_dir = path.join(".sworm");
-    fs::create_dir(&sworm_dir)?;
-    // Harness configuration is not part of the working-tree assertions.
-    fs::write(path.join(".git/info/exclude"), ".sworm/\n")?;
-    fs::write(
-        sworm_dir.join("settings.jsonc"),
-        r#"{"providers":{"terminal":{"enabled":true,"binary_path_override":"sh","extra_args":[]}}}"#,
-    )?;
-    Ok(())
-}
 
 fn assert_unauthorized<T>(result: Result<T, RemoteError>) {
     assert!(matches!(
@@ -150,14 +48,15 @@ async fn root_entries(
     project_path: &str,
 ) -> Result<Vec<DirEntry>, RemoteError> {
     client
-        .call(&Request::FilesReadDir {
-            project_path: project_path.to_owned(),
-            dir_path: String::new(),
-            show_hidden: false,
-        })
-        .await?
-        .files_read_dir()
-        .map_err(RemoteError::Wire)
+        .call_as(
+            &Request::FilesReadDir {
+                project_path: project_path.to_owned(),
+                dir_path: String::new(),
+                show_hidden: false,
+            },
+            Reply::files_read_dir,
+        )
+        .await
 }
 
 async fn wait_for_src(client: &RemoteClient, project_path: &str, present: bool) -> Result<()> {
@@ -175,75 +74,49 @@ async fn wait_for_src(client: &RemoteClient, project_path: &str, present: bool) 
     Ok(())
 }
 
-async fn watch_root(client: &RemoteClient, project_path: &str) -> Result<()> {
-    client
-        .call(&Request::FilesWatchDirs {
-            project_path: project_path.to_owned(),
-            dirs: vec![String::new()],
-        })
-        .await?
-        .files_watch_dirs()
-        .map_err(RemoteError::Wire)?;
-    Ok(())
-}
-
-async fn claim_folder(client: &RemoteClient, folder_path: &str) -> Result<()> {
-    client
-        .call(&Request::FolderClaim {
-            folder_path: folder_path.to_owned(),
-        })
-        .await?
-        .folder_claim()
-        .map_err(RemoteError::Wire)?;
-    Ok(())
-}
-
-async fn release_folder(client: &RemoteClient, folder_path: &str) -> Result<()> {
-    client
-        .call(&Request::FolderRelease {
-            folder_path: folder_path.to_owned(),
-        })
-        .await?
-        .folder_release()
-        .map_err(RemoteError::Wire)?;
-    Ok(())
-}
-
 async fn next_host_event(recv: &mut quinn::RecvStream) -> Result<HostEventWire> {
-    Ok(read_frame::<HostEventFrame>(recv).await?.0)
+    Ok(read_frame::<HostEventWire>(recv).await?)
 }
 
-async fn wait_for_files_changed(recv: &mut quinn::RecvStream, folder_path: &str) -> Result<()> {
-    timeout(SHORT_TIMEOUT, async {
+async fn files_changed_within(
+    recv: &mut quinn::RecvStream,
+    folder_path: &str,
+    deadline: Duration,
+) -> Result<bool> {
+    match timeout(deadline, async {
         loop {
             if let HostEventWire::FilesChanged(event) = next_host_event(recv).await? {
-                if event.folder_path == folder_path && event.dirs.iter().any(String::is_empty) {
-                    return Ok::<(), anyhow::Error>(());
+                if event.folder_path == folder_path {
+                    assert!(
+                        event.dirs.iter().any(String::is_empty),
+                        "watched root missing from event"
+                    );
+                    return Ok(true);
                 }
             }
         }
     })
     .await
-    .with_context(|| format!("no files-changed event for {folder_path}"))??;
+    {
+        Ok(result) => result,
+        Err(_) => Ok(false),
+    }
+}
+
+async fn wait_for_files_changed(recv: &mut quinn::RecvStream, folder_path: &str) -> Result<()> {
+    assert!(
+        files_changed_within(recv, folder_path, SHORT_TIMEOUT).await?,
+        "no files-changed event for {folder_path}"
+    );
     Ok(())
 }
 
 async fn assert_no_files_changed(recv: &mut quinn::RecvStream, folder_path: &str) -> Result<()> {
-    let received = timeout(Duration::from_millis(750), async {
-        loop {
-            if let HostEventWire::FilesChanged(event) = next_host_event(recv).await? {
-                if event.folder_path == folder_path {
-                    return Ok::<(), anyhow::Error>(());
-                }
-            }
-        }
-    })
-    .await;
-    match received {
-        Err(_) => Ok(()),
-        Ok(Ok(())) => bail!("released subscriber received files-changed for {folder_path}"),
-        Ok(Err(error)) => Err(error),
-    }
+    assert!(
+        !files_changed_within(recv, folder_path, Duration::from_millis(750)).await?,
+        "released subscriber received files-changed for {folder_path}"
+    );
+    Ok(())
 }
 
 async fn wait_for_created_file(
@@ -270,27 +143,29 @@ async fn wait_for_created_file(
 
 async fn run_status(client: &RemoteClient, run_id: &str) -> Result<RunStatus> {
     Ok(client
-        .call(&Request::RunStatus {
-            run_id: run_id.to_owned(),
-        })
-        .await?
-        .run_status()
-        .map_err(RemoteError::Wire)?)
+        .call_as(
+            &Request::RunStatus {
+                run_id: run_id.to_owned(),
+            },
+            Reply::run_status,
+        )
+        .await?)
 }
 
 async fn start_terminal(client: &RemoteClient, run_id: &str, folder_path: &str) -> Result<bool> {
     Ok(client
-        .call(&Request::SessionStart {
-            run_id: run_id.to_owned(),
-            folder_path: folder_path.to_owned(),
-            provider_id: "terminal".to_owned(),
-            resume_token: None,
-            cols: 80,
-            rows: 24,
-        })
+        .call_as(
+            &Request::SessionStart {
+                run_id: run_id.to_owned(),
+                folder_path: folder_path.to_owned(),
+                provider_id: "terminal".to_owned(),
+                resume_token: None,
+                cols: 80,
+                rows: 24,
+            },
+            Reply::session_start,
+        )
         .await?
-        .session_start()
-        .map_err(RemoteError::Wire)?
         .resumed)
 }
 
@@ -301,29 +176,19 @@ async fn start_task(
     attach_only: bool,
 ) -> Result<(), RemoteError> {
     client
-        .call(&Request::TasksStart {
-            run_id: run_id.to_owned(),
-            folder_path: folder_path.to_owned(),
-            task_id: "once".to_owned(),
-            active_file_path: None,
-            cols: 80,
-            rows: 24,
-            attach_only,
-        })
-        .await?
-        .tasks_start()
-        .map_err(RemoteError::Wire)
-}
-
-async fn stop_session(client: &RemoteClient, run_id: &str) -> Result<()> {
-    client
-        .call(&Request::SessionStop {
-            run_id: run_id.to_owned(),
-        })
-        .await?
-        .session_stop()
-        .map_err(RemoteError::Wire)?;
-    Ok(())
+        .call_as(
+            &Request::TasksStart {
+                run_id: run_id.to_owned(),
+                folder_path: folder_path.to_owned(),
+                task_id: "once".to_owned(),
+                active_file_path: None,
+                cols: 80,
+                rows: 24,
+                attach_only,
+            },
+            Reply::tasks_start,
+        )
+        .await
 }
 
 #[derive(Debug)]
@@ -396,19 +261,25 @@ async fn read_until_occurrences(
     .context("PTY marker timed out")?
 }
 
-async fn prepare_shell(
-    send: &mut quinn::SendStream,
-    recv: &mut quinn::RecvStream,
-    cursor: &mut PtyCursor,
-) -> Result<()> {
+async fn open_shell(
+    client: &RemoteClient,
+    run_id: &str,
+    mut cursor: PtyCursor,
+) -> Result<(quinn::SendStream, quinn::RecvStream, PtyCursor)> {
+    let (mut send, mut recv) = client
+        .open_stream(Open::Pty {
+            run_id: run_id.to_owned(),
+            cursor,
+        })
+        .await?;
     const MARKER: &[u8] = b"SWORM-ECHO-OFF-6a314f";
     write_raw_frame(
-        send,
+        &mut send,
         b"stty -echo; printf '%s%s\\n' 'SWORM-ECHO-' 'OFF-6a314f'\n",
     )
     .await?;
-    read_until_occurrences(recv, cursor, MARKER, 1).await?;
-    Ok(())
+    read_until_occurrences(&mut recv, &mut cursor, MARKER, 1).await?;
+    Ok((send, recv, cursor))
 }
 
 async fn wait_for_stream_end(recv: &mut quinn::RecvStream) -> Result<()> {
@@ -449,29 +320,37 @@ async fn wait_for_exit(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
-    let project_path = fixture.repo_path();
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
+    let project_path = repo.path().to_string_lossy().into_owned();
 
     // An unpaired peer's oversized request dies at the server's 64KiB
     // unauthenticated intake, not at a client-side limit: the reset stream
     // surfaces as a transport failure, never a dispatched reply.
     let oversized_request = fixture.client().await?;
     let oversized_result = oversized_request
-        .call(&Request::FileRead {
-            project_path: format!("/{}", "x".repeat(MAX_REQUEST_FRAME_BYTES)),
-            file_path: "ignored".to_string(),
-        })
+        .call_as(
+            &Request::FileRead {
+                project_path: format!("/{}", "x".repeat(MAX_REQUEST_FRAME_BYTES)),
+                file_path: "ignored".to_string(),
+            },
+            Reply::file_read,
+        )
         .await;
     assert!(matches!(oversized_result, Err(RemoteError::Transport(_))));
     oversized_request.close();
     let unpaired = fixture.client().await?;
     assert_unauthorized(
         unpaired
-            .call(&Request::FilesReadDir {
-                project_path: project_path.clone(),
-                dir_path: String::new(),
-                show_hidden: false,
-            })
+            .call_as(
+                &Request::FilesReadDir {
+                    project_path: project_path.clone(),
+                    dir_path: String::new(),
+                    show_hidden: false,
+                },
+                Reply::files_read_dir,
+            )
             .await,
     );
     wait_closed(&unpaired).await;
@@ -515,7 +394,7 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     pairing_client.pair(&token, "test\nlaptop").await?;
     assert_eq!(
         fs::read_to_string(fixture.config.path().join("authorized_keys"))?,
-        format!("{} test-laptop\n", fixture.client_identity.fingerprint())
+        format!("{} test-laptop\n", fixture.identity.fingerprint())
     );
     assert_eq!(
         fs::metadata(fixture.config.path().join("authorized_keys"))?
@@ -528,14 +407,15 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
 
     let client = fixture.client().await?;
     let entries = client
-        .call(&Request::FilesReadDir {
-            project_path: project_path.clone(),
-            dir_path: String::new(),
-            show_hidden: false,
-        })
-        .await?
-        .files_read_dir()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::FilesReadDir {
+                project_path: project_path.clone(),
+                dir_path: String::new(),
+                show_hidden: false,
+            },
+            Reply::files_read_dir,
+        )
+        .await?;
     assert!(entries
         .iter()
         .any(|entry| entry.name == "hello.txt" && !entry.is_dir));
@@ -544,23 +424,27 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
         .any(|entry| entry.name == "src" && entry.is_dir));
 
     let contents = client
-        .call(&Request::FileRead {
-            project_path: project_path.clone(),
-            file_path: "hello.txt".to_string(),
-        })
-        .await?
-        .file_read()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::FileRead {
+                project_path: project_path.clone(),
+                file_path: "hello.txt".to_string(),
+            },
+            Reply::file_read,
+        )
+        .await?;
     assert_eq!(contents.content, "sentinel\n");
     assert!(!contents.version.is_empty());
 
-    let oversized_path = fixture.repo.path().join("oversized.txt");
+    let oversized_path = repo.path().join("oversized.txt");
     fs::File::create(&oversized_path)?.set_len(MAX_WHOLE_FILE_BYTES as u64 + 1)?;
     let oversized = client
-        .call(&Request::FileRead {
-            project_path: project_path.clone(),
-            file_path: "oversized.txt".to_string(),
-        })
+        .call_as(
+            &Request::FileRead {
+                project_path: project_path.clone(),
+                file_path: "oversized.txt".to_string(),
+            },
+            Reply::file_read,
+        )
         .await;
     assert!(matches!(
         oversized,
@@ -570,20 +454,24 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     fs::remove_file(oversized_path)?;
 
     let summary: GitSummary = client
-        .call(&Request::GitGetSummary {
-            path: project_path.clone(),
-        })
-        .await?
-        .git_get_summary()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::GitGetSummary {
+                path: project_path.clone(),
+            },
+            Reply::git_get_summary,
+        )
+        .await?;
     assert!(summary.is_repo);
     assert_eq!(summary.untracked_count, 2);
 
     let traversal = client
-        .call(&Request::FileRead {
-            project_path: project_path.clone(),
-            file_path: "../outside".to_string(),
-        })
+        .call_as(
+            &Request::FileRead {
+                project_path: project_path.clone(),
+                file_path: "../outside".to_string(),
+            },
+            Reply::file_read,
+        )
         .await;
     assert!(matches!(
         traversal,
@@ -592,10 +480,13 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     ));
 
     let relative_project = client
-        .call(&Request::FileRead {
-            project_path: "relative/project".to_string(),
-            file_path: "hello.txt".to_string(),
-        })
+        .call_as(
+            &Request::FileRead {
+                project_path: "relative/project".to_string(),
+                file_path: "hello.txt".to_string(),
+            },
+            Reply::file_read,
+        )
         .await;
     assert!(matches!(
         relative_project,
@@ -604,16 +495,19 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     ));
 
     let missing = client
-        .call(&Request::FilesReadDir {
-            project_path: fixture
-                .config
-                .path()
-                .join("missing-project")
-                .to_string_lossy()
-                .into_owned(),
-            dir_path: String::new(),
-            show_hidden: false,
-        })
+        .call_as(
+            &Request::FilesReadDir {
+                project_path: fixture
+                    .config
+                    .path()
+                    .join("missing-project")
+                    .to_string_lossy()
+                    .into_owned(),
+                dir_path: String::new(),
+                show_hidden: false,
+            },
+            Reply::files_read_dir,
+        )
         .await;
     assert!(matches!(
         missing,
@@ -623,7 +517,7 @@ async fn pairing_persists_and_dispatches_host_operations() -> Result<()> {
     let bad_pin = RemoteClient::connect(
         &fixture.endpoint,
         fixture.handle.local_addr,
-        &fixture.client_identity,
+        &fixture.identity,
         Fingerprint([0; 32]),
     )
     .await;
@@ -644,25 +538,28 @@ async fn file_read_stream_assembles_and_caps() -> Result<()> {
     use sworm_protocol::rpc::{FileReadDown, MAX_FILE_CHUNK_BYTES};
     use sworm_remote::wire::read_tagged_frame_with_limit;
 
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let path = fixture.repo.path().join("large.txt");
+    let path = repo.path().join("large.txt");
     let contents = vec![b'x'; 20 * 1024 * 1024];
     fs::write(&path, &contents)?;
     let expected_version = format!("{:x}", sha2::Sha256::digest(&contents));
     let stat = client
-        .call(&Request::FileStat {
-            project_path: fixture.repo_path(),
-            file_path: "large.txt".to_owned(),
-        })
-        .await?
-        .file_stat()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::FileStat {
+                project_path: repo.path().to_string_lossy().into_owned(),
+                file_path: "large.txt".to_owned(),
+            },
+            Reply::file_stat,
+        )
+        .await?;
     assert_eq!(stat.size, contents.len() as u64);
     assert!(stat.regular);
     let (_send, mut recv) = client
         .open_stream(Open::FileRead {
-            project_path: fixture.repo_path(),
+            project_path: repo.path().to_string_lossy().into_owned(),
             file_path: "large.txt".to_owned(),
             version: stat.version,
         })
@@ -687,17 +584,18 @@ async fn file_read_stream_assembles_and_caps() -> Result<()> {
     }
     assert_eq!(assembled, contents);
     let stat = client
-        .call(&Request::FileStat {
-            project_path: fixture.repo_path(),
-            file_path: "large.txt".to_owned(),
-        })
-        .await?
-        .file_stat()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::FileStat {
+                project_path: repo.path().to_string_lossy().into_owned(),
+                file_path: "large.txt".to_owned(),
+            },
+            Reply::file_stat,
+        )
+        .await?;
     fs::write(&path, b"changed")?;
     let (_send, mut recv) = client
         .open_stream(Open::FileRead {
-            project_path: fixture.repo_path(),
+            project_path: repo.path().to_string_lossy().into_owned(),
             file_path: "large.txt".to_owned(),
             version: stat.version,
         })
@@ -714,16 +612,17 @@ async fn file_read_stream_assembles_and_caps() -> Result<()> {
     ));
     fs::File::create(&path)?.set_len(300 * 1024 * 1024)?;
     let stat = client
-        .call(&Request::FileStat {
-            project_path: fixture.repo_path(),
-            file_path: "large.txt".to_owned(),
-        })
-        .await?
-        .file_stat()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::FileStat {
+                project_path: repo.path().to_string_lossy().into_owned(),
+                file_path: "large.txt".to_owned(),
+            },
+            Reply::file_stat,
+        )
+        .await?;
     let (_send, mut recv) = client
         .open_stream(Open::FileRead {
-            project_path: fixture.repo_path(),
+            project_path: repo.path().to_string_lossy().into_owned(),
             file_path: "large.txt".to_owned(),
             version: stat.version,
         })
@@ -745,18 +644,10 @@ async fn file_read_stream_assembles_and_caps() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn one_use_token_has_one_winner_across_connections() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
     let token = auth::write_pairing_token(fixture.config.path())?;
     let first = fixture.client().await?;
-    let second_dir = tempfile::tempdir()?;
-    let second_identity = Identity::load_or_generate(second_dir.path(), "client")?;
-    let second = RemoteClient::connect(
-        &fixture.endpoint,
-        fixture.handle.local_addr,
-        &second_identity,
-        fixture.handle.fingerprint,
-    )
-    .await?;
+    let second = fixture.client_as_new_identity().await?;
 
     let (first_result, second_result) =
         tokio::join!(first.pair(&token, "first"), second.pair(&token, "second"));
@@ -792,11 +683,13 @@ async fn provisioned_keys_admit_without_pairing() -> Result<()> {
     let desktop = Identity::create(&keys.path().join("desktop.pem"))?;
     let declared = keys.path().join("authorized");
     fs::write(&declared, format!("{} desktop\n", desktop.fingerprint()))?;
-    let fixture = Fixture::start(Some(serde_json::json!({
+    let fixture = Daemon::start(Some(serde_json::json!({
         "identity_file": server_key,
         "authorized_keys_file": declared,
     })))
     .await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     assert_eq!(fixture.handle.fingerprint, server_fingerprint);
 
     let client = RemoteClient::connect(
@@ -806,12 +699,12 @@ async fn provisioned_keys_admit_without_pairing() -> Result<()> {
         server_fingerprint,
     )
     .await?;
-    let entries = root_entries(&client, &fixture.repo_path()).await?;
+    let entries = root_entries(&client, &repo.path().to_string_lossy()).await?;
     assert!(entries.iter().any(|entry| entry.name == "src"));
     assert!(!fixture.config.path().join("authorized_keys").exists());
 
     let undeclared = fixture.client().await?;
-    assert_unauthorized(root_entries(&undeclared, &fixture.repo_path()).await);
+    assert_unauthorized(root_entries(&undeclared, &repo.path().to_string_lossy()).await);
 
     client.close();
     fixture.handle.shutdown().await;
@@ -820,20 +713,22 @@ async fn provisioned_keys_admit_without_pairing() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fifo_read_is_rejected_and_shutdown_stays_prompt() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let fifo_path = fixture.repo.path().join("pipe");
-    let status = Command::new("mkfifo").arg(&fifo_path).status()?;
-    if !status.success() {
-        bail!("mkfifo failed with {status}");
-    }
+    let fifo_path = repo.path().join("pipe");
+    mkfifo(&fifo_path)?;
 
     let result = timeout(
         SHORT_TIMEOUT,
-        client.call(&Request::FileRead {
-            project_path: fixture.repo_path(),
-            file_path: "pipe".to_string(),
-        }),
+        client.call_as(
+            &Request::FileRead {
+                project_path: repo.path().to_string_lossy().into_owned(),
+                file_path: "pipe".to_string(),
+            },
+            Reply::file_read,
+        ),
     )
     .await
     .context("FIFO read did not return promptly")?;
@@ -857,82 +752,73 @@ fn large_unicode_content() -> String {
     unit.repeat(256 * 1024 / unit.len() + 1)
 }
 
-async fn write_file(
-    client: &RemoteClient,
-    project_path: &str,
-    file_path: &str,
-    content: &str,
-    expected_version: Option<String>,
-) -> Result<String, RemoteError> {
-    client
-        .call(&Request::FileWrite {
-            project_path: project_path.to_owned(),
-            file_path: file_path.to_owned(),
-            content: content.to_owned(),
-            expected_version,
-        })
-        .await?
-        .file_write()
-        .map_err(RemoteError::Wire)
-}
-
-async fn read_file(
-    client: &RemoteClient,
-    project_path: &str,
-    file_path: &str,
-) -> Result<FileContent, RemoteError> {
-    client
-        .call(&Request::FileRead {
-            project_path: project_path.to_owned(),
-            file_path: file_path.to_owned(),
-        })
-        .await?
-        .file_read()
-        .map_err(RemoteError::Wire)
-}
-
 /// A save carries the file, so a paired client's frame budget has to follow
 /// the payload rather than the smallest control frame — without loosening the
 /// write limit or the version check the editor relies on.
 #[tokio::test(flavor = "multi_thread")]
 async fn paired_client_writes_a_large_file_and_still_loses_a_stale_write() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let project_path = fixture.repo_path();
+    let project_path = repo.path().to_string_lossy().into_owned();
 
-    let seed = write_file(&client, &project_path, "big.txt", "seed\n", None).await?;
+    let seed = client
+        .call_as(
+            &Request::FileWrite {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+                content: ("seed\n").to_owned(),
+                expected_version: None,
+            },
+            Reply::file_write,
+        )
+        .await?;
 
     let content = large_unicode_content();
     assert!(content.len() > MAX_REQUEST_FRAME_BYTES);
     let version = timeout(
         OUTPUT_TIMEOUT,
-        write_file(
-            &client,
-            &project_path,
-            "big.txt",
-            &content,
-            Some(seed.clone()),
+        client.call_as(
+            &Request::FileWrite {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+                content: content.to_owned(),
+                expected_version: Some(seed.clone()),
+            },
+            Reply::file_write,
         ),
     )
     .await
     .context("large write did not complete")??;
     assert_ne!(version, seed);
 
-    let stored = timeout(OUTPUT_TIMEOUT, read_file(&client, &project_path, "big.txt"))
-        .await
-        .context("large read did not complete")??;
+    let stored = timeout(
+        OUTPUT_TIMEOUT,
+        client.call_as(
+            &Request::FileRead {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+            },
+            Reply::file_read,
+        ),
+    )
+    .await
+    .context("large read did not complete")??;
     assert_eq!(stored.content, content);
     assert_eq!(stored.version, version);
 
     // Payload frames are large, not unbounded: writes stop where reads do.
     let oversized = timeout(
         OUTPUT_TIMEOUT,
-        write_file(
-            &client,
-            &project_path,
-            "big.txt",
-            &"a".repeat(MAX_WHOLE_FILE_BYTES + 1),
-            Some(version.clone()),
+        client.call_as(
+            &Request::FileWrite {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+                content: "a".repeat(MAX_WHOLE_FILE_BYTES + 1),
+                expected_version: Some(version.clone()),
+            },
+            Reply::file_write,
         ),
     )
     .await
@@ -942,16 +828,35 @@ async fn paired_client_writes_a_large_file_and_still_loses_a_stale_write() -> Re
         Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
     ));
 
-    let stale = write_file(&client, &project_path, "big.txt", "clobbered\n", Some(seed)).await;
+    let stale = client
+        .call_as(
+            &Request::FileWrite {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+                content: ("clobbered\n").to_owned(),
+                expected_version: Some(seed),
+            },
+            Reply::file_write,
+        )
+        .await;
     assert!(matches!(
         stale,
         Err(RemoteError::Wire(WireError::Conflict { current_version }))
             if current_version == version
     ));
 
-    let unchanged = timeout(OUTPUT_TIMEOUT, read_file(&client, &project_path, "big.txt"))
-        .await
-        .context("read after the refused writes did not complete")??;
+    let unchanged = timeout(
+        OUTPUT_TIMEOUT,
+        client.call_as(
+            &Request::FileRead {
+                project_path: project_path.to_owned(),
+                file_path: ("big.txt").to_owned(),
+            },
+            Reply::file_read,
+        ),
+    )
+    .await
+    .context("read after the refused writes did not complete")??;
     assert_eq!(unchanged.content, content);
     assert_eq!(unchanged.version, version);
 
@@ -964,17 +869,11 @@ async fn paired_client_writes_a_large_file_and_still_loses_a_stale_write() -> Re
 /// size a buffer for, or wait on, a body it never sends.
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_unauthenticated_open_frame_is_refused_without_dispatch() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let paired = fixture.paired_client().await?;
-    let intruder_dir = tempfile::tempdir()?;
-    let intruder_identity = Identity::load_or_generate(intruder_dir.path(), "client")?;
-    let intruder = RemoteClient::connect(
-        &fixture.endpoint,
-        fixture.handle.local_addr,
-        &intruder_identity,
-        fixture.handle.fingerprint,
-    )
-    .await?;
+    let intruder = fixture.client_as_new_identity().await?;
 
     let (mut send, mut recv) = intruder.connection().open_bi().await?;
     send.write_all(&(MAX_REQUEST_FRAME_BYTES as u32 + 1).to_be_bytes())
@@ -994,9 +893,12 @@ async fn oversized_unauthenticated_open_frame_is_refused_without_dispatch() -> R
         "oversized open frame reached dispatch"
     );
 
-    let entries = timeout(SHORT_TIMEOUT, root_entries(&paired, &fixture.repo_path()))
-        .await
-        .context("daemon stopped serving after refusing an oversized frame")??;
+    let entries = timeout(
+        SHORT_TIMEOUT,
+        root_entries(&paired, &repo.path().to_string_lossy()),
+    )
+    .await
+    .context("daemon stopped serving after refusing an oversized frame")??;
     assert!(entries.iter().any(|entry| entry.name == "src"));
 
     paired.close();
@@ -1007,9 +909,11 @@ async fn oversized_unauthenticated_open_frame_is_refused_without_dispatch() -> R
 
 #[tokio::test(flavor = "multi_thread")]
 async fn folder_settings_changes_refresh_directory_listing() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
-    let project_path = fixture.repo_path();
-    let sworm_dir = fixture.repo.path().join(".sworm");
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
+    let project_path = repo.path().to_string_lossy().into_owned();
+    let sworm_dir = repo.path().join(".sworm");
     fs::create_dir_all(&sworm_dir)?;
 
     let first = fixture.paired_client().await?;
@@ -1040,11 +944,13 @@ async fn folder_settings_changes_refresh_directory_listing() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_streams_do_not_starve_paired_requests() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let idle = fixture.client().await?;
     let paired = fixture.paired_client().await?;
     let body = serde_json::to_vec(&Open::Rpc(Request::FileRead {
-        project_path: fixture.repo_path(),
+        project_path: repo.path().to_string_lossy().into_owned(),
         file_path: "hello.txt".to_owned(),
     }))?;
 
@@ -1057,9 +963,12 @@ async fn idle_streams_do_not_starve_paired_requests() -> Result<()> {
     }
     sleep(Duration::from_millis(100)).await;
 
-    let entries = timeout(SHORT_TIMEOUT, root_entries(&paired, &fixture.repo_path()))
-        .await
-        .context("idle streams starved a paired request")??;
+    let entries = timeout(
+        SHORT_TIMEOUT,
+        root_entries(&paired, &repo.path().to_string_lossy()),
+    )
+    .await
+    .context("idle streams starved a paired request")??;
     assert!(entries.iter().any(|entry| entry.name == "src"));
 
     drop(idle_streams);
@@ -1071,35 +980,47 @@ async fn idle_streams_do_not_starve_paired_requests() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn events_stream_delivers_only_claimed_folder_changes() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let first = fixture.paired_client().await?;
     let second = fixture.client().await?;
     let other = tempfile::tempdir()?;
-    let project_path = fixture.repo_path();
+    let project_path = repo.path().to_string_lossy().into_owned();
     let other_path = other.path().to_string_lossy().into_owned();
     let (_first_send, mut first_events) = first.open_stream(Open::Events).await?;
     let (_second_send, mut second_events) = second.open_stream(Open::Events).await?;
 
-    watch_root(&first, &project_path).await?;
-    watch_root(&second, &other_path).await?;
+    first
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: project_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
+    second
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: other_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
     fs::write(other.path().join("stream-ready"), "ready\n")?;
     wait_for_files_changed(&mut second_events, &other_path).await?;
 
-    fs::write(fixture.repo.path().join("claimed-change"), "changed\n")?;
+    fs::write(repo.path().join("claimed-change"), "changed\n")?;
     wait_for_files_changed(&mut first_events, &project_path).await?;
-    let leaked = timeout(Duration::from_millis(750), async {
-        loop {
-            match next_host_event(&mut second_events).await? {
-                HostEventWire::FilesChanged(event) if event.folder_path == project_path => {
-                    return Ok::<bool, anyhow::Error>(true)
-                }
-                _ => {}
-            }
-        }
-    })
-    .await;
     assert!(
-        leaked.is_err(),
+        !files_changed_within(
+            &mut second_events,
+            &project_path,
+            Duration::from_millis(750)
+        )
+        .await?,
         "unclaimed folder event crossed connections"
     );
 
@@ -1111,45 +1032,127 @@ async fn events_stream_delivers_only_claimed_folder_changes() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_folder_claims_keep_each_clients_watch_and_release_independent() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
-    let folder = fixture.repo.path().canonicalize()?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
+    let folder = repo.path().canonicalize()?;
     let folder_path = folder.to_string_lossy().into_owned();
     let first = fixture.paired_client().await?;
     let second = fixture.client().await?;
     let (_first_send, mut first_events) = first.open_stream(Open::Events).await?;
     let (_second_send, mut second_events) = second.open_stream(Open::Events).await?;
 
-    claim_folder(&first, &folder_path).await?;
-    claim_folder(&first, &folder_path).await?;
-    claim_folder(&second, &folder_path).await?;
-    watch_root(&first, &folder_path).await?;
-    watch_root(&second, &folder_path).await?;
+    first
+        .call_as(
+            &Request::FolderClaim {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_claim,
+        )
+        .await?;
+    first
+        .call_as(
+            &Request::FolderClaim {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_claim,
+        )
+        .await?;
+    second
+        .call_as(
+            &Request::FolderClaim {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_claim,
+        )
+        .await?;
+    first
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: folder_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
+    second
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: folder_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
     fs::write(folder.join("both-ready"), "ready\n")?;
     wait_for_files_changed(&mut first_events, &folder_path).await?;
     wait_for_files_changed(&mut second_events, &folder_path).await?;
 
-    release_folder(&first, &folder_path).await?;
+    first
+        .call_as(
+            &Request::FolderRelease {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_release,
+        )
+        .await?;
     fs::write(folder.join("second-only"), "second\n")?;
     wait_for_files_changed(&mut second_events, &folder_path).await?;
     assert_no_files_changed(&mut first_events, &folder_path).await?;
 
-    release_folder(&first, &folder_path).await?;
+    first
+        .call_as(
+            &Request::FolderRelease {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_release,
+        )
+        .await?;
     fs::write(folder.join("still-second"), "second\n")?;
     wait_for_files_changed(&mut second_events, &folder_path).await?;
     assert_no_files_changed(&mut first_events, &folder_path).await?;
 
-    release_folder(&second, &folder_path).await?;
+    second
+        .call_as(
+            &Request::FolderRelease {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_release,
+        )
+        .await?;
     fs::write(folder.join("nobody-watching"), "unwatched\n")?;
     assert_no_files_changed(&mut second_events, &folder_path).await?;
 
-    claim_folder(&first, &folder_path).await?;
-    watch_root(&first, &folder_path).await?;
+    first
+        .call_as(
+            &Request::FolderClaim {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_claim,
+        )
+        .await?;
+    first
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: folder_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
     fs::write(folder.join("rearmed"), "watched\n")?;
     wait_for_files_changed(&mut first_events, &folder_path).await?;
     assert_no_files_changed(&mut second_events, &folder_path).await?;
 
     fs::remove_dir_all(&folder)?;
-    release_folder(&first, &folder_path).await?;
+    first
+        .call_as(
+            &Request::FolderRelease {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_release,
+        )
+        .await?;
     first.close();
     second.close();
     fixture.handle.shutdown().await;
@@ -1158,9 +1161,11 @@ async fn explicit_folder_claims_keep_each_clients_watch_and_release_independent(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let project_path = fixture.repo_path();
+    let project_path = repo.path().to_string_lossy().into_owned();
     let run_id = "loopback-idempotent-session";
 
     assert_eq!(
@@ -1187,18 +1192,28 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
     );
     assert_ne!(first?, second?, "only one concurrent start can spawn");
     assert!(run_status(&client, concurrent_id).await?.live);
-    stop_session(&client, concurrent_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (concurrent_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
 
     let other = tempfile::tempdir()?;
     let conflicting = client
-        .call(&Request::SessionStart {
-            run_id: run_id.to_owned(),
-            folder_path: other.path().to_string_lossy().into_owned(),
-            provider_id: "terminal".to_owned(),
-            resume_token: None,
-            cols: 80,
-            rows: 24,
-        })
+        .call_as(
+            &Request::SessionStart {
+                run_id: run_id.to_owned(),
+                folder_path: other.path().to_string_lossy().into_owned(),
+                provider_id: "terminal".to_owned(),
+                resume_token: None,
+                cols: 80,
+                rows: 24,
+            },
+            Reply::session_start,
+        )
         .await;
     assert!(matches!(
         conflicting,
@@ -1206,29 +1221,26 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
     ));
 
     let wrong_kind = client
-        .call(&Request::TasksStart {
-            run_id: run_id.to_owned(),
-            folder_path: project_path.clone(),
-            task_id: "unconfigured-task".to_owned(),
-            active_file_path: None,
-            cols: 80,
-            rows: 24,
-            attach_only: false,
-        })
+        .call_as(
+            &Request::TasksStart {
+                run_id: run_id.to_owned(),
+                folder_path: project_path.clone(),
+                task_id: "unconfigured-task".to_owned(),
+                active_file_path: None,
+                cols: 80,
+                rows: 24,
+                attach_only: false,
+            },
+            Reply::tasks_start,
+        )
         .await;
     assert!(matches!(
         wrong_kind,
         Err(RemoteError::Wire(WireError::InvalidArgument { .. }))
     ));
     assert!(run_status(&client, run_id).await?.live);
-    let (mut send, mut recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     write_raw_frame(&mut send, b"exit 7\n").await?;
     assert_eq!(
         wait_for_exit(&mut recv, &mut cursor, run_id).await?,
@@ -1242,8 +1254,22 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
         }
     );
 
-    stop_session(&client, run_id).await?;
-    stop_session(&client, run_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     assert_eq!(
         run_status(&client, run_id).await?,
         RunStatus {
@@ -1254,14 +1280,8 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
 
     // A canceled lease cannot operate on a new incarnation with the same ID.
     assert!(!start_terminal(&client, run_id, &project_path).await?);
-    let (mut fresh_send, mut fresh_recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut fresh_cursor = PtyCursor::default();
-    prepare_shell(&mut fresh_send, &mut fresh_recv, &mut fresh_cursor).await?;
+    let (mut fresh_send, mut fresh_recv, mut fresh_cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     let _ = write_raw_frame(&mut send, b"touch stale-incarnation-command\n").await;
     write_raw_frame(
         &mut fresh_send,
@@ -1275,12 +1295,15 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
         1,
     )
     .await?;
-    assert!(!fixture
-        .repo
-        .path()
-        .join("stale-incarnation-command")
-        .exists());
-    stop_session(&client, run_id).await?;
+    assert!(!repo.path().join("stale-incarnation-command").exists());
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
 
     client.close();
     fixture.handle.shutdown().await;
@@ -1289,15 +1312,17 @@ async fn session_start_status_and_stop_are_idempotent() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn restored_task_never_executes_unknown_run_and_reuses_existing_one() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
-    let folder = fixture.repo_path();
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
+    let folder = repo.path().to_string_lossy().into_owned();
     fs::write(
-        fixture.repo.path().join(".sworm/tasks.jsonc"),
-        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> task-counter; sleep 30","singleton":true}]}"#,
+        repo.path().join(".sworm/tasks.jsonc"),
+        once_task("printf x >> task-counter; sleep 30"),
     )?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-restored-task";
-    let counter = fixture.repo.path().join("task-counter");
+    let counter = repo.path().join("task-counter");
 
     assert!(matches!(
         start_task(&client, run_id, &folder, true).await,
@@ -1325,12 +1350,13 @@ async fn restored_task_never_executes_unknown_run_and_reuses_existing_one() -> R
     assert_eq!(fs::read(&counter)?, b"x", "restoration restarted task");
 
     client
-        .call(&Request::TasksStop {
-            run_id: run_id.into(),
-        })
-        .await?
-        .tasks_stop()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::TasksStop {
+                run_id: run_id.into(),
+            },
+            Reply::tasks_stop,
+        )
+        .await?;
     assert!(matches!(
         start_task(&client, run_id, &folder, true).await,
         Err(RemoteError::Wire(WireError::NotFound { .. }))
@@ -1352,82 +1378,32 @@ async fn restored_task_never_executes_unknown_run_and_reuses_existing_one() -> R
     .await
     .context("explicit restart did not execute task")?;
     client
-        .call(&Request::TasksStop {
-            run_id: run_id.into(),
-        })
-        .await?
-        .tasks_stop()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::TasksStop {
+                run_id: run_id.into(),
+            },
+            Reply::tasks_stop,
+        )
+        .await?;
     client.close();
     fixture.handle.shutdown().await;
     Ok(())
 }
 
-/// A task definition read blocks after opening the FIFO until release. The
-/// writer reports the open, not merely its attempt, so tests know the daemon
-/// reached its synchronous startup path before probing another RPC.
-struct StalledTaskFile {
-    path: PathBuf,
-    release: Option<mpsc::Sender<()>>,
-    writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-}
-
-impl StalledTaskFile {
-    fn new(path: PathBuf) -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
-        let status = Command::new("mkfifo").arg(&path).status()?;
-        if !status.success() {
-            bail!("mkfifo failed with {status}");
-        }
-        let (opened, reached) = tokio::sync::oneshot::channel();
-        let (release, resume) = mpsc::channel();
-        let writer_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            let mut fifo = OpenOptions::new().write(true).open(&writer_path)?;
-            let _ = opened.send(());
-            let _ = resume.recv();
-            fifo.write_all(br#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> task-counter; sleep 30","singleton":true}]}"#)?;
-            Ok(())
-        });
-        Ok((
-            Self {
-                path,
-                release: Some(release),
-                writer: Some(writer),
-            },
-            reached,
-        ))
-    }
-
-    fn unblock(&mut self) -> Result<()> {
-        self.release.take();
-        let writer = self.writer.take().expect("FIFO writer already joined");
-        writer.join().expect("FIFO writer panicked")?;
-        Ok(())
-    }
-}
-
-impl Drop for StalledTaskFile {
-    fn drop(&mut self) {
-        self.release.take();
-        if let Some(writer) = self.writer.take() {
-            // Linux FIFO RDWR opens without a peer. Unblock the writer even
-            // when an assertion fails before the daemon reaches its read.
-            let _ = OpenOptions::new().read(true).write(true).open(&self.path);
-            let _ = writer.join();
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()> {
     const MARKER: &[u8] = b"INDEPENDENT-PTY-4b29";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let first = fixture.paired_client().await?;
     let other = fixture.client().await?;
-    let folder = fixture.repo_path();
+    let folder = repo.path().to_string_lossy().into_owned();
     let run_id = "loopback-blocked-task-start";
-    let (mut stalled, reached) =
-        StalledTaskFile::new(fixture.repo.path().join(".sworm/tasks.jsonc"))?;
+    let (mut stalled, reached) = StalledTask::new(
+        repo.path().join(".sworm/tasks.jsonc"),
+        "printf x >> task-counter; sleep 30",
+    )?;
     let first_folder = folder.clone();
     let pending =
         tokio::spawn(async move { start_task(&first, run_id, &first_folder, false).await });
@@ -1441,14 +1417,7 @@ async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()>
     timeout(SHORT_TIMEOUT, start_terminal(&other, b, &folder))
         .await
         .context("unrelated start waited on blocked run")??;
-    let (mut send, mut recv) = other
-        .open_stream(Open::Pty {
-            run_id: b.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) = open_shell(&other, b, PtyCursor::default()).await?;
     write_frame(
         &mut send,
         &sworm_protocol::rpc::PtyUp::Resize { cols: 81, rows: 25 },
@@ -1456,10 +1425,18 @@ async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()>
     .await?;
     write_raw_frame(&mut send, b"printf '%s%s\\n' 'INDEPENDENT-PTY-' '4b29'\n").await?;
     read_until_occurrences(&mut recv, &mut cursor, MARKER, 1).await?;
-    timeout(SHORT_TIMEOUT, stop_session(&other, b))
-        .await
-        .context("unrelated stop waited on blocked run")??;
-    assert!(!fixture.repo.path().join("task-counter").exists());
+    timeout(
+        SHORT_TIMEOUT,
+        other.call_as(
+            &Request::SessionStop {
+                run_id: (b).to_owned(),
+            },
+            Reply::session_stop,
+        ),
+    )
+    .await
+    .context("unrelated stop waited on blocked run")??;
+    assert!(!repo.path().join("task-counter").exists());
 
     // Same-ID fresh requests must not spawn twice once A is released.
     let repeated = fixture.client().await?;
@@ -1470,7 +1447,7 @@ async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()>
     stalled.unblock()?;
     pending.await??;
     second.await??;
-    let counter = fixture.repo.path().join("task-counter");
+    let counter = repo.path().join("task-counter");
     timeout(SHORT_TIMEOUT, async {
         loop {
             if fs::read(&counter).is_ok_and(|bytes| bytes == b"x") {
@@ -1488,12 +1465,13 @@ async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()>
         "reattachment executed the task again"
     );
     other
-        .call(&Request::TasksStop {
-            run_id: run_id.into(),
-        })
-        .await?
-        .tasks_stop()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::TasksStop {
+                run_id: run_id.into(),
+            },
+            Reply::tasks_stop,
+        )
+        .await?;
     other.close();
     fixture.handle.shutdown().await;
     Ok(())
@@ -1501,13 +1479,17 @@ async fn stalled_start_does_not_block_unrelated_rpc_or_pty_input() -> Result<()>
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stop_during_stalled_start_invalidates_the_published_run() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let starter = fixture.paired_client().await?;
     let stopper = fixture.client().await?;
-    let folder = fixture.repo_path();
+    let folder = repo.path().to_string_lossy().into_owned();
     let run_id = "loopback-stalled-stop";
-    let (mut stalled, reached) =
-        StalledTaskFile::new(fixture.repo.path().join(".sworm/tasks.jsonc"))?;
+    let (mut stalled, reached) = StalledTask::new(
+        repo.path().join(".sworm/tasks.jsonc"),
+        "printf x >> task-counter; sleep 30",
+    )?;
     let started_folder = folder.clone();
     let pending =
         tokio::spawn(async move { start_task(&starter, run_id, &started_folder, false).await });
@@ -1527,7 +1509,14 @@ async fn stop_during_stalled_start_invalidates_the_published_run() -> Result<()>
     timeout(SHORT_TIMEOUT, start_terminal(&stopper, b, &folder))
         .await
         .context("unrelated start blocked behind pending stop")??;
-    stop_session(&stopper, b).await?;
+    stopper
+        .call_as(
+            &Request::SessionStop {
+                run_id: (b).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     stalled.unblock()?;
     pending.await??;
     timeout(SHORT_TIMEOUT, read_frame::<Response>(&mut stop_recv))
@@ -1552,19 +1541,15 @@ async fn stop_during_stalled_start_invalidates_the_published_run() -> Result<()>
 async fn pty_stream_replays_from_cursor_without_killing_run() -> Result<()> {
     const READY: &[u8] = b"REPLAY-READY-2f73a1";
     const AGAIN: &[u8] = b"REPLAY-AGAIN-c6840d";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-cursor-replay";
-    start_terminal(&client, run_id, &fixture.repo_path()).await?;
+    start_terminal(&client, run_id, &repo.path().to_string_lossy()).await?;
 
-    let (mut first_send, mut first_recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut first_send, &mut first_recv, &mut cursor).await?;
+    let (mut first_send, mut first_recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     write_raw_frame(
         &mut first_send,
         b"printf '%s%s\\n' 'REPLAY-READY-' '2f73a1'\n",
@@ -1592,7 +1577,14 @@ async fn pty_stream_replays_from_cursor_without_killing_run() -> Result<()> {
         "cursor replay repeated output already consumed"
     );
 
-    stop_session(&client, run_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -1601,20 +1593,16 @@ async fn pty_stream_replays_from_cursor_without_killing_run() -> Result<()> {
 async fn folder_release_and_disconnect_preserve_session() -> Result<()> {
     const BEFORE: &[u8] = b"PID-BEFORE-";
     const AFTER: &[u8] = b"FRESH-AFTER-7df621";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-folder-release-retention";
-    let folder_path = fixture.repo_path();
+    let folder_path = repo.path().to_string_lossy().into_owned();
     start_terminal(&client, run_id, &folder_path).await?;
 
-    let (mut send, mut recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     write_raw_frame(&mut send, b"printf 'PID-BEFORE-%s-END\\n' \"$$\"\n").await?;
     let recorded = read_until_occurrences(&mut recv, &mut cursor, b"-END", 1).await?;
     let pid: u32 = String::from_utf8_lossy(&recorded)
@@ -1626,7 +1614,14 @@ async fn folder_release_and_disconnect_preserve_session() -> Result<()> {
         .0
         .parse()?;
 
-    release_folder(&client, &folder_path).await?;
+    client
+        .call_as(
+            &Request::FolderRelease {
+                folder_path: folder_path.to_owned(),
+            },
+            Reply::folder_release,
+        )
+        .await?;
     client.close();
     wait_closed(&client).await;
     drop(send);
@@ -1654,7 +1649,14 @@ async fn folder_release_and_disconnect_preserve_session() -> Result<()> {
         !resumed.windows(BEFORE.len()).any(|part| part == BEFORE),
         "saved cursor replayed consumed PID marker"
     );
-    stop_session(&reconnected, run_id).await?;
+    reconnected
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -1662,19 +1664,15 @@ async fn folder_release_and_disconnect_preserve_session() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn completed_run_replays_from_disk_after_daemon_restart() -> Result<()> {
     const TAIL: &[u8] = b"TRANSCRIPT-TAIL-4be71c";
-    let mut fixture = Fixture::start(None).await?;
+    let mut fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-completed-transcript";
-    start_terminal(&client, run_id, &fixture.repo_path()).await?;
+    start_terminal(&client, run_id, &repo.path().to_string_lossy()).await?;
 
-    let (mut send, mut recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     write_raw_frame(
         &mut send,
         b"printf '%s%s\\n' 'TRANSCRIPT-TAIL-' '4be71c'; exit 7\n",
@@ -1711,7 +1709,14 @@ async fn completed_run_replays_from_disk_after_daemon_restart() -> Result<()> {
         Some(7)
     );
 
-    stop_session(&client, run_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     let (_send, mut recv) = client
         .open_stream(Open::Pty {
             run_id: run_id.to_owned(),
@@ -1733,19 +1738,15 @@ async fn completed_run_replays_from_disk_after_daemon_restart() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn pty_stream_reopen_replaces_previous_stream() -> Result<()> {
     const LIVE: &[u8] = b"REPLACEMENT-LIVE-d17b39";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-stream-replacement";
-    start_terminal(&client, run_id, &fixture.repo_path()).await?;
+    start_terminal(&client, run_id, &repo.path().to_string_lossy()).await?;
 
-    let (mut first_send, mut first_recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut first_send, &mut first_recv, &mut cursor).await?;
+    let (mut first_send, mut first_recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     let (mut replacement_send, mut replacement_recv) = client
         .open_stream(Open::Pty {
             run_id: run_id.to_owned(),
@@ -1763,10 +1764,17 @@ async fn pty_stream_reopen_replaces_previous_stream() -> Result<()> {
     )
     .await?;
     read_until_occurrences(&mut replacement_recv, &mut cursor, LIVE, 1).await?;
-    assert!(!fixture.repo.path().join("stale-stream-command").exists());
+    assert!(!repo.path().join("stale-stream-command").exists());
     assert!(run_status(&client, run_id).await?.live);
 
-    stop_session(&client, run_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -1775,24 +1783,17 @@ async fn pty_stream_reopen_replaces_previous_stream() -> Result<()> {
 async fn pty_stream_survives_quic_connection_drop() -> Result<()> {
     const BEFORE: &[u8] = b"DROP-BEFORE-f594c8";
     const AFTER: &[u8] = b"DROP-AFTER-0b7e26";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-connection-drop";
-    let trigger = fixture.repo.path().join("drop-trigger");
-    let status = Command::new("mkfifo").arg(&trigger).status()?;
-    if !status.success() {
-        bail!("mkfifo failed with {status}");
-    }
-    start_terminal(&client, run_id, &fixture.repo_path()).await?;
+    let trigger = repo.path().join("drop-trigger");
+    mkfifo(&trigger)?;
+    start_terminal(&client, run_id, &repo.path().to_string_lossy()).await?;
 
-    let (mut send, mut recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     write_raw_frame(
         &mut send,
         b"printf '%s%s\\n' 'DROP-BEFORE-' 'f594c8'; read _ < drop-trigger; printf '%s%s\\n' 'DROP-AFTER-' '0b7e26'\n",
@@ -1829,7 +1830,14 @@ async fn pty_stream_survives_quic_connection_drop() -> Result<()> {
     );
     drop(reconnected_send);
 
-    stop_session(&reconnected, run_id).await?;
+    reconnected
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -1838,22 +1846,26 @@ async fn pty_stream_survives_quic_connection_drop() -> Result<()> {
 async fn slow_client_recovers_twenty_mebibytes_with_contiguous_offsets() -> Result<()> {
     const OUTPUT_BYTES: u64 = 20 * 1024 * 1024;
     const DONE: &[u8] = b"SLOW-DONE-7f3c9a";
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
     let run_id = "loopback-slow-reader";
-    let project_path = fixture.repo_path();
+    let project_path = repo.path().to_string_lossy().into_owned();
     let (_events_send, mut events_recv) = client.open_stream(Open::Events).await?;
-    watch_root(&client, &project_path).await?;
+    client
+        .call_as(
+            &Request::FilesWatchDirs {
+                project_path: project_path.to_owned(),
+                dirs: vec![String::new()],
+            },
+            Reply::files_watch_dirs,
+        )
+        .await?;
     start_terminal(&client, run_id, &project_path).await?;
 
-    let (mut send, mut recv) = client
-        .open_stream(Open::Pty {
-            run_id: run_id.to_owned(),
-            cursor: PtyCursor::default(),
-        })
-        .await?;
-    let mut cursor = PtyCursor::default();
-    prepare_shell(&mut send, &mut recv, &mut cursor).await?;
+    let (mut send, mut recv, mut cursor) =
+        open_shell(&client, run_id, PtyCursor::default()).await?;
     let output_start = cursor.output_offset;
     write_raw_frame(
         &mut send,
@@ -1864,7 +1876,7 @@ async fn slow_client_recovers_twenty_mebibytes_with_contiguous_offsets() -> Resu
     wait_for_created_file(
         &mut events_recv,
         &project_path,
-        &fixture.repo.path().join("slow-produced"),
+        &repo.path().join("slow-produced"),
     )
     .await?;
     timeout(Duration::from_secs(30), async {
@@ -1915,54 +1927,21 @@ async fn slow_client_recovers_twenty_mebibytes_with_contiguous_offsets() -> Resu
     .context("slow reader did not self-heal")??;
 
     assert!(run_status(&client, run_id).await?.live);
-    stop_session(&client, run_id).await?;
+    client
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
-    Ok(())
-}
-
-/// A language server stand-in: it announces itself, then answers anything that
-/// looks like an `initialize` request. Shell builtins only — the child runs
-/// with a cleared environment.
-fn write_fake_lsp(dir: &Path) -> Result<PathBuf> {
-    let path = dir.join("fake-lsp.sh");
-    fs::write(
-        &path,
-        r#"#!/bin/sh
-say() {
-  printf 'Content-Length: %s\r\n\r\n%s' "${#1}" "$1"
-}
-say '{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"fake-lsp-started"}}'
-while IFS= read -r line; do
-  case "$line" in
-    *initialize*) say '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}' ;;
-  esac
-done
-"#,
-    )?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
-    Ok(path)
-}
-
-/// Rewrites the fixture's folder settings, keeping its terminal provider: the
-/// folder layer is also what pins `enabled`, so a developer's global settings
-/// cannot disable the fake server.
-fn enable_fake_lsp(repo: &Path, script: &Path) -> Result<()> {
-    fs::write(
-        repo.join(".sworm/settings.jsonc"),
-        format!(
-            r#"{{
-  "providers": {{ "terminal": {{ "enabled": true, "binary_path_override": "sh", "extra_args": [] }} }},
-  "lsp": {{ "servers": {{ "{FAKE_LSP_SERVER_ID}": {{ "enabled": true, "binary_path_override": "{}" }} }} }}
-}}"#,
-            script.display()
-        ),
-    )?;
     Ok(())
 }
 
 async fn open_fake_lsp(
     client: &RemoteClient,
-    fixture: &Fixture,
+    repo: &Path,
     session_id: &str,
 ) -> Result<(quinn::SendStream, quinn::RecvStream, u32)> {
     let (send, mut recv) = client
@@ -1978,15 +1957,16 @@ async fn open_fake_lsp(
     }
 
     client
-        .call(&Request::LspStart {
-            session_id: session_id.to_owned(),
-            folder_path: fixture.repo_path(),
-            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
-            root_path: fixture.repo_path(),
-        })
-        .await?
-        .lsp_start()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::LspStart {
+                session_id: session_id.to_owned(),
+                folder_path: repo.to_string_lossy().into_owned(),
+                server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+                root_path: repo.to_string_lossy().into_owned(),
+            },
+            Reply::lsp_start,
+        )
+        .await?;
 
     let pid = match next_lsp_event(&mut recv).await? {
         LspEvent::Started { pid, .. } => pid.context("started event carried no pid")?,
@@ -2034,12 +2014,14 @@ async fn wait_process_exited(pid: u32) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lsp_stream_forwards_events_and_kills_on_close() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let script = write_fake_lsp(fixture.repo.path())?;
-    enable_fake_lsp(fixture.repo.path(), &script)?;
 
-    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, "loopback-lsp").await?;
+    enable_fake_lsp(repo.path())?;
+
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, repo.path(), "loopback-lsp").await?;
     // The server speaks first: daemon -> desktop forwarding works.
     wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
 
@@ -2067,25 +2049,30 @@ async fn lsp_stream_forwards_events_and_kills_on_close() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_live_lsp_server_is_refused_by_name_not_by_message() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let script = write_fake_lsp(fixture.repo.path())?;
-    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    enable_fake_lsp(repo.path())?;
 
     let session_id = "loopback-lsp-restart";
-    let (send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    let (send, mut recv, pid) = open_fake_lsp(&client, repo.path(), session_id).await?;
     wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
 
     // A reloaded webview forgets its instances while their servers keep
     // running. The desktop replaces its own orphan and must leave every other
     // start failure alone, so the refusal has to be identifiable as itself.
     let refused = client
-        .call(&Request::LspStart {
-            session_id: session_id.to_owned(),
-            folder_path: fixture.repo_path(),
-            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
-            root_path: fixture.repo_path(),
-        })
+        .call_as(
+            &Request::LspStart {
+                session_id: session_id.to_owned(),
+                folder_path: repo.path().to_string_lossy().into_owned(),
+                server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+                root_path: repo.path().to_string_lossy().into_owned(),
+            },
+            Reply::lsp_start,
+        )
         .await;
     assert!(
         matches!(
@@ -2110,14 +2097,16 @@ async fn a_live_lsp_server_is_refused_by_name_not_by_message() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_drop_kills_lsp_and_keeps_pty_alive() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let script = write_fake_lsp(fixture.repo.path())?;
-    enable_fake_lsp(fixture.repo.path(), &script)?;
-    let run_id = "loopback-lsp-pty";
-    start_terminal(&client, run_id, &fixture.repo_path()).await?;
 
-    let (send, recv, pid) = open_fake_lsp(&client, &fixture, "loopback-lsp-drop").await?;
+    enable_fake_lsp(repo.path())?;
+    let run_id = "loopback-lsp-pty";
+    start_terminal(&client, run_id, &repo.path().to_string_lossy()).await?;
+
+    let (send, recv, pid) = open_fake_lsp(&client, repo.path(), "loopback-lsp-drop").await?;
 
     client.close();
     wait_closed(&client).await;
@@ -2133,7 +2122,14 @@ async fn connection_drop_kills_lsp_and_keeps_pty_alive() -> Result<()> {
         "disconnect killed the PTY run along with the LSP session"
     );
 
-    stop_session(&reconnected, run_id).await?;
+    reconnected
+        .call_as(
+            &Request::SessionStop {
+                run_id: (run_id).to_owned(),
+            },
+            Reply::session_stop,
+        )
+        .await?;
     fixture.handle.shutdown().await;
     Ok(())
 }
@@ -2163,13 +2159,15 @@ fn process_alive(pid: u32) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn duplicate_lsp_stream_is_refused_and_spares_the_live_session() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let script = write_fake_lsp(fixture.repo.path())?;
-    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    enable_fake_lsp(repo.path())?;
 
     let session_id = "loopback-lsp-duplicate";
-    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, repo.path(), session_id).await?;
     wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
 
     // The session id is leased, so a second stream for it is refused instead of
@@ -2210,21 +2208,26 @@ async fn duplicate_lsp_stream_is_refused_and_spares_the_live_session() -> Result
 
 #[tokio::test(flavor = "multi_thread")]
 async fn foreign_connection_cannot_start_or_stop_a_leased_lsp_session() -> Result<()> {
-    let fixture = Fixture::start(None).await?;
+    let fixture = Daemon::start(None).await?;
+    let repo = tempfile::tempdir()?;
+    init_repo(repo.path())?;
     let client = fixture.paired_client().await?;
-    let script = write_fake_lsp(fixture.repo.path())?;
-    enable_fake_lsp(fixture.repo.path(), &script)?;
+
+    enable_fake_lsp(repo.path())?;
 
     let session_id = "loopback-lsp-foreign";
-    let (mut send, mut recv, pid) = open_fake_lsp(&client, &fixture, session_id).await?;
+    let (mut send, mut recv, pid) = open_fake_lsp(&client, repo.path(), session_id).await?;
     wait_for_lsp_message(&mut recv, "fake-lsp-started").await?;
 
     // Paired, but holding no lease on this session id.
     let intruder = fixture.client().await?;
     let stopped = intruder
-        .call(&Request::LspStop {
-            session_id: session_id.to_owned(),
-        })
+        .call_as(
+            &Request::LspStop {
+                session_id: session_id.to_owned(),
+            },
+            Reply::lsp_stop,
+        )
         .await;
     assert!(
         matches!(
@@ -2234,12 +2237,15 @@ async fn foreign_connection_cannot_start_or_stop_a_leased_lsp_session() -> Resul
         "a foreign connection was allowed to stop the session: {stopped:?}"
     );
     let started = intruder
-        .call(&Request::LspStart {
-            session_id: session_id.to_owned(),
-            folder_path: fixture.repo_path(),
-            server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
-            root_path: fixture.repo_path(),
-        })
+        .call_as(
+            &Request::LspStart {
+                session_id: session_id.to_owned(),
+                folder_path: repo.path().to_string_lossy().into_owned(),
+                server_definition_id: FAKE_LSP_SERVER_ID.to_owned(),
+                root_path: repo.path().to_string_lossy().into_owned(),
+            },
+            Reply::lsp_start,
+        )
         .await;
     assert!(
         matches!(
@@ -2257,12 +2263,13 @@ async fn foreign_connection_cannot_start_or_stop_a_leased_lsp_session() -> Resul
 
     // The lease holder still owns the stop.
     client
-        .call(&Request::LspStop {
-            session_id: session_id.to_owned(),
-        })
-        .await?
-        .lsp_stop()
-        .map_err(RemoteError::Wire)?;
+        .call_as(
+            &Request::LspStop {
+                session_id: session_id.to_owned(),
+            },
+            Reply::lsp_stop,
+        )
+        .await?;
     wait_process_exited(pid).await?;
 
     intruder.close();

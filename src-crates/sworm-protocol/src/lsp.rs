@@ -18,7 +18,6 @@ pub struct LspServerStatus {
     pub enabled: bool,
     pub status: LspServerConnectionStatus,
     pub resolved_path: Option<String>,
-    pub runtime_resolved_path: Option<String>,
     pub message: Option<String>,
     pub install_hint: String,
     pub document_selectors: Vec<BuiltinDocumentSelector>,
@@ -50,7 +49,6 @@ pub enum LspEvent {
         session_id: String,
         pid: Option<u32>,
         resolved_path: Option<String>,
-        runtime_resolved_path: Option<String>,
     },
     Message {
         session_id: String,
@@ -69,16 +67,4 @@ pub enum LspEvent {
         session_id: String,
         message: String,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SaveLspServerConfigInput {
-    pub server_definition_id: String,
-    pub enabled: bool,
-    pub binary_path_override: Option<String>,
-    pub runtime_path_override: Option<String>,
-    pub runtime_args: Vec<String>,
-    pub extra_args: Vec<String>,
-    pub trace: crate::settings::LspTraceLevel,
-    pub settings: Option<Value>,
 }

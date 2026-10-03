@@ -14,20 +14,15 @@ use schemars::schema_for;
 use serde_json::json;
 use sworm_protocol::config_schemas::ConfigSchemaEntry;
 
-use crate::services::builtins::BuiltinCatalogService;
-use sworm_protocol::{
-    server_config::ServerConfig,
-    settings::{settings_layer_schema, SettingsLayerKind},
-    task::TasksFile,
+use crate::services::{
+    builtins::BuiltinCatalogService, settings_resolution::settings_layer_schema,
 };
+use sworm_protocol::{server_config::ServerConfig, settings::SettingsLayerKind, task::TasksFile};
 
-pub fn all_config_schemas() -> Result<Vec<ConfigSchemaEntry>, String> {
-    let lsp_server_ids = BuiltinCatalogService::list_server_definitions()?
-        .into_iter()
-        .map(|server| server.server_definition_id)
-        .collect::<Vec<_>>();
+pub fn all_config_schemas() -> Vec<ConfigSchemaEntry> {
+    let lsp_server_ids = BuiltinCatalogService::server_definition_ids();
 
-    Ok(vec![
+    vec![
         ConfigSchemaEntry {
             id: "sworm.tasks".into(),
             file_match: vec![
@@ -57,7 +52,7 @@ pub fn all_config_schemas() -> Result<Vec<ConfigSchemaEntry>, String> {
             schema: serde_json::to_value(schema_for!(ServerConfig))
                 .expect("server config schema serializes"),
         },
-    ])
+    ]
 }
 
 fn shortcuts_file_schema() -> serde_json::Value {
@@ -109,7 +104,7 @@ mod tests {
 
     #[test]
     fn registers_settings_jsonc_schemas() {
-        let schemas = all_config_schemas().expect("schemas build");
+        let schemas = all_config_schemas();
         let folder_settings = schemas
             .iter()
             .find(|entry| entry.id == "sworm.settings.folder")
@@ -127,7 +122,7 @@ mod tests {
 
     #[test]
     fn registers_shortcuts_jsonc_schema() {
-        let schemas = all_config_schemas().expect("schemas build");
+        let schemas = all_config_schemas();
         let shortcuts = schemas
             .iter()
             .find(|entry| entry.id == "sworm.shortcuts")
@@ -139,7 +134,7 @@ mod tests {
 
     #[test]
     fn registers_tasks_jsonc_schema() {
-        let schemas = all_config_schemas().expect("schemas build");
+        let schemas = all_config_schemas();
         let tasks = schemas
             .iter()
             .find(|entry| entry.id == "sworm.tasks")
@@ -191,7 +186,6 @@ mod tests {
         .to_string();
 
         assert!(rendered.contains("binary_path_override"));
-        assert!(rendered.contains("runtime_path_override"));
         assert!(rendered.contains("\"string\",\"null\""));
         assert!(rendered.contains("font_size"));
         assert!(!rendered.contains("\"integer\",\"null\""));

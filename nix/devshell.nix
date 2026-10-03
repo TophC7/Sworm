@@ -47,6 +47,10 @@ pkgs.mkShell {
   LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibraries;
   LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
+  # Host Mesa may require a newer glibc than this shell's WebKitGTK.
+  __EGL_VENDOR_LIBRARY_FILENAMES = "${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json";
+  LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+
   shellHook = ''
     export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules"
     export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:${pkgs.shared-mime-info}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"

@@ -678,62 +678,30 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
             }
         }) => result,
     };
-    let open = match first {
+    let open: Result<Open, (u16, &'static str)> = match first {
         Ok(Some(Ok(Message::Binary(body)))) if body.len() <= MAX_REQUEST_FRAME_BYTES => {
-            serde_json::from_slice::<Open>(&body)
+            match serde_json::from_slice::<Open>(&body) {
+                Ok(Open::Rpc(_) | Open::WorkbenchRpc { .. } | Open::Events) => {
+                    Err((close_code::POLICY, "unsupported stream open"))
+                }
+                Ok(open) => Ok(open),
+                Err(_) => Err((close_code::POLICY, "invalid stream open")),
+            }
         }
-        Ok(Some(Ok(Message::Binary(_)))) => {
-            let _ = timeout(
-                IO_TIMEOUT,
-                socket.send(close(close_code::SIZE, "stream open too large")),
-            )
-            .await;
-            return;
-        }
+        Ok(Some(Ok(Message::Binary(_)))) => Err((close_code::SIZE, "stream open too large")),
         Ok(Some(Ok(Message::Text(text)))) if text.len() > MAX_REQUEST_FRAME_BYTES => {
-            let _ = timeout(
-                IO_TIMEOUT,
-                socket.send(close(close_code::SIZE, "stream open too large")),
-            )
-            .await;
-            return;
+            Err((close_code::SIZE, "stream open too large"))
         }
-        Ok(Some(Err(_))) => {
-            let _ = timeout(
-                IO_TIMEOUT,
-                socket.send(close(close_code::SIZE, "stream frame too large")),
-            )
-            .await;
-            return;
-        }
-        _ => {
-            let _ = timeout(
-                IO_TIMEOUT,
-                socket.send(close(close_code::POLICY, "binary stream open required")),
-            )
-            .await;
+        Ok(Some(Err(_))) => Err((close_code::SIZE, "stream frame too large")),
+        _ => Err((close_code::POLICY, "binary stream open required")),
+    };
+    let open = match open {
+        Ok(open) => open,
+        Err((code, reason)) => {
+            let _ = timeout(IO_TIMEOUT, socket.send(close(code, reason))).await;
             return;
         }
     };
-    let Ok(open) = open else {
-        let _ = timeout(
-            IO_TIMEOUT,
-            socket.send(close(close_code::POLICY, "invalid stream open")),
-        )
-        .await;
-        return;
-    };
-    if matches!(
-        open,
-        Open::Rpc(_) | Open::WorkbenchRpc { .. } | Open::Events
-    ) {
-        let _ = timeout(
-            IO_TIMEOUT,
-            socket.send(close(close_code::POLICY, "unsupported stream open")),
-        )
-        .await;
-        return;
-    }
     // Authority may have been retired while the open frame was in flight.
     if *stop.borrow() || !control.lease.admitted() {
         return;
@@ -815,18 +783,12 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::atomic::AtomicBool, task::Poll};
+    use crate::test_support::pending;
+    use std::sync::atomic::AtomicBool;
     use sworm_protocol::rpc::Reply;
 
     fn workbench_control() -> Arc<Control> {
         Control::new("a".into(), "a".into(), ControlLease::new())
-    }
-
-    async fn pending(future: &mut (impl Future + Unpin)) -> bool {
-        std::future::poll_fn(|cx| {
-            Poll::Ready(std::pin::Pin::new(&mut *future).poll(cx).is_pending())
-        })
-        .await
     }
 
     #[tokio::test]

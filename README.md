@@ -158,6 +158,16 @@ nix run .
 
 Sworm uses [Tauri v2](https://tauri.app/) and Rust for the desktop runtime, with the system Git CLI and SQLite. The interface is built with Svelte 5, SvelteKit, and Tailwind CSS v4; editing uses Monaco and Shiki, and terminals use xterm.js. Nix defines the development environment and packaging.
 
+Backend ownership:
+
+- `src-crates/sworm-protocol`: shared models and the operation table that generates daemon dispatch, desktop routing, and forwarding commands.
+- `src-crates/sworm-core`: synchronous Host operations and services for settings, folder environments, Git, files, issues, and runs.
+- `src-crates/sworm-remote`: identities, QUIC connections, transport policy, and wire framing.
+- `src-crates/sworm-server`: daemon authorization, workbench ownership, and QUIC/WebSocket adapters.
+- `src-tauri/src`: desktop commands, routing, window coordination, and desktop event delivery.
+
+Desktop and daemon adapters move blocking Host operations off the async runtime. Settings mutations share one locked atomic-write path; notification failures after a committed write are logged rather than reported as failed mutations.
+
 ## Feedback
 
 If you try Sworm, I'd like to hear what works for you and what gets in the way. [Open an issue](https://github.com/tophc7/Sworm/issues) with bugs, ideas, or how you use coding agents.

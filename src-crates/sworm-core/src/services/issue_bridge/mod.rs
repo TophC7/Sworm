@@ -22,7 +22,6 @@ use crate::events::{EventSink, HostEvent};
 use crate::services::issues::IssueService;
 use parking_lot::Mutex;
 use protocol::PROTOCOL_VERSION;
-use serde::Serialize;
 use server::run_bridge;
 use socket::{create_private_dir, socket_path_for};
 use std::collections::HashMap;
@@ -38,8 +37,7 @@ use std::os::unix::fs::PermissionsExt;
 /// Per-project bridge coordinates injected into agent child processes
 /// as `SWORM_ISSUES_*` environment variables. Returned by
 /// [`IssueBridgeService::ensure_running`].
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct IssueBridgeInfo {
     pub project_path: String,
     pub socket_path: String,

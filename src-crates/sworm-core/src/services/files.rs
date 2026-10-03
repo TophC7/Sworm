@@ -123,7 +123,7 @@ impl FileReadStream {
 
     /// Content hash, meaningful only after `read_chunk` successfully returns EOF.
     pub fn version(&self) -> String {
-        hex(self.hash.clone().finalize())
+        format!("{:x}", self.hash.clone().finalize())
     }
 }
 
@@ -134,33 +134,12 @@ impl FileService {
         }
     }
 
-    /// Reject paths that could escape the project root:
-    /// - `..` components (traversal)
-    /// - absolute paths (Unix RootDir, Windows Prefix) — `Path::join` discards
-    ///   its base when given an absolute path, so these would bypass the root
-    ///   and let callers read/write anywhere on disk.
-    pub fn validate_path(&self, file_path: &str) -> Result<(), ApiError> {
-        let has_escape = Path::new(file_path).components().any(|c| {
-            matches!(
-                c,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        });
-        if has_escape {
-            return Err(ApiError::InvalidArgument(format!(
-                "Invalid file path: {}",
-                file_path
-            )));
-        }
-        Ok(())
-    }
-
     pub fn stat(
         &self,
         project_path: &Path,
         file_path: &str,
     ) -> Result<sworm_protocol::files::FileStat, ApiError> {
-        self.validate_path(file_path)?;
+        validate_path(file_path)?;
         let metadata = std::fs::metadata(project_path.join(file_path))
             .map_err(|error| ApiError::Io(format!("Failed to stat {file_path}: {error}")))?;
         Ok(sworm_protocol::files::FileStat {
@@ -180,7 +159,7 @@ impl FileService {
         version: &str,
     ) -> Result<FileReadStream, ApiError> {
         use sworm_protocol::rpc::MAX_STREAM_FILE_BYTES;
-        self.validate_path(file_path)?;
+        validate_path(file_path)?;
         let path = project_path.join(file_path);
         let (file, metadata) = Self::open_regular(&path, file_path)?;
         if metadata.len() > MAX_STREAM_FILE_BYTES as u64 {
@@ -209,7 +188,7 @@ impl FileService {
     pub fn read(&self, project_path: &Path, file_path: &str) -> Result<FileContent, ApiError> {
         use sworm_protocol::rpc::MAX_WHOLE_FILE_BYTES;
         let limit = MAX_WHOLE_FILE_BYTES as u64;
-        self.validate_path(file_path)?;
+        validate_path(file_path)?;
         let abs = project_path.join(file_path);
         let (file, metadata) = Self::open_regular(&abs, file_path)?;
         if metadata.len() > limit {
@@ -280,7 +259,7 @@ impl FileService {
         let mut hasher = Sha256::new();
         std::io::copy(&mut file, &mut hasher)
             .map_err(|error| ApiError::Io(format!("Failed to read {file_path}: {error}")))?;
-        Ok(Some(hex(hasher.finalize())))
+        Ok(Some(format!("{:x}", hasher.finalize())))
     }
 
     /// Write content to a file inside a project, returning the version of the
@@ -300,7 +279,7 @@ impl FileService {
         content: &str,
         expected_version: Option<&str>,
     ) -> Result<String, ApiError> {
-        self.validate_path(file_path)?;
+        validate_path(file_path)?;
         let abs = project_path.join(file_path);
         if let Some(expected) = expected_version {
             match Self::current_version(&abs, file_path)? {
@@ -324,7 +303,7 @@ impl FileService {
 
     /// Create a directory (and any missing parents) within a project.
     pub fn create_dir(&self, project_path: &Path, dir_path: &str) -> Result<(), ApiError> {
-        self.validate_path(dir_path)?;
+        validate_path(dir_path)?;
         let abs = project_path.join(dir_path);
         if abs.exists() {
             return Err(ApiError::InvalidArgument(format!(
@@ -343,8 +322,8 @@ impl FileService {
         old_path: &str,
         new_path: &str,
     ) -> Result<(), ApiError> {
-        self.validate_path(old_path)?;
-        self.validate_path(new_path)?;
+        validate_path(old_path)?;
+        validate_path(new_path)?;
         let abs_old = project_path.join(old_path);
         let abs_new = project_path.join(new_path);
         if !abs_old.exists() {
@@ -375,38 +354,31 @@ impl FileService {
     pub fn paste(
         &self,
         project_path: &Path,
-        target_dir: &str,
+        target: &str,
         op: &str,
         sources: &[String],
         collision_policy: &str,
         rename_map: &HashMap<String, String>,
     ) -> Result<Vec<FilePasteMapping>, ApiError> {
-        if op != "copy" && op != "cut" {
-            return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op)));
-        }
-        if !matches!(
-            collision_policy,
-            "auto_rename" | "replace" | "skip" | "rename" | "error"
-        ) {
-            return Err(ApiError::InvalidArgument(format!(
-                "Invalid collision policy: {}",
-                collision_policy
-            )));
-        }
-        self.validate_path(target_dir)?;
-        let abs_target_dir = project_path.join(target_dir);
-        if !abs_target_dir.exists() {
-            return Err(ApiError::NotFound(format!(
-                "Target directory not found: {}",
-                target_dir
-            )));
-        }
-        if !abs_target_dir.is_dir() {
-            return Err(ApiError::InvalidArgument(format!(
-                "Target is not a directory: {}",
-                target_dir
-            )));
-        }
+        let op = match op {
+            "copy" => PasteOp::Copy,
+            "cut" => PasteOp::Cut,
+            _ => return Err(ApiError::InvalidArgument(format!("Invalid op: {}", op))),
+        };
+        let collision_policy = match collision_policy {
+            "auto_rename" => CollisionPolicy::AutoRename,
+            "replace" => CollisionPolicy::Replace,
+            "skip" => CollisionPolicy::Skip,
+            "rename" => CollisionPolicy::Rename,
+            "error" => CollisionPolicy::Error,
+            _ => {
+                return Err(ApiError::InvalidArgument(format!(
+                    "Invalid collision policy: {}",
+                    collision_policy
+                )))
+            }
+        };
+        let abs_target_dir = target_dir(project_path, target)?;
 
         let mut mappings = Vec::new();
 
@@ -419,7 +391,7 @@ impl FileService {
             // For explicit rename resolution, allow the caller to choose
             // a different basename for this source.
             let mut desired_dest = abs_target_dir.join(name);
-            if collision_policy == "rename" {
+            if collision_policy == CollisionPolicy::Rename {
                 if let Some(rename_to) = rename_map.get(source) {
                     validate_basename(rename_to)?;
                     desired_dest = abs_target_dir.join(rename_to);
@@ -427,7 +399,6 @@ impl FileService {
             }
 
             let dest_path = resolve_destination(
-                project_path,
                 src_path,
                 source,
                 &desired_dest,
@@ -438,19 +409,19 @@ impl FileService {
                 continue;
             };
 
-            if op == "cut" && src_path == dest_path {
+            if op == PasteOp::Cut && src_path == dest_path {
                 continue;
             }
 
-            if op == "cut" {
+            if op == PasteOp::Cut {
                 // Try fast rename; fall back to copy+delete if it fails
                 // (e.g. cross-filesystem moves).
                 if std::fs::rename(src_path, &dest_path).is_err() {
-                    copy_recursive(src_path, &dest_path)?;
+                    copy_recursive_bounded(src_path, &dest_path, 0)?;
                     remove_recursive(src_path)?;
                 }
             } else {
-                copy_recursive(src_path, &dest_path)?;
+                copy_recursive_bounded(src_path, &dest_path, 0)?;
             }
 
             // Compute project-relative path for the created item
@@ -470,23 +441,10 @@ impl FileService {
     pub fn paste_collisions(
         &self,
         project_path: &Path,
-        target_dir: &str,
+        target: &str,
         sources: &[String],
     ) -> Result<Vec<FilePasteCollision>, ApiError> {
-        self.validate_path(target_dir)?;
-        let abs_target_dir = project_path.join(target_dir);
-        if !abs_target_dir.exists() {
-            return Err(ApiError::NotFound(format!(
-                "Target directory not found: {}",
-                target_dir
-            )));
-        }
-        if !abs_target_dir.is_dir() {
-            return Err(ApiError::InvalidArgument(format!(
-                "Target is not a directory: {}",
-                target_dir
-            )));
-        }
+        let abs_target_dir = target_dir(project_path, target)?;
 
         let mut collisions = Vec::new();
         for source in sources {
@@ -514,7 +472,7 @@ impl FileService {
 
     /// Delete a file within a project.
     pub fn delete(&self, project_path: &Path, file_path: &str) -> Result<(), ApiError> {
-        self.validate_path(file_path)?;
+        validate_path(file_path)?;
         let abs = project_path.join(file_path);
         if !abs.exists() {
             return Err(ApiError::NotFound(format!("File not found: {}", file_path)));
@@ -543,7 +501,7 @@ impl FileService {
         show_hidden: bool,
         generation: u64,
     ) -> Result<Vec<DirEntry>, ApiError> {
-        self.validate_path(dir_path)?;
+        validate_path(dir_path)?;
         let filter = self.filter(project_path, generation)?;
         read_dir_with_filter(project_path, dir_path, show_hidden, &filter)
     }
@@ -609,19 +567,7 @@ fn file_content(bytes: Vec<u8>, file_path: &str) -> Result<FileContent, ApiError
 
 /// Hex SHA-256 of a file's bytes.
 fn version_of(bytes: &[u8]) -> String {
-    hex(Sha256::digest(bytes))
-}
-
-/// Lowercase hex of a finished digest.
-fn hex(digest: impl AsRef<[u8]>) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = digest.as_ref();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Entry survivors of one directory, before compaction.
@@ -865,12 +811,60 @@ fn list_paths_with_filter(
 
 // ── Paste helpers ─────────────────────────────────────────────────
 
+/// Reject lexical paths that can escape the project root.
+fn validate_path(file_path: &str) -> Result<(), ApiError> {
+    if Path::new(file_path).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(ApiError::InvalidArgument(format!(
+            "Invalid file path: {}",
+            file_path
+        )));
+    }
+    Ok(())
+}
+
+fn target_dir(project: &Path, target: &str) -> Result<PathBuf, ApiError> {
+    validate_path(target)?;
+    let path = project.join(target);
+    if !path.exists() {
+        return Err(ApiError::NotFound(format!(
+            "Target directory not found: {}",
+            target
+        )));
+    }
+    if !path.is_dir() {
+        return Err(ApiError::InvalidArgument(format!(
+            "Target is not a directory: {}",
+            target
+        )));
+    }
+    Ok(path)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PasteOp {
+    Copy,
+    Cut,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollisionPolicy {
+    AutoRename,
+    Replace,
+    Skip,
+    Rename,
+    Error,
+}
+
 fn resolve_destination(
-    project_path: &Path,
     src_path: &Path,
     source_key: &str,
     desired_dest: &Path,
-    collision_policy: &str,
+    collision_policy: CollisionPolicy,
     rename_map: &HashMap<String, String>,
 ) -> Result<Option<PathBuf>, ApiError> {
     if !desired_dest.exists() {
@@ -878,43 +872,30 @@ fn resolve_destination(
     }
 
     match collision_policy {
-        "auto_rename" => Ok(Some(unique_path(desired_dest))),
-        "replace" => {
+        CollisionPolicy::AutoRename => Ok(Some(unique_path(desired_dest))),
+        CollisionPolicy::Replace => {
             if desired_dest == src_path {
                 return Ok(Some(desired_dest.to_path_buf()));
             }
             remove_recursive(desired_dest)?;
             Ok(Some(desired_dest.to_path_buf()))
         }
-        "skip" => Ok(None),
-        "rename" => {
-            let rename_to = rename_map.get(source_key).ok_or_else(|| {
-                ApiError::InvalidArgument(format!(
+        CollisionPolicy::Skip => Ok(None),
+        CollisionPolicy::Rename => {
+            if !rename_map.contains_key(source_key) {
+                return Err(ApiError::InvalidArgument(format!(
                     "Rename policy requires rename_map entry for source: {}",
                     source_key
-                ))
-            })?;
-            validate_basename(rename_to)?;
-            let parent = desired_dest.parent().unwrap_or(project_path);
-            let candidate = parent.join(rename_to);
-            if candidate == src_path {
-                return Ok(Some(candidate));
-            }
-            if candidate.exists() {
-                return Err(ApiError::InvalidArgument(format!(
-                    "Destination already exists: {}",
-                    candidate.display()
                 )));
             }
-            Ok(Some(candidate))
+            Err(ApiError::InvalidArgument(format!(
+                "Destination already exists: {}",
+                desired_dest.display()
+            )))
         }
-        "error" => Err(ApiError::InvalidArgument(format!(
+        CollisionPolicy::Error => Err(ApiError::InvalidArgument(format!(
             "Destination already exists: {}",
             desired_dest.display()
-        ))),
-        other => Err(ApiError::InvalidArgument(format!(
-            "Invalid collision policy: {}",
-            other
         ))),
     }
 }
@@ -936,9 +917,6 @@ fn validate_basename(value: &str) -> Result<(), ApiError> {
 
 /// Return a non-colliding path by appending " (copy)", " (copy 2)", etc.
 fn unique_path(desired: &Path) -> std::path::PathBuf {
-    if !desired.exists() {
-        return desired.to_path_buf();
-    }
     let parent = desired.parent().unwrap_or_else(|| Path::new(""));
     let stem = desired
         .file_stem()
@@ -970,10 +948,6 @@ fn unique_path(desired: &Path) -> std::path::PathBuf {
 
 /// Recursively copy a file or directory. Capped at `MAX_DEPTH` to prevent
 /// runaway recursion on symlink loops or pathological bind mounts.
-fn copy_recursive(src: &Path, dest: &Path) -> Result<(), ApiError> {
-    copy_recursive_bounded(src, dest, 0)
-}
-
 fn copy_recursive_bounded(src: &Path, dest: &Path, depth: usize) -> Result<(), ApiError> {
     if depth > MAX_DEPTH {
         return Err(ApiError::Io(format!(
@@ -1059,6 +1033,35 @@ mod tests {
 
     fn names(entries: &[DirEntry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn paste_rename_never_overwrites_existing_destination() {
+        let dir = unique_test_dir("paste-rename");
+        let source = dir.join("source.txt").to_string_lossy().into_owned();
+        std::fs::write(&source, "source content").unwrap();
+        std::fs::write(dir.join("other.txt"), "other content").unwrap();
+        let service = FileService::new();
+        for name in ["source.txt", "other.txt"] {
+            let rename_map = HashMap::from([(source.clone(), name.to_string())]);
+            assert!(matches!(
+                service.paste(
+                    &dir,
+                    "",
+                    "copy",
+                    std::slice::from_ref(&source),
+                    "rename",
+                    &rename_map
+                ),
+                Err(ApiError::InvalidArgument(_))
+            ));
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "source content");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("other.txt")).unwrap(),
+                "other content"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

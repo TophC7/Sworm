@@ -78,8 +78,6 @@ pub struct StashEntry {
     pub files: Vec<CommitFileChange>,
 }
 
-pub const GIT_CHANGED_EVENT: &str = "git-changed";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GitChangeScope {

@@ -302,10 +302,7 @@ fn closing() -> WireError {
 }
 
 fn load(conn: &rusqlite::Connection) -> Result<Vec<WorkbenchRecord>, WireError> {
-    let Some(raw) = AppStateKvService::new()
-        .get(conn, MANIFEST_KEY)
-        .map_err(database)?
-    else {
+    let Some(raw) = AppStateKvService::get(conn, MANIFEST_KEY).map_err(database)? else {
         return Ok(Vec::new());
     };
     let records: Vec<WorkbenchRecord> = serde_json::from_str(&raw)
@@ -333,9 +330,7 @@ fn load(conn: &rusqlite::Connection) -> Result<Vec<WorkbenchRecord>, WireError> 
 
 fn store(conn: &rusqlite::Connection, records: &[WorkbenchRecord]) -> Result<(), WireError> {
     let raw = serde_json::to_string(records).map_err(database)?;
-    AppStateKvService::new()
-        .put(conn, MANIFEST_KEY, &raw)
-        .map_err(database)
+    AppStateKvService::put(conn, MANIFEST_KEY, &raw).map_err(database)
 }
 
 /// One writer transaction; dropping it on error rolls every write back.
@@ -345,7 +340,7 @@ fn transaction<T>(
 ) -> Result<T, WireError> {
     let db = host.db.write();
     let transaction = db.conn().unchecked_transaction().map_err(database)?;
-    let value = work(&*transaction)?;
+    let value = work(&transaction)?;
     transaction.commit().map_err(database)?;
     Ok(value)
 }
@@ -372,9 +367,7 @@ fn not_found(id: &str) -> WireError {
 fn delete(conn: &rusqlite::Connection, id: &str) -> Result<(), WireError> {
     let mut records = load(conn)?;
     records.retain(|record| record.id != id);
-    AppStateKvService::new()
-        .delete(conn, &snapshot_key(id))
-        .map_err(database)?;
+    AppStateKvService::delete(conn, &snapshot_key(id)).map_err(database)?;
     store(conn, &records)
 }
 
@@ -475,12 +468,10 @@ pub(crate) async fn list(
 ) -> Result<Vec<WorkbenchInfo>, WireError> {
     let (records, mut running) = blocking(host, |host| {
         let db = host.db.read();
-        let kv = AppStateKvService::new();
         let records = load(db.conn())?
             .into_iter()
             .map(|record| {
-                let snapshot = kv
-                    .get(db.conn(), &snapshot_key(&record.id))
+                let snapshot = AppStateKvService::get(db.conn(), &snapshot_key(&record.id))
                     .map_err(database)?;
                 Ok((record, snapshot.as_deref().map(folders).unwrap_or_default()))
             })
@@ -516,8 +507,7 @@ async fn lookup(host: &Arc<Host>, id: &str) -> Result<Option<WorkbenchRecord>, W
 pub(crate) async fn snapshot(host: &Arc<Host>, id: &str) -> Result<String, WireError> {
     let id = id.to_owned();
     blocking(host, move |host| {
-        AppStateKvService::new()
-            .get(host.db.read().conn(), &snapshot_key(&id))
+        AppStateKvService::get(host.db.read().conn(), &snapshot_key(&id))
             .map_err(database)?
             .ok_or_else(|| not_found(&id))
     })
@@ -543,9 +533,7 @@ pub(crate) async fn put_snapshot(
                 .iter_mut()
                 .find(|record| record.id == id)
                 .ok_or_else(|| not_found(&id))?;
-            AppStateKvService::new()
-                .put(conn, &snapshot_key(&id), &value_json)
-                .map_err(database)?;
+            AppStateKvService::put(conn, &snapshot_key(&id), &value_json).map_err(database)?;
             record.last_seen_at = now();
             store(conn, &records)
         })
@@ -567,8 +555,7 @@ fn commit_attach(
         let index = match records.iter().position(|record| record.id == id) {
             Some(index) => index,
             None => {
-                AppStateKvService::new()
-                    .put(conn, &snapshot_key(id), EMPTY_SNAPSHOT)
+                AppStateKvService::put(conn, &snapshot_key(id), EMPTY_SNAPSHOT)
                     .map_err(database)?;
                 records.push(WorkbenchRecord {
                     id: id.to_owned(),
@@ -743,8 +730,7 @@ pub(crate) async fn detach(
                         return Ok(None);
                     };
                     let empty = !rebound
-                        && AppStateKvService::new()
-                            .get(conn, &snapshot_key(&detached))
+                        && AppStateKvService::get(conn, &snapshot_key(&detached))
                             .map_err(database)?
                             .as_deref()
                             .is_some_and(tabless)
@@ -919,21 +905,9 @@ mod tests {
     // other concurrently running unit tests.
     #[test]
     fn close_failures_keep_the_workbench_fenced() {
-        if std::env::var_os("SWORM_WORKBENCH_CLOSE_CHILD").is_none() {
-            let home = tempfile::tempdir().unwrap();
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("--exact")
-                .arg("workbenches::tests::close_failures_keep_the_workbench_fenced")
-                .arg("--nocapture")
-                .env("SWORM_WORKBENCH_CLOSE_CHILD", "1")
-                .env("HOME", home.path())
-                .env("XDG_CONFIG_HOME", home.path().join("config"))
-                .env("XDG_DATA_HOME", home.path().join("data"))
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .status()
-                .unwrap();
-            assert!(status.success(), "isolated workbench close test failed");
+        if !crate::test_support::isolated(
+            "workbenches::tests::close_failures_keep_the_workbench_fenced",
+        ) {
             return;
         }
         let scratch = tempfile::tempdir().unwrap();
@@ -966,11 +940,7 @@ mod tests {
                 ));
                 teardown.await.unwrap();
                 assert!(is_registered(&host, &a).await.unwrap());
-                assert!(host
-                    .app_state_get(snapshot_key(&a))
-                    .await
-                    .unwrap()
-                    .is_some());
+                assert!(host.app_state_get(snapshot_key(&a)).unwrap().is_some());
                 assert_eq!(
                     attach(
                         &host,
@@ -992,11 +962,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
                 assert!(!is_registered(&host, &a).await.unwrap());
-                assert!(host
-                    .app_state_get(snapshot_key(&a))
-                    .await
-                    .unwrap()
-                    .is_none());
+                assert!(host.app_state_get(snapshot_key(&a)).unwrap().is_none());
                 close(&host, &context, a.clone(), None).await.unwrap();
                 close(&host, &context, "never-created".to_owned(), None)
                     .await
@@ -1013,11 +979,7 @@ mod tests {
                 assert_ne!(recreated.owner, first_owner, "closed owner was reused");
                 disconnect(&host, &context, &a, token, &control).await;
                 assert!(!is_registered(&host, &a).await.unwrap());
-                assert!(host
-                    .app_state_get(snapshot_key(&a))
-                    .await
-                    .unwrap()
-                    .is_none());
+                assert!(host.app_state_get(snapshot_key(&a)).unwrap().is_none());
                 assert!(
                     context.workbenches.slots.lock().is_empty(),
                     "pruned workbench kept a slot"

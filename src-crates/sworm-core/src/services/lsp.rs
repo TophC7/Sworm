@@ -1,8 +1,6 @@
 use crate::errors::ApiError;
 use crate::events::EventSink;
 use crate::services::builtins::LoadedBuiltinLspServerDefinition;
-use crate::services::env::EnvironmentService;
-use crate::services::nix::NixService;
 use sworm_protocol::lsp::{
     LspEvent, LspServerConnectionStatus, LspServerStatus, LspTransportTraceDirection,
 };
@@ -10,7 +8,7 @@ use sworm_protocol::settings::{LspServerConfigRecord, LspTraceLevel};
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,38 +21,11 @@ const LSP_MAX_HEADER_BYTES: usize = 64 * 1024;
 const LSP_MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
-pub struct ProjectLspEnvironment {
-    pub merged_path: String,
-    pub child_env: HashMap<String, String>,
-}
-
-impl ProjectLspEnvironment {
-    pub fn from_host(env: &EnvironmentService) -> Self {
-        Self {
-            merged_path: env.merged_path.clone(),
-            child_env: env.child_env.clone(),
-        }
-    }
-
-    pub fn from_nix(env: &EnvironmentService, nix_env: Option<&HashMap<String, String>>) -> Self {
-        match nix_env {
-            Some(nix_env) => Self {
-                merged_path: NixService::merged_path(&env.merged_path, nix_env),
-                child_env: NixService::merge_env(&env.child_env, nix_env),
-            },
-            None => Self::from_host(env),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct ResolvedLspCommand {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: String,
     pub env: HashMap<String, String>,
-    pub resolved_path: Option<String>,
-    pub runtime_resolved_path: Option<String>,
 }
 
 pub struct LspService {
@@ -70,6 +41,14 @@ struct LiveLspSession {
     trace: LspTraceLevel,
     events: EventSink<LspEvent>,
     owner_id: Option<String>,
+}
+
+impl LiveLspSession {
+    fn terminate(&self) -> io::Result<()> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.finalized.store(true, Ordering::Release);
+        self.child.lock().kill()
+    }
 }
 
 impl LspService {
@@ -157,8 +136,7 @@ impl LspService {
         let _ = (events)(LspEvent::Started {
             session_id: session_id.clone(),
             pid: Some(pid),
-            resolved_path: resolved.resolved_path.clone(),
-            runtime_resolved_path: resolved.runtime_resolved_path.clone(),
+            resolved_path: Some(resolved.program.clone()),
         });
 
         self.spawn_stdout_thread(
@@ -216,11 +194,7 @@ impl LspService {
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
         let live = self.sessions.lock().remove(session_id);
         if let Some(live) = live {
-            live.shutdown.store(true, Ordering::Relaxed);
-            live.finalized.store(true, Ordering::Release);
-            live.child
-                .lock()
-                .kill()
+            live.terminate()
                 .map_err(|error| format!("Failed to kill LSP process: {}", error))?;
             Ok(())
         } else {
@@ -244,9 +218,7 @@ impl LspService {
         };
         let total = live_sessions.len();
         for (session_id, live) in live_sessions {
-            live.shutdown.store(true, Ordering::Relaxed);
-            live.finalized.store(true, Ordering::Release);
-            if let Err(error) = live.child.lock().kill() {
+            if let Err(error) = live.terminate() {
                 warn!("Failed to kill LSP process {}: {}", session_id, error);
             }
         }
@@ -257,9 +229,7 @@ impl LspService {
         let live_sessions: Vec<(String, LiveLspSession)> = self.sessions.lock().drain().collect();
         let total = live_sessions.len();
         for (session_id, live) in live_sessions {
-            live.shutdown.store(true, Ordering::Relaxed);
-            live.finalized.store(true, Ordering::Release);
-            if let Err(error) = live.child.lock().kill() {
+            if let Err(error) = live.terminate() {
                 warn!("Failed to kill LSP process {}: {}", session_id, error);
             }
         }
@@ -449,85 +419,57 @@ fn already_active(session_id: &str) -> ApiError {
 pub fn resolve_server_status(
     server: &LoadedBuiltinLspServerDefinition,
     config: &LspServerConfigRecord,
-    env: &ProjectLspEnvironment,
+    env: &HashMap<String, String>,
 ) -> LspServerStatus {
-    if !config.enabled {
-        return LspServerStatus {
-            server_definition_id: server.server_definition_id.clone(),
-            builtin_id: server.builtin_id.clone(),
-            builtin_label: server.builtin_label.clone(),
-            label: server.definition.label.clone(),
-            enabled: false,
-            status: LspServerConnectionStatus::Disabled,
-            resolved_path: None,
-            runtime_resolved_path: None,
-            message: None,
-            install_hint: server.definition.install_hint.clone(),
-            document_selectors: server.definition.document_selectors.clone(),
-            initialization_options: server.definition.initialization_options.clone(),
-            settings: server.definition.settings.clone(),
-        };
-    }
+    let (status, resolved_path, message) = if !config.enabled {
+        (LspServerConnectionStatus::Disabled, None, None)
+    } else {
+        match resolve_launch(server, config, env, ".") {
+            Ok(resolved) => (
+                LspServerConnectionStatus::Connected,
+                Some(resolved.program),
+                None,
+            ),
+            Err(message) => (LspServerConnectionStatus::Missing, None, Some(message)),
+        }
+    };
 
-    match resolve_launch(server, config, env, ".") {
-        Ok(resolved) => LspServerStatus {
-            server_definition_id: server.server_definition_id.clone(),
-            builtin_id: server.builtin_id.clone(),
-            builtin_label: server.builtin_label.clone(),
-            label: server.definition.label.clone(),
-            enabled: true,
-            status: LspServerConnectionStatus::Connected,
-            resolved_path: resolved.resolved_path,
-            runtime_resolved_path: resolved.runtime_resolved_path,
-            message: None,
-            install_hint: server.definition.install_hint.clone(),
-            document_selectors: server.definition.document_selectors.clone(),
-            initialization_options: server.definition.initialization_options.clone(),
-            settings: server.definition.settings.clone(),
-        },
-        Err(message) => LspServerStatus {
-            server_definition_id: server.server_definition_id.clone(),
-            builtin_id: server.builtin_id.clone(),
-            builtin_label: server.builtin_label.clone(),
-            label: server.definition.label.clone(),
-            enabled: true,
-            status: LspServerConnectionStatus::Missing,
-            resolved_path: None,
-            runtime_resolved_path: None,
-            message: Some(message),
-            install_hint: server.definition.install_hint.clone(),
-            document_selectors: server.definition.document_selectors.clone(),
-            initialization_options: server.definition.initialization_options.clone(),
-            settings: server.definition.settings.clone(),
-        },
+    LspServerStatus {
+        server_definition_id: server.server_definition_id.clone(),
+        builtin_id: server.builtin_id.clone(),
+        builtin_label: server.builtin_label.clone(),
+        label: server.definition.label.clone(),
+        enabled: config.enabled,
+        status,
+        resolved_path,
+        message,
+        install_hint: server.definition.install_hint.clone(),
+        document_selectors: server.definition.document_selectors.clone(),
+        initialization_options: server.definition.initialization_options.clone(),
+        settings: server.definition.settings.clone(),
     }
 }
 
 pub fn resolve_launch(
     server: &LoadedBuiltinLspServerDefinition,
     config: &LspServerConfigRecord,
-    env: &ProjectLspEnvironment,
+    env: &HashMap<String, String>,
     cwd: &str,
 ) -> Result<ResolvedLspCommand, String> {
-    let runtime = &server.definition.runtime;
-    let extra_args = config.extra_args.clone();
-
     let program = resolve_host_command(
-        &runtime.command,
-        &env.merged_path,
+        &server.definition.command,
+        env.get("PATH").map(String::as_str).unwrap_or(""),
         config.binary_path_override.as_deref(),
     )?;
 
     let mut args = server.definition.args.clone();
-    args.extend(extra_args);
+    args.extend(config.extra_args.iter().cloned());
 
     Ok(ResolvedLspCommand {
-        program: program.clone(),
+        program,
         args,
         cwd: cwd.to_string(),
-        env: env.child_env.clone(),
-        resolved_path: Some(program),
-        runtime_resolved_path: None,
+        env: env.clone(),
     })
 }
 

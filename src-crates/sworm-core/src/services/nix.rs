@@ -1,4 +1,3 @@
-use crate::services::env::merge_paths;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,37 +6,6 @@ use tracing::info;
 
 /// Nix files checked in priority order.
 const NIX_FILES: &[&str] = &["flake.nix", "shell.nix", "default.nix"];
-
-/// Environment variables that the host always owns — Nix cannot override these.
-/// These provide system integration (display, auth, API keys) that must come
-/// from the running desktop session, not from a Nix evaluation.
-///
-/// Keep in sync with ENV_ALLOWLIST in services/env.rs — any var that should
-/// survive a Nix overlay must appear here.
-const HOST_AUTHORITATIVE: &[&str] = &[
-    "TERM",
-    "COLORTERM",
-    "HOME",
-    "USER",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "GDK_BACKEND",
-    "XDG_RUNTIME_DIR",
-    "XDG_CURRENT_DESKTOP",
-    "XDG_SESSION_TYPE",
-    "DBUS_SESSION_BUS_ADDRESS",
-    "SSH_AUTH_SOCK",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "ANTHROPIC_API_KEY",
-];
 
 /// Errors that can occur during Nix evaluation.
 #[derive(Debug)]
@@ -345,52 +313,6 @@ impl NixService {
         }
     }
 
-    /// Merge a Nix-captured environment with the host's base environment.
-    ///
-    /// Strategy:
-    /// - Host-authoritative vars (display, auth, API keys) are never overridden
-    /// - PATH is merged: Nix entries prepended, host entries appended, deduplicated
-    /// - Everything else from Nix is added or overwrites the host value
-    pub fn merge_env(
-        host_env: &HashMap<String, String>,
-        nix_env: &HashMap<String, String>,
-    ) -> HashMap<String, String> {
-        let mut merged = host_env.clone();
-
-        for (key, value) in nix_env {
-            // Never override host-authoritative vars
-            if HOST_AUTHORITATIVE.contains(&key.as_str()) {
-                continue;
-            }
-
-            if key == "PATH" {
-                // Prepend Nix PATH entries before host PATH
-                let host_path = host_env.get("PATH").map(|s| s.as_str()).unwrap_or("");
-                merged.insert("PATH".to_string(), merge_paths(value, host_path));
-            } else {
-                // Nix value wins for everything else
-                merged.insert(key.clone(), value.clone());
-            }
-        }
-
-        // NixOS shell init re-sources set-environment, replacing PATH, unless
-        // this is set. Session-launched hosts pass it through `nix develop`; a
-        // systemd daemon has none, so its fish children would drop the devshell.
-        merged
-            .entry("__NIXOS_SET_ENVIRONMENT_DONE".to_string())
-            .or_insert_with(|| "1".to_string());
-
-        merged
-    }
-
-    /// Extract a merged PATH from a Nix env + host PATH, for provider detection.
-    pub fn merged_path(host_path: &str, nix_env: &HashMap<String, String>) -> String {
-        match nix_env.get("PATH") {
-            Some(nix_path) => merge_paths(nix_path, host_path),
-            None => host_path.to_string(),
-        }
-    }
-
     /// Load the cached Nix env vars from the DB for a folder.
     /// Returns None if no Nix env is configured or not yet evaluated.
     pub fn load_env_vars(
@@ -509,61 +431,6 @@ mod tests {
         let env = parse_env_output(output).unwrap();
         assert!(env.contains_key("PATH"));
         assert!(!env.keys().any(|k| k.starts_with("BASH_FUNC_")));
-    }
-
-    #[test]
-    fn test_merge_env_host_authoritative_preserved() {
-        let mut host = HashMap::new();
-        host.insert("HOME".to_string(), "/home/user".to_string());
-        host.insert("DISPLAY".to_string(), ":0".to_string());
-        host.insert("CC".to_string(), "gcc".to_string());
-
-        let mut nix = HashMap::new();
-        nix.insert("HOME".to_string(), "/homeless-shelter".to_string());
-        nix.insert("DISPLAY".to_string(), "nix-display".to_string());
-        nix.insert("CC".to_string(), "/nix/store/.../cc".to_string());
-        nix.insert("NEW_VAR".to_string(), "from-nix".to_string());
-
-        let merged = NixService::merge_env(&host, &nix);
-        assert_eq!(merged.get("HOME").unwrap(), "/home/user");
-        assert_eq!(merged.get("DISPLAY").unwrap(), ":0");
-        assert_eq!(merged.get("CC").unwrap(), "/nix/store/.../cc");
-        assert_eq!(merged.get("NEW_VAR").unwrap(), "from-nix");
-        assert_eq!(merged.get("__NIXOS_SET_ENVIRONMENT_DONE").unwrap(), "1");
-    }
-
-    #[test]
-    fn test_merge_env_path_prepended() {
-        let mut host = HashMap::new();
-        host.insert("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string());
-
-        let mut nix = HashMap::new();
-        nix.insert(
-            "PATH".to_string(),
-            "/nix/store/a:/nix/store/b:/usr/bin".to_string(),
-        );
-
-        let merged = NixService::merge_env(&host, &nix);
-        let path = merged.get("PATH").unwrap();
-        assert!(path.starts_with("/nix/store/a"));
-        // /usr/bin should appear only once (deduplicated)
-        assert_eq!(path.matches("/usr/bin").count(), 1);
-    }
-
-    #[test]
-    fn test_merged_path_with_nix() {
-        let mut nix = HashMap::new();
-        nix.insert("PATH".to_string(), "/nix/store/bin:/usr/bin".to_string());
-        let result = NixService::merged_path("/usr/bin:/usr/local/bin", &nix);
-        assert!(result.starts_with("/nix/store/bin"));
-        assert!(result.contains("/usr/local/bin"));
-    }
-
-    #[test]
-    fn test_merged_path_without_nix() {
-        let nix = HashMap::new();
-        let result = NixService::merged_path("/usr/bin", &nix);
-        assert_eq!(result, "/usr/bin");
     }
 
     #[test]

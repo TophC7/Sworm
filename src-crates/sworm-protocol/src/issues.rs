@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const ISSUES_CHANGED_EVENT: &str = "issues-changed";
-
 /// Top-level grouping for issues. Roughly: an epic is a body of work
 /// that a session can pick up across multiple issues.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +100,7 @@ pub struct IssueDetail {
     pub events: Vec<IssueEvent>,
 }
 
-/// Optional filters for `issues_list`. All fields are independent.
+/// Optional filters for `issues_list` and `issues_search`. All fields are independent.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueListFilters {
@@ -119,17 +117,6 @@ pub struct IssueListFilters {
 #[serde(rename_all = "camelCase")]
 pub struct IssueReadyFilters {
     pub epic_id: Option<String>,
-    pub limit: Option<i64>,
-}
-
-/// Optional filters for `issues_search`. The query string itself is a
-/// separate parameter; this struct only carries refinements.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct IssueSearchFilters {
-    pub status: Option<String>,
-    pub epic_id: Option<String>,
-    pub include_archived: Option<bool>,
     pub limit: Option<i64>,
 }
 

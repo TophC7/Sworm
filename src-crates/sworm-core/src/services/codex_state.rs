@@ -5,7 +5,7 @@ use std::path::PathBuf;
 pub struct CodexStateReader;
 
 impl CodexStateReader {
-    fn db_path() -> Option<PathBuf> {
+    pub(crate) fn db_path() -> Option<PathBuf> {
         let path = home_dir()?.join(".codex/state_5.sqlite");
         path.exists().then_some(path)
     }

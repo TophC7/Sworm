@@ -1,5 +1,7 @@
 //! Per-project SQLite handle and connection plumbing for the issue store.
 
+use super::db_error;
+use crate::errors::ApiError;
 use parking_lot::{Mutex, MutexGuard};
 use rusqlite::Connection;
 use std::path::Path;
@@ -124,21 +126,18 @@ impl IssueProjectDb {
     }
 }
 
-pub(super) fn open_issue_connection(db_path: &Path, read_only: bool) -> Result<Connection, String> {
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("Failed to open issue db {}: {}", db_path.display(), e))?;
+pub(super) fn open_issue_connection(
+    db_path: &Path,
+    read_only: bool,
+) -> Result<Connection, ApiError> {
+    let conn = Connection::open(db_path).map_err(db_error("Failed to open issue db"))?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )
-    .map_err(|e| format!("Failed to configure issue db {}: {}", db_path.display(), e))?;
+    .map_err(db_error("Failed to configure issue db"))?;
     if read_only {
-        conn.execute_batch("PRAGMA query_only=ON;").map_err(|e| {
-            format!(
-                "Failed to set issue db reader pragma {}: {}",
-                db_path.display(),
-                e
-            )
-        })?;
+        conn.execute_batch("PRAGMA query_only=ON;")
+            .map_err(db_error("Failed to set issue db reader pragma"))?;
     }
     Ok(conn)
 }

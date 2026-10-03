@@ -7,12 +7,9 @@ use futures_util::{
     SinkExt, StreamExt,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    io::{self, Write},
-    time::Duration,
-};
+use std::time::Duration;
 use sworm_protocol::rpc::MAX_FRAME_BYTES;
-use sworm_remote::wire;
+use sworm_remote::wire::{self, JSON_TAG, RAW_TAG};
 use tokio::{sync::watch, time::timeout};
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,32 +22,12 @@ pub(crate) enum Frame<T> {
     Raw(Bytes),
 }
 
-/// Bound serialized JSON as it is produced, matching the QUIC frame ceiling.
-struct TaggedJson(Vec<u8>);
-
-impl Write for TaggedJson {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_FRAME_BYTES.saturating_sub(self.0.len().saturating_sub(1)) {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "frame exceeds size limit",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 /// A framed output stream. The web variant writes directly into the socket sink:
 /// accepting a frame is never just enqueueing it in an unbounded writer actor.
 pub(crate) enum StreamWriter {
     Quic {
         send: quinn::SendStream,
-        connection: Option<quinn::Connection>,
+        connection: quinn::Connection,
     },
     Web {
         sink: WebSink,
@@ -69,7 +46,7 @@ pub(crate) enum StreamReader {
 }
 
 impl StreamWriter {
-    pub(crate) fn quic(send: quinn::SendStream, connection: Option<quinn::Connection>) -> Self {
+    pub(crate) fn quic(send: quinn::SendStream, connection: quinn::Connection) -> Self {
         Self::Quic { send, connection }
     }
 
@@ -88,11 +65,9 @@ impl StreamWriter {
                 .map_err(|_| "stream write timed out".to_owned())?
                 .map_err(|error| error.to_string()),
             Self::Web { sink, .. } => {
-                // Serialize straight into the final tagged message, including the tag.
-                let mut bytes = TaggedJson(vec![0]);
-                serde_json::to_writer(&mut bytes, value)
-                    .map_err(|error| format!("encode frame: {error}"))?;
-                timeout(WRITE_TIMEOUT, sink.send(Message::Binary(bytes.0.into())))
+                let bytes =
+                    wire::encode_json(value, MAX_FRAME_BYTES).map_err(|error| error.to_string())?;
+                timeout(WRITE_TIMEOUT, sink.send(Message::Binary(bytes.into())))
                     .await
                     .map_err(|_| "stream write timed out".to_owned())?
                     .map_err(|error| format!("write stream frame: {error}"))
@@ -111,32 +86,24 @@ impl StreamWriter {
         prefix: &[u8],
         bytes: &[u8],
     ) -> Result<(), String> {
-        let length = prefix
-            .len()
-            .checked_add(bytes.len())
-            .ok_or_else(|| "stream frame size overflow".to_owned())?;
-        if length > MAX_FRAME_BYTES {
-            return Err(format!("frame exceeds {MAX_FRAME_BYTES}-byte limit"));
-        }
         match self {
-            Self::Quic { send, .. } => {
-                if prefix.is_empty() {
-                    return timeout(WRITE_TIMEOUT, wire::write_raw_frame(send, bytes))
-                        .await
-                        .map_err(|_| "stream write timed out".to_owned())?
-                        .map_err(|error| error.to_string());
-                }
-                let mut body = Vec::with_capacity(length);
-                body.extend_from_slice(prefix);
-                body.extend_from_slice(bytes);
-                timeout(WRITE_TIMEOUT, wire::write_raw_frame(send, &body))
-                    .await
-                    .map_err(|_| "stream write timed out".to_owned())?
-                    .map_err(|error| error.to_string())
-            }
+            Self::Quic { send, .. } => timeout(
+                WRITE_TIMEOUT,
+                wire::write_raw_frame_parts(send, prefix, bytes, MAX_FRAME_BYTES),
+            )
+            .await
+            .map_err(|_| "stream write timed out".to_owned())?
+            .map_err(|error| error.to_string()),
             Self::Web { sink, .. } => {
+                let length = prefix
+                    .len()
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| "stream frame size overflow".to_owned())?;
+                if length > MAX_FRAME_BYTES {
+                    return Err(format!("frame exceeds {MAX_FRAME_BYTES}-byte limit"));
+                }
                 let mut frame = Vec::with_capacity(length + 1);
-                frame.push(1);
+                frame.push(RAW_TAG);
                 frame.extend_from_slice(prefix);
                 frame.extend_from_slice(bytes);
                 timeout(WRITE_TIMEOUT, sink.send(Message::Binary(frame.into())))
@@ -171,11 +138,7 @@ impl StreamWriter {
     pub(crate) async fn stopped(&mut self) {
         match self {
             Self::Quic { send, connection } => {
-                if let Some(connection) = connection {
-                    tokio::select! { _ = send.stopped() => {}, _ = connection.closed() => {} }
-                } else {
-                    let _ = send.stopped().await;
-                }
+                tokio::select! { _ = send.stopped() => {}, _ = connection.closed() => {} }
             }
             Self::Web {
                 sink,
@@ -278,10 +241,10 @@ impl StreamReader {
                             return Err("stream frame exceeds size limit".to_owned());
                         }
                         let result = match bytes.split_first() {
-                            Some((&0, body)) => serde_json::from_slice(body)
+                            Some((&JSON_TAG, body)) => serde_json::from_slice(body)
                                 .map(Frame::Json)
                                 .map_err(|error| format!("decode stream frame: {error}")),
-                            Some((&1, _)) => Ok(Frame::Raw(bytes.slice(1..))),
+                            Some((&RAW_TAG, _)) => Ok(Frame::Raw(bytes.slice(1..))),
                             _ => Err("unknown or missing stream frame tag".to_owned()),
                         };
                         if result.is_err() {

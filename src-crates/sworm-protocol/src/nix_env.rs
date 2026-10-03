@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub const NIX_CHANGED_EVENT: &str = "nix-changed";
-
 /// Status of a Nix environment evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -11,6 +11,7 @@
 //! pays for the whole tree.
 
 use crate::errors::ApiError;
+use crate::services::git::git_line;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::Match;
@@ -189,27 +190,16 @@ impl IgnoreChain<'_> {
         }
 
         let abs = self.filter.root.join(rel_path);
-        for matcher in &self.matchers {
-            match matcher.matched(&abs, is_dir) {
-                Match::Ignore(_) => return true,
-                Match::Whitelist(_) => return false,
-                Match::None => {}
-            }
-        }
-
-        match self.filter.repo_exclude.matched(&abs, is_dir) {
-            Match::Ignore(_) => return true,
-            Match::Whitelist(_) => return false,
-            Match::None => {}
-        }
-
-        match self.filter.global_exclude.matched(&abs, is_dir) {
-            Match::Ignore(_) => return true,
-            Match::Whitelist(_) => return false,
-            Match::None => {}
-        }
-
-        false
+        self.matchers
+            .iter()
+            .map(AsRef::as_ref)
+            .chain([&self.filter.repo_exclude, &self.filter.global_exclude])
+            .find_map(|matcher| match matcher.matched(&abs, is_dir) {
+                Match::Ignore(_) => Some(true),
+                Match::Whitelist(_) => Some(false),
+                Match::None => None,
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -220,24 +210,10 @@ fn resolve_repo_exclude(repo: &Path) -> Gitignore {
         builder.add(exclude_file);
     } else {
         // In a worktree or submodule, `.git` is a file containing `gitdir: <path>`.
-        if let Ok(output) = std::process::Command::new("git")
-            .args([
-                "--no-optional-locks",
-                "rev-parse",
-                "--git-path",
-                "info/exclude",
-            ])
-            .current_dir(repo)
-            .output()
-        {
-            if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    let path = repo.join(path_str);
-                    if path.is_file() {
-                        builder.add(path);
-                    }
-                }
+        if let Some(path) = git_line(repo, &["rev-parse", "--git-path", "info/exclude"]) {
+            let path = repo.join(path);
+            if path.is_file() {
+                builder.add(path);
             }
         }
     }
@@ -247,26 +223,11 @@ fn resolve_repo_exclude(repo: &Path) -> Gitignore {
 fn resolve_global_exclude(repo: &Path) -> Gitignore {
     let mut builder = GitignoreBuilder::new(repo);
     // 1. Check if git config specifies an explicit core.excludesFile.
-    if let Ok(output) = std::process::Command::new("git")
-        .args([
-            "--no-optional-locks",
-            "config",
-            "--path",
-            "--get",
-            "core.excludesfile",
-        ])
-        .current_dir(repo)
-        .output()
-    {
-        if output.status.success() {
-            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path_str.is_empty() {
-                let path = PathBuf::from(path_str);
-                if path.is_file() {
-                    builder.add(path);
-                    return builder.build().unwrap_or_else(|_| Gitignore::empty());
-                }
-            }
+    if let Some(path) = git_line(repo, &["config", "--path", "--get", "core.excludesfile"]) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            builder.add(path);
+            return builder.build().unwrap_or_else(|_| Gitignore::empty());
         }
     }
 

@@ -1,133 +1,5 @@
 use crate::app_state::AppState;
-use std::collections::HashMap;
 use sworm_core::errors::ApiError;
-use sworm_protocol::files::{
-    DirEntry, FileContent, FilePasteCollision, FilePasteMapping, FileStat, PathList,
-};
-
-#[tauri::command]
-pub async fn file_read(
-    project_path: String,
-    file_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<FileContent, ApiError> {
-    state.router.file_read(project_path, file_path).await
-}
-
-#[tauri::command]
-pub async fn file_stat(
-    project_path: String,
-    file_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<FileStat, ApiError> {
-    state.router.file_stat(project_path, file_path).await
-}
-
-#[tauri::command]
-pub async fn file_write(
-    project_path: String,
-    file_path: String,
-    content: String,
-    expected_version: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, ApiError> {
-    state
-        .router
-        .file_write(project_path, file_path, content, expected_version)
-        .await
-}
-
-#[tauri::command]
-pub async fn file_create_dir(
-    project_path: String,
-    dir_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.file_create_dir(project_path, dir_path).await
-}
-
-#[tauri::command]
-pub async fn file_rename(
-    project_path: String,
-    old_path: String,
-    new_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state
-        .router
-        .file_rename(project_path, old_path, new_path)
-        .await
-}
-
-#[tauri::command]
-pub async fn file_paste(
-    project_path: String,
-    target_dir: String,
-    op: String,
-    sources: Vec<String>,
-    collision_policy: String,
-    rename_map: Option<HashMap<String, String>>,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<FilePasteMapping>, ApiError> {
-    state
-        .router
-        .file_paste(
-            project_path,
-            target_dir,
-            op,
-            sources,
-            collision_policy,
-            rename_map,
-        )
-        .await
-}
-
-#[tauri::command]
-pub async fn file_paste_collisions(
-    project_path: String,
-    target_dir: String,
-    sources: Vec<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<FilePasteCollision>, ApiError> {
-    state
-        .router
-        .file_paste_collisions(project_path, target_dir, sources)
-        .await
-}
-
-#[tauri::command]
-pub async fn file_delete(
-    project_path: String,
-    file_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.file_delete(project_path, file_path).await
-}
-
-#[tauri::command]
-pub async fn files_read_dir(
-    project_path: String,
-    dir_path: String,
-    show_hidden: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<DirEntry>, ApiError> {
-    state
-        .router
-        .files_read_dir(project_path, dir_path, show_hidden)
-        .await
-}
-
-#[tauri::command]
-pub async fn files_list_paths(
-    project_path: String,
-    show_hidden: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<PathList, ApiError> {
-    state
-        .router
-        .files_list_paths(project_path, show_hidden)
-        .await
-}
 
 #[tauri::command]
 pub async fn files_watch_dirs(
@@ -140,4 +12,31 @@ pub async fn files_watch_dirs(
         .router
         .files_watch_dirs(window.label().to_string(), project_path, dirs)
         .await
+}
+
+#[tauri::command]
+pub async fn file_read_stream(
+    state: tauri::State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request_id: String,
+    project_path: String,
+    file_path: String,
+    version: String,
+    size: u64,
+) -> Result<sworm_protocol::files::FileContent, ApiError> {
+    use tauri::Emitter;
+    state.router.read_file_stream(window.label(), &request_id, project_path.clone(), file_path.clone(), version, size, |bytes, total| {
+        let _ = window.emit("file-read-progress", serde_json::json!({
+            "requestId": request_id, "folderPath": project_path, "filePath": file_path, "bytes": bytes, "total": total,
+        }));
+    }).await
+}
+
+#[tauri::command]
+pub fn file_read_stream_cancel(
+    state: tauri::State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    request_id: String,
+) {
+    state.router.cancel_file_read(window.label(), &request_id);
 }

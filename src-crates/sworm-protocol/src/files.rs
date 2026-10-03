@@ -54,8 +54,6 @@ pub struct PathList {
     pub truncated: bool,
 }
 
-pub const FILES_CHANGED_EVENT: &str = "files-changed";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilesChangedEvent {
     pub folder_path: String,

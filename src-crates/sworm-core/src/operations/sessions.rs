@@ -1,13 +1,11 @@
 use crate::errors::ApiError;
 use crate::host::Host;
-use crate::services::codex_state::CodexStateReader;
 use crate::services::folders::resolve_folder;
-use crate::services::nix::NixService;
 use crate::services::omp;
 use crate::services::providers::{
-    antigravity_conversation_exists, claude_session_transcript_exists, ProviderService,
+    binary_override, discovers_resume_token, resume_token_exists, ProviderService,
 };
-use crate::services::pty::{CompletedRunSink, PtySubscriber, RunRetention};
+use crate::services::pty::{CompletedRunSink, PtySubscriber};
 use crate::services::resume_discovery::PendingRun;
 use crate::services::runs::RunKind;
 use crate::services::settings_resolution::{
@@ -55,35 +53,7 @@ impl Host {
     /// - Antigravity: `--conversation <id>` when the supplied conversation
     ///   store exists; otherwise fresh and discovery announces the id.
     /// - Terminal: never resumes.
-    pub async fn session_start(
-        self: &Arc<Self>,
-        run_id: String,
-        folder_path: String,
-        provider_id: String,
-        resume_token: Option<String>,
-        cols: u16,
-        rows: u16,
-        subscriber: Option<PtySubscriber>,
-        owner_id: Option<String>,
-    ) -> Result<SessionStartInfo, ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.start_session(
-                run_id,
-                folder_path,
-                provider_id,
-                resume_token,
-                cols,
-                rows,
-                subscriber,
-                owner_id,
-            )
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    fn start_session(
+    pub fn session_start(
         &self,
         run_id: String,
         folder_path: String,
@@ -96,26 +66,26 @@ impl Host {
     ) -> Result<SessionStartInfo, ApiError> {
         let _owner = self.runs.owner_activity(owner_id.as_deref())?;
         let folder = resolve_folder(&folder_path)?;
+        let kind = RunKind::Session {
+            provider_id: provider_id.clone(),
+        };
         self.runs.with_start(&run_id, |runs| {
-            if let Some(info) = runs.reuse_session(
+            if runs.reuse(
                 &run_id,
                 &folder,
-                &provider_id,
+                &kind,
                 &self.pty,
                 subscriber.as_ref(),
                 owner_id.as_deref(),
                 cols,
                 rows,
             )? {
-                return Ok(info);
+                return Ok(SessionStartInfo {
+                    resumed: true,
+                    resume_token: self.runs.resume_token(&run_id),
+                });
             }
-            let (token, completed) = runs.reserve(
-                &run_id,
-                folder.clone(),
-                RunKind::Session {
-                    provider_id: provider_id.clone(),
-                },
-            );
+            let (token, completed) = runs.reserve(&run_id, folder.clone(), kind);
             let token = token.expect("session reservation has token cell");
             let result = self.spawn_session(
                 run_id.clone(),
@@ -158,11 +128,10 @@ impl Host {
         token: Arc<Mutex<Option<String>>>,
         completed: Option<CompletedRunSink>,
     ) -> Result<SessionStartInfo, ApiError> {
-        let provider = ProviderService::definition(&provider_id)
-            .map(|definition| definition.id)
-            .ok_or_else(|| {
-                ApiError::InvalidArgument(format!("Unsupported provider: {provider_id}"))
-            })?;
+        let definition = ProviderService::definition(&provider_id).ok_or_else(|| {
+            ApiError::InvalidArgument(format!("Unsupported provider: {provider_id}"))
+        })?;
+        let provider = definition.id;
         let effective_settings =
             resolve_effective_settings_for_folder_path(Some(folder)).map_err(ApiError::Internal)?;
         let provider_config = provider_config_record(&effective_settings.settings, &provider_id);
@@ -173,68 +142,26 @@ impl Host {
         }
         let cwd = folder.to_string_lossy().into_owned();
 
-        let nix_env_vars = {
-            let db = self.db.read();
-            NixService::load_env_vars(db.conn(), &cwd).unwrap_or_else(|error| {
-                warn!("Failed to load Nix env for folder {cwd}: {error}");
-                None
-            })
-        };
-
-        let effective_path = match &nix_env_vars {
-            Some(nix_env) => NixService::merged_path(&self.env.merged_path, nix_env),
-            None => self.env.merged_path.clone(),
-        };
+        let mut child_env = self.folder_env(folder);
 
         let cli_cmd = if provider == ProviderId::Terminal {
-            provider_config
-                .binary_path_override
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
+            binary_override(provider_config.binary_path_override.as_deref())
                 .map(str::to_string)
                 .unwrap_or_else(|| self.env.detected_shell.clone())
         } else {
             ProviderService::resolve_command_path(
                 &provider_id,
-                &effective_path,
+                &child_env["PATH"],
                 provider_config.binary_path_override.as_deref(),
             )
-            .unwrap_or_else(|| {
-                ProviderService::cli_command(&provider_id)
-                    .unwrap_or("/bin/bash")
-                    .to_string()
-            })
+            .expect("provider definition already validated")
         };
 
-        let (resume_token, session_app_id) = match provider {
-            ProviderId::ClaudeCode => {
-                match validated_token(resume_token, "Claude session", |token| {
-                    claude_session_transcript_exists(&cwd, token)
-                }) {
-                    Some(token) => (Some(token), None),
-                    None => (None, Some(uuid::Uuid::new_v4().to_string())),
-                }
-            }
-            ProviderId::Codex => (
-                validated_token(resume_token, "Codex thread", |token| {
-                    CodexStateReader::thread_exists(token, &cwd).unwrap_or(false)
-                }),
-                None,
-            ),
-            ProviderId::Omp => (
-                validated_token(resume_token, "OMP session", |token| {
-                    omp::session_exists(&cwd, token)
-                }),
-                None,
-            ),
-            ProviderId::Antigravity => (
-                validated_token(resume_token, "Antigravity conversation", |token| {
-                    antigravity_conversation_exists(token)
-                }),
-                None,
-            ),
-            ProviderId::Terminal => (None, None),
-        };
+        let resume_token = validated_token(resume_token, definition.label, |token| {
+            resume_token_exists(provider, &cwd, token)
+        });
+        let session_app_id = (provider == ProviderId::ClaudeCode && resume_token.is_none())
+            .then(|| uuid::Uuid::new_v4().to_string());
         let resumed = resume_token.is_some();
 
         let mut args = ProviderService::build_start_args(
@@ -245,14 +172,9 @@ impl Host {
         args.extend(provider_config.extra_args);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-        let mut child_env = match nix_env_vars {
-            Some(nix_env) => NixService::merge_env(&self.env.child_env, &nix_env),
-            None => self.env.child_env.clone(),
-        };
-
         // Bridge values override inherited and Nix-provided values.
         if provider != ProviderId::Terminal {
-            match self.issue_bridge.ensure_running(&folder) {
+            match self.issue_bridge.ensure_running(folder) {
                 Ok(info) => {
                     child_env.insert("SWORM_PROJECT_PATH".to_string(), info.project_path);
                     child_env.insert("SWORM_ISSUES_SOCKET".to_string(), info.socket_path);
@@ -269,11 +191,7 @@ impl Host {
         }
 
         let discovery = self.resume_discovery.clone();
-        let awaiting_token = resume_token.is_none()
-            && matches!(
-                provider,
-                ProviderId::Codex | ProviderId::Antigravity | ProviderId::Omp
-            );
+        let awaiting_token = resume_token.is_none() && discovers_resume_token(provider);
         let exited = awaiting_token.then(|| Arc::new(AtomicBool::new(false)));
         let exit_flag = exited.clone();
         let on_exit: Box<dyn FnOnce(&str, Option<i32>) + Send> = Box::new(move |rid, code| {
@@ -298,7 +216,6 @@ impl Host {
                 rows,
                 subscriber,
                 owner_id,
-                RunRetention::Retained,
                 Some(on_exit),
                 completed,
             )
@@ -306,11 +223,7 @@ impl Host {
 
         match &resume_token {
             Some(token) => self.resume_discovery.claim(token),
-            None if matches!(
-                provider,
-                ProviderId::Codex | ProviderId::Antigravity | ProviderId::Omp
-            ) =>
-            {
+            None if discovers_resume_token(provider) => {
                 let tracked_run_id = run_id.clone();
                 self.resume_discovery.track(PendingRun {
                     run_id,
@@ -318,7 +231,7 @@ impl Host {
                     cwd,
                     spawned_at,
                     event_sink,
-                    on_bound: Some(Box::new(move |bound| *token.lock() = Some(bound))),
+                    on_bound: Box::new(move |bound| *token.lock() = Some(bound)),
                 });
                 // Exit can beat registration; its callback then had no pending
                 // run to cancel. Check the same flag after registering.
@@ -338,58 +251,26 @@ impl Host {
         })
     }
 
-    pub async fn session_write(
-        self: &Arc<Self>,
-        run_id: String,
-        data: Vec<u8>,
-    ) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || host.pty.write(&run_id, &data).map_err(ApiError::Pty))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    pub async fn session_resize(
-        self: &Arc<Self>,
-        run_id: String,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
     /// Stop a session and release its retained record and transcript, rejecting task IDs.
-    pub async fn session_stop(self: &Arc<Self>, run_id: String) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.runs.with_run(&run_id, |runs| {
-                let result = runs.stop(
-                    &run_id,
-                    RunKind::Session {
-                        provider_id: String::new(),
-                    },
-                    &host.pty,
-                );
-                host.resume_discovery.cancel(&run_id);
-                result
-            })
+    pub fn session_stop(&self, run_id: String) -> Result<(), ApiError> {
+        self.runs.with_run(&run_id, |runs| {
+            runs.stop(
+                &run_id,
+                RunKind::Session {
+                    provider_id: String::new(),
+                },
+                &self.pty,
+            )?;
+            self.forget_run(&run_id);
+            Ok(())
         })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
     }
 
-    pub async fn omp_resolve_uri(
+    pub fn omp_resolve_uri(
         &self,
         uri: String,
         cwd: Option<String>,
     ) -> Result<sworm_protocol::omp::OmpResolvedTarget, ApiError> {
-        tokio::task::spawn_blocking(move || omp::resolve_omp_target(&uri, cwd.as_deref()))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+        omp::resolve_omp_target(&uri, cwd.as_deref())
     }
 }

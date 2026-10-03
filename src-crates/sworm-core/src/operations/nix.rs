@@ -7,6 +7,8 @@ use crate::{
     },
     Host,
 };
+use std::collections::HashMap;
+use std::path::Path;
 use sworm_protocol::nix_env::{NixDetection, NixDiagnostic, NixEnvRecord, NixEnvStatus};
 
 struct NixEvalGuard<'a> {
@@ -21,11 +23,25 @@ impl Drop for NixEvalGuard<'_> {
 }
 
 impl Host {
-    fn emit_nix_changed(&self, folder_path: &str) -> Result<(), ApiError> {
-        (self.events)(HostEvent::NixChanged(folder_path.to_owned())).map_err(ApiError::Internal)
+    /// Resolve one child environment; unavailable Nix state falls back to the host.
+    pub(crate) fn folder_env(&self, folder: &Path) -> HashMap<String, String> {
+        let nix = {
+            let db = self.db.read();
+            NixService::load_env_vars(db.conn(), &folder.to_string_lossy())
+        };
+        match nix {
+            Ok(nix) => self.env.with_nix(nix.as_ref()),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to load Nix env for folder {}: {error}; using host environment",
+                    folder.display()
+                );
+                self.env.with_nix(None)
+            }
+        }
     }
 
-    pub async fn nix_detect(&self, folder_path: String) -> Result<NixDetection, ApiError> {
+    pub fn nix_detect(&self, folder_path: String) -> Result<NixDetection, ApiError> {
         let folder = resolve_folder(&folder_path)?;
         let folder_path = folder.to_string_lossy().into_owned();
         let db = self.db.read();
@@ -38,7 +54,7 @@ impl Host {
         })
     }
 
-    pub async fn nix_select(
+    pub fn nix_select(
         &self,
         folder_path: String,
         nix_file: String,
@@ -57,11 +73,11 @@ impl Host {
             let db = self.db.write();
             NixService::select(db.conn(), &folder_path, &nix_file).map_err(ApiError::Database)?
         };
-        self.emit_nix_changed(&folder_path)?;
+        self.emit(HostEvent::NixChanged(folder_path));
         Ok(record)
     }
 
-    pub async fn nix_evaluate(&self, folder_path: String) -> Result<NixEnvRecord, ApiError> {
+    pub fn nix_evaluate(&self, folder_path: String) -> Result<NixEnvRecord, ApiError> {
         let folder = resolve_folder(&folder_path)?;
         let folder_path = folder.to_string_lossy().into_owned();
 
@@ -79,7 +95,13 @@ impl Host {
             folder_path: folder_path.clone(),
         };
 
-        let (nix_file, timeout_secs) = {
+        let timeout_secs = resolve_effective_settings_for_folder_path(Some(&folder))
+            .map_err(ApiError::Internal)?
+            .settings
+            .nix
+            .eval_timeout_secs
+            .clamp(30, 3600);
+        let nix_file = {
             let db = self.db.write();
             let record = NixService::get(db.conn(), &folder_path)
                 .map_err(ApiError::Database)?
@@ -88,24 +110,12 @@ impl Host {
                         "No Nix file selected for this folder. Call nix_select first.".to_string(),
                     )
                 })?;
-            let effective_settings = resolve_effective_settings_for_folder_path(Some(&folder))
-                .map_err(ApiError::Internal)?;
-            let timeout_secs = effective_settings
-                .settings
-                .nix
-                .eval_timeout_secs
-                .clamp(30, 3600);
             NixService::set_status(db.conn(), &folder_path, NixEnvStatus::Evaluating)
                 .map_err(ApiError::Database)?;
-            (record.nix_file, timeout_secs)
+            record.nix_file
         };
 
-        let eval_folder_path = folder_path.clone();
-        let eval_result = tokio::task::spawn_blocking(move || {
-            NixService::evaluate(&eval_folder_path, &nix_file, timeout_secs)
-        })
-        .await
-        .map_err(|error| ApiError::Internal(format!("Evaluation task panicked: {}", error)))?;
+        let eval_result = NixService::evaluate(&folder_path, &nix_file, timeout_secs);
 
         let db = self.db.write();
         match eval_result {
@@ -117,7 +127,7 @@ impl Host {
                 NixService::save_error(db.conn(), &folder_path, &eval_error)
                     .map_err(ApiError::Database)?;
                 drop(db);
-                self.emit_nix_changed(&folder_path)?;
+                self.emit(HostEvent::NixChanged(folder_path));
                 return Err(ApiError::Internal(eval_error.to_string()));
             }
         }
@@ -128,21 +138,22 @@ impl Host {
                 ApiError::Internal("Nix env record disappeared after save".to_string())
             })?;
         drop(db);
-        self.emit_nix_changed(&folder_path)?;
+        self.emit(HostEvent::NixChanged(folder_path));
         Ok(record)
     }
 
-    pub async fn nix_clear(&self, folder_path: String) -> Result<(), ApiError> {
+    pub fn nix_clear(&self, folder_path: String) -> Result<(), ApiError> {
         let folder = resolve_folder(&folder_path)?;
         let folder_path = folder.to_string_lossy().into_owned();
         {
             let db = self.db.write();
             NixService::remove(db.conn(), &folder_path).map_err(ApiError::Database)?;
         }
-        self.emit_nix_changed(&folder_path)
+        self.emit(HostEvent::NixChanged(folder_path));
+        Ok(())
     }
 
-    pub async fn nix_lint(
+    pub fn nix_lint(
         &self,
         folder_path: String,
         file_path: String,
@@ -151,9 +162,6 @@ impl Host {
             .join(&file_path)
             .to_string_lossy()
             .to_string();
-        tokio::task::spawn_blocking(move || NixService::lint_nix(&abs_path))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
-            .map_err(ApiError::Internal)
+        NixService::lint_nix(&abs_path).map_err(ApiError::Internal)
     }
 }

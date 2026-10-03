@@ -27,8 +27,8 @@ Sworm is a Linux-first desktop app for running coding-agent CLIs inside a local 
 - Match the existing module split:
   - Svelte routes/components/stores in `src/`
   - Tauri commands in `src-tauri/src/commands/`
-  - business logic in `src-tauri/src/services/`
-  - serialized models in `src-tauri/src/models/`
+  - desktop logic in `src-tauri/src/` modules (`router/`, `windows/`); business logic in `src-crates/sworm-core`
+  - serialized models in `src-crates/sworm-protocol`
 - Keep sessions folder-scoped; tabs drive the workbench, and a folder is open exactly while it has a tab.
 
 ## Validation

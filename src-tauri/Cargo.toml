@@ -7,11 +7,7 @@ license = "AGPL-3.0-or-later"
 
 [lib]
 name = "sworm_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
-
-[[bin]]
-name = "sworm"
-path = "src/main.rs"
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -28,9 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 gethostname = "1"
 sha2 = "0.10"
-anyhow.workspace = true
 uuid.workspace = true
-chrono.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
 tracing.workspace = true
@@ -44,6 +38,7 @@ wl-clipboard-rs = "0.9.3"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-jsonc-parser.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
 sworm-server = { path = "../src-crates/sworm-server" }
 tempfile = "3"

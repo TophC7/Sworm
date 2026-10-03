@@ -1,4 +1,4 @@
-use crate::{client::RemoteError, identity::Fingerprint};
+use crate::{identity::Fingerprint, RemoteError};
 use rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider},
@@ -142,14 +142,16 @@ pub fn server_config(identity: &crate::Identity) -> Result<quinn::ServerConfig, 
     });
     let mut config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|error| tls_error("configure server TLS versions", error))?
+        .map_err(|error| RemoteError::transport("configure server TLS versions", error))?
         .with_client_cert_verifier(verifier)
         .with_single_cert(vec![identity.cert.clone()], identity.key.clone_key())
-        .map_err(|error| tls_error("configure server identity", error))?;
+        .map_err(|error| RemoteError::transport("configure server identity", error))?;
     config.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(config)
-        .map_err(|error| tls_error("configure QUIC server TLS", error))?;
-    Ok(quinn::ServerConfig::with_crypto(Arc::new(crypto)))
+        .map_err(|error| RemoteError::transport("configure QUIC server TLS", error))?;
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    config.transport_config(transport());
+    Ok(config)
 }
 
 pub fn client_config(
@@ -163,21 +165,16 @@ pub fn client_config(
     });
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|error| tls_error("configure client TLS versions", error))?
+        .map_err(|error| RemoteError::transport("configure client TLS versions", error))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(vec![identity.cert.clone()], identity.key.clone_key())
-        .map_err(|error| tls_error("configure client identity", error))?;
+        .map_err(|error| RemoteError::transport("configure client identity", error))?;
     config.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(config)
-        .map_err(|error| tls_error("configure QUIC client TLS", error))?;
+        .map_err(|error| RemoteError::transport("configure QUIC client TLS", error))?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    let mut transport = quinn::TransportConfig::default();
-    transport
-        .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONNECTION.into())
-        .max_concurrent_uni_streams(0u32.into())
-        .keep_alive_interval(Some(Duration::from_secs(10)));
-    config.transport_config(Arc::new(transport));
+    config.transport_config(transport());
     Ok(config)
 }
 
@@ -190,6 +187,16 @@ pub fn peer_fingerprint(connection: &quinn::Connection) -> Option<Fingerprint> {
         .map(Fingerprint::of_cert)
 }
 
-fn tls_error(context: &str, error: impl std::fmt::Display) -> RemoteError {
-    RemoteError::Transport(format!("{context}: {error}"))
+fn transport() -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONNECTION.into())
+        .max_concurrent_uni_streams(0u32.into())
+        .keep_alive_interval(Some(Duration::from_secs(10)))
+        .max_idle_timeout(Some(
+            Duration::from_secs(30)
+                .try_into()
+                .expect("30 second QUIC idle timeout is representable"),
+        ));
+    Arc::new(transport)
 }

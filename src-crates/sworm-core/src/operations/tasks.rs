@@ -1,10 +1,8 @@
 use crate::errors::ApiError;
 use crate::host::Host;
 use crate::services::folders::resolve_folder;
-use crate::services::nix::NixService;
-use crate::services::pty::{CompletedRunSink, PtySubscriber, RunRetention};
+use crate::services::pty::{CompletedRunSink, PtySubscriber};
 use crate::services::runs::RunKind;
-use std::collections::HashMap;
 use std::sync::Arc;
 use sworm_protocol::task::TaskDefinition;
 
@@ -12,7 +10,7 @@ impl Host {
     /// Return the parsed task list for a folder. Idempotently wires up
     /// the file watcher so callers receive task-change events when the
     /// folder's `.sworm/tasks.jsonc` is modified externally.
-    pub async fn tasks_list(&self, folder_path: String) -> Result<Vec<TaskDefinition>, ApiError> {
+    pub fn tasks_list(&self, folder_path: String) -> Result<Vec<TaskDefinition>, ApiError> {
         let folder = resolve_folder(&folder_path)?;
 
         // Watcher setup is best-effort; a failure must not block task listing.
@@ -27,37 +25,7 @@ impl Host {
         self.tasks.load(&folder).map_err(ApiError::Internal)
     }
 
-    pub async fn tasks_start(
-        self: &Arc<Self>,
-        run_id: String,
-        folder_path: String,
-        task_id: String,
-        active_file_path: Option<String>,
-        cols: u16,
-        rows: u16,
-        subscriber: Option<PtySubscriber>,
-        owner_id: Option<String>,
-        attach_only: bool,
-    ) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.start_task(
-                run_id,
-                folder_path,
-                task_id,
-                active_file_path,
-                cols,
-                rows,
-                subscriber,
-                owner_id,
-                attach_only,
-            )
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    fn start_task(
+    pub fn tasks_start(
         &self,
         run_id: String,
         folder_path: String,
@@ -71,11 +39,14 @@ impl Host {
     ) -> Result<(), ApiError> {
         let _owner = self.runs.owner_activity(owner_id.as_deref())?;
         let folder = resolve_folder(&folder_path)?;
+        let kind = RunKind::Task {
+            task_id: task_id.clone(),
+        };
         self.runs.with_start(&run_id, |runs| {
-            if runs.reuse_task(
+            if runs.reuse(
                 &run_id,
                 &folder,
-                &task_id,
+                &kind,
                 &self.pty,
                 subscriber.as_ref(),
                 owner_id.as_deref(),
@@ -87,13 +58,7 @@ impl Host {
             if attach_only {
                 return Err(ApiError::NotFound(format!("Run not found: {run_id}")));
             }
-            let (_, completed) = runs.reserve(
-                &run_id,
-                folder.clone(),
-                RunKind::Task {
-                    task_id: task_id.clone(),
-                },
-            );
+            let (_, completed) = runs.reserve(&run_id, folder.clone(), kind);
             let result = self.spawn_task(
                 run_id.clone(),
                 folder,
@@ -124,14 +89,13 @@ impl Host {
         owner_id: Option<String>,
         completed: Option<CompletedRunSink>,
     ) -> Result<(), ApiError> {
-        let folder_path = folder.to_string_lossy().into_owned();
         let task = self
             .tasks
             .find(&folder, &task_id)
             .map_err(ApiError::Internal)?
             .ok_or_else(|| ApiError::NotFound(format!("Task not found: {task_id}")))?;
 
-        let base_env = build_task_env(self, &folder_path);
+        let base_env = self.folder_env(&folder);
         let resolved = self
             .tasks
             .resolve(&task, &folder, active_file_path.as_deref(), &base_env);
@@ -167,7 +131,6 @@ impl Host {
             rows,
             subscriber,
             owner_id,
-            RunRetention::Retained,
             on_exit,
             completed,
         ) {
@@ -177,59 +140,17 @@ impl Host {
         Ok(())
     }
 
-    pub async fn tasks_write(
-        self: &Arc<Self>,
-        run_id: String,
-        data: Vec<u8>,
-    ) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || host.pty.write(&run_id, &data).map_err(ApiError::Pty))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    pub async fn tasks_resize(
-        self: &Arc<Self>,
-        run_id: String,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
+    pub fn tasks_stop(&self, run_id: String) -> Result<(), ApiError> {
+        self.runs.with_run(&run_id, |runs| {
+            runs.stop(
+                &run_id,
+                RunKind::Task {
+                    task_id: String::new(),
+                },
+                &self.pty,
+            )?;
+            self.forget_run(&run_id);
+            Ok(())
         })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-
-    pub async fn tasks_stop(self: &Arc<Self>, run_id: String) -> Result<(), ApiError> {
-        let host = Arc::clone(self);
-        tokio::task::spawn_blocking(move || {
-            host.runs.with_run(&run_id, |runs| {
-                let result = runs.stop(
-                    &run_id,
-                    RunKind::Task {
-                        task_id: String::new(),
-                    },
-                    &host.pty,
-                );
-                host.tasks.release_singleton_by_run_id(&run_id);
-                result
-            })
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-    }
-}
-
-fn build_task_env(host: &Host, folder_path: &str) -> HashMap<String, String> {
-    let nix_env = {
-        let db = host.db.read();
-        NixService::load_env_vars(db.conn(), folder_path).unwrap_or_default()
-    };
-
-    match nix_env {
-        Some(nix) => NixService::merge_env(&host.env.child_env, &nix),
-        None => host.env.child_env.clone(),
     }
 }

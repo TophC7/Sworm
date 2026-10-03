@@ -15,10 +15,7 @@
         "id": "nil",
         "label": "nil Language Server",
         "applies_to_languages": ["nix"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "nil"
-        },
+        "command": "nil",
         "args": [],
         "install_hint": "Install `nil` and ensure `nil` is on PATH.",
         "document_selectors": [

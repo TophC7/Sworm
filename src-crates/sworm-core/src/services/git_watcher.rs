@@ -6,13 +6,11 @@
 //! containing tracked files.
 
 use crate::events::{EventSink, HostEvent};
-use crate::services::git::GitService;
+use crate::services::git::{git_output, git_with_stdin, GitService};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
@@ -363,21 +361,17 @@ fn widest_scope(current: Option<GitChangeScope>, next: GitChangeScope) -> GitCha
 /// `(worktree_root, git_dir, common_dir)`; linked worktrees keep HEAD/index
 /// in the per-worktree git dir and refs plus packed-refs in the common dir.
 fn resolve_git_layout(folder: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let output = Command::new("git")
-        .args([
-            "--no-optional-locks",
+    let output = git_output(
+        folder,
+        &[
             "rev-parse",
             "--show-toplevel",
             "--git-dir",
             "--git-common-dir",
-        ])
-        .current_dir(folder)
-        .output()
-        .map_err(|error| format!("Failed to run git: {error}"))?;
-    if !output.status.success() {
-        return Err(git_failure("resolve repository metadata", &output));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        ],
+        "resolve repository metadata",
+    )?;
+    let stdout = String::from_utf8_lossy(&output);
     let mut lines = stdout
         .lines()
         .map(str::trim)
@@ -566,7 +560,7 @@ fn has_relevant_worktree_path(
 ) -> Result<bool, String> {
     let mut candidates = Vec::new();
     for path in paths {
-        if watched.iter().any(|dir| dir.starts_with(path)) {
+        if watched.contains(path) {
             return Ok(true);
         }
         if let Ok(relative) = path.strip_prefix(folder) {
@@ -579,34 +573,13 @@ fn has_relevant_worktree_path(
         return Ok(false);
     }
 
-    let mut child = Command::new("git")
-        .args(["--no-optional-locks", "check-ignore", "--stdin", "-z"])
-        .current_dir(folder)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Failed to run git check-ignore: {error}"))?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "Failed to open git check-ignore stdin".to_string())?;
-        for path in &candidates {
-            stdin
-                .write_all(path.as_bytes())
-                .and_then(|_| stdin.write_all(&[0]))
-                .map_err(|error| format!("Failed to query git ignores: {error}"))?;
-        }
+    let mut input = Vec::new();
+    for path in &candidates {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Failed to query git ignores: {error}"))?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(git_failure("query ignore rules", &output));
-    }
+    let output = git_with_stdin(folder, &["check-ignore", "--stdin", "-z"], &input)?;
     let ignored: HashSet<String> = output
-        .stdout
         .split(|byte| *byte == 0)
         .filter(|raw| !raw.is_empty())
         .map(|raw| String::from_utf8_lossy(raw).into_owned())
@@ -684,33 +657,10 @@ fn is_metadata_noise(relative: &str) -> bool {
         || relative.starts_with("logs/")
 }
 
-fn git_output(folder: &Path, args: &[&str], action: &str) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
-        .arg("--no-optional-locks")
-        .args(args)
-        .current_dir(folder)
-        .output()
-        .map_err(|error| format!("Failed to {action}: {error}"))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(git_failure(action, &output))
-    }
-}
-
-fn git_failure(action: &str, output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-    if detail.is_empty() {
-        format!("Failed to {action}: git exited with {}", output.status)
-    } else {
-        format!("Failed to {action}: {detail}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn temp_repo(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

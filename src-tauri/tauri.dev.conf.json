@@ -1,8 +1,5 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "dev.sworm.debug",
-  "productName": "Sworm (Dev)",
-  "app": {
-    "windows": []
-  }
+  "productName": "Sworm (Dev)"
 }

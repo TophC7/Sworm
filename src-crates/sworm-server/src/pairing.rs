@@ -4,10 +4,8 @@ use std::{
     path::Path,
     ptr,
 };
-use sworm_server::{
-    auth,
-    config::{self, ServerConfig},
-};
+use sworm_protocol::server_config::ServerConfig;
+use sworm_server::{auth, config};
 
 pub fn run(
     config_dir: &Path,

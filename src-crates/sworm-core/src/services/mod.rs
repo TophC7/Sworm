@@ -24,7 +24,6 @@ pub mod resume_discovery;
 pub(crate) mod runs;
 pub mod runtime_info;
 pub mod settings;
-pub mod settings_patch;
 pub mod settings_resolution;
 pub mod settings_watcher;
 pub mod tasks;

@@ -6,9 +6,7 @@ use crate::{
 use anyhow::Context;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use sworm_core::{services::completed_runs::CompletedRunStore, Host};
-use sworm_protocol::rpc::{
-    Open, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MAX_STREAMS_PER_CONNECTION,
-};
+use sworm_protocol::rpc::{Open, Response, WireError, MAX_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES};
 use sworm_remote::{
     tls::{peer_fingerprint, server_config},
     wire::{read_frame_with_limit, write_frame},
@@ -101,17 +99,6 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<ServerHandle> {
     host.configure_completed_runs(Arc::clone(&completed));
 
     let mut quic_config = server_config(&identity)?;
-    let mut transport = quinn::TransportConfig::default();
-    transport
-        .max_concurrent_bidi_streams(MAX_STREAMS_PER_CONNECTION.into())
-        .max_concurrent_uni_streams(0u32.into())
-        .max_idle_timeout(Some(
-            Duration::from_secs(30)
-                .try_into()
-                .expect("30 second QUIC idle timeout is representable"),
-        ))
-        .keep_alive_interval(Some(Duration::from_secs(10)));
-    quic_config.transport_config(Arc::new(transport));
     quic_config
         .max_incoming(MAX_CONNECTIONS)
         .incoming_buffer_size(1024 * 1024)
@@ -447,8 +434,17 @@ async fn process_stream(
             return;
         }
     };
+    if !matches!(open, Open::Rpc(_) | Open::FileRead { .. }) && !session.lock().await.authorized {
+        let response: Response = Err(dispatch::unauthorized(
+            "client is not paired with this server",
+        ));
+        if write_response(&mut send, &response).await {
+            close_unauthorized(&connection, &mut send).await;
+        }
+        return;
+    }
 
-    match open {
+    let response = match open {
         Open::FileRead {
             project_path,
             file_path,
@@ -471,34 +467,22 @@ async fn process_stream(
                 project_path,
                 file_path,
                 version,
-                StreamWriter::quic(send, Some(connection)),
+                StreamWriter::quic(send, connection),
                 StreamReader::quic(recv),
                 shutdown,
             )
             .await;
+            return;
         }
         Open::Rpc(request) => {
             // Bound RPC execution only. Stream intake and response backpressure hold no permit.
-            let response = {
-                let Ok(_permit) = request_permits.acquire_owned().await else {
-                    return;
-                };
-                dispatch::handle(&host, &context, &session, request).await
-            };
-            let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
-            if !write_response(&mut send, &response).await {
+            let Ok(_permit) = request_permits.acquire_owned().await else {
                 return;
-            }
-            if unauthorized {
-                close_unauthorized(&connection, &mut send).await;
-            }
+            };
+            dispatch::handle(&host, &context, &session, request).await
         }
         Open::WorkbenchRpc { workbench, request } => {
-            let response = if !session.lock().await.authorized {
-                Err(dispatch::unauthorized(
-                    "client is not paired with this server",
-                ))
-            } else if matches!(request, sworm_protocol::rpc::Request::WorkbenchClose { .. }) {
+            if matches!(request, sworm_protocol::rpc::Request::WorkbenchClose { .. }) {
                 // Close cannot wait for its own admitted work to drain.
                 dispatch::handle(&host, &context, &session, request).await
             } else {
@@ -527,25 +511,9 @@ async fn process_stream(
                 } else {
                     Err(WireError::NotController { workbench })
                 }
-            };
-            let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
-            if !write_response(&mut send, &response).await {
-                return;
-            }
-            if unauthorized {
-                close_unauthorized(&connection, &mut send).await;
             }
         }
         Open::Events => {
-            if !session.lock().await.authorized {
-                let response: Response = Err(dispatch::unauthorized(
-                    "client is not paired with this server",
-                ));
-                if write_response(&mut send, &response).await {
-                    close_unauthorized(&connection, &mut send).await;
-                }
-                return;
-            }
             events::run(
                 session,
                 context.host_events.clone(),
@@ -554,55 +522,44 @@ async fn process_stream(
                 shutdown,
             )
             .await;
+            return;
         }
         Open::Pty { run_id, cursor } => {
-            if !session.lock().await.authorized {
-                let response: Response = Err(dispatch::unauthorized(
-                    "client is not paired with this server",
-                ));
-                if write_response(&mut send, &response).await {
-                    close_unauthorized(&connection, &mut send).await;
-                }
-                return;
-            }
             pty_stream::run(
                 host,
                 context,
                 run_id,
                 cursor,
-                StreamWriter::quic(send, Some(connection)),
+                StreamWriter::quic(send, connection),
                 StreamReader::quic(recv),
                 shutdown,
             )
             .await;
+            return;
         }
         Open::Lsp { session_id } => {
             // The lease an LSP stream claims is bound to this connection, so
             // the session's owner travels with the stream.
-            let owner = {
-                let session = session.lock().await;
-                session.authorized.then(|| session.subscriber_id.clone())
-            };
-            let Some(owner) = owner else {
-                let response: Response = Err(dispatch::unauthorized(
-                    "client is not paired with this server",
-                ));
-                if write_response(&mut send, &response).await {
-                    close_unauthorized(&connection, &mut send).await;
-                }
-                return;
-            };
+            let owner = session.lock().await.subscriber_id.clone();
             lsp_stream::run(
                 host,
                 context,
                 session_id,
                 owner,
-                StreamWriter::quic(send, Some(connection)),
+                StreamWriter::quic(send, connection),
                 StreamReader::quic(recv),
                 shutdown,
             )
             .await;
+            return;
         }
+    };
+    let unauthorized = matches!(&response, Err(WireError::Unauthorized { .. }));
+    if !write_response(&mut send, &response).await {
+        return;
+    }
+    if unauthorized {
+        close_unauthorized(&connection, &mut send).await;
     }
 }
 

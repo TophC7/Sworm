@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use sworm_protocol::rpc::RunStatus;
-use sworm_protocol::session::SessionStartInfo;
 use tracing::warn;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,76 +298,7 @@ impl RunGuard<'_> {
         }
     }
 
-    fn known_state(&self, run_id: &str, pty: &PtyService) -> Result<bool, ApiError> {
-        if pty.run_state(run_id).is_some() {
-            return Ok(true);
-        }
-        let store = self.coordinator.state.lock().completed.clone();
-        store.as_ref().map_or(Ok(false), |store| {
-            store
-                .exit_status(run_id)
-                .map(|code| code.is_some())
-                .map_err(ApiError::Internal)
-        })
-    }
-
-    pub(crate) fn reuse_session(
-        &self,
-        run_id: &str,
-        folder: &PathBuf,
-        provider_id: &str,
-        pty: &PtyService,
-        subscriber: Option<&PtySubscriber>,
-        owner: Option<&str>,
-        cols: u16,
-        rows: u16,
-    ) -> Result<Option<SessionStartInfo>, ApiError> {
-        if !self.reuse_run(
-            run_id,
-            folder,
-            &RunKind::Session {
-                provider_id: provider_id.to_owned(),
-            },
-            pty,
-            subscriber,
-            owner,
-            cols,
-            rows,
-        )? {
-            return Ok(None);
-        }
-        Ok(Some(SessionStartInfo {
-            resumed: true,
-            resume_token: self.coordinator.resume_token(run_id),
-        }))
-    }
-
-    pub(crate) fn reuse_task(
-        &self,
-        run_id: &str,
-        folder: &PathBuf,
-        task_id: &str,
-        pty: &PtyService,
-        subscriber: Option<&PtySubscriber>,
-        owner: Option<&str>,
-        cols: u16,
-        rows: u16,
-    ) -> Result<bool, ApiError> {
-        self.reuse_run(
-            run_id,
-            folder,
-            &RunKind::Task {
-                task_id: task_id.to_owned(),
-            },
-            pty,
-            subscriber,
-            owner,
-            cols,
-            rows,
-        )
-    }
-
-    fn reuse_run(
+    pub(crate) fn reuse(
         &self,
         run_id: &str,
         folder: &PathBuf,
@@ -380,11 +310,22 @@ impl RunGuard<'_> {
         rows: u16,
     ) -> Result<bool, ApiError> {
         let existing = self.existing(run_id, folder, kind)?;
-        let known = self.known_state(run_id, pty)?;
+        let pty_state = pty.run_state(run_id);
+        let known = if pty_state.is_some() {
+            true
+        } else {
+            let store = self.coordinator.state.lock().completed.clone();
+            store.as_ref().map_or(Ok(false), |store| {
+                store
+                    .exit_status(run_id)
+                    .map(|code| code.is_some())
+                    .map_err(ApiError::Internal)
+            })?
+        };
         if !existing && !known {
             return Ok(false);
         }
-        if !existing && pty.run_state(run_id).is_some() {
+        if !existing && pty_state.is_some() {
             return Err(conflict(run_id));
         }
         if existing && !known {
@@ -393,7 +334,7 @@ impl RunGuard<'_> {
             )));
         }
         if let Some(subscriber) = subscriber {
-            if pty.run_state(run_id).is_some() {
+            if pty_state.is_some() {
                 pty.attach_same_owner(run_id, owner, subscriber.clone(), cols, rows)
                     .map_err(ApiError::Pty)?;
             } else {
@@ -401,7 +342,7 @@ impl RunGuard<'_> {
                     "Run {run_id} has no attachable PTY"
                 )));
             }
-        } else if existing && pty.run_state(run_id).is_some() {
+        } else if existing && pty_state.is_some() {
             pty.ensure_owner(run_id, owner).map_err(ApiError::Pty)?;
         }
         Ok(true)
@@ -469,13 +410,6 @@ impl RunGuard<'_> {
                             let mut state = coordinator.state.lock();
                             if state.records.get(&id).is_some_and(|record| record.archived) {
                                 state.records.remove(&id);
-                                if state
-                                    .gates
-                                    .get(&id)
-                                    .is_some_and(|gate| gate.strong_count() == 0)
-                                {
-                                    state.gates.remove(&id);
-                                }
                             }
                         }
                     });
@@ -486,15 +420,7 @@ impl RunGuard<'_> {
     }
 
     pub(crate) fn abort(&mut self, run_id: &str) {
-        let mut state = self.coordinator.state.lock();
-        state.records.remove(run_id);
-        if state
-            .gates
-            .get(run_id)
-            .is_some_and(|gate| gate.strong_count() == 0)
-        {
-            state.gates.remove(run_id);
-        }
+        self.coordinator.state.lock().records.remove(run_id);
     }
 
     pub(crate) fn stop(
@@ -515,18 +441,10 @@ impl RunGuard<'_> {
         {
             return Err(conflict(run_id));
         }
-        // Invalidate first: an exiting process must never re-create an explicitly deleted archive.
-        self.abort(run_id);
-        let result = match pty.kill(run_id) {
-            Ok(()) => Ok(()),
-            Err(error) if error.contains("No active PTY session") => Ok(()),
-            Err(error) => Err(ApiError::Pty(error)),
-        };
-        let store = self.coordinator.state.lock().completed.clone();
-        if let Some(store) = store {
-            store.delete(run_id);
-        }
-        result
+        pty.kill(run_id).map_err(ApiError::Pty)?;
+        // The run gate prevents a late archive callback from recreating this record.
+        self.release(run_id);
+        Ok(())
     }
 
     pub(crate) fn release(&mut self, run_id: &str) {
@@ -610,26 +528,23 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn task_attach_only_and_reuse_never_execute_twice() {
+    #[test]
+    fn task_attach_only_and_reuse_never_execute_twice() {
         let fixture = Fixture::new("printf x >> count; sleep 30");
         let folder = fixture.path();
         let (first, first_events) = subscriber();
         assert!(matches!(
-            fixture
-                .host
-                .tasks_start(
-                    "run".into(),
-                    folder.clone(),
-                    "once".into(),
-                    None,
-                    80,
-                    24,
-                    Some(first),
-                    Some("owner".into()),
-                    true
-                )
-                .await,
+            fixture.host.tasks_start(
+                "run".into(),
+                folder.clone(),
+                "once".into(),
+                None,
+                80,
+                24,
+                Some(first),
+                Some("owner".into()),
+                true
+            ),
             Err(ApiError::NotFound(_))
         ));
         assert!(!fixture.folder.join("count").exists());
@@ -646,7 +561,6 @@ mod tests {
                 Some("owner".into()),
                 false,
             )
-            .await
             .unwrap();
         wait_until(|| fs::read(fixture.folder.join("count")).is_ok_and(|bytes| bytes == b"x"));
         let (second, second_events) = subscriber();
@@ -663,7 +577,6 @@ mod tests {
                 Some("owner".into()),
                 true,
             )
-            .await
             .unwrap();
         wait_until(|| {
             second_events
@@ -673,47 +586,41 @@ mod tests {
         });
         assert_eq!(fs::read(fixture.folder.join("count")).unwrap(), b"x");
         assert!(matches!(
-            fixture
-                .host
-                .tasks_start(
-                    "run".into(),
-                    folder.clone(),
-                    "different".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner".into()),
-                    false
-                )
-                .await,
+            fixture.host.tasks_start(
+                "run".into(),
+                folder.clone(),
+                "different".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("owner".into()),
+                false
+            ),
             Err(ApiError::InvalidArgument(_))
         ));
         assert!(matches!(
-            fixture
-                .host
-                .tasks_start(
-                    "run".into(),
-                    folder,
-                    "once".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("other".into()),
-                    true
-                )
-                .await,
+            fixture.host.tasks_start(
+                "run".into(),
+                folder,
+                "once".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("other".into()),
+                true
+            ),
             Err(ApiError::Pty(_))
         ));
         assert!(fixture.host.run_status("run").unwrap().live);
         assert!(first_events.lock().is_empty());
-        fixture.host.tasks_stop("run".into()).await.unwrap();
+        fixture.host.tasks_stop("run".into()).unwrap();
         assert!(!fixture.host.run_status("run").unwrap().live);
     }
 
-    #[tokio::test]
-    async fn completed_local_task_replays_exit_without_respawn() {
+    #[test]
+    fn completed_local_task_replays_exit_without_respawn() {
         let fixture = Fixture::new("printf x >> count; printf retained-tail");
         let folder = fixture.path();
         fixture
@@ -729,7 +636,6 @@ mod tests {
                 Some("owner".into()),
                 false,
             )
-            .await
             .unwrap();
         wait_until(|| fixture.host.run_status("run").unwrap().exited.is_some());
         let output = Arc::new(Mutex::new(Vec::new()));
@@ -759,7 +665,6 @@ mod tests {
                 Some("owner".into()),
                 true,
             )
-            .await
             .unwrap();
         assert!(String::from_utf8_lossy(&output.lock()).contains("retained-tail"));
         assert!(events
@@ -767,11 +672,11 @@ mod tests {
             .iter()
             .any(|event| matches!(event, PtyEvent::Exit { .. })));
         assert_eq!(fs::read(fixture.folder.join("count")).unwrap(), b"x");
-        fixture.host.tasks_stop("run".into()).await.unwrap();
+        fixture.host.tasks_stop("run".into()).unwrap();
         assert!(fixture.host.run_status("run").unwrap().exited.is_none());
     }
-    #[tokio::test]
-    async fn concurrent_task_starts_share_one_process() {
+    #[test]
+    fn concurrent_task_starts_share_one_process() {
         let fixture = Fixture::new("printf x >> count; sleep 30");
         let folder = fixture.path();
         std::thread::scope(|scope| {
@@ -780,10 +685,7 @@ mod tests {
                     let folder = folder.clone();
                     let host = &fixture.host;
                     scope.spawn(move || {
-                        let runtime = tokio::runtime::Builder::new_current_thread()
-                            .build()
-                            .unwrap();
-                        runtime.block_on(host.tasks_start(
+                        host.tasks_start(
                             "race".into(),
                             folder,
                             "once".into(),
@@ -793,7 +695,7 @@ mod tests {
                             None,
                             Some("owner".into()),
                             false,
-                        ))
+                        )
                     })
                 })
                 .collect();
@@ -803,11 +705,65 @@ mod tests {
         });
         wait_until(|| fs::read(fixture.folder.join("count")).is_ok_and(|bytes| bytes == b"x"));
         assert_eq!(fs::read(fixture.folder.join("count")).unwrap(), b"x");
-        fixture.host.tasks_stop("race".into()).await.unwrap();
+        fixture.host.tasks_stop("race".into()).unwrap();
     }
 
     #[tokio::test]
-    async fn session_reattach_preserves_started_pid_and_rejects_other_owner() {
+    async fn discard_run_clears_discovery_and_record_before_same_id_restart() {
+        let fixture = Fixture::new("true");
+        fs::write(
+            fixture.folder.join(".sworm/settings.jsonc"),
+            serde_json::json!({
+                "providers": {
+                    "omp": {
+                        "enabled": true,
+                        "binary_path_override": "/bin/sh",
+                        "extra_args": ["-c", "printf x >> spawned; exec sleep 30"]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let host = &fixture.host;
+        let start = || {
+            host.session_start(
+                "discarded".into(),
+                fixture.path(),
+                "omp".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("owner".into()),
+            )
+        };
+        let first = start().unwrap();
+        wait_until(|| fs::read(fixture.folder.join("spawned")).is_ok_and(|bytes| bytes == b"x"));
+        assert!(!first.resumed);
+        assert_eq!(first.resume_token, None);
+        assert!(host.run_status("discarded").unwrap().live);
+        assert!(host.runs.state.lock().records.contains_key("discarded"));
+        assert!(host.resume_discovery.has_pending("discarded"));
+
+        host.discard_run("discarded").unwrap();
+        let status = host.run_status("discarded").unwrap();
+        assert!(!status.live);
+        assert_eq!(status.exited, None);
+        assert!(!host.runs.state.lock().records.contains_key("discarded"));
+        assert!(!host.resume_discovery.has_pending("discarded"));
+
+        let restarted = start().expect("discarded id must spawn, not reuse a missing transcript");
+        assert!(!restarted.resumed);
+        assert_eq!(restarted.resume_token, None);
+        wait_until(|| fs::read(fixture.folder.join("spawned")).is_ok_and(|bytes| bytes == b"xx"));
+        assert!(host.run_status("discarded").unwrap().live);
+        assert!(host.resume_discovery.has_pending("discarded"));
+        host.discard_run("discarded").unwrap();
+    }
+
+    #[test]
+    fn session_reattach_preserves_started_pid_and_rejects_other_owner() {
         let fixture = Fixture::new("true");
         let folder = fixture.path();
         let (first, first_events) = subscriber();
@@ -823,7 +779,6 @@ mod tests {
                 Some(first),
                 Some("owner".into()),
             )
-            .await
             .unwrap();
         wait_until(|| {
             first_events
@@ -844,7 +799,6 @@ mod tests {
                 Some(second),
                 Some("owner".into()),
             )
-            .await
             .unwrap();
         assert!(info.resumed);
         let first_pid = first_events
@@ -865,26 +819,19 @@ mod tests {
             .unwrap();
         assert_eq!(first_pid, second_pid);
         assert!(matches!(
-            fixture
-                .host
-                .session_start(
-                    "terminal-run".into(),
-                    folder,
-                    "terminal".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("other".into()),
-                )
-                .await,
+            fixture.host.session_start(
+                "terminal-run".into(),
+                folder,
+                "terminal".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("other".into()),
+            ),
             Err(ApiError::Pty(_))
         ));
-        fixture
-            .host
-            .session_stop("terminal-run".into())
-            .await
-            .unwrap();
+        fixture.host.session_stop("terminal-run".into()).unwrap();
     }
     #[test]
     fn stalled_start_does_not_block_other_runs_and_same_run_stop_waits() {
@@ -909,42 +856,36 @@ mod tests {
             let host = &fixture.host;
             let folder = fixture.path();
             let start = scope.spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(host.session_start(
-                        "slow".into(),
-                        folder,
-                        "terminal".into(),
-                        None,
-                        80,
-                        24,
-                        Some(subscriber),
-                        None,
-                    ))
+                host.session_start(
+                    "slow".into(),
+                    folder,
+                    "terminal".into(),
+                    None,
+                    80,
+                    24,
+                    Some(subscriber),
+                    None,
+                )
             });
             entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
             scope.spawn(move || {
-                let result = tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(host.session_stop("slow".into()));
+                let result = host.session_stop("slow".into());
                 stopped_tx.send(result).unwrap();
             });
             let (other_tx, other_rx) = std::sync::mpsc::channel();
             let folder = fixture.path();
             scope.spawn(move || {
-                let result = tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(host.session_start(
-                        "other".into(),
-                        folder,
-                        "terminal".into(),
-                        None,
-                        80,
-                        24,
-                        None,
-                        None,
-                    ));
+                let result = host.session_start(
+                    "other".into(),
+                    folder,
+                    "terminal".into(),
+                    None,
+                    80,
+                    24,
+                    None,
+                    None,
+                );
                 other_tx.send(result).unwrap();
             });
             let other = other_rx.recv_timeout(Duration::from_secs(2));
@@ -980,7 +921,7 @@ mod tests {
             }),
         };
         let host = Arc::clone(&fixture.host);
-        let first = tokio::spawn(async move {
+        let first = tokio::task::spawn_blocking(move || {
             host.session_start(
                 "first".into(),
                 folder,
@@ -991,29 +932,27 @@ mod tests {
                 Some(subscriber),
                 Some("owner-a".into()),
             )
-            .await
         });
         tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(5)))
             .await
             .unwrap()
             .unwrap();
-        let same_owner = tokio::time::timeout(Duration::from_secs(2), async {
-            fixture
-                .host
-                .session_start(
-                    "same-owner".into(),
-                    fixture.path(),
-                    "terminal".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner-a".into()),
-                )
-                .await?;
-            fixture.host.session_stop("same-owner".into()).await
-        })
-        .await;
+        let host = Arc::clone(&fixture.host);
+        let folder = fixture.path();
+        let same_owner_task = tokio::task::spawn_blocking(move || {
+            host.session_start(
+                "same-owner".into(),
+                folder,
+                "terminal".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("owner-a".into()),
+            )?;
+            host.session_stop("same-owner".into())
+        });
+        let same_owner = tokio::time::timeout(Duration::from_secs(2), same_owner_task).await;
         let host = Arc::clone(&fixture.host);
         let close =
             tokio::task::spawn_blocking(move || host.release_owner("owner-a", &Default::default()));
@@ -1024,23 +963,22 @@ mod tests {
         })
         .await
         .is_ok();
-        let other = tokio::time::timeout(Duration::from_secs(2), async {
-            fixture
-                .host
-                .session_start(
-                    "second".into(),
-                    fixture.path(),
-                    "terminal".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner-b".into()),
-                )
-                .await?;
-            fixture.host.session_stop("second".into()).await
-        })
-        .await;
+        let host = Arc::clone(&fixture.host);
+        let folder = fixture.path();
+        let other_task = tokio::task::spawn_blocking(move || {
+            host.session_start(
+                "second".into(),
+                folder,
+                "terminal".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("owner-b".into()),
+            )?;
+            host.session_stop("second".into())
+        });
+        let other = tokio::time::timeout(Duration::from_secs(2), other_task).await;
         let close_waited = !close.is_finished();
         let _ = release_tx.send(());
         first.await.unwrap().unwrap();
@@ -1050,25 +988,23 @@ mod tests {
             close_waited,
             "owner close must wait for its in-flight startup"
         );
-        other.expect("unrelated owner blocked").unwrap();
+        other.expect("unrelated owner blocked").unwrap().unwrap();
         same_owner
             .expect("another run for same owner blocked")
+            .unwrap()
             .unwrap();
         assert!(!fixture.host.run_status("first").unwrap().live);
         assert!(matches!(
-            fixture
-                .host
-                .session_start(
-                    "late".into(),
-                    fixture.path(),
-                    "terminal".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    Some("owner-a".into()),
-                )
-                .await,
+            fixture.host.session_start(
+                "late".into(),
+                fixture.path(),
+                "terminal".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("owner-a".into()),
+            ),
             Err(ApiError::NotFound(_))
         ));
     }
@@ -1098,7 +1034,6 @@ mod tests {
                 Some("owner-b".into()),
                 false,
             )
-            .await
             .unwrap();
         wait_until(|| {
             fixture
@@ -1124,7 +1059,7 @@ mod tests {
         };
         let host = Arc::clone(&fixture.host);
         let folder = fixture.path();
-        let first = tokio::spawn(async move {
+        let first = tokio::task::spawn_blocking(move || {
             host.tasks_start(
                 "stalled".into(),
                 folder,
@@ -1136,7 +1071,6 @@ mod tests {
                 Some("owner-a".into()),
                 false,
             )
-            .await
         });
         tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(5)))
             .await
@@ -1175,7 +1109,6 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            use std::future::Future;
             let (entered_tx, entered_rx) = std::sync::mpsc::channel();
             let (release_tx, release_rx) = std::sync::mpsc::channel();
             let blocker = tokio::task::spawn_blocking(move || {
@@ -1183,26 +1116,25 @@ mod tests {
                 let _ = release_rx.recv_timeout(Duration::from_secs(5));
             });
             entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            let mut queued = Box::pin(fixture.host.tasks_start(
-                "queued".into(),
-                fixture.path(),
-                "once".into(),
-                None,
-                80,
-                24,
-                None,
-                Some("owner".into()),
-                false,
-            ));
-            std::future::poll_fn(|cx| {
-                assert!(queued.as_mut().poll(cx).is_pending());
-                std::task::Poll::Ready(())
-            })
-            .await;
+            let host = Arc::clone(&fixture.host);
+            let folder = fixture.path();
+            let queued = tokio::task::spawn_blocking(move || {
+                host.tasks_start(
+                    "queued".into(),
+                    folder,
+                    "once".into(),
+                    None,
+                    80,
+                    24,
+                    None,
+                    Some("owner".into()),
+                    false,
+                )
+            });
             fixture.host.shutdown();
             let _ = release_tx.send(());
             blocker.await.unwrap();
-            assert!(matches!(queued.await, Err(ApiError::NotFound(_))));
+            assert!(matches!(queued.await.unwrap(), Err(ApiError::NotFound(_))));
             assert!(!fixture.folder.join("count").exists());
             assert!(fixture
                 .host
@@ -1213,8 +1145,8 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn archive_pruning_retires_metadata_without_losing_retained_identity() {
+    #[test]
+    fn archive_pruning_retires_metadata_without_losing_retained_identity() {
         let fixture = Fixture::new("printf unexpected >> count");
         fixture
             .host
@@ -1254,44 +1186,38 @@ mod tests {
         assert!(!state.records.contains_key("old"));
         drop(state);
         assert!(matches!(
-            fixture
-                .host
-                .tasks_start(
-                    "new".into(),
-                    fixture.path(),
-                    "wrong-task".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    None,
-                    true,
-                )
-                .await,
+            fixture.host.tasks_start(
+                "new".into(),
+                fixture.path(),
+                "wrong-task".into(),
+                None,
+                80,
+                24,
+                None,
+                None,
+                true,
+            ),
             Err(ApiError::InvalidArgument(_))
         ));
         assert!(matches!(
-            fixture
-                .host
-                .tasks_start(
-                    "old".into(),
-                    fixture.path(),
-                    "once".into(),
-                    None,
-                    80,
-                    24,
-                    None,
-                    None,
-                    true,
-                )
-                .await,
+            fixture.host.tasks_start(
+                "old".into(),
+                fixture.path(),
+                "once".into(),
+                None,
+                80,
+                24,
+                None,
+                None,
+                true,
+            ),
             Err(ApiError::NotFound(_))
         ));
         assert!(!fixture.folder.join("count").exists());
     }
 
-    #[tokio::test]
-    async fn restored_view_releases_only_unrestored_completed_owned_tasks() {
+    #[test]
+    fn restored_view_releases_only_unrestored_completed_owned_tasks() {
         let fixture = Fixture::new("if test -e keepalive; then sleep 30; else printf tail; fi");
         for (id, owner) in [
             ("discard", "owner"),
@@ -1313,7 +1239,6 @@ mod tests {
                     Some(owner.into()),
                     false,
                 )
-                .await
                 .unwrap();
             wait_until(|| fixture.host.run_status(id).unwrap().exited.is_some());
         }
@@ -1332,7 +1257,6 @@ mod tests {
                 Some("owner".into()),
                 false,
             )
-            .await
             .unwrap();
         fixture
             .host
@@ -1480,8 +1404,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn explicit_stop_fences_late_archive_publication() {
+    #[test]
+    fn explicit_stop_fences_late_archive_publication() {
         let fixture = Fixture::new("true");
         fixture
             .host
@@ -1500,7 +1424,7 @@ mod tests {
             );
             completion.unwrap()
         });
-        fixture.host.tasks_stop("closed".into()).await.unwrap();
+        fixture.host.tasks_stop("closed".into()).unwrap();
         fixture.host.runs.with_run("closed", |runs| {
             runs.reserve(
                 "closed",

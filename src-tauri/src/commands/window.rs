@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::host_events::channel_sink;
 use crate::router::Target;
-use crate::services::windows::{
+use crate::windows::{
     ClaimFileResult, OpenTarget, TabTransferExportPayload, TabTransferInitiateParams,
 };
 use std::path::{Path, PathBuf};
@@ -36,18 +36,12 @@ pub async fn window_ready(
     tokio::task::spawn_blocking(move || {
         host.release_unrestored_tasks(&owner, &restored_task_runs.into_iter().collect())
     })
-    .await
-    .map_err(|error| ApiError::Internal(error.to_string()))??;
+    .await??;
     state
         .windows
         .mark_ready(window.label(), window.app_handle())
         .map(|_| ())
         .map_err(ApiError::Internal)
-}
-
-#[tauri::command]
-pub fn window_get_label(window: WebviewWindow) -> Result<String, ApiError> {
-    Ok(window.label().to_string())
 }
 
 #[tauri::command]
@@ -59,8 +53,7 @@ pub async fn pty_pause(
     let host = state.host.clone();
     let owner = window.label().to_owned();
     tokio::task::spawn_blocking(move || host.pty.pause_owned(&run_id, &owner))
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .await?
         .map_err(ApiError::Pty)
 }
 
@@ -83,8 +76,7 @@ pub async fn pty_attach(
     tokio::task::spawn_blocking(move || {
         windows.attach_transfer_pty(&transfer_id, &owner, &run_id, subscriber, &host.pty)
     })
-    .await
-    .map_err(|error| ApiError::Internal(error.to_string()))?
+    .await?
     .map_err(ApiError::Pty)
 }
 
@@ -120,24 +112,11 @@ pub async fn window_transfer_initiate(
     params: TabTransferInitiateParams,
     state: State<'_, AppState>,
 ) -> Result<String, ApiError> {
-    authorize_transfer_initiation(window.label(), &params)?;
+    let owner = window.label().to_owned();
     let windows = state.windows.clone();
-    tokio::task::spawn_blocking(move || windows.initiate_tab_transfer(&app, params))
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
+    tokio::task::spawn_blocking(move || windows.initiate_tab_transfer(&app, &owner, params))
+        .await?
         .map_err(ApiError::Internal)
-}
-
-fn authorize_transfer_initiation(
-    caller: &str,
-    params: &TabTransferInitiateParams,
-) -> Result<(), ApiError> {
-    if params.target_window != caller {
-        return Err(ApiError::Pty(
-            "transfer target belongs to a different window".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -150,8 +129,7 @@ pub async fn window_transfer_source_exported(
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
     tokio::task::spawn_blocking(move || windows.source_export_ready(&app, &owner, payload))
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .await?
         .map_err(ApiError::Internal)
 }
 
@@ -165,8 +143,7 @@ pub async fn window_transfer_target_staged(
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
     tokio::task::spawn_blocking(move || windows.target_stage_ready(&app, &owner, &transfer_id))
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .await?
         .map_err(ApiError::Internal)
 }
 
@@ -181,14 +158,10 @@ pub async fn window_transfer_abort(
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
     tokio::task::spawn_blocking(move || {
-        windows
-            .authorize_participant(&transfer_id, &owner)
-            .map_err(ApiError::Pty)?;
-        windows.abort_tab_transfer(&app, &transfer_id, &reason);
-        Ok(())
+        windows.abort_tab_transfer_as(&app, &owner, &transfer_id, &reason)
     })
-    .await
-    .map_err(|error| ApiError::Internal(error.to_string()))?
+    .await?
+    .map_err(ApiError::Internal)
 }
 
 #[tauri::command]
@@ -289,22 +262,4 @@ fn resolve_file_path(file_path: &str) -> Result<PathBuf, ApiError> {
     Ok(sworm_core::services::folders::normalize_absolute_path(
         &path,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_drop_target_can_initiate_transfer() {
-        let params = TabTransferInitiateParams {
-            source_window: "source".into(),
-            target_window: "target".into(),
-            tab_id: "tab".into(),
-            target_index: 0,
-        };
-        assert!(authorize_transfer_initiation("target", &params).is_ok());
-        assert!(authorize_transfer_initiation("source", &params).is_err());
-        assert!(authorize_transfer_initiation("unrelated", &params).is_err());
-    }
 }

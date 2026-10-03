@@ -8,7 +8,6 @@
 use crate::errors::ApiError;
 use crate::services::folders::home_dir;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use sworm_protocol::omp::OmpResolvedTarget;
@@ -53,14 +52,13 @@ fn parse_session_file_name(name: &str) -> Option<(&str, &str)> {
 }
 
 /// Visit sessions in `cwd`'s bucket created at or after `since`, oldest
-/// first, excluding known ids. Returning `false` stops iteration.
+/// first. Returning `false` stops iteration.
 ///
 /// OMP materializes the session file only after the first assistant
 /// reply, so a fresh OMP run binds after its first exchange, not at start.
 pub fn visit_sessions_created_since(
     cwd: &str,
     since: SystemTime,
-    exclude: &HashSet<String>,
     mut visit: impl FnMut(SystemTime, String) -> bool,
 ) -> Option<()> {
     let entries = std::fs::read_dir(session_bucket(cwd)?).ok()?;
@@ -73,7 +71,7 @@ pub fn visit_sessions_created_since(
         let Some((ts, id)) = name.to_str().and_then(parse_session_file_name) else {
             continue;
         };
-        if ts < since_str.as_str() || exclude.contains(id) {
+        if ts < since_str.as_str() {
             continue;
         }
         let Ok(created_at) = NaiveDateTime::parse_from_str(ts, OMP_TS_FORMAT) else {
@@ -109,7 +107,10 @@ pub fn session_exists(cwd: &str, id: &str) -> bool {
 }
 
 fn latest_session_paths(cwd: &str) -> Option<(PathBuf, PathBuf)> {
-    let bucket = session_bucket(cwd)?;
+    latest_in(session_bucket(cwd)?)
+}
+
+fn latest_in(bucket: PathBuf) -> Option<(PathBuf, PathBuf)> {
     let entries = std::fs::read_dir(&bucket).ok()?;
     let latest = entries
         .flatten()
@@ -131,29 +132,12 @@ fn latest_session_paths(cwd: &str) -> Option<(PathBuf, PathBuf)> {
 fn find_any_latest_session() -> Option<(PathBuf, PathBuf)> {
     let home = home_dir()?;
     let sessions_root = home.join(".omp").join("agent").join("sessions");
-    let bucket_entries = std::fs::read_dir(&sessions_root).ok()?;
-    let mut best: Option<(String, PathBuf, PathBuf)> = None;
-    for b in bucket_entries.flatten() {
-        let bpath = b.path();
-        if bpath.is_dir() {
-            if let Ok(files) = std::fs::read_dir(&bpath) {
-                for f in files.flatten() {
-                    let name = f.file_name().to_string_lossy().into_owned();
-                    if name.ends_with(".jsonl") {
-                        if best.as_ref().map_or(true, |(prev, _, _)| name > *prev) {
-                            let full_file = bpath.join(&name);
-                            best = Some((name, full_file, bpath.clone()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let (_, jsonl_file, bucket_path) = best?;
-    let file_name = jsonl_file.file_name()?.to_string_lossy();
-    let stem = file_name.strip_suffix(".jsonl")?;
-    let artifacts_dir = bucket_path.join(stem);
-    Some((jsonl_file, artifacts_dir))
+    std::fs::read_dir(sessions_root)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| latest_in(entry.path()))
+        .max_by(|left, right| left.0.file_name().cmp(&right.0.file_name()))
 }
 
 fn fallback_omp_read(uri: &str, home: &Path, slug: &str) -> Result<OmpResolvedTarget, ApiError> {
@@ -200,252 +184,147 @@ pub fn resolve_omp_target(uri: &str, cwd: Option<&str>) -> Result<OmpResolvedTar
             .or_else(find_any_latest_session)
     };
 
-    match scheme {
-        "history" => {
-            if let Some((jsonl_file, artifacts_dir)) = get_session() {
+    fn file(path: PathBuf) -> Option<OmpResolvedTarget> {
+        path.is_file().then(|| OmpResolvedTarget {
+            path: path.to_string_lossy().into_owned(),
+            is_dir: false,
+        })
+    }
+
+    fn entry(path: PathBuf) -> Option<OmpResolvedTarget> {
+        path.exists().then(|| OmpResolvedTarget {
+            is_dir: path.is_dir(),
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+
+    let resolved = match scheme {
+        "history" => get_session().and_then(|(jsonl, artifacts)| {
+            if target.is_empty() || target == "Main" {
+                file(jsonl)
+            } else {
+                file(artifacts.join(format!("{target}.jsonl"))).or_else(|| file(jsonl))
+            }
+        }),
+        "agent" => get_session()
+            .and_then(|(jsonl, artifacts)| {
                 if target.is_empty() || target == "Main" {
-                    return Ok(OmpResolvedTarget {
-                        path: jsonl_file.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
+                    file(jsonl)
+                } else {
+                    file(artifacts.join(format!("{target}.md")))
                 }
-                let subagent_file = artifacts_dir.join(format!("{target}.jsonl"));
-                if subagent_file.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: subagent_file.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                return Ok(OmpResolvedTarget {
-                    path: jsonl_file.to_string_lossy().into_owned(),
-                    is_dir: false,
-                });
-            }
-            fallback_omp_read(uri, &home, target)
-        }
-        "agent" => {
-            if let Some((jsonl_file, artifacts_dir)) = get_session() {
-                if target.is_empty() || target == "Main" {
-                    return Ok(OmpResolvedTarget {
-                        path: jsonl_file.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                let candidate = artifacts_dir.join(format!("{target}.md"));
-                if candidate.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: candidate.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-            }
-            let user_agent = home
-                .join(".omp")
-                .join("agent")
-                .join("agents")
-                .join(format!("{target}.md"));
-            if user_agent.is_file() {
-                return Ok(OmpResolvedTarget {
-                    path: user_agent.to_string_lossy().into_owned(),
-                    is_dir: false,
-                });
-            }
-            if let Some(c) = cwd {
-                let proj_agent = Path::new(c)
-                    .join("omp")
-                    .join("agents")
-                    .join(format!("{target}.md"));
-                if proj_agent.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: proj_agent.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                let proj_agent_hidden = Path::new(c)
-                    .join(".omp")
-                    .join("agents")
-                    .join(format!("{target}.md"));
-                if proj_agent_hidden.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: proj_agent_hidden.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-            }
-            fallback_omp_read(uri, &home, target)
-        }
-        "artifact" => {
-            if let Some((_, artifacts_dir)) = get_session() {
-                if artifacts_dir.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(&artifacts_dir) {
-                        let mut best: Option<(u32, PathBuf)> = None;
-                        for e in entries.flatten() {
-                            let name = e.file_name().to_string_lossy().into_owned();
-                            if target == "latest" {
-                                if let Some(first) = name.split('.').next() {
-                                    if let Ok(num) = first.parse::<u32>() {
-                                        if best
-                                            .as_ref()
-                                            .map_or(true, |(prev_num, _)| num > *prev_num)
-                                        {
-                                            best = Some((num, artifacts_dir.join(&name)));
-                                        }
-                                    }
-                                }
-                            } else if name.starts_with(&format!("{target}.")) || name == target {
-                                return Ok(OmpResolvedTarget {
-                                    path: artifacts_dir.join(&name).to_string_lossy().into_owned(),
-                                    is_dir: false,
-                                });
-                            }
-                        }
-                        if let Some((_, file)) = best {
-                            return Ok(OmpResolvedTarget {
-                                path: file.to_string_lossy().into_owned(),
-                                is_dir: false,
-                            });
-                        }
+            })
+            .or_else(|| file(home.join(".omp/agent/agents").join(format!("{target}.md"))))
+            .or_else(|| {
+                cwd.and_then(|cwd| {
+                    file(
+                        Path::new(cwd)
+                            .join("omp/agents")
+                            .join(format!("{target}.md")),
+                    )
+                    .or_else(|| {
+                        file(
+                            Path::new(cwd)
+                                .join(".omp/agents")
+                                .join(format!("{target}.md")),
+                        )
+                    })
+                })
+            }),
+        "artifact" => get_session().and_then(|(_, artifacts)| {
+            let entries = std::fs::read_dir(&artifacts).ok()?.flatten();
+            if target == "latest" {
+                let mut best: Option<(u32, PathBuf)> = None;
+                for item in entries {
+                    let name = item.file_name();
+                    let name = name.to_string_lossy();
+                    let Some(number) = name
+                        .split('.')
+                        .next()
+                        .and_then(|part| part.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    if best.as_ref().is_none_or(|(previous, _)| number > *previous) {
+                        best = Some((number, item.path()));
                     }
                 }
+                best.and_then(|(_, path)| file(path))
+            } else {
+                let prefix = format!("{target}.");
+                entries
+                    .filter_map(|item| {
+                        let name = item.file_name();
+                        let name = name.to_string_lossy();
+                        (name.starts_with(&prefix) || name == target).then(|| item.path())
+                    })
+                    .find_map(file)
             }
-            fallback_omp_read(uri, &home, target)
-        }
-        "local" => {
-            if let Some((_, artifacts_dir)) = get_session() {
-                let cand1 = artifacts_dir.join("local").join(target);
-                if cand1.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand1.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                let cand2 = artifacts_dir.join(target);
-                if cand2.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand2.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-            }
-            if let Some(c) = cwd {
-                let cand3 = Path::new(c).join(".omp").join(target);
-                if cand3.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand3.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                let cand4 = Path::new(c).join(target);
-                if cand4.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand4.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-            }
-            fallback_omp_read(uri, &home, target)
-        }
+        }),
+        "local" => get_session()
+            .and_then(|(_, artifacts)| {
+                file(artifacts.join("local").join(target)).or_else(|| file(artifacts.join(target)))
+            })
+            .or_else(|| {
+                cwd.and_then(|cwd| {
+                    file(Path::new(cwd).join(".omp").join(target))
+                        .or_else(|| file(Path::new(cwd).join(target)))
+                })
+            }),
         "skill" => {
-            let (skill_name, subpath) = target.split_once('/').unwrap_or((target, "SKILL.md"));
-            let rel = if subpath.is_empty() {
+            let (name, subpath) = target.split_once('/').unwrap_or((target, "SKILL.md"));
+            let relative = if subpath.is_empty() {
                 "SKILL.md"
             } else {
                 subpath
             };
-            let plugins_dir = home.join(".omp").join("plugins").join("node_modules");
-            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
-                for entry in entries.flatten() {
-                    let cand = entry.path().join("skills").join(skill_name).join(rel);
-                    if cand.exists() {
-                        return Ok(OmpResolvedTarget {
-                            is_dir: cand.is_dir(),
-                            path: cand.to_string_lossy().into_owned(),
-                        });
-                    }
-                }
-            }
-            let user_skill = home
-                .join(".omp")
-                .join("agent")
-                .join("skills")
-                .join(skill_name)
-                .join(rel);
-            if user_skill.exists() {
-                return Ok(OmpResolvedTarget {
-                    is_dir: user_skill.is_dir(),
-                    path: user_skill.to_string_lossy().into_owned(),
-                });
-            }
-            if let Some(c) = cwd {
-                let proj_skill = Path::new(c)
-                    .join(".omp")
-                    .join("skills")
-                    .join(skill_name)
-                    .join(rel);
-                if proj_skill.exists() {
-                    return Ok(OmpResolvedTarget {
-                        is_dir: proj_skill.is_dir(),
-                        path: proj_skill.to_string_lossy().into_owned(),
-                    });
-                }
-            }
-            fallback_omp_read(uri, &home, target)
+            std::fs::read_dir(home.join(".omp/plugins/node_modules"))
+                .ok()
+                .and_then(|entries| {
+                    entries.flatten().find_map(|item| {
+                        entry(item.path().join("skills").join(name).join(relative))
+                    })
+                })
+                .or_else(|| entry(home.join(".omp/agent/skills").join(name).join(relative)))
+                .or_else(|| {
+                    cwd.and_then(|cwd| {
+                        entry(Path::new(cwd).join(".omp/skills").join(name).join(relative))
+                    })
+                })
         }
-        "rule" => {
-            if let Some(c) = cwd {
-                let cand1 = Path::new(c)
-                    .join("omp")
-                    .join("extensions")
-                    .join(format!("{target}.ts"));
-                if cand1.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand1.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-                let cand2 = Path::new(c)
-                    .join(".omp")
-                    .join("rules")
-                    .join(format!("{target}.md"));
-                if cand2.is_file() {
-                    return Ok(OmpResolvedTarget {
-                        path: cand2.to_string_lossy().into_owned(),
-                        is_dir: false,
-                    });
-                }
-            }
-            let user_ext = home
-                .join(".omp")
-                .join("agent")
-                .join("extensions")
-                .join(format!("{target}.ts"));
-            if user_ext.is_file() {
-                return Ok(OmpResolvedTarget {
-                    path: user_ext.to_string_lossy().into_owned(),
-                    is_dir: false,
-                });
-            }
-            let user_rule = home
-                .join(".omp")
-                .join("agent")
-                .join("rules")
-                .join(format!("{target}.md"));
-            if user_rule.is_file() {
-                return Ok(OmpResolvedTarget {
-                    path: user_rule.to_string_lossy().into_owned(),
-                    is_dir: false,
-                });
-            }
-            fallback_omp_read(uri, &home, target)
-        }
+        "rule" => cwd
+            .and_then(|cwd| {
+                file(
+                    Path::new(cwd)
+                        .join("omp/extensions")
+                        .join(format!("{target}.ts")),
+                )
+                .or_else(|| {
+                    file(
+                        Path::new(cwd)
+                            .join(".omp/rules")
+                            .join(format!("{target}.md")),
+                    )
+                })
+            })
+            .or_else(|| {
+                file(
+                    home.join(".omp/agent/extensions")
+                        .join(format!("{target}.ts")),
+                )
+            })
+            .or_else(|| file(home.join(".omp/agent/rules").join(format!("{target}.md")))),
         "omp" => {
             let slug = if target.is_empty() { "index" } else { target };
-            fallback_omp_read(uri, &home, slug)
+            return fallback_omp_read(uri, &home, slug);
         }
-        _ => Err(ApiError::InvalidArgument(format!(
-            "Unsupported scheme: {scheme}"
-        ))),
-    }
+        _ => {
+            return Err(ApiError::InvalidArgument(format!(
+                "Unsupported scheme: {scheme}"
+            )))
+        }
+    };
+    resolved.map_or_else(|| fallback_omp_read(uri, &home, target), Ok)
 }
 
 #[cfg(test)]

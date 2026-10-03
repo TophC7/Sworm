@@ -2,15 +2,6 @@ use crate::app_state::AppState;
 use crate::host_events::channel_sink;
 use sworm_core::errors::ApiError;
 use sworm_protocol::pty::PtyEvent;
-use sworm_protocol::task::TaskDefinition;
-
-#[tauri::command]
-pub async fn tasks_list(
-    folder_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<TaskDefinition>, ApiError> {
-    state.router.tasks_list(folder_path).await
-}
 
 #[tauri::command]
 pub async fn tasks_start(
@@ -42,7 +33,7 @@ pub async fn tasks_start(
             Some(owner.clone()),
         )
         .await?;
-    if !state.windows.has_window(&owner) && !state.windows.destroy_detaches_runs() {
+    if state.windows.owner_closed(&owner) {
         state.router.tasks_stop(run_id).await?;
     }
     Ok(())
@@ -54,7 +45,7 @@ pub async fn tasks_write(
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.router.tasks_write(run_id, data).await
+    state.router.run_write(run_id, data).await
 }
 
 #[tauri::command]
@@ -64,10 +55,5 @@ pub async fn tasks_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.router.tasks_resize(run_id, cols, rows).await
-}
-
-#[tauri::command]
-pub async fn tasks_stop(run_id: String, state: tauri::State<'_, AppState>) -> Result<(), ApiError> {
-    state.router.tasks_stop(run_id).await
+    state.router.run_resize(run_id, cols, rows).await
 }

@@ -1,7 +1,8 @@
-use crate::rpc::DEFAULT_SERVER_PORT;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
+
+pub const DEFAULT_SERVER_PORT: u16 = 7420;
 
 pub const SERVER_CONFIG_FILE: &str = "server.jsonc";
 

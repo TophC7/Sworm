@@ -4,8 +4,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf};
 use sworm_core::services::settings::SettingsService;
+use sworm_protocol::settings::GLOBAL_SETTINGS_DIR_NAME;
 use sworm_remote::Identity;
-use sworm_server::{paths, serve, ServeOptions};
+use sworm_server::{serve, ServeOptions};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -66,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
             let data_dir = cli
                 .data_dir
                 .map(Ok)
-                .unwrap_or_else(paths::default_data_dir)
+                .unwrap_or_else(default_data_dir)
                 .map_err(anyhow::Error::msg)?;
             let handle = serve(ServeOptions {
                 config_dir,
@@ -103,6 +104,20 @@ async fn main() -> anyhow::Result<()> {
         Command::Keygen { file } => println!("{}", Identity::create(&file)?.fingerprint()),
     }
     Ok(())
+}
+
+fn default_data_dir() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path).join(GLOBAL_SETTINGS_DIR_NAME));
+    }
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(|path| {
+            PathBuf::from(path)
+                .join(".local/share")
+                .join(GLOBAL_SETTINGS_DIR_NAME)
+        })
+        .ok_or_else(|| "HOME is required to resolve server data path".to_string())
 }
 
 #[cfg(unix)]

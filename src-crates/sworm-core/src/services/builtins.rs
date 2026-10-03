@@ -1,10 +1,11 @@
+use serde::Deserialize;
 use serde_json::from_str;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::LazyLock;
 use sworm_protocol::builtins::{
     BuiltinCatalog, BuiltinDocumentSelector, BuiltinFormatterGroupId, BuiltinFormatterPolicy,
-    BuiltinLanguageContribution, BuiltinLspServerDefinition, BuiltinManifest,
-    BuiltinRuntimeCatalog, BuiltinSettingsCatalog, BuiltinSettingsPage, BuiltinSettingsPageKind,
+    BuiltinLanguageContribution, BuiltinLspServerSettingsDescriptor, BuiltinRuntimeCatalog,
+    BuiltinSettingsCatalog, BuiltinSettingsPage, BuiltinSettingsPageKind,
 };
 use sworm_protocol::settings::FormatterSelection;
 
@@ -94,24 +95,52 @@ const BUILTIN_ASSETS: &[BuiltinAsset] = &[
     },
 ];
 
-#[derive(Debug, Clone)]
-struct LoadedBuiltinManifest {
-    manifest: BuiltinManifest,
+#[derive(Debug, Deserialize)]
+struct BuiltinManifest {
+    id: String,
+    label: String,
+    #[serde(default)]
+    contributes: BuiltinContributions,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Default)]
+struct BuiltinContributions {
+    #[serde(default)]
+    languages: Vec<BuiltinLanguageContribution>,
+    #[serde(default)]
+    lsp_servers: Vec<BuiltinLspServerDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct BuiltinLspServerDefinition {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub applies_to_languages: Vec<String>,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub install_hint: String,
+    #[serde(default)]
+    pub document_selectors: Vec<BuiltinDocumentSelector>,
+    #[serde(default)]
+    pub initialization_options: Option<serde_json::Value>,
+    #[serde(default)]
+    pub settings: Option<BuiltinLspServerSettingsDescriptor>,
+}
+
+#[derive(Debug)]
 pub struct LoadedBuiltinLspServerDefinition {
     pub server_definition_id: String,
     pub builtin_id: String,
     pub builtin_label: String,
-    pub definition: BuiltinLspServerDefinition,
+    pub(super) definition: BuiltinLspServerDefinition,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LoadedBuiltinCatalog {
     catalog: BuiltinCatalog,
     server_definitions: Vec<LoadedBuiltinLspServerDefinition>,
-    server_definitions_by_id: HashMap<String, LoadedBuiltinLspServerDefinition>,
 }
 
 #[derive(Clone, Copy)]
@@ -159,37 +188,37 @@ const PAGE_OVERLAYS: &[PageOverlay] = &[
     },
 ];
 
-static LOADED_BUILTINS: OnceLock<Result<LoadedBuiltinCatalog, String>> = OnceLock::new();
+static CATALOG: LazyLock<LoadedBuiltinCatalog> =
+    LazyLock::new(|| load_catalog().expect("embedded builtins are valid"));
 
 pub struct BuiltinCatalogService;
 
 impl BuiltinCatalogService {
-    pub fn catalog() -> Result<BuiltinCatalog, String> {
-        Ok(loaded_catalog()?.catalog.clone())
+    pub fn catalog() -> &'static BuiltinCatalog {
+        &CATALOG.catalog
     }
 
     pub fn server_definition_id(builtin_id: &str, server_id: &str) -> String {
         format!("{}::{}", builtin_id, server_id)
     }
 
-    pub fn list_server_definitions() -> Result<Vec<LoadedBuiltinLspServerDefinition>, String> {
-        Ok(loaded_catalog()?.server_definitions.clone())
+    pub fn server_definitions() -> &'static [LoadedBuiltinLspServerDefinition] {
+        &CATALOG.server_definitions
+    }
+
+    pub fn server_definition_ids() -> Vec<String> {
+        Self::server_definitions()
+            .iter()
+            .map(|server| server.server_definition_id.clone())
+            .collect()
     }
 
     pub fn find_server_definition(
         server_definition_id: &str,
-    ) -> Result<Option<LoadedBuiltinLspServerDefinition>, String> {
-        Ok(loaded_catalog()?
-            .server_definitions_by_id
-            .get(server_definition_id)
-            .cloned())
-    }
-}
-
-fn loaded_catalog() -> Result<&'static LoadedBuiltinCatalog, String> {
-    match LOADED_BUILTINS.get_or_init(load_catalog) {
-        Ok(catalog) => Ok(catalog),
-        Err(error) => Err(error.clone()),
+    ) -> Option<&'static LoadedBuiltinLspServerDefinition> {
+        Self::server_definitions()
+            .iter()
+            .find(|server| server.server_definition_id == server_definition_id)
     }
 }
 
@@ -199,21 +228,16 @@ fn load_catalog() -> Result<LoadedBuiltinCatalog, String> {
 
     for asset in BUILTIN_ASSETS {
         let parsed = parse_builtin(asset)?;
-        if !seen_builtin_ids.insert(parsed.manifest.id.clone()) {
-            return Err(format!("Duplicate builtin id {}", parsed.manifest.id));
+        if !seen_builtin_ids.insert(parsed.id.clone()) {
+            return Err(format!("Duplicate builtin id {}", parsed.id));
         }
         builtins.push(parsed);
     }
 
     let runtime_languages = merge_languages(&builtins)?;
     validate_page_overlays(&runtime_languages)?;
-    let server_definitions = build_server_definitions(&builtins, &runtime_languages)?;
+    let server_definitions = build_server_definitions(builtins, &runtime_languages)?;
     let settings_pages = build_settings_pages(&runtime_languages, &server_definitions);
-    let server_definitions_by_id = server_definitions
-        .iter()
-        .cloned()
-        .map(|definition| (definition.server_definition_id.clone(), definition))
-        .collect();
 
     Ok(LoadedBuiltinCatalog {
         catalog: BuiltinCatalog {
@@ -225,11 +249,10 @@ fn load_catalog() -> Result<LoadedBuiltinCatalog, String> {
             },
         },
         server_definitions,
-        server_definitions_by_id,
     })
 }
 
-fn parse_builtin(asset: &BuiltinAsset) -> Result<LoadedBuiltinManifest, String> {
+fn parse_builtin(asset: &BuiltinAsset) -> Result<BuiltinManifest, String> {
     let mut manifest = from_str::<BuiltinManifest>(asset.manifest)
         .map_err(|error| format!("Failed to parse {} builtin manifest: {}", asset.id, error))?;
 
@@ -251,7 +274,7 @@ fn parse_builtin(asset: &BuiltinAsset) -> Result<LoadedBuiltinManifest, String> 
     validate_manifest(&manifest)?;
     inline_settings_schemas(&mut manifest, asset.resources)?;
 
-    Ok(LoadedBuiltinManifest { manifest })
+    Ok(manifest)
 }
 
 fn normalize_manifest(manifest: &mut BuiltinManifest) {
@@ -311,7 +334,7 @@ fn validate_manifest(manifest: &BuiltinManifest) -> Result<(), String> {
                 manifest.id, server.id
             ));
         }
-        if server.runtime.command.trim().is_empty() {
+        if server.command.trim().is_empty() {
             return Err(format!(
                 "Builtin {} server {} must define a host command",
                 manifest.id, server.id
@@ -397,12 +420,12 @@ fn normalize_resource_key(value: &str) -> &str {
 }
 
 fn merge_languages(
-    builtins: &[LoadedBuiltinManifest],
+    builtins: &[BuiltinManifest],
 ) -> Result<Vec<BuiltinLanguageContribution>, String> {
     let mut merged = BTreeMap::<String, BuiltinLanguageContribution>::new();
 
     for builtin in builtins {
-        for language in &builtin.manifest.contributes.languages {
+        for language in &builtin.contributes.languages {
             if let Some(existing) = merged.get_mut(&language.id) {
                 if existing.label != language.label {
                     return Err(format!(
@@ -446,7 +469,7 @@ fn validate_page_overlays(languages: &[BuiltinLanguageContribution]) -> Result<(
 }
 
 fn build_server_definitions(
-    builtins: &[LoadedBuiltinManifest],
+    builtins: Vec<BuiltinManifest>,
     languages: &[BuiltinLanguageContribution],
 ) -> Result<Vec<LoadedBuiltinLspServerDefinition>, String> {
     let known_language_ids = languages
@@ -457,25 +480,25 @@ fn build_server_definitions(
     let mut definitions = Vec::new();
 
     for builtin in builtins {
-        for definition in &builtin.manifest.contributes.lsp_servers {
+        for definition in builtin.contributes.lsp_servers {
             for language_id in &definition.applies_to_languages {
                 if !known_language_ids.contains(language_id.as_str()) {
                     return Err(format!(
                         "Builtin {} server {} targets unknown language {}",
-                        builtin.manifest.id, definition.id, language_id
+                        builtin.id, definition.id, language_id
                     ));
                 }
             }
 
             validate_document_selectors(
-                &builtin.manifest.id,
+                &builtin.id,
                 &definition.id,
                 &definition.document_selectors,
                 &known_language_ids,
             )?;
 
             let server_definition_id =
-                BuiltinCatalogService::server_definition_id(&builtin.manifest.id, &definition.id);
+                BuiltinCatalogService::server_definition_id(&builtin.id, &definition.id);
             if !seen_server_definition_ids.insert(server_definition_id.clone()) {
                 return Err(format!(
                     "Duplicate server definition id {}",
@@ -485,9 +508,9 @@ fn build_server_definitions(
 
             definitions.push(LoadedBuiltinLspServerDefinition {
                 server_definition_id,
-                builtin_id: builtin.manifest.id.clone(),
-                builtin_label: builtin.manifest.label.clone(),
-                definition: definition.clone(),
+                builtin_id: builtin.id.clone(),
+                builtin_label: builtin.label.clone(),
+                definition,
             });
         }
     }
@@ -676,7 +699,7 @@ mod tests {
         for builtin in BUILTIN_ASSETS {
             let parsed = parse_builtin(builtin)
                 .unwrap_or_else(|error| panic!("failed to parse {}: {}", builtin.id, error));
-            assert_eq!(parsed.manifest.id, builtin.id);
+            assert_eq!(parsed.id, builtin.id);
         }
     }
 
@@ -685,7 +708,7 @@ mod tests {
         for builtin in BUILTIN_ASSETS {
             let parsed = parse_builtin(builtin)
                 .unwrap_or_else(|error| panic!("failed to parse {}: {}", builtin.id, error));
-            for server in &parsed.manifest.contributes.lsp_servers {
+            for server in &parsed.contributes.lsp_servers {
                 let Some(settings) = server.settings.as_ref() else {
                     continue;
                 };
@@ -723,10 +746,7 @@ mod tests {
               {
                 "id": "server",
                 "label": "Server",
-                "runtime": {
-                  "kind": "host_binary",
-                  "command": "test-server"
-                },
+                "command": "test-server",
                 "install_hint": "n/a",
                 "document_selectors": [
                   {

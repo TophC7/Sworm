@@ -300,7 +300,7 @@ async fn read_input(
     loop {
         match recv.read_json::<LspUp>().await {
             Ok(LspUp::Message { payload_json }) => {
-                if let Err(error) = host.lsp_send(session_id.clone(), payload_json).await {
+                if let Err(error) = host.lsp_send(session_id.clone(), payload_json) {
                     // stdin is gone: report it once and let the stream end.
                     let _ = events
                         .send(LspEvent::Error {

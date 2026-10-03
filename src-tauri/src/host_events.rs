@@ -1,15 +1,27 @@
-use crate::services::windows::WindowCoordinatorService;
+use crate::windows::WindowCoordinatorService;
 use serde::Serialize;
 use serde_json::json;
 use std::sync::Arc;
 use sworm_core::events::{EventSink, HostEvent};
-use sworm_protocol::files::FILES_CHANGED_EVENT;
-use sworm_protocol::git::GIT_CHANGED_EVENT;
-use sworm_protocol::issues::ISSUES_CHANGED_EVENT;
-use sworm_protocol::nix_env::NIX_CHANGED_EVENT;
-use sworm_protocol::settings::SETTINGS_CHANGED_EVENT;
-use sworm_protocol::task::TASKS_CHANGED_EVENT;
 use tauri::Emitter;
+
+pub enum DesktopEvent {
+    Host(HostEvent),
+    RemoteStatus {
+        server: String,
+        connected: bool,
+        last_error: Option<String>,
+        state: String,
+    },
+    RemoteRunStatus {
+        run_id: String,
+        state: String,
+    },
+    /// `server`'s workbench registry changed; the desktop re-lists it.
+    WorkbenchesChanged {
+        server: String,
+    },
+}
 
 pub fn channel_sink<T: Serialize + Send + Sync + 'static>(
     channel: tauri::ipc::Channel<T>,
@@ -17,37 +29,37 @@ pub fn channel_sink<T: Serialize + Send + Sync + 'static>(
     Arc::new(move |payload| channel.send(payload).map_err(|error| error.to_string()))
 }
 
-pub fn host_event_sink(
+pub fn desktop_event_sink(
     app: tauri::AppHandle,
     windows: Arc<WindowCoordinatorService>,
-) -> EventSink<HostEvent> {
+) -> EventSink<DesktopEvent> {
     Arc::new(move |event| {
         let result = match event {
-            HostEvent::RemoteStatus { server, connected, last_error, state } =>
+            DesktopEvent::RemoteStatus { server, connected, last_error, state } =>
                 app.emit("remote-status", json!({ "server": server, "connected": connected, "last_error": last_error, "state": state })),
-            HostEvent::RemoteWorkbenchesChanged { server } =>
+            DesktopEvent::WorkbenchesChanged { server } =>
                 app.emit("workbenches-changed", json!({ "server": server })),
-            HostEvent::RemoteRunStatus { run_id, state } =>
+            DesktopEvent::RemoteRunStatus { run_id, state } =>
                 app.emit("remote-run-status", json!({ "runId": run_id, "state": state })),
-            HostEvent::FilesChanged(payload) => app.emit(FILES_CHANGED_EVENT, payload),
-            HostEvent::GitChanged(payload) => app.emit(GIT_CHANGED_EVENT, payload),
-            HostEvent::SettingsChanged(payload) => app.emit(SETTINGS_CHANGED_EVENT, payload),
-            HostEvent::RecentFoldersChanged(folders) => {
+            DesktopEvent::Host(HostEvent::FilesChanged(payload)) => app.emit("files-changed", payload),
+            DesktopEvent::Host(HostEvent::GitChanged(payload)) => app.emit("git-changed", payload),
+            DesktopEvent::Host(HostEvent::SettingsChanged(payload)) => app.emit("settings-changed", payload),
+            DesktopEvent::Host(HostEvent::RecentFoldersChanged(folders)) => {
                 app.emit("recent-folders-changed", folders)
             }
-            HostEvent::TasksChanged(folder) => app.emit(TASKS_CHANGED_EVENT, folder),
-            HostEvent::NixChanged(folder) => {
-                app.emit(NIX_CHANGED_EVENT, json!({ "folderPath": folder }))
+            DesktopEvent::Host(HostEvent::TasksChanged(folder)) => app.emit("tasks-changed", folder),
+            DesktopEvent::Host(HostEvent::NixChanged(folder)) => {
+                app.emit("nix-changed", json!({ "folderPath": folder }))
             }
-            HostEvent::IssuesChanged(folder) => {
-                app.emit(ISSUES_CHANGED_EVENT, json!({ "folderPath": folder }))
+            DesktopEvent::Host(HostEvent::IssuesChanged(folder)) => {
+                app.emit("issues-changed", json!({ "folderPath": folder }))
             }
-            HostEvent::FileMoved {
+            DesktopEvent::Host(HostEvent::FileMoved {
                 folder_path,
                 old_path,
                 new_path,
                 replace_destination,
-            } => {
+            }) => {
                 if replace_destination && windows.release_claims_under(&new_path) > 0 {
                     let _ = app.emit(
                         "file-deleted",
@@ -64,7 +76,7 @@ pub fn host_event_sink(
                     }),
                 )
             }
-            HostEvent::FileDeleted(path) => {
+            DesktopEvent::Host(HostEvent::FileDeleted(path)) => {
                 windows.release_claims_under(&path);
                 app.emit(
                     "file-deleted",

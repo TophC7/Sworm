@@ -124,8 +124,6 @@
         server_definition_id: id,
         enabled: draft.enabled,
         binary_path_override: draft.binaryPath.trim() || null,
-        runtime_path_override: null,
-        runtime_args: [],
         extra_args: splitArgs(draft.extraArgs),
         trace: draft.trace,
         settings: draft.settings
@@ -301,13 +299,6 @@
 
         {#if open && draft}
           <div class="flex flex-col gap-3 bg-surface/40 px-5 py-4">
-            {#if entry.server.runtime_resolved_path}
-              <div class="flex items-center gap-3">
-                <span class="w-32 shrink-0 text-sm text-muted">Runtime</span>
-                <span class="truncate font-mono text-xs text-muted">{entry.server.runtime_resolved_path}</span>
-              </div>
-            {/if}
-
             <div class="flex items-center gap-3">
               <span class="w-32 shrink-0 text-sm text-muted">Binary path</span>
               <Input

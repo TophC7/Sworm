@@ -1,29 +1,7 @@
 use crate::app_state::AppState;
-use crate::commands::settings::settings_server;
 use crate::host_events::channel_sink;
 use sworm_core::errors::ApiError;
-use sworm_protocol::lsp::{LspEvent, LspServerSettingsEntry, SaveLspServerConfigInput};
-use sworm_protocol::settings::LspServerConfigRecord;
-
-#[tauri::command]
-pub async fn lsp_list_servers(
-    state: tauri::State<'_, AppState>,
-    folder_path: Option<String>,
-) -> Result<Vec<LspServerSettingsEntry>, ApiError> {
-    state.router.lsp_list_servers(folder_path).await
-}
-
-#[tauri::command]
-pub async fn lsp_set_server_config(
-    config: SaveLspServerConfigInput,
-    folder_path: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<LspServerConfigRecord, ApiError> {
-    state
-        .router
-        .lsp_set_server_config(settings_server(folder_path.as_deref())?, config)
-        .await
-}
+use sworm_protocol::lsp::LspEvent;
 
 #[tauri::command]
 pub async fn lsp_start(
@@ -55,12 +33,4 @@ pub async fn lsp_send(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
     state.router.lsp_send(session_id, message_json).await
-}
-
-#[tauri::command]
-pub async fn lsp_stop(
-    session_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.lsp_stop(session_id).await
 }

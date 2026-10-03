@@ -8,11 +8,7 @@ use rusqlite::{Connection, OptionalExtension};
 pub struct AppStateKvService;
 
 impl AppStateKvService {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn get(&self, conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    pub fn get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
         conn.query_row(
             "SELECT value_json FROM app_state WHERE key = ?1",
             rusqlite::params![key],
@@ -22,7 +18,7 @@ impl AppStateKvService {
         .map_err(|e| format!("app_state get failed: {}", e))
     }
 
-    pub fn put(&self, conn: &Connection, key: &str, value_json: &str) -> Result<(), String> {
+    pub fn put(conn: &Connection, key: &str, value_json: &str) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO app_state (key, value_json, updated_at)
@@ -36,7 +32,7 @@ impl AppStateKvService {
         Ok(())
     }
 
-    pub fn delete(&self, conn: &Connection, key: &str) -> Result<(), String> {
+    pub fn delete(conn: &Connection, key: &str) -> Result<(), String> {
         conn.execute(
             "DELETE FROM app_state WHERE key = ?1",
             rusqlite::params![key],

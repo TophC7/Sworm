@@ -21,10 +21,7 @@
         "id": "vtsls",
         "label": "vtsls",
         "applies_to_languages": ["javascript", "typescript"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "vtsls"
-        },
+        "command": "vtsls",
         "args": ["--stdio"],
         "install_hint": "Install `@vtsls/language-server` and ensure `vtsls` is on PATH.",
         "document_selectors": [

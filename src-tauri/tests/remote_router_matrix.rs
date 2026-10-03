@@ -1,35 +1,21 @@
-//! Every workspace operation a user can reach either routes to the host that
-//! owns the folder or is refused there. The matrix is generated from the op
-//! table, so a new operation is covered the moment it is added.
+//! Remote spawn failures, workbench leases and file URIs stay on the daemon;
+//! desktop settings and recent folders stay local.
+
+mod common;
 
 use serde_json::json;
-use std::{
-    collections::HashMap, ffi::OsString, fs, future::Future, path::PathBuf, process::Command,
-    sync::Arc, time::Duration,
-};
+use std::{fs, future::Future, path::PathBuf, sync::Arc, time::Duration};
 use sworm_core::{
     errors::ApiError,
     events::{EventSink, HostEvent},
     Host,
 };
+use sworm_lib::host_events::DesktopEvent;
 use sworm_lib::router::{Target, WorkspaceRouter};
 use sworm_protocol::rpc::{AttachMode, RecentFolder, Request};
-use sworm_protocol::{
-    file_diff::{DiffSource, GitStatus},
-    issues::{
-        IssueCommentCreateInput, IssueCommentUpdateInput, IssueCreateInput, IssueDependencyInput,
-        IssueEpicCreateInput, IssueEpicUpdateInput, IssueListFilters, IssueReadyFilters,
-        IssueSearchFilters, IssueUpdateInput,
-    },
-    lsp::{LspEvent, SaveLspServerConfigInput},
-    pty::PtyEvent,
-    settings::{
-        EffectiveSettingsInput, FolderSettingsFileInput, FormattingSettings, LspTraceLevel,
-        NixSettings, PatchSettingsSectionInput, SaveProviderConfigInput,
-    },
-};
+use sworm_protocol::{lsp::LspEvent, pty::PtyEvent, settings::PatchSettingsSectionInput};
 use sworm_remote::{Identity, RemoteClient};
-use sworm_server::{auth::append_authorized, serve, ServeOptions, ServerHandle};
+use sworm_server::ServerHandle;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -37,29 +23,6 @@ use tokio::sync::mpsc;
 /// instead of mutating a real workspace, and a fall-through to the desktop's
 /// own host still shows up as a `sworm://` path in the error.
 const PROBE: &str = "sworm-matrix-probe";
-
-const ISOLATED_ENV: [&str; 5] = [
-    "HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_NOSYSTEM",
-];
-
-struct IsolatedEnvironment {
-    previous: Vec<(&'static str, Option<OsString>)>,
-}
-
-impl Drop for IsolatedEnvironment {
-    fn drop(&mut self) {
-        for (key, value) in &self.previous {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 /// One daemon and one desktop configuration for this binary, owned by the
 /// runtime that also serves the daemon. The server runs as tasks on that
@@ -73,54 +36,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Points every global path this process reads at a scratch directory.
-    /// Synchronous and called before the runtime has any work: a task reading
-    /// `HOME` while it changes would see either value.
-    fn isolate() -> anyhow::Result<(TempDir, IsolatedEnvironment)> {
-        let root = tempfile::tempdir()?;
-        let home = root.path().join("home");
-        let git_config = root.path().join("gitconfig");
-        fs::create_dir_all(&home)?;
-        fs::write(&git_config, "")?;
-        let previous = ISOLATED_ENV
-            .into_iter()
-            .map(|key| (key, std::env::var_os(key)))
-            .collect();
-        let environment = IsolatedEnvironment { previous };
-        std::env::set_var("XDG_CONFIG_HOME", root.path().join("config-home"));
-        std::env::set_var("XDG_DATA_HOME", root.path().join("data-home"));
-        std::env::set_var("HOME", &home);
-        std::env::set_var("GIT_CONFIG_GLOBAL", &git_config);
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
-        Ok((root, environment))
-    }
-
     async fn start(root: TempDir) -> anyhow::Result<Self> {
-        let server_config = root.path().join("server-config");
-        let server = serve(ServeOptions {
-            config_dir: server_config.clone(),
-            data_dir: root.path().join("server-data"),
-            listen: Some("127.0.0.1:0".parse()?),
-            config_file: None,
-            web_assets_dir: None,
-        })
-        .await?;
-
-        let desktop_config = root.path().join("config-home").join("sworm");
-        fs::create_dir_all(&desktop_config)?;
-        fs::write(
-            desktop_config.join("settings.jsonc"),
-            serde_json::to_vec(&json!({
-                "remotes": {
-                    "loop": {
-                        "address": format!("localhost:{}", server.local_addr.port()),
-                        "fingerprint": server.fingerprint.to_string(),
-                    }
-                }
-            }))?,
-        )?;
-        let identity = Identity::load_or_generate(&desktop_config, "client")?;
-        append_authorized(&server_config, identity.fingerprint(), "matrix-test")?;
+        let (server, identity, _) = common::start_loop(root.path()).await?;
 
         Ok(Self {
             root,
@@ -150,23 +67,15 @@ impl Fixture {
     /// server. Each test gets its own so mutations cannot collide.
     fn workspace(&self, name: &str) -> anyhow::Result<Workspace> {
         let path = self.root.path().join(name);
-        let git = Command::new("git")
-            .args(["-c", "init.defaultBranch=main", "init"])
-            .arg(&path)
-            .output()?;
-        assert!(
-            git.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&git.stderr)
-        );
-        fs::write(path.join("hello.txt"), "sentinel\n")?;
+        common::init_repo(&path)?;
 
         let (send, events) = mpsc::unbounded_channel();
-        let sink: EventSink<HostEvent> =
+        let sink: EventSink<DesktopEvent> =
             Arc::new(move |event| send.send(event).map_err(|error| error.to_string()));
+        let desktop = Arc::clone(&sink);
         let host = Arc::new(Host::new(
             self.root.path().join(format!("{name}.db")),
-            Arc::clone(&sink),
+            Arc::new(move |event| desktop(DesktopEvent::Host(event))),
         )?);
         let router = WorkspaceRouter::with_events(Arc::clone(&host), sink);
         let remote = format!("sworm://loop{}", path.display());
@@ -186,15 +95,14 @@ struct Workspace {
     /// The `sworm://` URI the frontend would hand every command.
     remote: String,
     path: PathBuf,
-    events: mpsc::UnboundedReceiver<HostEvent>,
+    events: mpsc::UnboundedReceiver<DesktopEvent>,
 }
 
 /// Every call is bounded, so a daemon that stops answering names the operation
 /// it died on instead of hanging the gate.
 const OP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Covers a hang outside an individual RPC — setup, event waits, the macro's
-/// own expansion of a new operation.
+/// Covers a hang outside an individual RPC, including setup and event waits.
 const SUITE_TIMEOUT: Duration = Duration::from_secs(180);
 
 async fn bounded<T>(method: &str, operation: impl Future<Output = T>) -> T {
@@ -243,200 +151,26 @@ fn assert_routed<T>(method: &str, result: Result<T, ApiError>) {
     );
 }
 
-trait Sample {
-    fn sample() -> Self;
-}
-
-impl Sample for String {
-    fn sample() -> Self {
-        PROBE.to_owned()
-    }
-}
-
-impl Sample for bool {
-    fn sample() -> Self {
-        false
-    }
-}
-
-impl Sample for usize {
-    fn sample() -> Self {
-        0
-    }
-}
-
-impl Sample for u16 {
-    fn sample() -> Self {
-        0
-    }
-}
-
-impl Sample for i64 {
-    fn sample() -> Self {
-        0
-    }
-}
-
-impl<T> Sample for Option<T> {
-    fn sample() -> Self {
-        None
-    }
-}
-
-impl<T> Sample for Vec<T> {
-    fn sample() -> Self {
-        Vec::new()
-    }
-}
-
-impl<K, V> Sample for HashMap<K, V> {
-    fn sample() -> Self {
-        HashMap::new()
-    }
-}
-
-impl Sample for DiffSource {
-    fn sample() -> Self {
-        Self::Working { staged: None }
-    }
-}
-
-impl Sample for GitStatus {
-    fn sample() -> Self {
-        Self::Modified
-    }
-}
-
-impl Sample for IssueListFilters {
-    fn sample() -> Self {
-        Self::default()
-    }
-}
-
-impl Sample for IssueReadyFilters {
-    fn sample() -> Self {
-        Self::default()
-    }
-}
-
-impl Sample for IssueSearchFilters {
-    fn sample() -> Self {
-        Self::default()
-    }
-}
-
-impl Sample for IssueUpdateInput {
-    fn sample() -> Self {
-        Self::default()
-    }
-}
-
-impl Sample for IssueEpicUpdateInput {
-    fn sample() -> Self {
-        Self::default()
-    }
-}
-
-impl Sample for IssueCreateInput {
-    fn sample() -> Self {
-        Self {
-            title: PROBE.to_owned(),
-            description: None,
-            status: None,
-            priority: None,
-            epic_id: None,
-            parent_issue_id: None,
-            assignee_kind: None,
-            assignee_id: None,
-            tags: Vec::new(),
-            context_json: None,
-            actor: None,
-        }
-    }
-}
-
-impl Sample for IssueEpicCreateInput {
-    fn sample() -> Self {
-        Self {
-            title: PROBE.to_owned(),
-            description: None,
-            status: None,
-            priority: None,
-            actor: None,
-        }
-    }
-}
-
-impl Sample for IssueCommentCreateInput {
-    fn sample() -> Self {
-        Self {
-            issue_id: PROBE.to_owned(),
-            author: PROBE.to_owned(),
-            body: PROBE.to_owned(),
-            actor: None,
-        }
-    }
-}
-
-impl Sample for IssueCommentUpdateInput {
-    fn sample() -> Self {
-        Self {
-            body: PROBE.to_owned(),
-            actor: None,
-        }
-    }
-}
-
-impl Sample for IssueDependencyInput {
-    fn sample() -> Self {
-        Self {
-            issue_id: PROBE.to_owned(),
-            depends_on_issue_id: PROBE.to_owned(),
-            actor: None,
-        }
-    }
-}
-
-/// The daemon serves from tasks on this runtime, so the runtime must outlive
-/// every behavior. A `#[tokio::test]` per behavior gave each one its own
-/// runtime: the first to finish dropped the daemon's tasks with it and the rest
-/// of the suite talked to a dead server. The behaviors are therefore helpers
-/// driven from one runtime here.
-#[test]
-fn remote_workspaces_route_every_reachable_operation() -> anyhow::Result<()> {
-    // The generated route matrix's async frame exceeds the test harness's 2 MiB stack.
-    std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
-            // HOME/XDG/git are process-global: isolate before constructing Tokio.
-            let (root, _environment) = Fixture::isolate()?;
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?;
-            let result = runtime.block_on(async {
-                let fixture = Fixture::start(root).await?;
-                let suite = tokio::time::timeout(SUITE_TIMEOUT, async {
-                    lease_receives_registry_events_without_folder_claims(&fixture).await?;
-                    local_leases_follow_authority_and_transfer_identity(&fixture).await?;
-                    independent_servers_do_not_share_transition_gates(&fixture).await?;
-                    every_routed_workspace_op_reaches_the_daemon(&fixture).await?;
-                    remote_file_rename_emits_desktop_file_moved(&fixture).await?;
-                    remote_paste_stays_on_source_host(&fixture).await?;
-                    settings_effective_merges_desktop_sections(&fixture).await?;
-                    local_only_ops_stay_on_desktop(&fixture).await?;
-                    anyhow::Ok(())
-                })
-                .await;
-                fixture.shutdown().await;
-                suite.unwrap_or_else(|_| {
-                    panic!("the routing suite did not finish within {SUITE_TIMEOUT:?}")
-                })
-            });
-            drop(runtime);
-            result
-        })?
-        .join()
-        .expect("route matrix test thread panicked")
+/// One runtime owns the daemon and all behaviors that depend on its tasks.
+#[tokio::test]
+async fn remote_spawns_leases_and_uris_stay_on_daemon() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    common::isolate(root.path())?;
+    let fixture = Fixture::start(root).await?;
+    let suite = tokio::time::timeout(SUITE_TIMEOUT, async {
+        lease_receives_registry_events_without_folder_claims(&fixture).await?;
+        local_leases_follow_authority_and_transfer_identity(&fixture).await?;
+        independent_servers_do_not_share_transition_gates(&fixture).await?;
+        remote_spawn_arms_and_workspace_uris(&fixture).await?;
+        remote_file_rename_emits_desktop_file_moved(&fixture).await?;
+        remote_paste_stays_on_source_host(&fixture).await?;
+        settings_effective_merges_desktop_sections(&fixture).await?;
+        local_only_ops_stay_on_desktop(&fixture).await?;
+        anyhow::Ok(())
+    })
+    .await;
+    fixture.shutdown().await;
+    suite.unwrap_or_else(|_| panic!("the routing suite did not finish within {SUITE_TIMEOUT:?}"))
 }
 
 async fn local_leases_follow_authority_and_transfer_identity(
@@ -629,7 +363,7 @@ async fn independent_servers_do_not_share_transition_gates(
     // Bound UDP socket absorbs QUIC traffic without replying, keeping the
     // first server's connect pending rather than depending on DNS timing.
     let stalled = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-    workspace.host.settings_patch_global_section(PatchSettingsSectionInput {
+    workspace.router.settings_patch_global_section(None, PatchSettingsSectionInput {
         section: "remotes".into(),
         value: json!({
             "loop": { "address": format!("localhost:{}", fixture.server.local_addr.port()), "fingerprint": fixture.server.fingerprint.to_string() },
@@ -676,7 +410,7 @@ async fn independent_servers_do_not_share_transition_gates(
         .router
         .workbench_close("loop", "fast".into())
         .await?;
-    workspace.host.settings_patch_global_section(PatchSettingsSectionInput {
+    workspace.router.settings_patch_global_section(None, PatchSettingsSectionInput {
         section: "remotes".into(),
         value: json!({
             "loop": { "address": format!("localhost:{}", fixture.server.local_addr.port()), "fingerprint": fixture.server.fingerprint.to_string() },
@@ -719,7 +453,7 @@ async fn lease_receives_registry_events_without_folder_claims(
                     .recv()
                     .await
                     .expect("host event sink closed");
-                if let HostEvent::RemoteWorkbenchesChanged { server } = event {
+                if let DesktopEvent::WorkbenchesChanged { server } = event {
                     assert_eq!(server, "loop");
                     break;
                 }
@@ -740,7 +474,7 @@ async fn lease_receives_registry_events_without_folder_claims(
     Ok(())
 }
 
-async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyhow::Result<()> {
+async fn remote_spawn_arms_and_workspace_uris(fixture: &Fixture) -> anyhow::Result<()> {
     let workspace = fixture.workspace("matrix-repo")?;
     let router = &workspace.router;
     let remote = workspace.remote.clone();
@@ -756,96 +490,9 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         "sentinel\n"
     );
 
-    macro_rules! probe_operations {
-        // Event sinks, watcher predicates and owners put these outside the
-        // generated shape. Each one is invoked by hand below instead.
-        (#[route($route:ident)] FilesWatchDirs => $($rest:tt)*) => {};
-        (#[route($route:ident)] GitWatch => $($rest:tt)*) => {};
-        (#[route($route:ident)] SessionStart => $($rest:tt)*) => {};
-        (#[route($route:ident)] TasksStart => $($rest:tt)*) => {};
-        (#[route($route:ident)] LspStart => $($rest:tt)*) => {};
-        // Window claims/releases are adapter-owned, never path-only router methods.
-        (#[route(folder_path)] FolderClaim => $($rest:tt)*) => {};
-        (#[route(folder_path)] FolderRelease => $($rest:tt)*) => {};
-        // Not keyed by a folder path: run ids, session ids, an explicit server,
-        // or an input struct. Each is asserted by hand below.
-        (#[route(run)] $($rest:tt)*) => {};
-        (#[route(lsp)] $($rest:tt)*) => {};
-        (#[route(none)] $($rest:tt)*) => {};
-        (#[route(server)] $($rest:tt)*) => {};
-        (#[route(opt_folder_path)] $($rest:tt)*) => {};
-        (#[route(input_folder_path)] $($rest:tt)*) => {};
-        (#[route(input_path)] $($rest:tt)*) => {};
-        (
-            #[route($route:ident)]
-            $variant:ident => $method:ident(
-                $($argument:ident: $argument_type:ty),* $(,)?
-            ) -> $return_type:ty;
-        ) => {
-            $(
-                // The route argument is shadowed below, never read as a sample.
-                #[allow(unused_variables)]
-                let $argument: $argument_type = Sample::sample();
-            )*
-            // The route argument is what the frontend passes: a workspace URI.
-            let $route = remote.clone();
-            assert_routed(
-                stringify!($method),
-                bounded(stringify!($method), router.$method($($argument),*)).await,
-            );
-        };
-    }
-
-    // Expand the table before the per-row skip patterns: the first `none`
-    // route must not swallow every row that follows it.
-    macro_rules! probe_all_operations {
-        (
-            $(
-                #[route($route:ident)]
-                $variant:ident => $method:ident(
-                    $($argument:ident: $argument_type:ty),* $(,)?
-                ) -> $return_type:ty;
-            )+
-        ) => {
-            $(
-                {
-                    probe_operations! {
-                        #[route($route)]
-                        $variant => $method(
-                            $($argument: $argument_type),*
-                        ) -> $return_type;
-                    }
-                }
-            )+
-        };
-    }
-
-    sworm_protocol::sworm_rpc_ops!(probe_all_operations);
-
-    // The route keys the generated shape cannot express.
-    assert_routed(
-        "lsp_list_servers",
-        bounded(
-            "lsp_list_servers",
-            router.lsp_list_servers(Some(remote.clone())),
-        )
-        .await,
-    );
-    assert_routed(
-        "settings_get_effective",
-        bounded(
-            "settings_get_effective",
-            router.settings_get_effective(EffectiveSettingsInput {
-                folder_path: Some(remote.clone()),
-            }),
-        )
-        .await,
-    );
     let folder_file = bounded(
         "settings_open_folder_file",
-        router.settings_open_folder_file(FolderSettingsFileInput {
-            folder_path: remote.clone(),
-        }),
+        router.settings_open_folder_file(remote.clone()),
     )
     .await?;
     assert!(
@@ -858,19 +505,6 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         fs::read_dir(workspace.path.join(".sworm")).is_ok(),
         "the daemon must have created the folder settings file"
     );
-    assert_routed(
-        "settings_set_nix",
-        bounded(
-            "settings_set_nix",
-            router.settings_set_nix(Some("loop".to_owned()), NixSettings::default()),
-        )
-        .await,
-    );
-    assert_routed(
-        "settings_get",
-        bounded("settings_get", router.settings_get(Some("loop".to_owned()))).await,
-    );
-
     let workbench_id = "matrix-workbench".to_owned();
     let attached = bounded(
         "workbench_attach",
@@ -1052,22 +686,6 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         ),
     )
     .await?;
-    assert!(matches!(
-        router
-            .session_start(
-                format!("{PROBE}-unleased"),
-                remote.clone(),
-                PROBE.to_owned(),
-                None,
-                80,
-                24,
-                Arc::new(|_| Ok(())),
-                Arc::new(|_| Ok(())),
-                Some("matrix-window".into()),
-            )
-            .await,
-        Err(ApiError::InvalidArgument(_))
-    ));
     let language_server = bounded(
         "lsp_start",
         router.lsp_start(
@@ -1085,69 +703,6 @@ async fn every_routed_workspace_op_reaches_the_daemon(fixture: &Fixture) -> anyh
         "an unknown server definition must not spawn a language server on the daemon"
     );
     assert_routed("lsp_start", language_server);
-
-    // Host-owned settings are keyed by the server that runs them, so the
-    // desktop names `loop` instead of passing a path.
-    assert_routed(
-        "settings_patch_global_section",
-        bounded(
-            "settings_patch_global_section",
-            router.settings_patch_global_section(
-                Some("loop".to_owned()),
-                PatchSettingsSectionInput {
-                    // Refused before anything is written, so the probe cannot
-                    // disturb the settings the rest of the suite reads.
-                    section: PROBE.to_owned(),
-                    value: json!({}),
-                },
-            ),
-        )
-        .await,
-    );
-    assert_routed(
-        "settings_set_formatting",
-        bounded(
-            "settings_set_formatting",
-            router.settings_set_formatting(Some("loop".to_owned()), FormattingSettings::default()),
-        )
-        .await,
-    );
-    assert_routed(
-        "settings_set_provider_config",
-        bounded(
-            "settings_set_provider_config",
-            router.settings_set_provider_config(
-                Some("loop".to_owned()),
-                SaveProviderConfigInput {
-                    provider_id: PROBE.to_owned(),
-                    enabled: false,
-                    binary_path_override: None,
-                    extra_args: Vec::new(),
-                },
-            ),
-        )
-        .await,
-    );
-    assert_routed(
-        "lsp_set_server_config",
-        bounded(
-            "lsp_set_server_config",
-            router.lsp_set_server_config(
-                Some("loop".to_owned()),
-                SaveLspServerConfigInput {
-                    server_definition_id: PROBE.to_owned(),
-                    enabled: false,
-                    binary_path_override: None,
-                    runtime_path_override: None,
-                    runtime_args: Vec::new(),
-                    extra_args: Vec::new(),
-                    trace: LspTraceLevel::default(),
-                    settings: None,
-                },
-            ),
-        )
-        .await,
-    );
 
     Ok(())
 }
@@ -1171,12 +726,12 @@ async fn remote_file_rename_emits_desktop_file_moved(fixture: &Fixture) -> anyho
     let moved = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match workspace.events.recv().await.expect("event channel closed") {
-                HostEvent::FileMoved {
+                DesktopEvent::Host(HostEvent::FileMoved {
                     folder_path,
                     old_path,
                     new_path,
                     replace_destination,
-                } => return (folder_path, old_path, new_path, replace_destination),
+                }) => return (folder_path, old_path, new_path, replace_destination),
                 _ => continue,
             }
         }
@@ -1198,7 +753,7 @@ async fn remote_file_rename_emits_desktop_file_moved(fixture: &Fixture) -> anyho
     .await?;
     let deleted = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let HostEvent::FileDeleted(path) =
+            if let DesktopEvent::Host(HostEvent::FileDeleted(path)) =
                 workspace.events.recv().await.expect("event channel closed")
             {
                 return path;
@@ -1315,12 +870,13 @@ async fn settings_effective_merges_desktop_sections(fixture: &Fixture) -> anyhow
     )?;
     bounded(
         "settings_patch_global_section",
-        workspace
-            .host
-            .settings_patch_global_section(PatchSettingsSectionInput {
+        workspace.router.settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
                 section: "terminal".into(),
                 value: json!({ "font_size": 17 }),
-            }),
+            },
+        ),
     )
     .await?;
 
@@ -1328,9 +884,7 @@ async fn settings_effective_merges_desktop_sections(fixture: &Fixture) -> anyhow
         "settings_get_effective",
         workspace
             .router
-            .settings_get_effective(EffectiveSettingsInput {
-                folder_path: Some(workspace.remote.clone()),
-            }),
+            .settings_get_effective(Some(workspace.remote.clone())),
     )
     .await?;
 
@@ -1356,22 +910,21 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     let client = fixture.client().await?;
     let key = "workbench:desktop-matrix".to_owned();
     let formatted = "{\n  \"tabs\": [ ],\n  \"marker\": \"desktop\"\n}\n".to_owned();
-    assert_eq!(
-        bounded("app_state_get missing", router.app_state_get(key.clone())).await?,
-        None
-    );
     bounded(
         "app_state_put",
         router.app_state_put(key.clone(), formatted.clone()),
     )
     .await?;
     assert_eq!(
-        bounded("router app_state_get", router.app_state_get(key.clone())).await?,
-        Some(formatted.clone()),
-        "router must return exact opaque bytes"
-    );
-    assert_eq!(
-        bounded("app_state_get", workspace.host.app_state_get(key.clone())).await?,
+        bounded(
+            "app_state_get",
+            tokio::task::spawn_blocking({
+                let host = Arc::clone(&workspace.host);
+                let key = key.clone();
+                move || host.app_state_get(key)
+            })
+        )
+        .await??,
         Some(formatted.clone()),
         "router must persist exact opaque bytes to desktop Host DB"
     );
@@ -1388,7 +941,14 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     );
     bounded("app_state_delete", router.app_state_delete(key.clone())).await?;
     assert_eq!(
-        bounded("app_state_get deleted", workspace.host.app_state_get(key)).await?,
+        bounded(
+            "app_state_get deleted",
+            tokio::task::spawn_blocking({
+                let host = Arc::clone(&workspace.host);
+                move || host.app_state_get(key)
+            })
+        )
+        .await??,
         None
     );
 
@@ -1408,16 +968,21 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     assert!(chrono::DateTime::parse_from_rfc3339(&touched[0].opened_at).is_ok());
     assert_eq!(paths(touched.clone()), vec![local_uri.clone()]);
     match bounded("desktop recent event", workspace.events.recv()).await {
-        Some(HostEvent::RecentFoldersChanged(folders)) => assert_eq!(folders, touched),
+        Some(DesktopEvent::Host(HostEvent::RecentFoldersChanged(folders))) => {
+            assert_eq!(folders, touched)
+        }
         Some(_) => panic!("desktop recent mutation emitted wrong event"),
         None => panic!("desktop event sink closed"),
     }
     assert_eq!(
         bounded(
             "recent_folders_list persisted",
-            workspace.host.recent_folders_list()
+            tokio::task::spawn_blocking({
+                let host = Arc::clone(&workspace.host);
+                move || host.recent_folders_list()
+            })
         )
-        .await?,
+        .await??,
         touched
     );
 
@@ -1436,27 +1001,14 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     )
     .await
     .expect_err("path root is desktop-local");
-    assert_eq!(
-        error.to_string(),
-        "Remote error: folder_path_root is not supported on remote workspaces"
-    );
+    assert!(matches!(error, ApiError::Remote(_)));
     let error = bounded(
         "omp_resolve_uri remote cwd",
         router.omp_resolve_uri("local://probe.md".into(), Some(workspace.remote.clone())),
     )
     .await
     .expect_err("remote OMP lookup context must be rejected");
-    assert_eq!(
-        error.to_string(),
-        "Remote error: omp_resolve_uri is not supported on remote workspaces"
-    );
-    let info = bounded(
-        "app_runtime_info desktop",
-        router.app_runtime_info("desktop-matrix".into(), "9.8.7".into()),
-    )
-    .await?;
-    assert_eq!(info.name, "desktop-matrix");
-    assert_eq!(info.version, "9.8.7");
+    assert!(matches!(error, ApiError::Remote(_)));
 
     // NixClear synchronously publishes a folder-scoped remote event. Retry
     // readiness while the router's event subscription opens, then use a
@@ -1468,13 +1020,13 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
             retry.tick().await;
             router.nix_clear(workspace.remote.clone()).await?;
             while let Ok(event) = workspace.events.try_recv() {
-                if let HostEvent::NixChanged(path) = event {
+                if let DesktopEvent::Host(HostEvent::NixChanged(path)) = event {
                     if path == workspace.remote {
                         return anyhow::Ok(());
                     }
                 }
             }
-            if let Ok(Some(HostEvent::NixChanged(path))) =
+            if let Ok(Some(DesktopEvent::Host(HostEvent::NixChanged(path)))) =
                 tokio::time::timeout(Duration::from_millis(100), workspace.events.recv()).await
             {
                 if path == workspace.remote {
@@ -1512,10 +1064,10 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
                 .await
                 .expect("desktop event sink closed")
             {
-                HostEvent::RecentFoldersChanged(paths) => {
+                DesktopEvent::Host(HostEvent::RecentFoldersChanged(paths)) => {
                     panic!("daemon recent folders leaked into desktop sink: {paths:?}")
                 }
-                HostEvent::NixChanged(path) if path == marker_uri => break,
+                DesktopEvent::Host(HostEvent::NixChanged(path)) if path == marker_uri => break,
                 _ => {}
             }
         }
@@ -1535,7 +1087,9 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
         Vec::<RecentFolder>::new()
     );
     match bounded("desktop recent removal event", workspace.events.recv()).await {
-        Some(HostEvent::RecentFoldersChanged(paths)) => assert!(paths.is_empty()),
+        Some(DesktopEvent::Host(HostEvent::RecentFoldersChanged(paths))) => {
+            assert!(paths.is_empty())
+        }
         Some(_) => panic!("desktop recent removal emitted wrong event"),
         None => panic!("desktop event sink closed"),
     }

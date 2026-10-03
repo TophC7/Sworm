@@ -344,8 +344,7 @@ impl WindowCoordinatorService {
                 attachment_id,
             ) && self.has_window(&handoff.source_window)
                 && app.get_webview_window(&handoff.source_window).is_some()
-            {
-                if matches!(
+                && matches!(
                     tokio::time::timeout_at(
                         transfer.deadline,
                         state.router.workbench_transfer(
@@ -358,11 +357,11 @@ impl WindowCoordinatorService {
                     )
                     .await,
                     Ok(Ok(_))
-                ) {
-                    return Err(format!(
-                        "group finalization failed; source retained control: {error}"
-                    ));
-                }
+                )
+            {
+                return Err(format!(
+                    "group finalization failed; source retained control: {error}"
+                ));
             }
             // Ownership cannot safely be restored. Tell source commit won so it
             // cannot resurrect stale control; requester still gets delivery failure.
@@ -851,19 +850,35 @@ mod tests {
             "tabId": "text", "folderPath": "sworm://dev/repo", "filePath": null,
             "value": "unsaved", "savedValue": "", "language": "plaintext", "viewState": null,
         });
-        assert!(validate_metadata("dev", &[tab.clone()], Some("text"), &[model.clone()]).is_ok());
-        assert!(
-            validate_metadata("other", &[tab.clone()], Some("text"), &[model.clone()]).is_err()
-        );
+        assert!(validate_metadata(
+            "dev",
+            std::slice::from_ref(&tab),
+            Some("text"),
+            std::slice::from_ref(&model)
+        )
+        .is_ok());
+        assert!(validate_metadata(
+            "other",
+            std::slice::from_ref(&tab),
+            Some("text"),
+            std::slice::from_ref(&model)
+        )
+        .is_err());
         assert!(validate_metadata("dev", &[tab.clone(), tab.clone()], None, &[]).is_err());
-        assert!(validate_metadata("dev", &[tab.clone()], Some("other"), &[]).is_err());
+        assert!(validate_metadata("dev", std::slice::from_ref(&tab), Some("other"), &[]).is_err());
         let mut foreign = model.clone();
         foreign["folderPath"] = serde_json::json!("sworm://dev/other");
-        assert!(validate_metadata("dev", &[tab.clone()], None, &[foreign]).is_err());
+        assert!(validate_metadata("dev", std::slice::from_ref(&tab), None, &[foreign]).is_err());
         foreign = model.clone();
         foreign["tabId"] = serde_json::json!("other");
-        assert!(validate_metadata("dev", &[tab.clone()], None, &[foreign]).is_err());
-        assert!(validate_metadata("dev", &[tab.clone()], None, &[model.clone(), model]).is_err());
+        assert!(validate_metadata("dev", std::slice::from_ref(&tab), None, &[foreign]).is_err());
+        assert!(validate_metadata(
+            "dev",
+            std::slice::from_ref(&tab),
+            None,
+            &[model.clone(), model]
+        )
+        .is_err());
         let mut malformed = tab;
         malformed["filePath"] = serde_json::json!(42);
         assert!(validate_metadata("dev", &[malformed], None, &[]).is_err());

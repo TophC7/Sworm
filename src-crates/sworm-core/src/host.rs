@@ -1,4 +1,5 @@
-use crate::events::{EventSink, HostEvent};
+use crate::errors::ApiError;
+use crate::events::{deliver, EventSink, HostEvent};
 use crate::services::{
     db::DatabaseService,
     env::EnvironmentService,
@@ -33,23 +34,22 @@ pub struct Host {
     pub(crate) git: Arc<GitService>,
     pub(crate) issues: Arc<IssueService>,
     pub(crate) issue_bridge: IssueBridgeService,
-    pub(crate) files: Arc<FileService>,
+    pub(crate) files: FileService,
     pub(crate) env: EnvironmentService,
     pub(crate) lsp: LspService,
     pub tasks: TaskService,
     pub(crate) settings_watchers: SettingsWatcherService,
     pub file_watchers: FileWatcherService,
-    pub(crate) git_watchers: Arc<GitWatcherService>,
+    pub(crate) git_watchers: GitWatcherService,
     pub(crate) resume_discovery: ResumeDiscoveryService,
     pub(crate) nix_eval_locks: Mutex<HashSet<String>>,
     pub(crate) activity_map_cache: Mutex<Option<Vec<DiscoveredProject>>>,
-    pub(crate) settings_generation: Arc<Mutex<u64>>,
     pub(crate) events: EventSink<HostEvent>,
 }
 
 impl Host {
-    /// Creates services without opening issue-bridge sockets. Async operations
-    /// (including bridge startup) run on the caller's Tokio runtime.
+    /// Creates services without opening issue-bridge sockets. Bridge startup
+    /// requires the caller's Tokio runtime context.
     pub fn new(db_path: PathBuf, events: EventSink<HostEvent>) -> Result<Self, anyhow::Error> {
         let db = Arc::new(DatabaseService::new(db_path)?);
         let issues = Arc::new(IssueService::new());
@@ -62,19 +62,22 @@ impl Host {
             git: Arc::clone(&git),
             issues: Arc::clone(&issues),
             issue_bridge: IssueBridgeService::new(issues, Arc::clone(&events)),
-            files: Arc::new(FileService::new()),
+            files: FileService::new(),
             env: EnvironmentService::new(),
             lsp: LspService::new(),
             tasks: TaskService::new(),
-            settings_watchers: SettingsWatcherService::new(),
+            settings_watchers: SettingsWatcherService::new(Arc::clone(&events)),
             file_watchers: FileWatcherService::new(),
-            git_watchers: Arc::new(GitWatcherService::new(git)),
+            git_watchers: GitWatcherService::new(git),
             resume_discovery: ResumeDiscoveryService::new(),
             nix_eval_locks: Mutex::new(HashSet::new()),
             activity_map_cache: Mutex::new(None),
-            settings_generation: Arc::new(Mutex::new(0)),
             events,
         })
+    }
+
+    pub(crate) fn emit(&self, event: HostEvent) {
+        deliver(&self.events, event);
     }
 
     /// The caller releases ownership before evicting a folder's shared resources.
@@ -116,8 +119,7 @@ impl Host {
             for run_id in self.pty.owner_run_ids(owner, protected_pty_runs) {
                 self.runs.with_run(&run_id, |runs| {
                     if retire(&run_id) {
-                        self.resume_discovery.cancel(&run_id);
-                        self.tasks.release_singleton_by_run_id(&run_id);
+                        self.forget_run(&run_id);
                         runs.release(&run_id);
                     }
                 });
@@ -135,8 +137,7 @@ impl Host {
                 self.runs.with_run(&run_id, |runs| {
                     match self.pty.stop_owned_run(&run_id, owner) {
                         Ok(true) => {
-                            self.resume_discovery.cancel(&run_id);
-                            self.tasks.release_singleton_by_run_id(&run_id);
+                            self.forget_run(&run_id);
                             runs.release(&run_id);
                         }
                         Ok(false) => {}
@@ -153,6 +154,29 @@ impl Host {
                 )))
             }
         })
+    }
+
+    pub(crate) fn forget_run(&self, run_id: &str) {
+        self.resume_discovery.cancel(run_id);
+        self.tasks.release_singleton_by_run_id(run_id);
+    }
+
+    /// Retire any run, including its discovery, singleton lease and transcript.
+    pub fn discard_run(&self, run_id: &str) -> Result<(), ApiError> {
+        self.runs.with_run(run_id, |runs| {
+            self.pty.kill(run_id).map_err(ApiError::Pty)?;
+            runs.release(run_id);
+            self.forget_run(run_id);
+            Ok(())
+        })
+    }
+
+    pub fn run_write(&self, run_id: String, data: Vec<u8>) -> Result<(), ApiError> {
+        self.pty.write(&run_id, &data).map_err(ApiError::Pty)
+    }
+
+    pub fn run_resize(&self, run_id: String, cols: u16, rows: u16) -> Result<(), ApiError> {
+        self.pty.resize(&run_id, cols, rows).map_err(ApiError::Pty)
     }
 
     /// A replacement view reports restored tasks; completed locals absent from it can be released.
@@ -194,7 +218,7 @@ impl Host {
     }
 
     pub fn settings_generation(&self) -> u64 {
-        *self.settings_generation.lock()
+        self.settings_watchers.generation()
     }
 
     /// Gracefully terminate local PTYs and language servers while detaching

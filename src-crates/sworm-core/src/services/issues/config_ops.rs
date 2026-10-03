@@ -2,19 +2,20 @@
 
 use super::rows::collect_rows;
 use super::validators::{validate_config_key, validate_prefix};
-use super::IssueService;
+use super::{db_error, IssueService};
+use crate::errors::ApiError;
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
 use sworm_protocol::issues::*;
 
 impl IssueService {
     /// Project-local id-prefix configuration entries.
-    pub fn list_config(&self, project_path: &Path) -> Result<Vec<IssueConfigEntry>, String> {
+    pub fn list_config(&self, project_path: &Path) -> Result<Vec<IssueConfigEntry>, ApiError> {
         let db = self.db(project_path)?;
         let conn = db.read();
         let mut stmt = conn
             .prepare("SELECT key, value FROM issue_config ORDER BY key ASC")
-            .map_err(|e| format!("Failed to prepare config query: {}", e))?;
+            .map_err(db_error("Failed to prepare config query"))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(IssueConfigEntry {
@@ -22,7 +23,7 @@ impl IssueService {
                     value: row.get(1)?,
                 })
             })
-            .map_err(|e| format!("Failed to query config: {}", e))?;
+            .map_err(db_error("Failed to query config"))?;
         collect_rows(rows, "config")
     }
 
@@ -31,7 +32,7 @@ impl IssueService {
         &self,
         project_path: &Path,
         key: &str,
-    ) -> Result<Option<IssueConfigEntry>, String> {
+    ) -> Result<Option<IssueConfigEntry>, ApiError> {
         validate_config_key(key)?;
         let db = self.db(project_path)?;
         let conn = db.read();
@@ -46,7 +47,7 @@ impl IssueService {
             },
         )
         .optional()
-        .map_err(|e| format!("Failed to get config: {}", e))
+        .map_err(db_error("Failed to get config"))
     }
 
     /// Upsert a single config entry. Validates key/value shape; the
@@ -56,13 +57,13 @@ impl IssueService {
         project_path: &Path,
         key: &str,
         value: &str,
-    ) -> Result<IssueConfigEntry, String> {
+    ) -> Result<IssueConfigEntry, ApiError> {
         validate_config_key(key)?;
         let normalized = validate_prefix(value)?;
         let db = self.db(project_path)?;
         let conn = db.write();
         conn.execute("INSERT INTO issue_config(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, normalized])
-            .map_err(|e| format!("Failed to set config: {}", e))?;
+            .map_err(db_error("Failed to set config"))?;
         Ok(IssueConfigEntry {
             key: key.to_string(),
             value: normalized,

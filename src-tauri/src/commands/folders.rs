@@ -1,36 +1,12 @@
 use crate::app_state::AppState;
 use crate::router::Target;
-use crate::services::windows::release_folder_resources;
+use crate::windows::release_folder_resources;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use sworm_core::errors::ApiError;
 use sworm_core::services::folders::resolve_folder;
-use sworm_protocol::folder::{FolderEntry, FolderInfo, PathRoot};
-use sworm_protocol::rpc::RecentFolder;
-
-#[tauri::command]
-pub async fn recent_folders_list(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<RecentFolder>, ApiError> {
-    state.router.recent_folders_list().await
-}
-
-#[tauri::command]
-pub async fn recent_folders_touch(
-    path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<RecentFolder>, ApiError> {
-    state.router.recent_folders_touch(path).await
-}
-
-#[tauri::command]
-pub async fn recent_folders_remove(
-    paths: Vec<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<RecentFolder>, ApiError> {
-    state.router.recent_folders_remove(paths).await
-}
+use tauri::Manager;
 
 /// Open a native directory picker and return the selected canonical path.
 #[tauri::command]
@@ -59,35 +35,6 @@ pub async fn folder_select_directory(
         .map_err(|error| ApiError::Internal(error.to_string()))?;
     let folder = resolve_folder(&path.to_string_lossy())?;
     Ok(Some(folder.to_string_lossy().into_owned()))
-}
-
-/// Canonicalize a folder path and return its display name.
-#[tauri::command]
-pub async fn folder_resolve(
-    path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<FolderInfo, ApiError> {
-    state.router.folder_resolve(path).await
-}
-
-/// Immediate children of a canonicalized directory; directories first, then
-/// case-insensitive by name.
-#[tauri::command]
-pub async fn folder_list_entries(
-    path: String,
-    show_hidden: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<FolderEntry>, ApiError> {
-    state.router.folder_list_entries(path, show_hidden).await
-}
-
-/// Where the folder switcher's path bar starts for a local folder.
-#[tauri::command]
-pub async fn folder_path_root(
-    path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<PathRoot, ApiError> {
-    state.router.folder_path_root(path).await
 }
 
 #[tauri::command]
@@ -119,7 +66,11 @@ pub async fn folder_release(
         .file_watchers
         .release_subscriber_folder(window.label(), &folder);
     if is_last_owner {
-        release_folder_resources(&state, &folder);
+        let app = window.app_handle().clone();
+        tokio::task::spawn_blocking(move || {
+            release_folder_resources(&app.state::<AppState>(), &folder);
+        })
+        .await?;
     }
     Ok(())
 }

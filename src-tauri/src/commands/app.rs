@@ -2,73 +2,7 @@ use crate::app_state::AppState;
 use crate::router::Target;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use sworm_core::errors::ApiError;
-
-/// Resolve existing launch paths lexically, preserving symlink path forms.
-/// `sworm://` remote workspaces name no local file; they are only decoded.
-pub fn launch_path_args(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
-    argv.iter()
-        .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .filter_map(|arg| {
-            if arg.starts_with("sworm://") {
-                return parse_workspace_link(arg);
-            }
-            let path = match tauri::Url::parse(arg) {
-                Ok(url) if url.scheme() == "file" => {
-                    if url.query().is_some() || url.fragment().is_some() {
-                        return None;
-                    }
-                    url.to_file_path().ok()?
-                }
-                _ => PathBuf::from(arg),
-            };
-            let path = if path.is_absolute() {
-                path
-            } else {
-                cwd?.join(path)
-            };
-            let path = sworm_core::services::folders::normalize_absolute_path(&path);
-            (path.is_file() || path.is_dir()).then(|| path.to_string_lossy().into_owned())
-        })
-        .collect()
-}
-
-/// Decode an external `sworm://server/path` link exactly once into the opaque
-/// internal workspace path; downstream code never decodes it again.
-pub fn parse_workspace_link(link: &str) -> Option<String> {
-    let rest = link.strip_prefix("sworm://")?;
-    let server = &rest[..rest.find('/').unwrap_or(rest.len())];
-    // Only a bare server id: userinfo, ports, queries, and fragments would make
-    // the target ambiguous.
-    if server.is_empty()
-        || !server
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-        || rest
-            .bytes()
-            .any(|b| b <= b' ' || matches!(b, 0x7f | b'?' | b'#'))
-    {
-        return None;
-    }
-    let url = tauri::Url::parse(link).ok()?;
-    let encoded = if url.path().is_empty() {
-        "/"
-    } else {
-        url.path()
-    };
-    // percent_decode_str passes malformed escapes through; reject them instead.
-    if encoded.split('%').skip(1).any(|escape| {
-        !escape
-            .get(..2)
-            .is_some_and(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
-    }) {
-        return None;
-    }
-    let path = percent_decode_str(encoded).decode_utf8().ok()?;
-    (!path.contains('\0')).then(|| format!("sworm://{server}{path}"))
-}
 
 #[derive(Serialize)]
 pub struct ClipboardFiles {
@@ -87,34 +21,6 @@ pub async fn app_runtime_info(
         .router
         .app_runtime_info(package.name.clone(), package.version.to_string())
         .await
-}
-
-/// Read a value from the app-state key/value store. Returns `None`
-/// when no entry exists for the key.
-#[tauri::command]
-pub async fn app_state_get(
-    key: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<String>, ApiError> {
-    state.router.app_state_get(key).await
-}
-
-/// Write a value to the app-state key/value store.
-#[tauri::command]
-pub async fn app_state_put(
-    key: String,
-    value_json: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.app_state_put(key, value_json).await
-}
-/// Delete a value from the app-state key/value store.
-#[tauri::command]
-pub async fn app_state_delete(
-    key: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.app_state_delete(key).await
 }
 
 /// Everything a URI path may not carry literally. `/` stays a separator, and
@@ -308,9 +214,6 @@ fn read_clipboard_files() -> Result<Option<ClipboardFiles>, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_path_args, parse_workspace_link};
-    use std::path::Path;
-
     /// A name holding a space or `#` survives the file clipboard in both
     /// directions: other file managers write RFC 3986, and read their own
     /// spelling back.
@@ -345,135 +248,5 @@ mod tests {
         // Schemes no workspace can reach are dropped, not pasted blindly.
         assert_eq!(clipboard_uri_to_path("sftp://host/srv/x"), None);
         assert_eq!(clipboard_uri_to_path("sworm://loop"), None);
-    }
-
-    #[test]
-    fn launch_path_args_ignores_argv0_and_flags_and_uses_cwd_for_relative_paths() {
-        let root = unique_test_dir("relative-path");
-        let cwd = root.join("cwd");
-        let project = root.join("project");
-        std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::create_dir_all(&project).unwrap();
-
-        // argv[0] is the binary; leading '-' flags must be skipped.
-        let argv = vec!["sworm".into(), "--some-flag".into(), "../project".into()];
-        let resolved = launch_path_args(&argv, Some(cwd.as_path()));
-
-        assert_eq!(resolved, vec![project.to_string_lossy().into_owned()]);
-
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn launch_path_args_returns_empty_for_missing_path() {
-        let argv = vec!["sworm".into(), "/nonexistent/path/xyz".into()];
-        assert!(launch_path_args(&argv, None).is_empty());
-    }
-
-    /// A lone URL argument belongs to the deep-link plugin; several arguments
-    /// reach argv routing, which must decode remote workspaces the same way.
-    #[test]
-    fn launch_path_args_decodes_remote_workspace_uris() {
-        let argv = vec![
-            "sworm".into(),
-            "sworm://homelab/home/me/my%20project".into(),
-            "sworm://homelab/home/me/%ZZ".into(),
-        ];
-        assert_eq!(
-            launch_path_args(&argv, None),
-            vec!["sworm://homelab/home/me/my project".to_owned()]
-        );
-    }
-
-    #[test]
-    fn workspace_links_decode_once_and_reject_ambiguous_forms() {
-        for (link, expected) in [
-            (
-                "sworm://BuildBox/my%20repo/%E6%96%87%E4%BB%B6",
-                "sworm://BuildBox/my repo/文件",
-            ),
-            (
-                "sworm://BuildBox/literal%2520name",
-                "sworm://BuildBox/literal%20name",
-            ),
-            ("sworm://BuildBox/a%23b%3Fc", "sworm://BuildBox/a#b?c"),
-            ("sworm://BuildBox", "sworm://BuildBox/"),
-        ] {
-            assert_eq!(
-                parse_workspace_link(link).as_deref(),
-                Some(expected),
-                "{link}"
-            );
-        }
-        for link in [
-            "sworm://user@host/repo",
-            "sworm://host:7420/repo",
-            "sworm:///repo",
-            "sworm://host/repo?query",
-            "sworm://host/repo#fragment",
-            "sworm://host/repo?",
-            "sworm://host/repo#",
-            "sworm://host/%ZZ",
-            "sworm://host/%C0%AF",
-            "sworm://host/%00",
-            "sworm://host/repo\n",
-            "sworm://host/my repo",
-        ] {
-            assert_eq!(parse_workspace_link(link), None, "{link:?}");
-        }
-    }
-
-    #[test]
-    fn launch_path_args_decodes_local_file_uris_and_rejects_remote_hosts() {
-        let root = tempfile::tempdir().unwrap();
-        let project = root.path().join("project #1 %");
-        std::fs::create_dir(&project).unwrap();
-        let uri = tauri::Url::from_directory_path(&project).unwrap();
-        let expected = project.to_string_lossy().into_owned();
-        for uri in [
-            uri.to_string(),
-            uri.as_str().replacen("file:///", "file://localhost/", 1),
-        ] {
-            assert_eq!(
-                launch_path_args(&["sworm".into(), uri], None),
-                vec![expected.clone()]
-            );
-        }
-        for uri in [
-            uri.as_str().replacen("file:///", "file://remote/", 1),
-            format!("{uri}?query"),
-            format!("{uri}#fragment"),
-        ] {
-            assert!(launch_path_args(&["sworm".into(), uri], None).is_empty());
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn launch_path_args_preserves_symlink_path_form() {
-        let root = unique_test_dir("symlink-path");
-        let real = root.join("real-project");
-        let link = root.join("project-link");
-        std::fs::create_dir_all(&real).unwrap();
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        let argv = vec!["sworm".into(), link.to_string_lossy().into_owned()];
-        let resolved = launch_path_args(&argv, None);
-
-        assert_eq!(resolved, vec![link.to_string_lossy().into_owned()]);
-
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    fn unique_test_dir(label: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sworm-app-command-test-{}-{}",
-            label,
-            uuid::Uuid::new_v4()
-        ));
-        if Path::new(&dir).exists() {
-            std::fs::remove_dir_all(&dir).unwrap();
-        }
-        dir
     }
 }

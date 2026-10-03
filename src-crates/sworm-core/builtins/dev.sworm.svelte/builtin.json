@@ -15,10 +15,7 @@
         "id": "svelte-language-server",
         "label": "Svelte Language Server",
         "applies_to_languages": ["svelte"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "svelteserver"
-        },
+        "command": "svelteserver",
         "args": ["--stdio"],
         "install_hint": "Install `svelte-language-server` and ensure `svelteserver` is on PATH.",
         "document_selectors": [

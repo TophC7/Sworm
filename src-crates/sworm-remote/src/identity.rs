@@ -1,5 +1,5 @@
-use crate::client::RemoteError;
-use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use crate::RemoteError;
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use std::{
     fmt,
@@ -8,12 +8,8 @@ use std::{
     path::{Component, Path, PathBuf},
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
-    thread,
-    time::{Duration, Instant},
 };
 
-const LOCK_WAIT: Duration = Duration::from_secs(10);
-const LOCK_POLL: Duration = Duration::from_millis(10);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// SHA-256 digest of a certificate's DER encoding.
@@ -60,22 +56,24 @@ impl Identity {
         secure_directory(dir)?;
 
         let identity_path = dir.join(format!("{stem}.pem"));
-        let load = || {
-            if entry_exists(&identity_path)? {
-                load_existing(&identity_path).map(Some)
-            } else {
-                Ok(None)
-            }
-        };
-        if let Some(identity) = load()? {
-            return Ok(identity);
+        if entry_exists(&identity_path)? {
+            return load_existing(&identity_path);
         }
 
-        let _lock = GenerationLock::acquire(&dir.join(format!(".{stem}.identity.lock")))?;
-        if let Some(identity) = load()? {
-            return Ok(identity);
+        let temporary = generate(dir, stem)?;
+        match publish(&temporary.0, &identity_path) {
+            Ok(()) => sync_directory(dir)?,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                return load_existing(&identity_path);
+            }
+            Err(error) => {
+                return Err(RemoteError::identity(
+                    format!("cannot create identity file {}", identity_path.display()),
+                    error,
+                ));
+            }
         }
-        generate(dir, stem, &identity_path)
+        load_existing(&identity_path)
     }
 
     /// Load a provisioned identity (e.g. a sops/agenix secret), never
@@ -96,7 +94,18 @@ impl Identity {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        generate(dir, stem, path)
+        let temporary = generate(dir, stem)?;
+        publish(&temporary.0, path).map_err(|error| {
+            RemoteError::identity(
+                format!(
+                    "cannot create identity file {} without overwriting existing data",
+                    path.display()
+                ),
+                error,
+            )
+        })?;
+        sync_directory(dir)?;
+        load_existing(path)
     }
 
     pub fn fingerprint(&self) -> Fingerprint {
@@ -115,22 +124,18 @@ fn validate_stem(stem: &str) -> Result<(), RemoteError> {
     }
 }
 
-fn generate(dir: &Path, stem: &str, identity_path: &Path) -> Result<Identity, RemoteError> {
+fn generate(dir: &Path, stem: &str) -> Result<TemporaryFiles, RemoteError> {
     let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)
-        .map_err(|error| identity_error("generate Ed25519 key", error))?;
+        .map_err(|error| RemoteError::identity("generate Ed25519 key", error))?;
     let certificate = rcgen::CertificateParams::new(vec!["sworm".to_string()])
         .and_then(|params| params.self_signed(&key_pair))
-        .map_err(|error| identity_error("generate self-signed certificate", error))?;
+        .map_err(|error| RemoteError::identity("generate self-signed certificate", error))?;
     let contents = format!("{}{}", certificate.pem(), key_pair.serialize_pem());
 
-    let mut temporary = TemporaryFiles(Vec::new());
-    let identity_temp = write_temp(dir, stem, "pem", contents.as_bytes(), 0o600)?;
-    temporary.0.push(identity_temp.clone());
-    publish(&identity_temp, identity_path, 0o600)?;
-    sync_directory(dir)?;
-    drop(temporary);
-
-    load_existing(identity_path)
+    let temporary = TemporaryFiles(write_temp(dir, stem, contents.as_bytes())?);
+    // Restore owner access stripped by umask before making the file visible.
+    set_mode(&temporary.0, 0o600)?;
+    Ok(temporary)
 }
 
 /// Follows symlinks so provisioned secrets can be linked into place, and like
@@ -226,20 +231,11 @@ fn secure_directory(dir: &Path) -> Result<(), RemoteError> {
     }
 }
 
-fn write_temp(
-    dir: &Path,
-    stem: &str,
-    kind: &str,
-    contents: &[u8],
-    mode: u32,
-) -> Result<PathBuf, RemoteError> {
+fn write_temp(dir: &Path, stem: &str, contents: &[u8]) -> Result<PathBuf, RemoteError> {
     for _ in 0..128 {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!(
-            ".{stem}.{kind}.tmp-{}-{sequence}",
-            std::process::id()
-        ));
-        let mut file = match open_new(&path, mode) {
+        let path = dir.join(format!(".{stem}.pem.tmp-{}-{sequence}", std::process::id()));
+        let mut file = match open_new(&path, 0o600) {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -264,14 +260,8 @@ fn write_temp(
     ))
 }
 
-fn publish(source: &Path, destination: &Path, mode: u32) -> Result<(), RemoteError> {
-    fs::hard_link(source, destination).map_err(|error| {
-        RemoteError::Identity(format!(
-            "cannot create identity file {} without overwriting existing data: {error}",
-            destination.display()
-        ))
-    })?;
-    set_mode(destination, mode)
+fn publish(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::hard_link(source, destination)
 }
 
 fn open_new(path: &Path, mode: u32) -> io::Result<File> {
@@ -324,67 +314,21 @@ fn sync_directory(dir: &Path) -> Result<(), RemoteError> {
     }
 }
 
-fn identity_error(context: &str, error: impl fmt::Display) -> RemoteError {
-    RemoteError::Identity(format!("{context}: {error}"))
-}
-
-struct GenerationLock {
-    _file: File,
-}
-
-impl GenerationLock {
-    fn acquire(path: &Path) -> Result<Self, RemoteError> {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(path).map_err(|error| {
-            RemoteError::Identity(format!(
-                "cannot open identity lock {}: {error}",
-                path.display()
-            ))
-        })?;
-        let started = Instant::now();
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(Self { _file: file }),
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    if started.elapsed() >= LOCK_WAIT {
-                        return Err(RemoteError::Identity(format!(
-                            "timed out waiting for identity lock {}",
-                            path.display()
-                        )));
-                    }
-                    thread::sleep(LOCK_POLL);
-                }
-                Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(RemoteError::Identity(format!(
-                        "cannot acquire identity lock {}: {error}",
-                        path.display()
-                    )))
-                }
-            }
-        }
-    }
-}
-
-struct TemporaryFiles(Vec<PathBuf>);
+struct TemporaryFiles(PathBuf);
 
 impl Drop for TemporaryFiles {
     fn drop(&mut self) {
-        for path in &self.0 {
-            let _ = fs::remove_file(path);
-        }
+        let _ = fs::remove_file(&self.0);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     #[test]
     fn fingerprint_display_parse_round_trip() {
@@ -496,13 +440,6 @@ mod tests {
             .map(|thread| thread.join().unwrap())
             .collect::<Vec<_>>();
         assert!(fingerprints.iter().all(|value| *value == fingerprints[0]));
-    }
-
-    #[test]
-    fn stale_lock_file_does_not_block_generation() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join(".client.identity.lock"), b"stale").unwrap();
-        Identity::load_or_generate(directory.path(), "client").unwrap();
     }
 
     #[cfg(unix)]

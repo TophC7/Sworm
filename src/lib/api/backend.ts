@@ -45,7 +45,6 @@ import type {
   IssueEpicUpdateInput,
   IssueListFilters,
   IssueReadyFilters,
-  IssueSearchFilters,
   IssueUpdateInput,
   LspEvent,
   LspServerConfig,
@@ -548,9 +547,7 @@ export const backend = {
       return invoke<SettingsPayload>('settings_get', { folderPath: folderPath ?? null })
     },
     getEffective(folderPath?: string): Promise<EffectiveSettingsPayload> {
-      return invoke<EffectiveSettingsPayload>('settings_get_effective', {
-        input: { folder_path: folderPath ?? null }
-      })
+      return invoke<EffectiveSettingsPayload>('settings_get_effective', { folderPath: folderPath ?? null })
     },
     getGlobalLayer(): Promise<SettingsLayerPayload> {
       return invoke<SettingsLayerPayload>('settings_get_global_layer')
@@ -572,9 +569,7 @@ export const backend = {
       return invoke<SettingsFileResult>('settings_create_global_file')
     },
     openFolderFile(folderPath: string): Promise<SettingsFileResult> {
-      return invoke<SettingsFileResult>('settings_open_folder_file', {
-        input: { folder_path: folderPath }
-      })
+      return invoke<SettingsFileResult>('settings_open_folder_file', { folderPath })
     },
     onChanged(handler: (event: SettingsChangedEvent) => void): Promise<Unsubscribe> {
       return getHostTransport().subscribe('settings-changed', handler)
@@ -637,7 +632,7 @@ export const backend = {
         filters: readyFilters
       })
     },
-    search(folderPath: string, query: string, filters: IssueSearchFilters = {}): Promise<Issue[]> {
+    search(folderPath: string, query: string, filters: IssueListFilters = {}): Promise<Issue[]> {
       return invoke<Issue[]>('issues_search', { folderPath, query, filters })
     },
     get(folderPath: string, issueId: string): Promise<IssueDetail> {

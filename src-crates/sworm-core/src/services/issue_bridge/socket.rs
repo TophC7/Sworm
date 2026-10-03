@@ -41,23 +41,7 @@ pub(super) fn socket_path_for(project_path: &Path) -> Result<PathBuf, String> {
 
 fn short_hash(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
-    hex_prefix(&digest, 12)
-}
-
-fn hex_prefix(bytes: &[u8], chars: usize) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(chars);
-    for byte in bytes {
-        if out.len() >= chars {
-            break;
-        }
-        out.push(HEX[(byte >> 4) as usize] as char);
-        if out.len() >= chars {
-            break;
-        }
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    digest[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Create `dir` (and any missing ancestors) with mode 0o700 set

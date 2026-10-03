@@ -1,14 +1,19 @@
+mod common;
+
 use serde_json::json;
-use std::{collections::HashSet, fs, process::Command, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 use sworm_core::{
     errors::ApiError,
     events::{EventSink, HostEvent},
     Host,
 };
+use sworm_lib::host_events::DesktopEvent;
 use sworm_lib::router::{Target, WorkspaceRouter};
-use sworm_protocol::{pty::PtyEvent, rpc::AttachMode, settings::PatchSettingsSectionInput};
+use sworm_protocol::{
+    pty::PtyEvent, rpc::AttachMode, session::SessionStartInfo, settings::PatchSettingsSectionInput,
+};
 use sworm_remote::Identity;
-use sworm_server::{auth::append_authorized, serve, ServeOptions};
+use sworm_server::{serve, ServeOptions};
 use tempfile::tempdir;
 use tokio::{sync::mpsc, time::timeout};
 
@@ -37,6 +42,48 @@ fn pty_sinks() -> (
     (output, events, receive)
 }
 
+async fn start_terminal(
+    router: &WorkspaceRouter,
+    run_id: &str,
+    folder: &str,
+    owner: &str,
+) -> (
+    Result<SessionStartInfo, ApiError>,
+    mpsc::UnboundedReceiver<PtyDelivery>,
+) {
+    let (output, events, receive) = pty_sinks();
+    let result = router
+        .session_start(
+            run_id.into(),
+            folder.into(),
+            "terminal".into(),
+            None,
+            80,
+            24,
+            output,
+            events,
+            Some(owner.into()),
+        )
+        .await;
+    (result, receive)
+}
+
+async fn echo(
+    router: &WorkspaceRouter,
+    run_id: &str,
+    receive: &mut mpsc::UnboundedReceiver<PtyDelivery>,
+    marker: &str,
+) -> Vec<PtyDelivery> {
+    router
+        .run_write(
+            run_id.into(),
+            format!("printf '{marker}\\n'\n").into_bytes(),
+        )
+        .await
+        .expect("failed to write PTY marker");
+    receive_output_until(receive, format!("{marker}\r\n").as_bytes()).await
+}
+
 async fn receive_output_until(
     receive: &mut mpsc::UnboundedReceiver<PtyDelivery>,
     needle: &[u8],
@@ -56,40 +103,23 @@ async fn receive_output_until(
     .await
     .expect("timed out waiting for PTY output")
 }
-async fn receive_through_synced(
+async fn receive_through(
     receive: &mut mpsc::UnboundedReceiver<PtyDelivery>,
+    done: fn(&PtyEvent) -> bool,
 ) -> Vec<PtyDelivery> {
     timeout(Duration::from_secs(15), async {
         let mut deliveries = Vec::new();
         loop {
             let delivery = receive.recv().await.expect("PTY delivery channel closed");
-            let synced = matches!(&delivery, PtyDelivery::Event(PtyEvent::Synced { .. }));
+            let finished = matches!(&delivery, PtyDelivery::Event(event) if done(event));
             deliveries.push(delivery);
-            if synced {
+            if finished {
                 return deliveries;
             }
         }
     })
     .await
-    .expect("timed out waiting for PTY synchronization")
-}
-
-async fn receive_through_exit(
-    receive: &mut mpsc::UnboundedReceiver<PtyDelivery>,
-) -> Vec<PtyDelivery> {
-    timeout(Duration::from_secs(15), async {
-        let mut deliveries = Vec::new();
-        loop {
-            let delivery = receive.recv().await.expect("PTY delivery channel closed");
-            let exited = matches!(&delivery, PtyDelivery::Event(PtyEvent::Exit { .. }));
-            deliveries.push(delivery);
-            if exited {
-                return deliveries;
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for PTY exit")
+    .expect("timed out waiting for PTY event")
 }
 
 fn output_bytes(deliveries: &[PtyDelivery]) -> Vec<u8> {
@@ -116,30 +146,11 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     // One test owns process-global XDG/HOME for its whole lifetime. Separate
     // integration-test binaries run in separate processes.
     let temporary = tempdir()?;
-    let xdg_config_home = temporary.path().join("config-home");
-    let xdg_data_home = temporary.path().join("data-home");
-    let home = temporary.path().join("home");
-    let git_config = temporary.path().join("gitconfig");
-    fs::create_dir_all(&home)?;
-    fs::write(&git_config, "")?;
-    std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
-    std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
-    std::env::set_var("HOME", &home);
-    std::env::set_var("GIT_CONFIG_GLOBAL", &git_config);
-    std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    common::isolate(temporary.path())?;
 
     let repository = temporary.path().join("repository");
-    let git = Command::new("git")
-        .args(["-c", "init.defaultBranch=main", "init"])
-        .arg(&repository)
-        .output()?;
-    assert!(
-        git.status.success(),
-        "git init failed: {}",
-        String::from_utf8_lossy(&git.stderr)
-    );
+    common::init_repo(&repository)?;
     fs::create_dir(repository.join("src"))?;
-    fs::write(repository.join("hello.txt"), "sentinel\n")?;
     fs::write(repository.join("src/lib.rs"), "pub fn sentinel() {}\n")?;
     let repository_settings = repository.join(".sworm");
     fs::create_dir(&repository_settings)?;
@@ -148,47 +159,21 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         r#"{"providers":{"terminal":{"enabled":true,"binary_path_override":"sh","extra_args":[]}}}"#,
     )?;
 
-    let server_config = temporary.path().join("server-config");
-    let server = serve(ServeOptions {
-        config_dir: server_config.clone(),
-        data_dir: temporary.path().join("server-data"),
-        listen: Some("127.0.0.1:0".parse()?),
-        config_file: None,
-        web_assets_dir: None,
-    })
-    .await?;
+    let (server, desktop_identity, remote_settings) = common::start_loop(temporary.path()).await?;
     let server_address = server.local_addr;
     let server_fingerprint = server.fingerprint;
-
-    let desktop_config = xdg_config_home.join("sworm");
-    fs::create_dir_all(&desktop_config)?;
-    let settings_path = desktop_config.join("settings.jsonc");
-    let remote_settings = json!({
-        "loop": {
-            "address": format!("localhost:{}", server_address.port()),
-            "fingerprint": server_fingerprint.to_string(),
-        }
-    });
-    fs::write(
-        &settings_path,
-        serde_json::to_vec(&json!({ "remotes": remote_settings.clone() }))?,
-    )?;
-    let desktop_identity = Identity::load_or_generate(&desktop_config, "client")?;
-    append_authorized(
-        &server_config,
-        desktop_identity.fingerprint(),
-        "router-test",
-    )?;
+    let settings_path = temporary.path().join("config-home/sworm/settings.jsonc");
 
     let (host_events_send, mut host_events_receive) = mpsc::unbounded_channel();
-    let host_events: EventSink<HostEvent> = Arc::new(move |event| {
+    let host_events: EventSink<DesktopEvent> = Arc::new(move |event| {
         host_events_send
             .send(event)
             .map_err(|error| error.to_string())
     });
+    let desktop = Arc::clone(&host_events);
     let host = Arc::new(Host::new(
         temporary.path().join("sworm.db"),
-        Arc::clone(&host_events),
+        Arc::new(move |event| desktop(DesktopEvent::Host(event))),
     )?);
     let router = WorkspaceRouter::with_events(Arc::clone(&host), host_events);
 
@@ -270,27 +255,10 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         attached,
         Some(sworm_protocol::rpc::WorkbenchAttached::Ready { .. })
     ));
-    let (output, events, mut leased_output) = pty_sinks();
-    router
-        .session_start(
-            "leased-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("lease-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
-            "leased-run".into(),
-            b"printf '__LEASED_RUN__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut leased_output, b"__LEASED_RUN__\r\n").await;
+    let (started, mut leased_output) =
+        start_terminal(&router, "leased-run", &remote_repository, "lease-window").await;
+    started?;
+    echo(&router, "leased-run", &mut leased_output, "__LEASED_RUN__").await;
     let listed = router.workbench_list("loop").await?;
     let workbench = listed
         .iter()
@@ -315,20 +283,14 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         )
         .await?
         .is_some());
-    let (foreign_output, foreign_events, _foreign_deliveries) = pty_sinks();
-    router
-        .session_start(
-            "foreign-release-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            foreign_output,
-            foreign_events,
-            Some("foreign-window".into()),
-        )
-        .await?;
+    let (started, _foreign_deliveries) = start_terminal(
+        &router,
+        "foreign-release-run",
+        &remote_repository,
+        "foreign-window",
+    )
+    .await;
+    started?;
     assert!(matches!(
         router.remote_runs_release(
             "lease-window",
@@ -492,7 +454,7 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             )
             .await?;
         assert_eq!(other_owner.version, expected_hash);
-        router.release_file_reads("stream-test");
+        router.release_window("stream-test");
         fs::remove_file(repository.join("large.txt"))?;
         fs::remove_file(repository.join("huge.txt"))?;
     }
@@ -544,7 +506,7 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     fs::write(repository.join("watched.txt"), "changed\n")?;
     let watched = timeout(Duration::from_secs(5), async {
         loop {
-            if let HostEvent::FilesChanged(event) = host_events_receive
+            if let DesktopEvent::Host(HostEvent::FilesChanged(event)) = host_events_receive
                 .recv()
                 .await
                 .expect("host event channel closed")
@@ -559,32 +521,40 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     .expect("timed out waiting for remote file event");
     assert_eq!(watched.folder_path, canonical_uri);
 
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({
-            "loop": {
-                "address": "not-a-socket",
-                "fingerprint": server_fingerprint.to_string(),
-            }
-        }),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({
+                    "loop": {
+                        "address": "not-a-socket",
+                        "fingerprint": server_fingerprint.to_string(),
+                    }
+                }),
+            },
+        )
+        .await?;
     let changed_address = router
         .file_read(remote_repository.clone(), "hello.txt".into())
         .await
         .expect_err("settings generation change must invalidate cached address");
     assert!(changed_address.to_string().contains("cannot resolve"));
 
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({
-            "loop": {
-                "address": server_address.to_string(),
-                "fingerprint": "bad",
-            }
-        }),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({
+                    "loop": {
+                        "address": server_address.to_string(),
+                        "fingerprint": "bad",
+                    }
+                }),
+            },
+        )
+        .await?;
     assert!(matches!(
         router
             .file_read(remote_repository.clone(), "hello.txt".into())
@@ -593,11 +563,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         ApiError::InvalidArgument(_)
     ));
 
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({}),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({}),
+            },
+        )
+        .await?;
     assert!(router
         .file_read(remote_repository.clone(), "hello.txt".into())
         .await
@@ -605,11 +579,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         .to_string()
         .contains("Unknown remote server"));
 
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: remote_settings.clone(),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: remote_settings.clone(),
+            },
+        )
+        .await?;
     assert_eq!(
         router
             .file_read(remote_repository.clone(), "hello.txt".into())
@@ -644,11 +622,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         "address": declared_server.local_addr.to_string(),
         "fingerprint": server_fingerprint.to_string(),
     });
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: remotes,
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: remotes,
+            },
+        )
+        .await?;
     let declared_repository = Target::remote_uri("declared", &repository.to_string_lossy());
     assert!(router
         .file_read(declared_repository.clone(), "hello.txt".into())
@@ -669,11 +651,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     );
     assert!(!declared_config.join("authorized_keys").exists());
     declared_server.shutdown().await;
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: remote_settings.clone(),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: remote_settings.clone(),
+            },
+        )
+        .await?;
     router
         .files_watch_dirs(
             "desktop-window".into(),
@@ -683,23 +669,18 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         .await?;
     assert!(matches!(
         Target::parse("sworm://"),
-        Err(ApiError::InvalidArgument(message)) if message == "Invalid remote path: sworm://"
+        Err(ApiError::InvalidArgument(_))
     ));
 
     assert!(matches!(
-        router
-            .session_start(
-                "unleased-run".into(),
-                remote_repository.clone(),
-                "terminal".into(),
-                None,
-                80,
-                24,
-                Arc::new(|_| Ok(())),
-                Arc::new(|_| Ok(())),
-                Some("desktop-window".into()),
-            )
-            .await,
+        start_terminal(
+            &router,
+            "unleased-run",
+            &remote_repository,
+            "desktop-window"
+        )
+        .await
+        .0,
         Err(ApiError::InvalidArgument(_))
     ));
     router
@@ -711,39 +692,36 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             "desktop-window-attachment".into(),
         )
         .await?;
-    let (output, events, mut deliveries) = pty_sinks();
-    router
-        .session_start(
-            "reconnect-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("desktop-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
-            "reconnect-run".into(),
-            b"printf '__READY_REMOTE__\\n'\n".to_vec(),
-        )
-        .await?;
-    let before_loss = receive_output_until(&mut deliveries, b"__READY_REMOTE__\r\n").await;
+    let (started, mut deliveries) = start_terminal(
+        &router,
+        "reconnect-run",
+        &remote_repository,
+        "desktop-window",
+    )
+    .await;
+    started?;
+    let before_loss = echo(
+        &router,
+        "reconnect-run",
+        &mut deliveries,
+        "__READY_REMOTE__",
+    )
+    .await;
     assert!(router.close_remote_for_test("loop").await);
     router
         .file_read(remote_repository.clone(), "hello.txt".into())
         .await?;
-    let reconnect_replay = receive_through_synced(&mut deliveries).await;
-    router
-        .session_write(
-            "reconnect-run".into(),
-            b"printf '__AFTER_REMOTE__\\n'\n".to_vec(),
-        )
-        .await?;
-    let after_loss = receive_output_until(&mut deliveries, b"__AFTER_REMOTE__\r\n").await;
+    let reconnect_replay = receive_through(&mut deliveries, |event| {
+        matches!(event, PtyEvent::Synced { .. })
+    })
+    .await;
+    let after_loss = echo(
+        &router,
+        "reconnect-run",
+        &mut deliveries,
+        "__AFTER_REMOTE__",
+    )
+    .await;
     let all_output = [
         output_bytes(&before_loss),
         output_bytes(&reconnect_replay),
@@ -764,7 +742,7 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     fs::write(repository.join("watched-after-loss.txt"), "changed again\n")?;
     let watched_after_loss = timeout(Duration::from_secs(5), async {
         loop {
-            if let HostEvent::FilesChanged(event) = host_events_receive
+            if let DesktopEvent::Host(HostEvent::FilesChanged(event)) = host_events_receive
                 .recv()
                 .await
                 .expect("host event channel closed")
@@ -785,29 +763,22 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             _ => None,
         })
         .expect("original remote process started");
-    let (output, events, _) = pty_sinks();
-    let wrong_owner = router
-        .session_start(
-            "reconnect-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("foreign-window".into()),
-        )
-        .await;
+    let (wrong_owner, _) = start_terminal(
+        &router,
+        "reconnect-run",
+        &remote_repository,
+        "foreign-window",
+    )
+    .await;
     assert!(matches!(wrong_owner, Err(ApiError::Pty(_))));
     assert!(router.run_status("reconnect-run".into()).await?.live);
-    router
-        .session_write(
-            "reconnect-run".into(),
-            b"printf '__OWNER_STILL_LIVE__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut deliveries, b"__OWNER_STILL_LIVE__\r\n").await;
+    echo(
+        &router,
+        "reconnect-run",
+        &mut deliveries,
+        "__OWNER_STILL_LIVE__",
+    )
+    .await;
 
     router
         .workbench_attach(
@@ -818,25 +789,22 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             "desktop-window-takeover".into(),
         )
         .await?;
-    let (output, events, mut reloaded_deliveries) = pty_sinks();
-    let reloaded = router
-        .session_start(
-            "reconnect-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("desktop-window".into()),
-        )
-        .await?;
+    let (reloaded, mut reloaded_deliveries) = start_terminal(
+        &router,
+        "reconnect-run",
+        &remote_repository,
+        "desktop-window",
+    )
+    .await;
+    let reloaded = reloaded?;
     assert!(
         reloaded.resumed,
         "view reload must not restart daemon process"
     );
-    let replay = receive_through_synced(&mut reloaded_deliveries).await;
+    let replay = receive_through(&mut reloaded_deliveries, |event| {
+        matches!(event, PtyEvent::Synced { .. })
+    })
+    .await;
     let replay_bytes = output_bytes(&replay);
     for marker in [
         b"__READY_REMOTE__\r\n".as_slice(),
@@ -857,13 +825,13 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         })
         .expect("replay includes original process start");
     assert_eq!(replay_pid, original_pid);
-    router
-        .session_write(
-            "reconnect-run".into(),
-            b"printf '__AFTER_RELOAD__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut reloaded_deliveries, b"__AFTER_RELOAD__\r\n").await;
+    echo(
+        &router,
+        "reconnect-run",
+        &mut reloaded_deliveries,
+        "__AFTER_RELOAD__",
+    )
+    .await;
     router.session_stop("reconnect-run".into()).await?;
 
     router
@@ -875,27 +843,16 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             "last-window-attachment".into(),
         )
         .await?;
-    let (output, events, mut last_owner_deliveries) = pty_sinks();
-    router
-        .session_start(
-            "last-owner-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("last-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
-            "last-owner-run".into(),
-            b"printf '__BEFORE_OWNER_DETACH__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut last_owner_deliveries, b"__BEFORE_OWNER_DETACH__\r\n").await;
+    let (started, mut last_owner_deliveries) =
+        start_terminal(&router, "last-owner-run", &remote_repository, "last-window").await;
+    started?;
+    echo(
+        &router,
+        "last-owner-run",
+        &mut last_owner_deliveries,
+        "__BEFORE_OWNER_DETACH__",
+    )
+    .await;
     assert!(router.run_status("last-owner-run".into()).await?.live);
     host.detach_owner("last-window", &HashSet::new());
     assert!(
@@ -920,29 +877,23 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         )
         .await?;
 
-    let (output, events, mut resumed_owner_deliveries) = pty_sinks();
-    let resumed = router
-        .session_start(
-            "last-owner-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replacement-window".into()),
-        )
-        .await?;
+    let (resumed, mut resumed_owner_deliveries) = start_terminal(
+        &router,
+        "last-owner-run",
+        &remote_repository,
+        "replacement-window",
+    )
+    .await;
+    let resumed = resumed?;
     assert!(resumed.resumed, "last-owner close must detach remote run");
     assert!(router.run_status("last-owner-run".into()).await?.live);
-    router
-        .session_write(
-            "last-owner-run".into(),
-            b"printf '__AFTER_OWNER_DETACH__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut resumed_owner_deliveries, b"__AFTER_OWNER_DETACH__\r\n").await;
+    echo(
+        &router,
+        "last-owner-run",
+        &mut resumed_owner_deliveries,
+        "__AFTER_OWNER_DETACH__",
+    )
+    .await;
     router.session_stop("last-owner-run".into()).await?;
 
     router
@@ -954,29 +905,19 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             "secondary-window-attachment".into(),
         )
         .await?;
-    let (output, events, mut secondary_owner_deliveries) = pty_sinks();
-    router
-        .session_start(
-            "secondary-owner-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("secondary-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
-            "secondary-owner-run".into(),
-            b"printf '__BEFORE_OWNER_RELEASE__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(
+    let (started, mut secondary_owner_deliveries) = start_terminal(
+        &router,
+        "secondary-owner-run",
+        &remote_repository,
+        "secondary-window",
+    )
+    .await;
+    started?;
+    echo(
+        &router,
+        "secondary-owner-run",
         &mut secondary_owner_deliveries,
-        b"__BEFORE_OWNER_RELEASE__\r\n",
+        "__BEFORE_OWNER_RELEASE__",
     )
     .await;
     assert!(router.run_status("secondary-owner-run".into()).await?.live);
@@ -984,20 +925,13 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     std::thread::spawn(move || closing_host.release_owner("secondary-window", &HashSet::new()))
         .join()
         .expect("window event thread panicked");
-    let (output, events, _) = pty_sinks();
-    let stopping_start = router
-        .session_start(
-            "secondary-owner-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replacement-window".into()),
-        )
-        .await;
+    let (stopping_start, _) = start_terminal(
+        &router,
+        "secondary-owner-run",
+        &remote_repository,
+        "replacement-window",
+    )
+    .await;
     match stopping_start {
         Ok(started) => {
             assert!(!started.resumed, "a stopping run must not be re-adopted");
@@ -1014,59 +948,43 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     .await
     .expect("timed out waiting for secondary-owner remote stop");
 
-    let (output, events, mut restarted_owner_deliveries) = pty_sinks();
-    let restarted = router
-        .session_start(
-            "secondary-owner-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replacement-window".into()),
-        )
-        .await?;
+    let (restarted, mut restarted_owner_deliveries) = start_terminal(
+        &router,
+        "secondary-owner-run",
+        &remote_repository,
+        "replacement-window",
+    )
+    .await;
+    let restarted = restarted?;
     assert!(
         !restarted.resumed,
         "secondary-owner close must kill remote run"
     );
     assert!(router.run_status("secondary-owner-run".into()).await?.live);
-    router
-        .session_write(
-            "secondary-owner-run".into(),
-            b"printf '__AFTER_OWNER_RELEASE__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(
+    echo(
+        &router,
+        "secondary-owner-run",
         &mut restarted_owner_deliveries,
-        b"__AFTER_OWNER_RELEASE__\r\n",
+        "__AFTER_OWNER_RELEASE__",
     )
     .await;
     router.session_stop("secondary-owner-run".into()).await?;
 
-    let (output, events, mut detached_deliveries) = pty_sinks();
-    router
-        .session_start(
-            "detached-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replacement-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
-            "detached-run".into(),
-            b"printf '__BEFORE_DETACH__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut detached_deliveries, b"__BEFORE_DETACH__\r\n").await;
+    let (started, mut detached_deliveries) = start_terminal(
+        &router,
+        "detached-run",
+        &remote_repository,
+        "replacement-window",
+    )
+    .await;
+    started?;
+    echo(
+        &router,
+        "detached-run",
+        &mut detached_deliveries,
+        "__BEFORE_DETACH__",
+    )
+    .await;
     router
         .workbench_detach(
             "replacement-window",
@@ -1088,7 +1006,6 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         Arc::new(|_| Ok(())),
     )?);
     let router = WorkspaceRouter::new(Arc::clone(&host));
-    let (output, events, mut resumed_deliveries) = pty_sinks();
     router
         .workbench_attach(
             "restarted-window",
@@ -1098,50 +1015,42 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             "restarted-window-attachment".into(),
         )
         .await?;
-    let resumed = router
-        .session_start(
-            "detached-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("restarted-window".into()),
-        )
-        .await?;
+    let (resumed, mut resumed_deliveries) = start_terminal(
+        &router,
+        "detached-run",
+        &remote_repository,
+        "restarted-window",
+    )
+    .await;
+    let resumed = resumed?;
     assert!(resumed.resumed, "daemon run must survive desktop shutdown");
-    router
-        .session_write(
-            "detached-run".into(),
-            b"printf '__AFTER_DETACH__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut resumed_deliveries, b"__AFTER_DETACH__\r\n").await;
+    echo(
+        &router,
+        "detached-run",
+        &mut resumed_deliveries,
+        "__AFTER_DETACH__",
+    )
+    .await;
     router.session_stop("detached-run".into()).await?;
 
-    let (output, events, mut completed_deliveries) = pty_sinks();
+    let (started, mut completed_deliveries) = start_terminal(
+        &router,
+        "completed-run",
+        &remote_repository,
+        "restarted-window",
+    )
+    .await;
+    started?;
     router
-        .session_start(
-            "completed-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("restarted-window".into()),
-        )
-        .await?;
-    router
-        .session_write(
+        .run_write(
             "completed-run".into(),
             b"printf '\\036COMPLETED_TAIL\\037'; exit 7\n".to_vec(),
         )
         .await?;
-    let completed = receive_through_exit(&mut completed_deliveries).await;
+    let completed = receive_through(&mut completed_deliveries, |event| {
+        matches!(event, PtyEvent::Exit { .. })
+    })
+    .await;
     assert!(output_bytes(&completed)
         .windows(b"\x1eCOMPLETED_TAIL\x1f".len())
         .any(|window| window == b"\x1eCOMPLETED_TAIL\x1f"));
@@ -1153,7 +1062,6 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         Arc::new(|_| Ok(())),
     )?);
     let router = WorkspaceRouter::new(Arc::clone(&host));
-    let (output, events, mut replayed_deliveries) = pty_sinks();
     let Some(sworm_protocol::rpc::WorkbenchAttached::Ready {
         controller_token: replayed_token,
         ..
@@ -1169,21 +1077,19 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     else {
         panic!("replayed workbench attach was not ready")
     };
-    let replayed = router
-        .session_start(
-            "completed-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replayed-window".into()),
-        )
-        .await?;
+    let (replayed, mut replayed_deliveries) = start_terminal(
+        &router,
+        "completed-run",
+        &remote_repository,
+        "replayed-window",
+    )
+    .await;
+    let replayed = replayed?;
     assert!(replayed.resumed);
-    let replayed = receive_through_exit(&mut replayed_deliveries).await;
+    let replayed = receive_through(&mut replayed_deliveries, |event| {
+        matches!(event, PtyEvent::Exit { .. })
+    })
+    .await;
     assert!(output_bytes(&replayed)
         .windows(b"\x1eCOMPLETED_TAIL\x1f".len())
         .any(|window| window == b"\x1eCOMPLETED_TAIL\x1f"));
@@ -1192,37 +1098,30 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     assert_eq!(completed_status.exited, Some(Some(7)));
     router.session_stop("completed-run".into()).await?;
 
-    let (output, events, mut orphan_deliveries) = pty_sinks();
+    let (started, mut orphan_deliveries) =
+        start_terminal(&router, "orphan-run", &remote_repository, "replayed-window").await;
+    started?;
+    echo(
+        &router,
+        "orphan-run",
+        &mut orphan_deliveries,
+        "__BEFORE_ORPHAN__",
+    )
+    .await;
     router
-        .session_start(
-            "orphan-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
+        .settings_patch_global_section(
             None,
-            80,
-            24,
-            output,
-            events,
-            Some("replayed-window".into()),
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({
+                    "loop": {
+                        "address": "sworm-unreachable.invalid:7420",
+                        "fingerprint": server_fingerprint.to_string(),
+                    }
+                }),
+            },
         )
         .await?;
-    router
-        .session_write(
-            "orphan-run".into(),
-            b"printf '__BEFORE_ORPHAN__\\n'\n".to_vec(),
-        )
-        .await?;
-    receive_output_until(&mut orphan_deliveries, b"__BEFORE_ORPHAN__\r\n").await;
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({
-            "loop": {
-                "address": "sworm-unreachable.invalid:7420",
-                "fingerprint": server_fingerprint.to_string(),
-            }
-        }),
-    })
-    .await?;
     assert!(
         router.session_stop("orphan-run".into()).await.is_err(),
         "an unreachable daemon must fail the stop"
@@ -1247,11 +1146,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         1,
         "retry must wait for the workbench lease"
     );
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: remote_settings.clone(),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: remote_settings.clone(),
+            },
+        )
+        .await?;
     router
         .workbench_attach(
             "replayed-window",
@@ -1270,34 +1173,27 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     })
     .await
     .expect("timed out waiting for the pending remote stop to land");
-    let (output, events, _) = pty_sinks();
-    let orphan_restart = router
-        .session_start(
-            "orphan-run".into(),
-            remote_repository.clone(),
-            "terminal".into(),
-            None,
-            80,
-            24,
-            output,
-            events,
-            Some("replayed-window".into()),
-        )
-        .await?;
+    let (orphan_restart, _) =
+        start_terminal(&router, "orphan-run", &remote_repository, "replayed-window").await;
+    let orphan_restart = orphan_restart?;
     assert!(
         !orphan_restart.resumed,
         "the retried stop must have killed the daemon run"
     );
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({
-            "loop": {
-                "address": "sworm-unreachable.invalid:7420",
-                "fingerprint": server_fingerprint.to_string(),
-            }
-        }),
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({
+                    "loop": {
+                        "address": "sworm-unreachable.invalid:7420",
+                        "fingerprint": server_fingerprint.to_string(),
+                    }
+                }),
+            },
+        )
+        .await?;
     assert!(router.session_stop("orphan-run".into()).await.is_err());
     assert_eq!(router.pending_stops_for_test().len(), 1);
     assert!(router
@@ -1320,11 +1216,15 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
             .len(),
         1
     );
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: remote_settings,
-    })
-    .await?;
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: remote_settings,
+            },
+        )
+        .await?;
     router
         .workbench_attach(
             "replayed-window",
@@ -1338,21 +1238,10 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
         router.pending_stops_for_test().is_empty(),
         "a takeover must discard stops authorized by the previous controller token"
     );
-    let (output, events, _) = pty_sinks();
     assert!(
-        router
-            .session_start(
-                "orphan-run".into(),
-                remote_repository,
-                "terminal".into(),
-                None,
-                80,
-                24,
-                output,
-                events,
-                Some("replayed-window".into()),
-            )
-            .await?
+        start_terminal(&router, "orphan-run", &remote_repository, "replayed-window")
+            .await
+            .0?
             .resumed,
         "the run remains visible after its desktop lease is released"
     );

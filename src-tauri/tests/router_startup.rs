@@ -1,5 +1,8 @@
-use std::{fs, sync::Arc};
-use sworm_core::{events::EventSink, events::HostEvent, Host};
+mod common;
+
+use std::sync::Arc;
+use sworm_core::{events::EventSink, Host};
+use sworm_lib::host_events::DesktopEvent;
 use sworm_lib::router::WorkspaceRouter;
 use tempfile::tempdir;
 
@@ -9,16 +12,13 @@ use tempfile::tempdir;
 #[test]
 fn router_constructs_without_a_tokio_runtime() -> anyhow::Result<()> {
     let temporary = tempdir()?;
-    let home = temporary.path().join("home");
-    fs::create_dir_all(&home)?;
-    std::env::set_var("XDG_CONFIG_HOME", temporary.path().join("config-home"));
-    std::env::set_var("XDG_DATA_HOME", temporary.path().join("data-home"));
-    std::env::set_var("HOME", &home);
+    common::isolate(temporary.path())?;
 
-    let events: EventSink<HostEvent> = Arc::new(|_| Ok(()));
+    let events: EventSink<DesktopEvent> = Arc::new(|_| Ok(()));
+    let desktop = Arc::clone(&events);
     let host = Arc::new(Host::new(
         temporary.path().join("sworm.db"),
-        Arc::clone(&events),
+        Arc::new(move |event| desktop(DesktopEvent::Host(event))),
     )?);
     let router = WorkspaceRouter::with_events(host, events);
     assert!(router.server_for_run("no-such-run").is_none());

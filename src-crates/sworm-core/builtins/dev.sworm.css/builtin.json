@@ -27,10 +27,7 @@
         "id": "vscode-css-language-server",
         "label": "CSS Language Server",
         "applies_to_languages": ["css", "scss", "less"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "vscode-css-language-server"
-        },
+        "command": "vscode-css-language-server",
         "args": ["--stdio"],
         "install_hint": "Install `vscode-langservers-extracted` and ensure `vscode-css-language-server` is on PATH.",
         "document_selectors": [

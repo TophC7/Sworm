@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 /// Protocol version selected during the QUIC TLS handshake. Bump on any
 /// wire-incompatible change once released; there is no negotiation.
 pub const ALPN: &[u8] = b"sworm/1";
-pub const DEFAULT_SERVER_PORT: u16 = 7420;
 /// Maximum encoded `Open` frame body accepted before a connection is paired,
 /// and the ceiling every non-RPC open is written with: pairing metadata,
 /// stream ids, and cursors are tiny, so an unauthenticated peer can never
@@ -134,12 +133,11 @@ fn deserialize_exit<'de, D: serde::Deserializer<'de>>(
 /// Route keys name how the desktop router picks a host for the call:
 /// - `project_path`, `path`, `folder_path`: that argument is a workspace path.
 /// - `opt_folder_path`: an optional `folder_path`; `None` is local.
-/// - `input_folder_path`: the optional `folder_path` inside the `input` argument.
-/// - `input_path`: mandatory folder path in the `input` argument.
 /// - `server`: no path at all; the caller passes the server explicitly.
 /// - `run`: keyed by a registered run id.
 /// - `lsp`: keyed by a registered LSP session id.
-/// - `none`: connection-level, never routed.
+/// - `connection`: handled by the connection/workbench-registry layer; never reaches Host.
+/// - `none`: host-global; always the local host.
 #[macro_export]
 macro_rules! sworm_rpc_ops {
     ($callback:ident) => {
@@ -150,23 +148,23 @@ macro_rules! sworm_rpc_ops {
             AppStatePut => app_state_put(key: String, value_json: String) -> ();
             #[route(none)]
             AppStateDelete => app_state_delete(key: String) -> ();
-            #[route(server)]
+            #[route(connection)]
             WorkbenchList => workbench_list() -> Vec<$crate::rpc::WorkbenchInfo>;
-            #[route(server)]
+            #[route(connection)]
             WorkbenchClose => workbench_close(id: String) -> ();
             // Desktop lease: binds `id` to this QUIC connection until
             // matching `workbench_detach`, a takeover, Close, or disconnect.
             // Use a fresh attachment_id per operation; recover a lost response
             // on this same connection instead of replaying the attach.
             // Web pages attach through their socket hello instead.
-            #[route(server)]
+            #[route(connection)]
             WorkbenchAttach => workbench_attach(
                 id: String,
                 attachment_id: String,
                 mode: $crate::rpc::AttachMode,
                 client: String,
             ) -> $crate::rpc::WorkbenchAttached;
-            #[route(server)]
+            #[route(connection)]
             WorkbenchDetach => workbench_detach(id: String, attachment_id: String) -> ();
             // Wait for the matching pending attempt. Return Ready with the
             // current snapshot only while its control remains admitted;
@@ -174,13 +172,13 @@ macro_rules! sworm_rpc_ops {
             // Unknown recovery fences that exact late attach on this connection.
             // Bounded cancellation state never evicts identities: reconnect if
             // its capacity error rejects new attaches or unknown recovery.
-            #[route(server)]
+            #[route(connection)]
             WorkbenchRecover => workbench_recover(
                 id: String,
                 attachment_id: String,
             ) -> Option<$crate::rpc::WorkbenchAttached>;
             // Store the snapshot of a workbench this connection controls.
-            #[route(server)]
+            #[route(connection)]
             WorkbenchSave => workbench_save(id: String, snapshot: String) -> ();
             #[route(none)]
             AppRuntimeInfo => app_runtime_info() -> $crate::app::AppRuntimeInfo;
@@ -546,14 +544,13 @@ macro_rules! sworm_rpc_ops {
             #[route(folder_path)]
             IssuesReady => issues_ready(
                 folder_path: String,
-                limit: Option<i64>,
-                filters: Option<$crate::issues::IssueReadyFilters>,
+                filters: $crate::issues::IssueReadyFilters,
             ) -> Vec<$crate::issues::Issue>;
             #[route(folder_path)]
             IssuesSearch => issues_search(
                 folder_path: String,
                 query: String,
-                filters: $crate::issues::IssueSearchFilters,
+                filters: $crate::issues::IssueListFilters,
             ) -> Vec<$crate::issues::Issue>;
             #[route(folder_path)]
             IssuesGet => issues_get(
@@ -682,9 +679,9 @@ macro_rules! sworm_rpc_ops {
                 folder_path: String,
                 content: String,
             ) -> String;
-            #[route(input_folder_path)]
+            #[route(opt_folder_path)]
             SettingsGetEffective => settings_get_effective(
-                input: $crate::settings::EffectiveSettingsInput,
+                folder_path: Option<String>,
             ) -> $crate::settings::EffectiveSettingsPayload;
             #[route(server)]
             SettingsGet => settings_get() -> $crate::settings::SettingsPayload;
@@ -702,11 +699,11 @@ macro_rules! sworm_rpc_ops {
             ) -> $crate::settings::FormattingSettings;
             #[route(server)]
             SettingsSetProviderConfig => settings_set_provider_config(
-                config: $crate::settings::SaveProviderConfigInput,
+                config: $crate::settings::ProviderConfigRecord,
             ) -> $crate::settings::ProviderConfigRecord;
-            #[route(input_path)]
+            #[route(folder_path)]
             SettingsOpenFolderFile => settings_open_folder_file(
-                input: $crate::settings::FolderSettingsFileInput,
+                folder_path: String,
             ) -> $crate::settings::SettingsFileResult;
             #[route(opt_folder_path)]
             LspListServers => lsp_list_servers(
@@ -714,7 +711,7 @@ macro_rules! sworm_rpc_ops {
             ) -> Vec<$crate::lsp::LspServerSettingsEntry>;
             #[route(server)]
             LspSetServerConfig => lsp_set_server_config(
-                config: $crate::lsp::SaveLspServerConfigInput,
+                config: $crate::settings::LspServerConfigRecord,
             ) -> $crate::settings::LspServerConfigRecord;
             #[route(folder_path)]
             LspStart => lsp_start(
@@ -762,7 +759,7 @@ macro_rules! sworm_rpc_ops {
             RunStatus => run_status(
                 run_id: String,
             ) -> $crate::rpc::RunStatus;
-            #[route(none)]
+            #[route(connection)]
             Pair => pair(
                 token: String,
                 name: String,
@@ -802,16 +799,6 @@ macro_rules! define_rpc {
             $(
                 $variant($return_type),
             )*
-        }
-
-        impl Request {
-            pub fn method(&self) -> &'static str {
-                match self {
-                    $(
-                        Self::$variant { .. } => stringify!($method),
-                    )*
-                }
-            }
         }
 
         impl Reply {
@@ -962,11 +949,6 @@ pub enum PtyUp {
     Resize { cols: u16, rows: u16 },
 }
 
-/// Daemon-to-desktop frame on the host-events stream.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct HostEventFrame(pub HostEventWire);
-
 /// Wire-safe mirror of `sworm_core::events::HostEvent`.
 ///
 /// Mutation bookkeeping (`FileMoved` and `FileDeleted`) is intentionally
@@ -1090,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_table_names_every_method_once() {
+    fn operation_variants_match_wire_method_names() {
         macro_rules! collect_methods {
             (
                 $(
@@ -1100,17 +1082,22 @@ mod tests {
                     ) -> $return_type:ty;
                 )*
             ) => {
-                vec![$(stringify!($method)),*]
+                vec![$((stringify!($variant), stringify!($method))),*]
             };
         }
 
-        let methods: Vec<&str> = sworm_rpc_ops!(collect_methods);
-        let unique: std::collections::BTreeSet<&str> = methods.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            methods.len(),
-            "two operations share a method name, so reply extraction is ambiguous"
-        );
+        let methods: Vec<(&str, &str)> = sworm_rpc_ops!(collect_methods);
+        for (variant, method) in methods {
+            // Match serde's snake_case enum-variant tags, including acronym boundaries.
+            let mut wire_method = String::new();
+            for (index, ch) in variant.char_indices() {
+                if index > 0 && ch.is_uppercase() {
+                    wire_method.push('_');
+                }
+                wire_method.extend(ch.to_lowercase());
+            }
+            assert_eq!(wire_method, method, "wire method for {variant}");
+        }
     }
 
     #[test]

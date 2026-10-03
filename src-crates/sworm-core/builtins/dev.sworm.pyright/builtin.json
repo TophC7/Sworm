@@ -15,10 +15,7 @@
         "id": "pyright",
         "label": "Pyright",
         "applies_to_languages": ["python"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "pyright-langserver"
-        },
+        "command": "pyright-langserver",
         "args": ["--stdio"],
         "install_hint": "Install `pyright` and ensure `pyright-langserver` is on PATH.",
         "document_selectors": [

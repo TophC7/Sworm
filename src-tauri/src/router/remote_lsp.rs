@@ -1,4 +1,4 @@
-use crate::router::{remote_error, RouterInner, Target};
+use super::{target::remote_error, RouterInner};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -303,18 +303,6 @@ struct AbortOnDrop(JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
-    }
-}
-
-/// Strip the workspace URI from a root path: LSP servers only ever see
-/// daemon-absolute paths.
-pub(crate) fn daemon_root_path(server: &str, root_path: &str) -> String {
-    match Target::parse(root_path) {
-        Ok(Target::Remote {
-            server: owner,
-            path,
-        }) if owner == server => path.to_owned(),
-        _ => root_path.to_owned(),
     }
 }
 

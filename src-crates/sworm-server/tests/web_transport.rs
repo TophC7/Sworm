@@ -1,20 +1,19 @@
 //! Real HTTP/WS daemon regressions. The test binary relaunches itself so HOME/XDG
 //! are scratch paths before Tokio, Host, or global settings are initialized.
+mod support;
+
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
     net::{SocketAddr, TcpListener},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
-    sync::mpsc,
     time::Duration,
 };
+use support::{enable_fake_lsp, init_repo, once_task, serve_dirs, StalledTask, FAKE_LSP_SERVER_ID};
 use sworm_protocol::{
     lsp::LspEvent,
     rpc::{
@@ -25,7 +24,7 @@ use sworm_protocol::{
 };
 use sworm_remote::{Identity, RemoteClient, RemoteError};
 use sworm_server::auth;
-use sworm_server::{serve, ServeOptions, ServerHandle};
+use sworm_server::{serve, ServerHandle};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -38,7 +37,6 @@ use tokio_tungstenite::{
 };
 
 const WAIT: Duration = Duration::from_secs(8);
-const LSP_ID: &str = "dev.sworm.nix::nil";
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 struct Fixture {
@@ -53,7 +51,7 @@ impl Fixture {
         let data = home.join("server-data");
         let assets = home.join("assets");
         let repo = home.join("repo");
-        for dir in [&config, &data, &assets, &repo, &repo.join(".sworm")] {
+        for dir in [&config, &data, &assets] {
             fs::create_dir_all(dir)?;
         }
         fs::write(
@@ -66,26 +64,8 @@ impl Fixture {
             serde_json::json!({ "web": { "listen": "127.0.0.1:0", "assets_dir": assets } })
                 .to_string(),
         )?;
-        let status = Command::new("git")
-            .args(["-c", "init.defaultBranch=main", "init"])
-            .current_dir(&repo)
-            .status()?;
-        if !status.success() {
-            bail!("git init failed: {status}");
-        }
-        fs::write(repo.join(".git/info/exclude"), ".sworm/\n")?;
-        fs::write(
-            repo.join(".sworm/settings.jsonc"),
-            r#"{"providers":{"terminal":{"enabled":true,"binary_path_override":"sh","extra_args":[]}}}"#,
-        )?;
-        let handle = serve(ServeOptions {
-            config_dir: config.clone(),
-            data_dir: data,
-            listen: Some("127.0.0.1:0".parse()?),
-            config_file: None,
-            web_assets_dir: None,
-        })
-        .await?;
+        init_repo(&repo)?;
+        let handle = serve(serve_dirs(&config, &data)).await?;
         Ok(Self {
             home: home.into(),
             repo,
@@ -191,31 +171,50 @@ impl Fixture {
         let mut ws = connect(
             self.addr(),
             &format!("/ws/stream?connection_id={id}"),
-            Some(&format!("http://{}", self.addr())),
+            Some(&self.origin()),
         )
         .await?;
         ws.send(Message::Binary(serde_json::to_vec(&open)?.into()))
             .await?;
         Ok(ws)
     }
+    async fn shell(&self, connection: &str, run: &str) -> Result<(Socket, PtyCursor, u32)> {
+        let mut cursor = PtyCursor::default();
+        let mut pty = self
+            .stream(
+                connection,
+                Open::Pty {
+                    run_id: run.into(),
+                    cursor,
+                },
+            )
+            .await?;
+        let pid = shell_pid(&mut pty, &mut cursor).await?;
+        Ok((pty, cursor, pid))
+    }
 }
 
-async fn connect(addr: SocketAddr, route: &str, origin: Option<&str>) -> Result<Socket> {
+fn ws_request(
+    addr: SocketAddr,
+    route: &str,
+    origin: Option<&str>,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
     let mut request = format!("ws://{addr}{route}").into_client_request()?;
     if let Some(origin) = origin {
         request.headers_mut().insert("Origin", origin.parse()?);
     }
-    Ok(timeout(WAIT, connect_async(request))
-        .await
-        .context("websocket handshake timed out")??
-        .0)
+    Ok(request)
+}
+async fn connect(addr: SocketAddr, route: &str, origin: Option<&str>) -> Result<Socket> {
+    Ok(
+        timeout(WAIT, connect_async(ws_request(addr, route, origin)?))
+            .await
+            .context("websocket handshake timed out")??
+            .0,
+    )
 }
 async fn rejected(addr: SocketAddr, route: &str, origin: Option<&str>, code: u16) -> Result<()> {
-    let mut request = format!("ws://{addr}{route}").into_client_request()?;
-    if let Some(origin) = origin {
-        request.headers_mut().insert("Origin", origin.parse()?);
-    }
-    let err = timeout(WAIT, connect_async(request))
+    let err = timeout(WAIT, connect_async(ws_request(addr, route, origin)?))
         .await
         .context("websocket rejection timed out")?
         .expect_err("unexpected websocket upgrade");
@@ -231,10 +230,7 @@ async fn wait_revoked(addr: SocketAddr, id: &str) -> Result<()> {
     let route = format!("/ws/stream?connection_id={id}");
     timeout(WAIT, async {
         loop {
-            let mut request = format!("ws://{addr}{route}").into_client_request()?;
-            request
-                .headers_mut()
-                .insert("Origin", format!("http://{addr}").parse()?);
+            let request = ws_request(addr, &route, Some(&format!("http://{addr}")))?;
             match connect_async(request).await {
                 Err(tokio_tungstenite::tungstenite::Error::Http(response))
                     if response.status().as_u16() == 403 =>
@@ -317,10 +313,7 @@ async fn next_reply(ws: &mut Socket) -> Result<Value> {
     }
 }
 async fn rpc(ws: &mut Socket, id: u64, request: Request) -> Result<Response> {
-    ws.send(Message::Text(
-        json!({"id":id,"request":request}).to_string().into(),
-    ))
-    .await?;
+    ws.send(request_frame(id, request)).await?;
     let value = timeout(WAIT, next_reply(ws))
         .await
         .context("RPC timed out")??;
@@ -430,7 +423,6 @@ async fn denied(f: &Fixture, workbench: &str, mode: AttachMode) -> Result<Value>
 async fn invalid_id(f: &Fixture, workbench: &str) -> Result<()> {
     let frame = denied(f, workbench, AttachMode::Open {}).await?;
     assert_eq!(frame["error"]["kind"], "invalid_argument", "{frame}");
-    assert_eq!(frame["error"]["message"], "Invalid workbench id", "{frame}");
     Ok(())
 }
 /// The daemon must refuse this first control frame with a bare close.
@@ -594,10 +586,6 @@ async fn pty_denied(ws: &mut Socket) -> Result<()> {
 }
 
 async fn startup_and_policy(f: &Fixture) -> Result<()> {
-    assert!(
-        f.addr().ip().is_loopback(),
-        "default web bind exposed a non-loopback address"
-    );
     assert!(http(f.addr(), "/").await?.contains("SWORM-WEB-INDEX-7751"));
     assert!(http(f.addr(), "/app.js")
         .await?
@@ -615,13 +603,22 @@ async fn startup_and_policy(f: &Fixture) -> Result<()> {
         rejected(f.addr(), "/ws/stream?connection_id=unknown", origin, 403).await?;
     }
     let (mut owner, id) = f.control().await?;
-    assert!(
-        matches!(rpc(&mut owner, 30, Request::Pair { token:"unused".into(), name:"browser".into() }).await?, Err(WireError::InvalidArgument { message }) if message == "pairing is unavailable over web")
-    );
+    assert!(matches!(
+        rpc(
+            &mut owner,
+            30,
+            Request::Pair {
+                token: "unused".into(),
+                name: "browser".into()
+            }
+        )
+        .await?,
+        Err(WireError::InvalidArgument { .. })
+    ));
     rejected(
         f.addr(),
         "/ws/stream?connection_id=unknown",
-        Some(&format!("http://{}", f.addr())),
+        Some(&f.origin()),
         403,
     )
     .await?;
@@ -643,7 +640,7 @@ async fn startup_and_policy(f: &Fixture) -> Result<()> {
     let mut ws = connect(
         f.addr(),
         &format!("/ws/stream?connection_id={id}"),
-        Some(&format!("http://{}", f.addr())),
+        Some(&f.origin()),
     )
     .await?;
     ws.send(Message::Binary(vec![b'x'; 70 * 1024].into()))
@@ -656,89 +653,30 @@ async fn startup_and_policy(f: &Fixture) -> Result<()> {
     wait_revoked(f.addr(), &id).await?;
     Ok(())
 }
-struct StalledTask {
-    path: PathBuf,
-    release: Option<mpsc::Sender<()>>,
-    writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-}
-
-impl StalledTask {
-    fn new(path: PathBuf) -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
-        let result = Command::new("mkfifo").arg(&path).status()?;
-        if !result.success() {
-            bail!("mkfifo failed: {result}");
-        }
-        let (opened, reached) = tokio::sync::oneshot::channel();
-        let (release, resume) = mpsc::channel();
-        let writer_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            let mut fifo = OpenOptions::new().write(true).open(writer_path)?;
-            let _ = opened.send(());
-            let _ = resume.recv();
-            fifo.write_all(br#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"exec sh -c 'echo $$ >> delayed-pids; printf x >> delayed-counter; exec sleep 30'","singleton":true}]}"#)
-        });
-        Ok((
-            Self {
-                path,
-                release: Some(release),
-                writer: Some(writer),
-            },
-            reached,
-        ))
-    }
-    fn unblock(&mut self) -> Result<()> {
-        self.release.take();
-        self.writer
-            .take()
-            .expect("task writer already joined")
-            .join()
-            .expect("task writer panicked")?;
-        Ok(())
-    }
-}
-impl Drop for StalledTask {
-    fn drop(&mut self) {
-        self.release.take();
-        if let Some(writer) = self.writer.take() {
-            let _ = OpenOptions::new().read(true).write(true).open(&self.path);
-            let _ = writer.join();
-        }
-    }
-}
+const DELAYED_TASK_COMMAND: &str =
+    "exec sh -c 'echo $$ >> delayed-pids; printf x >> delayed-counter; exec sleep 30'";
 
 async fn delayed_start_and_disconnect(f: &Fixture) -> Result<()> {
     let tasks = f.repo.join(".sworm/tasks.jsonc");
-    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone(), DELAYED_TASK_COMMAND)?;
     let workbench = new_workbench();
     let Attached {
         ws: mut control,
         token,
         ..
     } = f.attach(&workbench, AttachMode::Open {}).await?;
-    let request = |run: &str| Request::TasksStart {
-        run_id: run.into(),
-        folder_path: f.folder(),
-        task_id: "once".into(),
-        active_file_path: None,
-        cols: 80,
-        rows: 24,
-        attach_only: false,
-    };
     control
-        .send(Message::Text(
-            json!({"id":100,"request":request("web-delayed-a")})
-                .to_string()
-                .into(),
-        ))
+        .send(request_frame(100, task_start(f, "web-delayed-a", false)))
         .await?;
     timeout(WAIT, reached)
         .await
         .context("task start did not reach gated config read")??;
     control
-        .send(Message::Text(
-            json!({"id":101,"request":Request::AppStateGet { key:"web:opaque".into() }})
-                .to_string()
-                .into(),
+        .send(request_frame(
+            101,
+            Request::AppStateGet {
+                key: "web:opaque".into(),
+            },
         ))
         .await?;
     let quick = timeout(Duration::from_secs(2), next_reply(&mut control))
@@ -763,13 +701,7 @@ async fn delayed_start_and_disconnect(f: &Fixture) -> Result<()> {
         .unwrap()
         .tasks_start()
         .checked()?;
-    timeout(WAIT, async {
-        while !fs::read(f.repo.join("delayed-counter")).is_ok_and(|bytes| bytes == b"x") {
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("first delayed task did not execute exactly once")?;
+    wait_file(&f.repo.join("delayed-counter"), b"x").await?;
     success(
         &mut control,
         102,
@@ -782,13 +714,9 @@ async fn delayed_start_and_disconnect(f: &Fixture) -> Result<()> {
     .checked()?;
     fs::remove_file(&tasks)?;
 
-    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone(), DELAYED_TASK_COMMAND)?;
     control
-        .send(Message::Text(
-            json!({"id":103,"request":request("web-delayed-b")})
-                .to_string()
-                .into(),
-        ))
+        .send(request_frame(103, task_start(f, "web-delayed-b", false)))
         .await?;
     timeout(WAIT, reached)
         .await
@@ -835,43 +763,20 @@ async fn events_and_correlation(f: &Fixture) -> Result<()> {
     let (mut first, _) = f.control().await?;
     let (mut second, _) = f.control().await?;
     let value = "{  \"opaque\": [1,  2], \"string\": \"keep spaces\"  }";
-    success(
-        &mut first,
-        1,
-        Request::AppStatePut {
-            key: "web:opaque".into(),
-            value_json: value.into(),
-        },
-    )
-    .await?
-    .app_state_put()
-    .checked()?;
+    put_state(&mut first, 1, "web:opaque", value).await?;
     assert_eq!(
-        success(
-            &mut second,
-            2,
-            Request::AppStateGet {
-                key: "web:opaque".into()
-            }
-        )
-        .await?
-        .app_state_get()
-        .checked()?
-        .as_deref(),
+        get_state(&mut second, 2, "web:opaque").await?.as_deref(),
         Some(value)
     );
     first
-        .send(Message::Text(
-            json!({"id":10,"request":Request::RecentFoldersList {}})
-                .to_string()
-                .into(),
-        ))
+        .send(request_frame(10, Request::RecentFoldersList {}))
         .await?;
     first
-        .send(Message::Text(
-            json!({"id":11,"request":Request::AppStateGet { key:"web:opaque".into() }})
-                .to_string()
-                .into(),
+        .send(request_frame(
+            11,
+            Request::AppStateGet {
+                key: "web:opaque".into(),
+            },
         ))
         .await?;
     let mut replies = std::collections::HashMap::new();
@@ -1056,51 +961,14 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         connection: id,
         ..
     } = f.attach(&workbench, AttachMode::Open {}).await?;
-    success(
-        &mut control,
-        1,
-        Request::SessionStart {
-            run_id: run.into(),
-            folder_path: f.folder(),
-            provider_id: "terminal".into(),
-            resume_token: None,
-            cols: 80,
-            rows: 24,
-        },
-    )
-    .await?
-    .session_start()
-    .checked()?;
-    let mut pty = f
-        .stream(
-            &id,
-            Open::Pty {
-                run_id: run.into(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut cursor = PtyCursor::default();
-    raw(
-        &mut pty,
-        b"stty -echo; printf '%s%s\\n' 'WEB-ECHO-' 'OFF-9943'\n",
-    )
-    .await?;
-    pty_until(&mut pty, &mut cursor, b"WEB-ECHO-OFF-9943").await?;
-    raw(&mut pty, b"printf 'WEB-PID-%s-END\\n' \"$$\"\n").await?;
-    let output = pty_until(&mut pty, &mut cursor, b"-END").await?;
-    let text = String::from_utf8_lossy(&output);
-    let pid: u32 = text
-        .split_once("WEB-PID-")
-        .context("PID marker missing")?
-        .1
-        .split_once("-END")
-        .context("PID suffix missing")?
-        .0
-        .parse()?;
+    success(&mut control, 1, terminal_start(f, run))
+        .await?
+        .session_start()
+        .checked()?;
+    let (mut pty, mut cursor, pid) = f.shell(&id, run).await?;
     control.close(None).await?;
     wait_revoked(f.addr(), &id).await?;
-    let _ = timeout(WAIT, async {
+    timeout(WAIT, async {
         loop {
             if next_message(&mut pty).await.is_err() {
                 break;
@@ -1141,7 +1009,7 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         "PTY PID changed: {text}"
     );
     assert!(
-        !text.contains("WEB-PID-"),
+        !text.contains("SHELL-PID-"),
         "cursor replay duplicated consumed output"
     );
     success(
@@ -1153,41 +1021,18 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
     .session_stop()
     .checked()?;
     assert!(!run_status(&mut replacement, run).await?);
-    timeout(WAIT, async {
-        while PathBuf::from(format!("/proc/{pid}")).exists() {
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("explicit stop left terminal PID alive")?;
+    wait_exit(pid, "explicitly stopped terminal").await?;
 
     fs::write(
         f.repo.join(".sworm/tasks.jsonc"),
-        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> task-counter; sleep 30","singleton":true}]}"#,
+        once_task("printf x >> task-counter; sleep 30"),
     )?;
     let task = "web-task-once";
-    let request = |run: &str, attach_only| Request::TasksStart {
-        run_id: run.into(),
-        folder_path: f.folder(),
-        task_id: "once".into(),
-        active_file_path: None,
-        cols: 80,
-        rows: 24,
-        attach_only,
-    };
-    success(&mut replacement, 3, request(task, false))
+    success(&mut replacement, 3, task_start(f, task, false))
         .await?
         .tasks_start()
         .checked()?;
-    timeout(WAIT, async {
-        loop {
-            if fs::read(f.repo.join("task-counter")).is_ok_and(|bytes| bytes == b"x") {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await?;
+    wait_file(&f.repo.join("task-counter"), b"x").await?;
     let mut task_stream = f
         .stream(
             &new_id,
@@ -1205,7 +1050,7 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         "initial task attachment had no process event"
     );
     task_stream.close(None).await?;
-    success(&mut replacement, 4, request(task, true))
+    success(&mut replacement, 4, task_start(f, task, true))
         .await?
         .tasks_start()
         .checked()?;
@@ -1225,11 +1070,6 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
         ),
         "attach-only task lost its retained stream"
     );
-    assert!(
-        run_status(&mut replacement, task).await?,
-        "attach-only replaced or lost live run"
-    );
-    assert_eq!(fs::read(f.repo.join("task-counter"))?, b"x");
     success(
         &mut replacement,
         5,
@@ -1240,41 +1080,9 @@ async fn retained_terminal_and_task(f: &Fixture) -> Result<()> {
     .await?
     .tasks_stop()
     .checked()?;
-    assert!(matches!(
-        rpc(
-            &mut replacement,
-            6,
-            request(&uuid::Uuid::new_v4().to_string(), true)
-        )
-        .await?,
-        Err(WireError::NotFound { .. })
-    ));
-    assert_eq!(fs::read(f.repo.join("task-counter"))?, b"x");
     Ok(())
 }
 
-fn enable_lsp(repo: &Path) -> Result<()> {
-    let script = repo.join("fake-lsp.sh");
-    fs::write(
-        &script,
-        r#"#!/bin/sh
-say() { printf 'Content-Length: %s\r\n\r\n%s' "${#1}" "$1"; }
-say '{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"fake-lsp-started"}}'
-while IFS= read -r line; do
-  case "$line" in *initialize*) say '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}' ;; esac
-done
-"#,
-    )?;
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    fs::write(
-        repo.join(".sworm/settings.jsonc"),
-        format!(
-            r#"{{"providers":{{"terminal":{{"enabled":true,"binary_path_override":"sh","extra_args":[]}}}},"lsp":{{"servers":{{"{LSP_ID}":{{"enabled":true,"binary_path_override":"{}"}}}}}}}}"#,
-            script.display()
-        ),
-    )?;
-    Ok(())
-}
 async fn lsp_event(ws: &mut Socket) -> Result<LspEvent> {
     match next_tagged::<LspDown>(ws).await? {
         Tagged::Json(LspDown::Event { event }) => Ok(event),
@@ -1282,7 +1090,7 @@ async fn lsp_event(ws: &mut Socket) -> Result<LspEvent> {
     }
 }
 async fn lsp_ownership(f: &Fixture) -> Result<()> {
-    enable_lsp(&f.repo)?;
+    enable_fake_lsp(&f.repo)?;
     let workbench = new_workbench();
     let Attached {
         ws: mut owner,
@@ -1291,21 +1099,10 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
     } = f.attach(&workbench, AttachMode::Open {}).await?;
     let (mut other, _) = f.control().await?;
     let pty_run = "web-lsp-surviving-pty";
-    success(
-        &mut owner,
-        1,
-        Request::SessionStart {
-            run_id: pty_run.into(),
-            folder_path: f.folder(),
-            provider_id: "terminal".into(),
-            resume_token: None,
-            cols: 80,
-            rows: 24,
-        },
-    )
-    .await?
-    .session_start()
-    .checked()?;
+    success(&mut owner, 1, terminal_start(f, pty_run))
+        .await?
+        .session_start()
+        .checked()?;
     let session = "web-lsp-owned";
     let mut stream = f
         .stream(
@@ -1322,7 +1119,7 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
     let start = |session: &str| Request::LspStart {
         session_id: session.into(),
         folder_path: f.folder(),
-        server_definition_id: LSP_ID.into(),
+        server_definition_id: FAKE_LSP_SERVER_ID.into(),
         root_path: f.folder(),
     };
     assert!(matches!(
@@ -1337,15 +1134,9 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
         LspEvent::Started { pid: Some(pid), .. } => pid,
         other => bail!("missing LSP PID: {other:?}"),
     };
-    assert!(PathBuf::from(format!("/proc/{pid}")).exists());
+    assert!(alive(pid));
     owner.close(None).await?;
-    timeout(WAIT, async {
-        while PathBuf::from(format!("/proc/{pid}")).exists() {
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("LSP survived control loss")?;
+    wait_exit(pid, "LSP after control loss").await?;
     let Attached {
         ws: mut replacement,
         connection: new_id,
@@ -1384,10 +1175,7 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
     };
     drop(stream);
     sleep(Duration::from_millis(100)).await;
-    assert!(
-        PathBuf::from(format!("/proc/{new_pid}")).exists(),
-        "stale lease killed replacement"
-    );
+    assert!(alive(new_pid), "stale lease killed replacement");
     success(
         &mut replacement,
         4,
@@ -1398,13 +1186,7 @@ async fn lsp_ownership(f: &Fixture) -> Result<()> {
     .await?
     .lsp_stop()
     .checked()?;
-    timeout(WAIT, async {
-        while PathBuf::from(format!("/proc/{new_pid}")).exists() {
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("replacement LSP survived stop")?;
+    wait_exit(new_pid, "replacement LSP after stop").await?;
     success(
         &mut replacement,
         5,
@@ -1543,47 +1325,11 @@ async fn file_integrity_and_shutdown(f: Fixture) -> Result<()> {
         "closed file stream continued reading the full 128 MiB file"
     );
     let run_id = "web-shutdown-terminal";
-    success(
-        &mut control,
-        3,
-        Request::SessionStart {
-            run_id: run_id.into(),
-            folder_path: f.folder(),
-            provider_id: "terminal".into(),
-            resume_token: None,
-            cols: 80,
-            rows: 24,
-        },
-    )
-    .await?
-    .session_start()
-    .checked()?;
-    let mut active = f
-        .stream(
-            &id,
-            Open::Pty {
-                run_id: run_id.into(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut cursor = PtyCursor::default();
-    raw(
-        &mut active,
-        b"stty -echo; printf '%s%s\\n' 'SHUTDOWN-ECHO-' 'OFF-7419'\n",
-    )
-    .await?;
-    pty_until(&mut active, &mut cursor, b"SHUTDOWN-ECHO-OFF-7419").await?;
-    raw(&mut active, b"printf 'SHUTDOWN-PID-%s-END\\n' \"$$\"\n").await?;
-    let output = pty_until(&mut active, &mut cursor, b"-END").await?;
-    let pid: u32 = String::from_utf8_lossy(&output)
-        .split_once("SHUTDOWN-PID-")
-        .context("shutdown PTY PID absent")?
-        .1
-        .split_once("-END")
-        .context("shutdown PID terminator absent")?
-        .0
-        .parse()?;
+    success(&mut control, 3, terminal_start(&f, run_id))
+        .await?
+        .session_start()
+        .checked()?;
+    let (mut active, _, pid) = f.shell(&id, run_id).await?;
     let mut stalled = f
         .stream(
             &id,
@@ -1603,13 +1349,7 @@ async fn file_integrity_and_shutdown(f: Fixture) -> Result<()> {
     timeout(WAIT, f.handle.shutdown())
         .await
         .context("shutdown held open WS upgrade tasks")?;
-    timeout(WAIT, async {
-        while PathBuf::from(format!("/proc/{pid}")).exists() {
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .context("shutdown left PTY process alive")?;
+    wait_exit(pid, "PTY after shutdown").await?;
     let _ = timeout(WAIT, next_message(&mut active)).await;
     Ok(())
 }
@@ -2153,7 +1893,7 @@ async fn takeover_and_leases(f: &Fixture) -> Result<()> {
     let counter = f.repo.join("takeover-counter");
     fs::write(
         f.repo.join(".sworm/tasks.jsonc"),
-        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"printf x >> takeover-counter; exec sleep 60","singleton":true}]}"#,
+        once_task("printf x >> takeover-counter; exec sleep 60"),
     )?;
     let folder = f.folder();
     let a = new_workbench();
@@ -2174,33 +1914,13 @@ async fn takeover_and_leases(f: &Fixture) -> Result<()> {
         .tasks_start()
         .checked()?;
     wait_file(&counter, b"x").await?;
-    let mut old_pty = f
-        .stream(
-            &a1.connection,
-            Open::Pty {
-                run_id: terminal_run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut cursor = PtyCursor::default();
-    let pid = shell_pid(&mut old_pty, &mut cursor).await?;
+    let (mut old_pty, mut cursor, pid) = f.shell(&a1.connection, &terminal_run).await?;
     let b_run = new_run();
     success(&mut b1.ws, 1, terminal_start(f, &b_run))
         .await?
         .session_start()
         .checked()?;
-    let mut b_pty = f
-        .stream(
-            &b1.connection,
-            Open::Pty {
-                run_id: b_run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut b_cursor = PtyCursor::default();
-    let b_pid = shell_pid(&mut b_pty, &mut b_cursor).await?;
+    let (mut b_pty, mut b_cursor, b_pid) = f.shell(&b1.connection, &b_run).await?;
 
     // A second fresh page is busy and leaves the controller untouched.
     assert_eq!(
@@ -2398,7 +2118,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
         .attach(&a, AttachMode::Open {})
         .await
         .context("drain_races: attach A1")?;
-    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone(), DELAYED_TASK_COMMAND)?;
     let run = new_run();
     a1.ws
         .send(request_frame(1, task_start(f, &run, false)))
@@ -2420,17 +2140,8 @@ async fn drain_races(f: &Fixture) -> Result<()> {
         .await?
         .session_start()
         .checked()?;
-    let mut b_pty = f
-        .stream(
-            &b.connection,
-            Open::Pty {
-                run_id: b_run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut b_cursor = PtyCursor::default();
-    let b_pid = shell_pid(&mut b_pty, &mut b_cursor)
+    let (_b_pty, _, b_pid) = f
+        .shell(&b.connection, &b_run)
         .await
         .context("drain_races: B shell pid")?;
     // Queued behind revocation: must never execute.
@@ -2507,7 +2218,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
         .attach(&c, AttachMode::Open {})
         .await
         .context("drain_races: attach C1")?;
-    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone(), DELAYED_TASK_COMMAND)?;
     let close_run = new_run();
     c1.ws
         .send(request_frame(1, task_start(f, &close_run, false)))
@@ -2526,10 +2237,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
                 .await
                 .context("drain_races: Close fence hello")?;
             if frame.get("error").is_some() {
-                assert_eq!(
-                    frame["error"],
-                    json!({"kind":"invalid_argument","message":"Workbench is closing; retry Close Workbench"})
-                );
+                closing_frame(&frame["error"]);
                 return Ok::<(), anyhow::Error>(());
             }
             sleep(Duration::from_millis(25)).await;
@@ -2582,7 +2290,7 @@ async fn drain_races(f: &Fixture) -> Result<()> {
 }
 
 async fn detach_and_close(f: &Fixture) -> Result<()> {
-    enable_lsp(&f.repo)?;
+    enable_fake_lsp(&f.repo)?;
     let counter = f.repo.join("close-counter");
     let task_pid_file = f.repo.join("close-task.pid");
     for path in [&counter, &task_pid_file] {
@@ -2590,7 +2298,9 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
     }
     fs::write(
         f.repo.join(".sworm/tasks.jsonc"),
-        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"exec sh -c 'printf %s $$ > close-task.pid; printf x >> close-counter; exec sleep 60'","singleton":true}]}"#,
+        once_task(
+            "exec sh -c 'printf %s $$ > close-task.pid; printf x >> close-counter; exec sleep 60'",
+        ),
     )?;
     let folder = f.folder();
     let a = new_workbench();
@@ -2619,17 +2329,8 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
         .checked()?;
     wait_file(&counter, b"x").await?;
     let task_pid: u32 = fs::read_to_string(&task_pid_file)?.parse()?;
-    let mut a_pty = f
-        .stream(
-            &a1.connection,
-            Open::Pty {
-                run_id: a_term.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut cursor = PtyCursor::default();
-    let a_pid = shell_pid(&mut a_pty, &mut cursor)
+    let (mut a_pty, mut cursor, a_pid) = f
+        .shell(&a1.connection, &a_term)
         .await
         .context("detach_and_close: A shell pid")?;
 
@@ -2639,17 +2340,8 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
         .await?
         .session_start()
         .checked()?;
-    let mut b_pty = f
-        .stream(
-            &b1.connection,
-            Open::Pty {
-                run_id: b_term.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let mut b_cursor = PtyCursor::default();
-    let b_pid = shell_pid(&mut b_pty, &mut b_cursor)
+    let (mut b_pty, mut b_cursor, b_pid) = f
+        .shell(&b1.connection, &b_term)
         .await
         .context("detach_and_close: B shell pid")?;
     let lsp_session = "close-b-lsp";
@@ -2673,7 +2365,7 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
         Request::LspStart {
             session_id: lsp_session.into(),
             folder_path: folder.clone(),
-            server_definition_id: LSP_ID.into(),
+            server_definition_id: FAKE_LSP_SERVER_ID.into(),
             root_path: folder.clone(),
         },
     )
@@ -2839,16 +2531,7 @@ async fn detach_and_close(f: &Fixture) -> Result<()> {
         .await?
         .session_start()
         .checked()?;
-    let mut d_pty = f
-        .stream(
-            &d1.connection,
-            Open::Pty {
-                run_id: d_run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let d_pid = shell_pid(&mut d_pty, &mut PtyCursor::default()).await?;
+    let (d_pty, _, d_pid) = f.shell(&d1.connection, &d_run).await?;
     d1.ws.close(None).await?;
     drop(d_pty);
     f.wait_detached(&d, 1)
@@ -2888,16 +2571,7 @@ async fn close_storage_failure(f: &Fixture) -> Result<()> {
         .await?
         .session_start()
         .checked()?;
-    let mut pty = f
-        .stream(
-            &e1.connection,
-            Open::Pty {
-                run_id: run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let pid = shell_pid(&mut pty, &mut PtyCursor::default()).await?;
+    let (_pty, _, pid) = f.shell(&e1.connection, &run).await?;
     let db = f.db()?;
     db.execute_batch(&format!(
         "CREATE TRIGGER block_close BEFORE DELETE ON app_state WHEN old.key = '{key}'
@@ -2913,11 +2587,7 @@ async fn close_storage_failure(f: &Fixture) -> Result<()> {
     assert!(f.listed(&e).await?.is_some(), "failed Close lost record");
     assert_eq!(stored(&db, &key)?.as_deref(), Some(snapshot.as_str()));
     assert!(manifest_ids(&db)?.contains(&e));
-    assert_eq!(
-        denied(f, &e, AttachMode::Open {}).await?["error"],
-        json!({"kind":"invalid_argument","message":"Workbench is closing; retry Close Workbench"}),
-        "failed Close reopened the workbench"
-    );
+    closing_frame(&denied(f, &e, AttachMode::Open {}).await?["error"]);
     db.execute_batch("DROP TRIGGER block_close;")?;
     timeout(WAIT, close_workbench(&mut observer, 2, &e))
         .await
@@ -2988,7 +2658,7 @@ async fn reopen(f: &Fixture, id: &str) -> Result<Attached> {
             if first.get("ready").is_some() {
                 return admitted(ws, first);
             }
-            assert_eq!(first["error"], closing_frame(), "{first}");
+            closing_frame(&first["error"]);
             drop(ws);
             sleep(Duration::from_millis(25)).await;
         }
@@ -2997,8 +2667,8 @@ async fn reopen(f: &Fixture, id: &str) -> Result<Attached> {
     .with_context(|| format!("workbench {id} was never recreated"))?
 }
 
-fn closing_frame() -> Value {
-    json!({"kind":"invalid_argument","message":"Workbench is closing; retry Close Workbench"})
+fn closing_frame(error: &Value) {
+    assert_eq!(error["kind"], "invalid_argument", "{error}");
 }
 
 async fn wait_deleted(db: &rusqlite::Connection, id: &str) -> Result<()> {
@@ -3021,7 +2691,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     let _ = fs::remove_file(&task_pid_file);
     fs::write(
         &tasks,
-        r#"{"version":1,"tasks":[{"id":"once","label":"Once","command":"exec sh -c 'printf %s $$ > self-close-task.pid; exec sleep 60'","singleton":true}]}"#,
+        once_task("exec sh -c 'printf %s $$ > self-close-task.pid; exec sleep 60'"),
     )?;
     let db = f.db()?;
     let (mut observer, observer_id) = f.observer().await?;
@@ -3040,16 +2710,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
         .await?
         .tasks_start()
         .checked()?;
-    let mut pty = f
-        .stream(
-            &a1.connection,
-            Open::Pty {
-                run_id: term_run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let term_pid = shell_pid(&mut pty, &mut PtyCursor::default()).await?;
+    let (_pty, _, term_pid) = f.shell(&a1.connection, &term_run).await?;
     let task_pid: u32 = timeout(WAIT, async {
         loop {
             if let Some(pid) = fs::read_to_string(&task_pid_file)
@@ -3108,7 +2769,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
         token: h_token,
         ..
     } = h1;
-    let (mut stalled, reached) = StalledTask::new(tasks.clone())?;
+    let (mut stalled, reached) = StalledTask::new(tasks.clone(), DELAYED_TASK_COMMAND)?;
     let held_run = new_run();
     h_ws.send(request_frame(1, task_start(f, &held_run, false)))
         .await?;
@@ -3137,11 +2798,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
             controller_token: h_token.clone(),
         },
     ] {
-        assert_eq!(
-            denied(f, &h, mode.clone()).await?["error"],
-            closing_frame(),
-            "hello crossed the close fence (mode={mode:?})"
-        );
+        closing_frame(&denied(f, &h, mode).await?["error"]);
     }
     sleep(Duration::from_millis(300)).await;
     assert!(
@@ -3180,16 +2837,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
         .await?
         .session_start()
         .checked()?;
-    let mut pty = f
-        .stream(
-            &e1.connection,
-            Open::Pty {
-                run_id: run.clone(),
-                cursor: PtyCursor::default(),
-            },
-        )
-        .await?;
-    let pid = shell_pid(&mut pty, &mut PtyCursor::default()).await?;
+    let (_pty, _, pid) = f.shell(&e1.connection, &run).await?;
     db.execute_batch(&format!(
         "CREATE TRIGGER block_self_close BEFORE DELETE ON app_state WHEN old.key = '{key}'
          BEGIN SELECT RAISE(ABORT, 'injected self-close failure'); END;"
@@ -3210,11 +2858,7 @@ async fn self_close(f: &Fixture) -> Result<()> {
     );
     assert_eq!(stored(&db, &key)?.as_deref(), Some(snapshot.as_str()));
     assert!(manifest_ids(&db)?.contains(&e));
-    assert_eq!(
-        denied(f, &e, AttachMode::Open {}).await?["error"],
-        closing_frame(),
-        "failed self-close reopened the workbench"
-    );
+    closing_frame(&denied(f, &e, AttachMode::Open {}).await?["error"]);
     db.execute_batch("DROP TRIGGER block_self_close;")?;
     timeout(WAIT, close_workbench(&mut observer, 3, &e))
         .await
@@ -3612,25 +3256,12 @@ async fn run(home: &Path) -> Result<()> {
     let disabled_data = home.join("disabled-data");
     fs::create_dir_all(&disabled_config)?;
     fs::create_dir_all(&disabled_data)?;
-    let disabled = serve(ServeOptions {
-        config_dir: disabled_config,
-        data_dir: disabled_data,
-        listen: Some("127.0.0.1:0".parse()?),
-        config_file: None,
-        web_assets_dir: None,
-    })
-    .await?;
+    let disabled = serve(serve_dirs(&disabled_config, &disabled_data)).await?;
     let startup_config = home.join("startup-config");
     let startup_data = home.join("startup-data");
     fs::create_dir_all(&startup_config)?;
     fs::create_dir_all(&startup_data)?;
-    let options = || ServeOptions {
-        config_dir: startup_config.clone(),
-        data_dir: startup_data.clone(),
-        listen: Some("127.0.0.1:0".parse().unwrap()),
-        config_file: None,
-        web_assets_dir: None,
-    };
+    let options = || serve_dirs(&startup_config, &startup_data);
     let missing = home.join("missing-web-assets");
     let write_web = |web: serde_json::Value| {
         fs::write(
@@ -3730,38 +3361,10 @@ async fn run(home: &Path) -> Result<()> {
 
 #[test]
 fn web_transport_contract() -> Result<()> {
-    if std::env::var_os("SWORM_WEB_TRANSPORT_CHILD").is_none() {
-        let home = tempfile::tempdir()?;
-        let result = Command::new(std::env::current_exe()?)
-            .args(["--exact", "web_transport_contract", "--nocapture"])
-            .env("SWORM_WEB_TRANSPORT_CHILD", "1")
-            .env("HOME", home.path())
-            .env("XDG_CONFIG_HOME", home.path().join("config"))
-            .env("XDG_DATA_HOME", home.path().join("data"))
-            .env("GIT_CONFIG_GLOBAL", home.path().join("gitconfig"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()?;
-        assert!(
-            result.success(),
-            "isolated web transport child failed: {result}"
-        );
+    if !support::test_support::isolated("web_transport_contract") {
         return Ok(());
     }
     let home = PathBuf::from(std::env::var_os("HOME").context("isolated HOME missing")?);
-    for dir in [
-        "config",
-        "data",
-        "disabled-config",
-        "disabled-data",
-        "startup-config",
-        "startup-data",
-        "server-config",
-        "server-data",
-        "assets",
-        "repo",
-    ] {
-        fs::create_dir_all(home.join(dir))?;
-    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

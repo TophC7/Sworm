@@ -18,11 +18,7 @@ pub(crate) fn to_wire(event: HostEvent) -> Option<HostEventWire> {
         HostEvent::TasksChanged(folder) => Some(HostEventWire::TasksChanged(folder)),
         HostEvent::NixChanged(folder) => Some(HostEventWire::NixChanged(folder)),
         HostEvent::IssuesChanged(folder) => Some(HostEventWire::IssuesChanged(folder)),
-        HostEvent::FileMoved { .. }
-        | HostEvent::FileDeleted(_)
-        | HostEvent::RemoteStatus { .. }
-        | HostEvent::RemoteWorkbenchesChanged { .. }
-        | HostEvent::RemoteRunStatus { .. } => None,
+        HostEvent::FileMoved { .. } | HostEvent::FileDeleted(_) => None,
     }
 }
 
@@ -78,7 +74,7 @@ pub(crate) async fn run(
         if !claimed(&session, event.as_ref()).await {
             continue;
         }
-        // HostEventFrame is transparent; serialize the Arc payload directly to avoid a clone.
+        // Serialize the wire event through its Arc borrow to avoid a clone.
         if let Err(error) = write_frame(&mut send, event.as_ref()).await {
             tracing::debug!(%error, "host events stream closed");
             break;

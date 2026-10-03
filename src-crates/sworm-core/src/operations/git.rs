@@ -1,9 +1,7 @@
 use crate::errors::ApiError;
 use crate::host::Host;
-use crate::services::git::{git_show_bounded, DeleteBranchError, ShowOutput};
-use std::io::Write;
+use crate::services::git::DeleteBranchError;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use sworm_protocol::branch::{BranchOpState, BranchSummary};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
@@ -16,7 +14,7 @@ use sworm_protocol::git::{
 /// sequences, and the metacharacters `git check-ref-format` rejects.
 /// Frontend validation is more permissive (mirrors `check-ref-format`
 /// directly); this layer only stops the obvious shell-side hazards.
-pub(crate) fn validated_ref_name(name: &str) -> Result<(), ApiError> {
+fn validated_ref_name(name: &str) -> Result<(), ApiError> {
     if name.is_empty() {
         return Err(ApiError::InvalidArgument(
             "Branch name is empty".to_string(),
@@ -129,199 +127,19 @@ fn validated_project_file(project_path: &str, file_path: &str) -> Result<(), Api
     Ok(())
 }
 
-fn git_show_raw_text(repo: &Path, spec: &str) -> Option<String> {
-    // Quick-diff bases feed hunk staging/reverting, so they must be the
-    // actual blob text, not display-only textconv output.
-    match git_show_bounded(repo, &["show", "--no-textconv", spec]) {
-        ShowOutput::Bytes(bytes) => String::from_utf8(bytes).ok(),
-        ShowOutput::Oversized | ShowOutput::Failed => None,
-    }
-}
-
-fn git_file_mode(repo: &Path, file_path: &str) -> Result<String, ApiError> {
-    let index = Command::new("git")
-        .args(["--no-optional-locks", "ls-files", "-s", "--"])
-        .arg(file_path)
-        .current_dir(repo)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("Failed to read git index: {}", e)))?;
-
-    if index.status.success() {
-        let line = String::from_utf8_lossy(&index.stdout);
-        if let Some(mode) = line.split_whitespace().next() {
-            if !mode.is_empty() {
-                return Ok(mode.to_string());
-            }
-        }
-    }
-
-    let head = Command::new("git")
-        .args(["--no-optional-locks", "ls-tree", "HEAD", "--"])
-        .arg(file_path)
-        .current_dir(repo)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("Failed to read HEAD tree: {}", e)))?;
-
-    if head.status.success() {
-        let line = String::from_utf8_lossy(&head.stdout);
-        if let Some(mode) = line.split_whitespace().next() {
-            if !mode.is_empty() {
-                return Ok(mode.to_string());
-            }
-        }
-    }
-
-    if let Some(mode) = git_worktree_file_mode(repo, file_path)? {
-        return Ok(mode);
-    }
-
-    Ok("100644".to_string())
-}
-
-#[cfg(unix)]
-fn git_worktree_file_mode(repo: &Path, file_path: &str) -> Result<Option<String>, ApiError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = match std::fs::symlink_metadata(repo.join(file_path)) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(ApiError::Internal(format!(
-                "Failed to read worktree file mode: {}",
-                error
-            )));
-        }
-    };
-
-    if metadata.file_type().is_symlink() {
-        return Ok(Some("120000".to_string()));
-    }
-
-    if metadata.permissions().mode() & 0o111 != 0 {
-        return Ok(Some("100755".to_string()));
-    }
-
-    Ok(Some("100644".to_string()))
-}
-
-#[cfg(not(unix))]
-fn git_worktree_file_mode(_repo: &Path, _file_path: &str) -> Result<Option<String>, ApiError> {
-    Ok(None)
-}
-
-fn git_hash_object(repo: &Path, file_path: &str, content: &str) -> Result<String, ApiError> {
-    let mut child = Command::new("git")
-        .args(["hash-object", "--stdin", "-w", "--path"])
-        .arg(file_path)
-        .current_dir(repo)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ApiError::Internal(format!("Failed to spawn git hash-object: {}", e)))?;
-
-    let stdin = child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| ApiError::Internal("Failed to open git hash-object stdin".to_string()))?;
-    stdin
-        .write_all(content.as_bytes())
-        .map_err(|e| ApiError::Internal(format!("Failed to write git object content: {}", e)))?;
-    let _ = child.stdin.take();
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| ApiError::Internal(format!("Failed to finish git hash-object: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(ApiError::Internal(format!(
-            "git hash-object failed{}",
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", stderr)
-            }
-        )));
-    }
-
-    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if hash.is_empty() {
-        return Err(ApiError::Internal(
-            "git hash-object returned an empty object id".to_string(),
-        ));
-    }
-
-    Ok(hash)
-}
-
-fn git_update_index_blob(repo: &Path, file_path: &str, content: &str) -> Result<(), ApiError> {
-    let mode = git_file_mode(repo, file_path)?;
-    let hash = git_hash_object(repo, file_path, content)?;
-    let output = Command::new("git")
-        .args(["update-index", "--add", "--cacheinfo"])
-        .arg(mode)
-        .arg(hash)
-        .arg(file_path)
-        .current_dir(repo)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("Failed to update git index: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(ApiError::Internal(format!(
-            "git update-index failed{}",
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", stderr)
-            }
-        )));
-    }
-
-    Ok(())
-}
-
-fn git_remove_index_path(repo: &Path, file_path: &str) -> Result<(), ApiError> {
-    let output = Command::new("git")
-        .args(["update-index", "--force-remove", "--"])
-        .arg(file_path)
-        .current_dir(repo)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("Failed to remove path from git index: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(ApiError::Internal(format!(
-            "git update-index --force-remove failed{}",
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", stderr)
-            }
-        )));
-    }
-
-    Ok(())
-}
-
 /// Get git summary for a project path. Git status can scan the full tree, so
 /// keep it off the async runtime thread.
 impl Host {
-    pub async fn git_get_summary(&self, path: String) -> Result<GitSummary, ApiError> {
-        let git = std::sync::Arc::clone(&self.git);
-        tokio::task::spawn_blocking(move || git.get_summary(Path::new(&path)))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+    pub fn git_get_summary(&self, path: String) -> Result<GitSummary, ApiError> {
+        self.git
+            .get_summary(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Branch, changed-path count and upstream ahead/behind from one `git status`.
-    pub async fn git_get_brief(&self, path: String) -> Result<GitBrief, ApiError> {
-        let git = std::sync::Arc::clone(&self.git);
-        tokio::task::spawn_blocking(move || git.get_brief(Path::new(&path)))
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+    pub fn git_get_brief(&self, path: String) -> Result<GitBrief, ApiError> {
+        self.git
+            .get_brief(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
@@ -329,24 +147,21 @@ impl Host {
     /// and invokes Git, so it also belongs on a blocking worker. Startup failures
     /// are returned; an unhealthy existing worker is replaced on a later call. A
     /// folder released while setup is in flight never keeps a watcher.
-    pub async fn git_watch(
+    pub fn git_watch(
         &self,
         project_path: String,
         owned: impl FnOnce(&Path) -> bool + Send + 'static,
     ) -> Result<(), ApiError> {
-        let watchers = std::sync::Arc::clone(&self.git_watchers);
-        let events = std::sync::Arc::clone(&self.events);
-        tokio::task::spawn_blocking(move || {
-            let folder = Path::new(&project_path);
-            watchers.watch(events, folder, || owned(folder))
-        })
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-        .map_err(ApiError::Internal)
+        let folder = Path::new(&project_path);
+        self.git_watchers
+            .watch(std::sync::Arc::clone(&self.events), folder, || {
+                owned(folder)
+            })
+            .map_err(ApiError::Internal)
     }
 
     /// Get full commit detail (metadata + file list with stats).
-    pub async fn git_get_commit_detail(
+    pub fn git_get_commit_detail(
         &self,
         path: String,
         hash: String,
@@ -359,7 +174,7 @@ impl Host {
     /// `FileDiff` per changed file, with both sides of content attached,
     /// regardless of whether the source is the working tree, a commit,
     /// or a stash. Replaces the mixed-shape `git_get_*_diffs` family.
-    pub async fn diff_get_files(
+    pub fn diff_get_files(
         &self,
         path: String,
         source: DiffSource,
@@ -376,7 +191,7 @@ impl Host {
     /// Pair with [`diff_get_working_file`] to load each file's content
     /// lazily; keeps the initial payload small even when the working
     /// tree has hundreds of changed files.
-    pub async fn diff_get_working_index(
+    pub fn diff_get_working_index(
         &self,
         path: String,
         staged: bool,
@@ -393,7 +208,7 @@ impl Host {
     /// a malicious or buggy frontend can't read arbitrary worktree files
     /// via `../` traversal. Mirrors the guard on `git_get_quick_diff_data`,
     /// `git_stage_file_content`, and `git_show_file`.
-    pub async fn diff_get_working_file(
+    pub fn diff_get_working_file(
         &self,
         path: String,
         file_path: String,
@@ -412,16 +227,12 @@ impl Host {
     }
 
     /// Get commit graph data for visualization (all branches).
-    pub async fn git_get_graph(
-        &self,
-        path: String,
-        limit: usize,
-    ) -> Result<Vec<GraphCommit>, ApiError> {
+    pub fn git_get_graph(&self, path: String, limit: usize) -> Result<Vec<GraphCommit>, ApiError> {
         Ok(self.git.get_graph(Path::new(&path), limit))
     }
 
     /// Get commit history reachable from one branch ref.
-    pub async fn git_get_branch_commits(
+    pub fn git_get_branch_commits(
         &self,
         path: String,
         branch: String,
@@ -436,62 +247,54 @@ impl Host {
     // WRITE OPERATIONS //
 
     /// Stage all changes (tracked + untracked).
-    pub async fn git_stage_all(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_stage_all(&self, path: String) -> Result<(), ApiError> {
         self.git
             .stage_all(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Stage specific files or directories.
-    pub async fn git_stage_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
+    pub fn git_stage_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
         self.git
             .stage_files(Path::new(&path), &files)
             .map_err(ApiError::Internal)
     }
 
     /// Unstage all staged changes.
-    pub async fn git_unstage_all(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_unstage_all(&self, path: String) -> Result<(), ApiError> {
         self.git
             .unstage_all(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Unstage specific files or directories.
-    pub async fn git_unstage_files(
-        &self,
-        path: String,
-        files: Vec<String>,
-    ) -> Result<(), ApiError> {
+    pub fn git_unstage_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
         self.git
             .unstage_files(Path::new(&path), &files)
             .map_err(ApiError::Internal)
     }
 
     /// Discard all unstaged changes and untracked files.
-    pub async fn git_discard_all(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_discard_all(&self, path: String) -> Result<(), ApiError> {
         self.git
             .discard_all(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Discard changes for specific files or directories.
-    pub async fn git_discard_files(
-        &self,
-        path: String,
-        files: Vec<String>,
-    ) -> Result<(), ApiError> {
+    pub fn git_discard_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
         self.git
             .discard_files(Path::new(&path), &files)
             .map_err(ApiError::Internal)
     }
 
     /// Get the combined patch for all working-tree changes.
-    pub async fn git_get_full_patch(&self, path: String) -> Result<Option<String>, ApiError> {
+    pub fn git_get_full_patch(&self, path: String) -> Result<Option<String>, ApiError> {
         Ok(self.git.get_full_patch(Path::new(&path)))
     }
 
     /// Get patch for specific paths, optionally scoped to staged or unstaged only.
-    pub async fn git_get_path_patch(
+    pub fn git_get_path_patch(
         &self,
         path: String,
         files: Vec<String>,
@@ -501,26 +304,16 @@ impl Host {
     }
 
     /// Return Git bases used by the live editor dirty-diff gutter.
-    pub async fn git_get_quick_diff_data(
+    pub fn git_get_quick_diff_data(
         &self,
         project_path: String,
         file_path: String,
     ) -> Result<GitQuickDiffData, ApiError> {
         validated_project_file(&project_path, &file_path)?;
 
-        let repo = Path::new(&project_path);
-        let index_spec = format!(":{}", file_path);
-        let head_spec = format!("HEAD:{}", file_path);
-        let index_content = git_show_raw_text(repo, &index_spec);
-        let head_content = git_show_raw_text(repo, &head_spec);
-        // Derive instead of spawning `git diff --cached --quiet`. Mode-only
-        // changes aren't reflected, but the dirty-diff editor is text-only.
-        let has_index_changes = index_content != head_content;
-        Ok(GitQuickDiffData {
-            index_content,
-            head_content,
-            has_index_changes,
-        })
+        Ok(self
+            .git
+            .quick_diff_data(Path::new(&project_path), &file_path))
     }
 
     /// Replace a single path's index blob with caller-supplied text content.
@@ -531,26 +324,20 @@ impl Host {
     /// `git_get_summary` reflects the new index state. Without this the 300ms
     /// TTL cache could serve a pre-stage summary to a frontend `refreshGit`
     /// chained immediately after, hiding the stage from the UI.
-    pub async fn git_stage_file_content(
+    pub fn git_stage_file_content(
         &self,
         project_path: String,
         file_path: String,
         content: Option<String>,
     ) -> Result<(), ApiError> {
         validated_project_file(&project_path, &file_path)?;
-        let repo = Path::new(&project_path);
-        let result = match content {
-            Some(content) => git_update_index_blob(repo, &file_path, &content),
-            None => git_remove_index_path(repo, &file_path),
-        };
-        if result.is_ok() {
-            self.git.invalidate(repo);
-        }
-        result
+        self.git
+            .stage_file_content(Path::new(&project_path), &file_path, content.as_deref())
+            .map_err(ApiError::Internal)
     }
 
     /// Create a commit with the given message.
-    pub async fn git_commit(&self, path: String, message: String) -> Result<String, ApiError> {
+    pub fn git_commit(&self, path: String, message: String) -> Result<String, ApiError> {
         let trimmed = message.trim();
         if trimmed.is_empty() {
             return Err(ApiError::InvalidArgument(
@@ -564,66 +351,62 @@ impl Host {
 
     /// Undo the last commit (soft reset to HEAD~1). Returns the commit
     /// message so the frontend can restore it into the commit textarea.
-    pub async fn git_undo_last_commit(&self, path: String) -> Result<String, ApiError> {
+    pub fn git_undo_last_commit(&self, path: String) -> Result<String, ApiError> {
         self.git
             .undo_last_commit(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Push current branch to upstream.
-    pub async fn git_push(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_push(&self, path: String) -> Result<(), ApiError> {
         self.git.push(Path::new(&path)).map_err(ApiError::Internal)
     }
 
     /// Push with --force-with-lease.
-    pub async fn git_push_force_with_lease(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_push_force_with_lease(&self, path: String) -> Result<(), ApiError> {
         self.git
             .push_force_with_lease(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Pull from upstream (fetch + merge).
-    pub async fn git_pull(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_pull(&self, path: String) -> Result<(), ApiError> {
         self.git.pull(Path::new(&path)).map_err(ApiError::Internal)
     }
 
     /// Fetch from all remotes.
-    pub async fn git_fetch(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_fetch(&self, path: String) -> Result<(), ApiError> {
         self.git.fetch(Path::new(&path)).map_err(ApiError::Internal)
     }
 
     /// Stash all changes including untracked files.
-    pub async fn git_stash_all(
-        &self,
-        path: String,
-        message: Option<String>,
-    ) -> Result<(), ApiError> {
+    pub fn git_stash_all(&self, path: String, message: Option<String>) -> Result<(), ApiError> {
         self.git
             .stash_all(Path::new(&path), message.as_deref())
             .map_err(ApiError::Internal)
     }
 
     /// Count stash entries (lightweight, no per-entry file stats).
-    pub async fn git_stash_count(&self, path: String) -> Result<usize, ApiError> {
+    pub fn git_stash_count(&self, path: String) -> Result<usize, ApiError> {
         self.git
             .stash_count(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// List all stash entries.
-    pub async fn git_stash_list(&self, path: String) -> Result<Vec<StashEntry>, ApiError> {
+    pub fn git_stash_list(&self, path: String) -> Result<Vec<StashEntry>, ApiError> {
         Ok(self.git.stash_list(Path::new(&path)))
     }
 
     /// Pop a stash entry (apply + drop).
-    pub async fn git_stash_pop(&self, path: String, index: usize) -> Result<(), ApiError> {
+    pub fn git_stash_pop(&self, path: String, index: usize) -> Result<(), ApiError> {
         self.git
             .stash_pop(Path::new(&path), index)
             .map_err(ApiError::Internal)
     }
 
     /// Drop a stash entry without applying.
-    pub async fn git_stash_drop(&self, path: String, index: usize) -> Result<(), ApiError> {
+    pub fn git_stash_drop(&self, path: String, index: usize) -> Result<(), ApiError> {
         self.git
             .stash_drop(Path::new(&path), index)
             .map_err(ApiError::Internal)
@@ -631,8 +414,8 @@ impl Host {
 
     /// Return file content at a specific git revision.
     /// Validates both the ref and file path before executing.
-    /// Uses the raw blob (no textconv) capped at `MAX_CONTENT_BYTES`.
-    pub async fn git_show_file(
+    /// Uses the raw blob (no textconv), subject to the service content cap.
+    pub fn git_show_file(
         &self,
         project_path: String,
         git_ref: String,
@@ -641,20 +424,20 @@ impl Host {
         validated_git_rev(&git_ref)?;
         validated_project_file(&project_path, &file_path)?;
 
-        let repo = Path::new(&project_path);
-        let rev_spec = format!("{}:{}", git_ref, file_path);
-        git_show_raw_text(repo, &rev_spec).ok_or_else(|| {
-            ApiError::NotFound(format!("Could not resolve {}:{}", git_ref, file_path))
-        })
+        self.git
+            .show_file(Path::new(&project_path), &git_ref, &file_path)
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Could not resolve {}:{}", git_ref, file_path))
+            })
     }
 
     /// Initialize a new git repository in the given directory.
-    pub async fn git_init(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_init(&self, path: String) -> Result<(), ApiError> {
         self.git.init(Path::new(&path)).map_err(ApiError::Internal)
     }
 
     /// Clone a repository into the given directory (in-place, no subfolder).
-    pub async fn git_clone_in_place(&self, path: String, url: String) -> Result<(), ApiError> {
+    pub fn git_clone_in_place(&self, path: String, url: String) -> Result<(), ApiError> {
         self.git
             .clone_in_place(Path::new(&path), &url)
             .map_err(ApiError::Internal)
@@ -663,19 +446,19 @@ impl Host {
     // BRANCH OPERATIONS //
 
     /// List every local + remote-tracking branch in one call.
-    pub async fn git_list_branches(&self, path: String) -> Result<Vec<BranchSummary>, ApiError> {
+    pub fn git_list_branches(&self, path: String) -> Result<Vec<BranchSummary>, ApiError> {
         self.git
             .list_branches(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Current paused-state of the working tree (idle / rebasing / merging).
-    pub async fn git_branch_status(&self, path: String) -> Result<BranchOpState, ApiError> {
+    pub fn git_branch_status(&self, path: String) -> Result<BranchOpState, ApiError> {
         Ok(self.git.branch_status(Path::new(&path)))
     }
 
     /// File metadata for `branch...HEAD` compare.
-    pub async fn git_diff_branch_against_head(
+    pub fn git_diff_branch_against_head(
         &self,
         path: String,
         branch: String,
@@ -685,7 +468,7 @@ impl Host {
     }
 
     /// Switch HEAD to an existing branch.
-    pub async fn git_checkout_branch(&self, path: String, name: String) -> Result<(), ApiError> {
+    pub fn git_checkout_branch(&self, path: String, name: String) -> Result<(), ApiError> {
         validated_ref_name(&name)?;
         let repo = Path::new(&path);
         if self.git.is_worktree_dirty(repo) {
@@ -699,7 +482,7 @@ impl Host {
     }
 
     /// Create a tracking local branch from a remote ref and switch to it.
-    pub async fn git_checkout_remote_as_local(
+    pub fn git_checkout_remote_as_local(
         &self,
         path: String,
         remote_name: String,
@@ -719,7 +502,7 @@ impl Host {
     }
 
     /// Create a branch off `base`, optionally switching to it after.
-    pub async fn git_create_branch(
+    pub fn git_create_branch(
         &self,
         path: String,
         name: String,
@@ -734,7 +517,7 @@ impl Host {
     }
 
     /// Rename a local branch.
-    pub async fn git_rename_branch(
+    pub fn git_rename_branch(
         &self,
         path: String,
         old_name: String,
@@ -749,7 +532,7 @@ impl Host {
 
     /// Delete a local branch. Without `force`, refuses unmerged branches
     /// with a typed error so the dialog can offer the force-delete fallback.
-    pub async fn git_delete_branch(
+    pub fn git_delete_branch(
         &self,
         path: String,
         name: String,
@@ -767,7 +550,7 @@ impl Host {
     }
 
     /// Delete a branch on a remote (`git push <remote> --delete <name>`).
-    pub async fn git_delete_remote_branch(
+    pub fn git_delete_remote_branch(
         &self,
         path: String,
         remote: String,
@@ -781,7 +564,7 @@ impl Host {
     }
 
     /// Set or change a branch's upstream tracking ref.
-    pub async fn git_set_upstream(
+    pub fn git_set_upstream(
         &self,
         path: String,
         branch: String,
@@ -796,11 +579,7 @@ impl Host {
 
     /// Fast-forward a branch to its upstream without checking it out.
     /// Falls back to `git pull --ff-only` for the current branch.
-    pub async fn git_fast_forward_branch(
-        &self,
-        path: String,
-        name: String,
-    ) -> Result<(), ApiError> {
+    pub fn git_fast_forward_branch(&self, path: String, name: String) -> Result<(), ApiError> {
         validated_ref_name(&name)?;
         self.git
             .fast_forward(Path::new(&path), &name)
@@ -808,7 +587,7 @@ impl Host {
     }
 
     /// Merge `source` into the current branch.
-    pub async fn git_merge_into_current(
+    pub fn git_merge_into_current(
         &self,
         path: String,
         source: String,
@@ -821,11 +600,7 @@ impl Host {
     }
 
     /// Rebase the current branch onto `target`.
-    pub async fn git_rebase_current_onto(
-        &self,
-        path: String,
-        target: String,
-    ) -> Result<(), ApiError> {
+    pub fn git_rebase_current_onto(&self, path: String, target: String) -> Result<(), ApiError> {
         validated_ref_name(&target)?;
         self.git
             .rebase_current_onto(Path::new(&path), &target)
@@ -833,28 +608,28 @@ impl Host {
     }
 
     /// Continue a paused rebase after the user resolved conflicts.
-    pub async fn git_rebase_continue(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_rebase_continue(&self, path: String) -> Result<(), ApiError> {
         self.git
             .rebase_continue(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Skip the current commit during a paused rebase.
-    pub async fn git_rebase_skip(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_rebase_skip(&self, path: String) -> Result<(), ApiError> {
         self.git
             .rebase_skip(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Abort an in-flight rebase.
-    pub async fn git_rebase_abort(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_rebase_abort(&self, path: String) -> Result<(), ApiError> {
         self.git
             .rebase_abort(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 
     /// Abort an in-flight merge.
-    pub async fn git_merge_abort(&self, path: String) -> Result<(), ApiError> {
+    pub fn git_merge_abort(&self, path: String) -> Result<(), ApiError> {
         self.git
             .merge_abort(Path::new(&path))
             .map_err(ApiError::Internal)
@@ -916,33 +691,5 @@ mod tests {
         assert!(validated_project_file(&project_str, "../etc/passwd").is_err());
 
         fs::remove_dir_all(&project).expect("remove temp project");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn worktree_file_mode_preserves_executable_bit() {
-        use super::git_worktree_file_mode;
-        use std::fs;
-        use std::os::unix::fs::PermissionsExt;
-
-        let repo = std::env::temp_dir().join(format!(
-            "sworm-git-mode-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir_all(&repo).expect("create temp repo dir");
-
-        let script = repo.join("script.sh");
-        fs::write(&script, "#!/bin/sh\n").expect("write script");
-        let mut permissions = fs::metadata(&script)
-            .expect("read script metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script, permissions).expect("mark script executable");
-
-        let mode = git_worktree_file_mode(&repo, "script.sh").expect("read worktree mode");
-        fs::remove_dir_all(&repo).expect("remove temp repo dir");
-
-        assert_eq!(mode.as_deref(), Some("100755"));
     }
 }

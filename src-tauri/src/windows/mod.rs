@@ -129,7 +129,7 @@ pub struct WindowCoordinatorService {
     records: Mutex<HashMap<String, LiveWindowRecord>>,
     active_transfers: Mutex<HashMap<String, ActiveTransfer>>,
     group_transfers: Mutex<HashMap<String, Arc<groups::GroupTransfer>>>,
-    exit_requested: Arc<AtomicBool>,
+    exit_requested: AtomicBool,
     pending_cleanup: Mutex<Vec<std::sync::mpsc::Receiver<()>>>,
 }
 
@@ -139,7 +139,7 @@ impl WindowCoordinatorService {
             records: Mutex::new(HashMap::new()),
             active_transfers: Mutex::new(HashMap::new()),
             group_transfers: Mutex::new(HashMap::new()),
-            exit_requested: Arc::new(AtomicBool::new(false)),
+            exit_requested: AtomicBool::new(false),
             pending_cleanup: Mutex::new(Vec::new()),
         }
     }
@@ -160,26 +160,13 @@ impl WindowCoordinatorService {
         }
     }
 
-    pub fn load_manifest_or_migrate(
-        &self,
-        _app_handle: &tauri::AppHandle,
-        kv: &AppStateKvService,
-        conn: &Connection,
-    ) -> Result<WindowManifest, String> {
-        self.load_manifest_or_migrate_from_kv(kv, conn)
-    }
-
-    fn load_manifest_or_migrate_from_kv(
-        &self,
-        kv: &AppStateKvService,
-        conn: &Connection,
-    ) -> Result<WindowManifest, String> {
-        if let Some(json) = kv.get(conn, MANIFEST_KEY)? {
+    pub fn load_manifest(conn: &Connection) -> Result<WindowManifest, String> {
+        if let Some(json) = AppStateKvService::get(conn, MANIFEST_KEY)? {
             return serde_json::from_str(&json)
                 .map_err(|error| format!("window manifest parse failed: {error}"));
         }
 
-        let Some(legacy_json) = kv.get(conn, "workbench")? else {
+        let Some(legacy_json) = AppStateKvService::get(conn, "workbench")? else {
             return Ok(WindowManifest::default());
         };
 
@@ -187,8 +174,8 @@ impl WindowCoordinatorService {
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
         let label = format!("workbench-{}", uuid::Uuid::new_v4());
-        kv.put(&tx, &format!("workbench:{label}"), &legacy_json)?;
-        kv.delete(&tx, "workbench")?;
+        AppStateKvService::put(&tx, &format!("workbench:{label}"), &legacy_json)?;
+        AppStateKvService::delete(&tx, "workbench")?;
         let manifest = WindowManifest {
             version: MANIFEST_VERSION,
             windows: vec![WindowManifestEntry {
@@ -200,7 +187,7 @@ impl WindowCoordinatorService {
         };
         let json = serde_json::to_string(&manifest)
             .map_err(|error| format!("window manifest serialization failed: {error}"))?;
-        kv.put(&tx, MANIFEST_KEY, &json)?;
+        AppStateKvService::put(&tx, MANIFEST_KEY, &json)?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(manifest)
     }
@@ -210,20 +197,13 @@ impl WindowCoordinatorService {
             .try_state::<AppState>()
             .ok_or_else(|| "AppState is not initialized".to_string())?;
         let db = state.host.db.write();
-        self.save_manifest_with(db.conn(), app)
+        self.save_manifest_with(db.conn())
     }
 
-    pub fn save_manifest_with(
-        &self,
-        conn: &Connection,
-        app: &tauri::AppHandle,
-    ) -> Result<(), String> {
+    pub fn save_manifest_with(&self, conn: &Connection) -> Result<(), String> {
         let json = serde_json::to_string(&self.current_manifest())
             .map_err(|error| format!("window manifest serialization failed: {error}"))?;
-        let state = app
-            .try_state::<AppState>()
-            .ok_or_else(|| "AppState is not initialized".to_string())?;
-        state.app_state_kv.put(conn, MANIFEST_KEY, &json)
+        AppStateKvService::put(conn, MANIFEST_KEY, &json)
     }
 
     fn current_manifest(&self) -> WindowManifest {
@@ -578,8 +558,12 @@ impl WindowCoordinatorService {
     pub fn initiate_tab_transfer<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        caller: &str,
         params: TabTransferInitiateParams,
     ) -> Result<String, String> {
+        if caller != params.target_window {
+            return Err("transfer target belongs to a different window".to_string());
+        }
         self.abort_expired_transfers(app);
         {
             let records = self.records.lock();
@@ -802,6 +786,18 @@ impl WindowCoordinatorService {
         Ok(())
     }
 
+    pub fn abort_tab_transfer_as<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        caller: &str,
+        transfer_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        self.authorize_participant(transfer_id, caller)?;
+        self.abort_tab_transfer(app, transfer_id, reason);
+        Ok(())
+    }
+
     pub fn abort_tab_transfer<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -816,8 +812,7 @@ impl WindowCoordinatorService {
                     if app_state.host.pty.resume_original(run_id).is_err()
                         && app_state.host.pty.abort_transfer_detached(run_id).is_err()
                     {
-                        let _ = app_state.host.pty.kill(run_id);
-                        app_state.host.tasks.release_singleton_by_run_id(run_id);
+                        let _ = app_state.host.discard_run(run_id);
                         pty_lost = true;
                     }
                 }
@@ -900,11 +895,7 @@ impl WindowCoordinatorService {
         pty.attach(run_id, subscriber)
     }
 
-    pub fn authorize_participant(
-        &self,
-        transfer_id: &str,
-        window_label: &str,
-    ) -> Result<(), String> {
+    fn authorize_participant(&self, transfer_id: &str, window_label: &str) -> Result<(), String> {
         if self
             .active_transfers
             .lock()
@@ -1083,11 +1074,11 @@ impl WindowCoordinatorService {
         }
     }
 
-    pub fn set_exit_requested(&self, val: bool) {
-        self.exit_requested.store(val, Ordering::Release);
+    pub fn request_exit(&self) {
+        self.exit_requested.store(true, Ordering::Release);
     }
 
-    pub fn is_exit_requested(&self) -> bool {
+    fn is_exit_requested(&self) -> bool {
         self.exit_requested.load(Ordering::Acquire)
     }
 
@@ -1109,6 +1100,10 @@ impl WindowCoordinatorService {
 
     pub(crate) fn has_window(&self, label: &str) -> bool {
         self.records.lock().contains_key(label)
+    }
+
+    pub(crate) fn owner_closed(&self, label: &str) -> bool {
+        !self.has_window(label) && !self.destroy_detaches_runs()
     }
 
     fn next_focus_order(&self) -> usize {
@@ -1192,7 +1187,6 @@ fn finish_window_close(
     state.windows.abort_transfers_for_window(app, label);
     tauri::async_runtime::block_on(state.windows.abort_groups_for_window(app, label));
     release_window_resources(&state, label, detach_runs);
-    state.router.release_file_reads(label);
     crate::deep_links::window_closed(app, label);
     if !discard_snapshot {
         return;
@@ -1203,10 +1197,8 @@ fn finish_window_close(
             .conn()
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
-        state
-            .app_state_kv
-            .delete(&tx, &format!("workbench:{label}"))?;
-        state.windows.save_manifest_with(&tx, app)?;
+        AppStateKvService::delete(&tx, &format!("workbench:{label}"))?;
+        state.windows.save_manifest_with(&tx)?;
         tx.commit().map_err(|error| error.to_string())
     })();
     if let Err(error) = result {
@@ -1227,8 +1219,7 @@ fn release_window_resources(state: &AppState, label: &str, detach_runs: bool) {
     // per window, so a close never reaches a surviving window's servers -
     // including a window that just adopted a transferred tab. PTY runs are
     // untouched: they may outlive the window.
-    state.router.release_lsp_owner(label);
-    state.router.release_workbench_owner(label);
+    state.router.release_window(label);
     for folder in final_folders {
         release_folder_resources(state, &folder);
     }
@@ -1281,11 +1272,17 @@ fn git_root(file: &Path) -> Option<PathBuf> {
     sworm_core::services::git::GitService::repo_root(file.parent()?)
 }
 
-fn focus_window(app: &tauri::AppHandle, label: &str) {
+pub(crate) fn focus_window(app: &tauri::AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        if let Err(error) = window.unminimize() {
+            tracing::warn!(%label, %error, "Failed to unminimize window");
+        }
+        if let Err(error) = window.show() {
+            tracing::warn!(%label, %error, "Failed to show window");
+        }
+        if let Err(error) = window.set_focus() {
+            tracing::warn!(%label, %error, "Failed to focus window");
+        }
     }
 }
 
@@ -1294,6 +1291,37 @@ mod tests {
     use super::*;
     use std::sync::mpsc::{channel, Receiver, TryRecvError};
     use tauri::Listener;
+
+    #[test]
+    fn only_drop_target_can_initiate_transfer() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "source", 1);
+        add_window(&service, "target", 2);
+        let app = tauri::test::mock_app();
+        let params = TabTransferInitiateParams {
+            source_window: "source".into(),
+            target_window: "target".into(),
+            tab_id: "tab".into(),
+            target_index: 0,
+        };
+        for caller in ["source", "unrelated"] {
+            assert!(service
+                .initiate_tab_transfer(app.handle(), caller, params.clone())
+                .is_err());
+            assert!(service.active_transfers.lock().is_empty());
+        }
+        let id = service
+            .initiate_tab_transfer(app.handle(), "target", params)
+            .expect("drop target may initiate transfer");
+        assert!(service
+            .abort_tab_transfer_as(app.handle(), "unrelated", &id, "cancel")
+            .is_err());
+        assert!(service.active_transfers.lock().contains_key(&id));
+        service
+            .abort_tab_transfer_as(app.handle(), "source", &id, "cancel")
+            .expect("source may abort transfer");
+        assert!(!service.active_transfers.lock().contains_key(&id));
+    }
 
     #[test]
     fn final_shutdown_waits_for_window_cleanup_without_locking_the_queue() {
@@ -1408,6 +1436,7 @@ mod tests {
         let transfer_id = service
             .initiate_tab_transfer(
                 app.handle(),
+                target.label(),
                 TabTransferInitiateParams {
                     source_window: source.label().to_string(),
                     target_window: target.label().to_string(),
@@ -1445,6 +1474,7 @@ mod tests {
         let aborted_id = service
             .initiate_tab_transfer(
                 app.handle(),
+                target.label(),
                 TabTransferInitiateParams {
                     source_window: source.label().to_string(),
                     target_window: target.label().to_string(),
@@ -1456,7 +1486,9 @@ mod tests {
         assert_next_event(&source_events, "tab-transfer-request");
         assert_no_event(&target_events);
 
-        service.abort_tab_transfer(app.handle(), &aborted_id, "test");
+        service
+            .abort_tab_transfer_as(app.handle(), target.label(), &aborted_id, "test")
+            .expect("target may abort transfer");
         assert_next_event(&source_events, "tab-transfer-aborted");
         assert_next_event(&target_events, "tab-transfer-aborted");
         assert_no_event(&source_events);
@@ -1482,6 +1514,7 @@ mod tests {
         let target_closed_id = service
             .initiate_tab_transfer(
                 app.handle(),
+                target.label(),
                 TabTransferInitiateParams {
                     source_window: source.label().to_string(),
                     target_window: target.label().to_string(),
@@ -1502,6 +1535,7 @@ mod tests {
         let source_closed_id = service
             .initiate_tab_transfer(
                 app.handle(),
+                target.label(),
                 TabTransferInitiateParams {
                     source_window: source.label().to_string(),
                     target_window: target.label().to_string(),
@@ -1527,6 +1561,7 @@ mod tests {
         let exported_id = service
             .initiate_tab_transfer(
                 app.handle(),
+                target.label(),
                 TabTransferInitiateParams {
                     source_window: source.label().to_string(),
                     target_window: target.label().to_string(),
@@ -1606,23 +1641,20 @@ mod tests {
 
     fn receive_exit(receiver: &Receiver<sworm_protocol::pty::PtyEvent>, run_id: &str) {
         loop {
-            match receiver
+            if let sworm_protocol::pty::PtyEvent::Exit { run_id: id, code } = receiver
                 .recv_timeout(Duration::from_secs(5))
                 .expect("receive PTY exit")
             {
-                sworm_protocol::pty::PtyEvent::Exit { run_id: id, code } => {
-                    assert_eq!(id, run_id);
-                    assert_eq!(code, Some(0));
-                    break;
-                }
-                _ => {}
+                assert_eq!(id, run_id);
+                assert_eq!(code, Some(0));
+                break;
             }
         }
     }
 
     #[test]
     fn native_transfer_of_local_pty_preserves_owner_and_delivery_cursors() {
-        use sworm_core::services::pty::{PtyRunState, RunRetention};
+        use sworm_core::services::pty::PtyRunState;
         use sworm_core::Host;
 
         let temporary = tempfile::tempdir().expect("test directory");
@@ -1645,7 +1677,6 @@ mod tests {
             host: Arc::clone(&host),
             router,
             windows: Arc::clone(&service),
-            app_state_kv: AppStateKvService::new(),
         });
 
         for (scenario, commit, exit_while_paused) in [
@@ -1669,7 +1700,6 @@ mod tests {
                     24,
                     Some(source_subscriber),
                     Some("source".to_string()),
-                    RunRetention::Retained,
                     None,
                     None,
                 )
@@ -1696,6 +1726,7 @@ mod tests {
             let transfer_id = service
                 .initiate_tab_transfer(
                     app.handle(),
+                    "target",
                     TabTransferInitiateParams {
                         source_window: "source".to_string(),
                         target_window: "target".to_string(),
@@ -1728,7 +1759,7 @@ mod tests {
                 .target_stage_ready(app.handle(), "other", &transfer_id)
                 .is_err());
             assert!(service
-                .authorize_participant(&transfer_id, "other")
+                .abort_tab_transfer_as(app.handle(), "other", &transfer_id, "cancel")
                 .is_err());
 
             let (target_subscriber, target_output, target_events) = transfer_subscriber();
@@ -1875,72 +1906,30 @@ mod tests {
 
     #[test]
     fn test_legacy_manifest_migration() {
-        let service = WindowCoordinatorService::new();
-        let kv = AppStateKvService::new();
         let conn = connection();
-        kv.put(&conn, "workbench", r#"{"tabs":[]}"#)
+        AppStateKvService::put(&conn, "workbench", r#"{"tabs":[]}"#)
             .expect("store legacy workbench");
 
-        let manifest = service
-            .load_manifest_or_migrate_from_kv(&kv, &conn)
-            .expect("migrate legacy workbench");
+        let manifest =
+            WindowCoordinatorService::load_manifest(&conn).expect("migrate legacy workbench");
 
         assert_eq!(manifest.windows.len(), 1);
-        assert!(kv
-            .get(&conn, "workbench")
+        assert!(AppStateKvService::get(&conn, "workbench")
             .expect("read legacy key")
             .is_none());
         let snapshot_key = format!("workbench:{}", manifest.windows[0].label);
         assert_eq!(
-            kv.get(&conn, &snapshot_key)
-                .expect("read migrated snapshot"),
+            AppStateKvService::get(&conn, &snapshot_key).expect("read migrated snapshot"),
             Some(r#"{"tabs":[]}"#.to_string())
         );
         let stored: WindowManifest = serde_json::from_str(
-            &kv.get(&conn, MANIFEST_KEY)
+            &AppStateKvService::get(&conn, MANIFEST_KEY)
                 .expect("read manifest")
                 .expect("manifest stored"),
         )
         .expect("parse manifest");
         assert_eq!(stored.windows.len(), 1);
         assert_eq!(stored.windows[0].label, manifest.windows[0].label);
-    }
-
-    #[test]
-    fn test_sibling_close_vs_full_exit_restore() {
-        let service = WindowCoordinatorService::new();
-        let kv = AppStateKvService::new();
-        let conn = connection();
-        add_window(&service, "workbench-a", 1);
-        add_window(&service, "workbench-b", 2);
-        kv.put(&conn, "workbench:workbench-a", "{}").unwrap();
-        kv.put(&conn, "workbench:workbench-b", "{}").unwrap();
-
-        if service.destroy_discards_snapshot() {
-            service.remove_window("workbench-a");
-            kv.delete(&conn, "workbench:workbench-a").unwrap();
-        }
-        assert_eq!(
-            service
-                .current_manifest()
-                .windows
-                .iter()
-                .map(|entry| entry.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["workbench-b"]
-        );
-        assert!(kv.get(&conn, "workbench:workbench-a").unwrap().is_none());
-
-        add_window(&service, "workbench-a", 1);
-        kv.put(&conn, "workbench:workbench-a", "{}").unwrap();
-        service.set_exit_requested(true);
-        if service.destroy_discards_snapshot() {
-            service.remove_window("workbench-a");
-            kv.delete(&conn, "workbench:workbench-a").unwrap();
-        }
-        assert_eq!(service.current_manifest().windows.len(), 2);
-        assert!(kv.get(&conn, "workbench:workbench-a").unwrap().is_some());
-        assert!(kv.get(&conn, "workbench:workbench-b").unwrap().is_some());
     }
 
     #[test]
@@ -1952,7 +1941,7 @@ mod tests {
         add_window(&service, "workbench-b", 2);
         assert!(service.destroy_discards_snapshot());
 
-        service.set_exit_requested(true);
+        service.request_exit();
         assert!(!service.destroy_discards_snapshot());
     }
 
@@ -1963,9 +1952,10 @@ mod tests {
         add_window(&service, "workbench-b", 2);
         assert!(!service.destroy_detaches_runs());
 
-        service.set_exit_requested(true);
+        service.request_exit();
         service.remove_window("workbench-a");
         assert!(service.destroy_detaches_runs());
+        assert!(!service.owner_closed("workbench-a"));
     }
 
     #[test]
@@ -1973,11 +1963,14 @@ mod tests {
         let service = WindowCoordinatorService::new();
         add_window(&service, "workbench-a", 1);
         add_window(&service, "workbench-b", 2);
+        assert!(!service.owner_closed("workbench-a"));
         service.remove_window("workbench-a");
         assert!(!service.destroy_detaches_runs());
+        assert!(service.owner_closed("workbench-a"));
 
         service.remove_window("workbench-b");
         assert!(service.destroy_detaches_runs());
+        assert!(!service.owner_closed("workbench-b"));
     }
 
     #[test]
@@ -1999,12 +1992,6 @@ mod tests {
 
         assert!(bounds_intersect_rect(&visible, &position, &size));
         assert!(!bounds_intersect_rect(&offscreen, &position, &size));
-        assert!(Some(visible.clone())
-            .filter(|bounds| bounds_intersect_rect(bounds, &position, &size))
-            .is_some());
-        assert!(Some(offscreen)
-            .filter(|bounds| bounds_intersect_rect(bounds, &position, &size))
-            .is_none());
     }
 
     #[test]

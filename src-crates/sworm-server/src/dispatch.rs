@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Weak},
 };
 use sworm_core::services::folders::resolve_folder;
-use sworm_core::Host;
+use sworm_core::{errors::ApiError, Host};
 use sworm_protocol::{
     rpc::{Reply, Request, Response, RunStatus, WireError, MAX_WHOLE_FILE_BYTES},
     session::SessionStartInfo,
@@ -209,6 +209,15 @@ impl ServerContext {
         Ok(())
     }
 
+    async fn publish_if_live(&self, host: &Arc<Host>, run_id: &str) -> Result<(), WireError> {
+        let host = Arc::clone(host);
+        let id = run_id.to_owned();
+        let live = tokio::task::spawn_blocking(move || host.pty.run_state(&id).is_some())
+            .await
+            .map_err(ApiError::from)?;
+        self.publish_run(run_id, live).await
+    }
+
     async fn invalidate_run(&self, run_id: &str) -> Result<(), WireError> {
         self.publish_run(run_id, false).await
     }
@@ -366,22 +375,13 @@ macro_rules! dispatch_operation {
     (#[route($route:ident)] GitWatch => $($rest:tt)*) => {};
     (#[route($route:ident)] SessionStart => $($rest:tt)*) => {};
     (#[route($route:ident)] TasksStart => $($rest:tt)*) => {};
-    (#[route($route:ident)] SessionStop => $($rest:tt)*) => {};
-    (#[route($route:ident)] TasksStop => $($rest:tt)*) => {};
-    (#[route($route:ident)] RunStatus => $($rest:tt)*) => {};
     (#[route($route:ident)] LspStart => $($rest:tt)*) => {};
-    (#[route($route:ident)] Pair => $($rest:tt)*) => {};
     // The manifest and registered snapshots belong to the workbench registry.
     (#[route($route:ident)] AppStateGet => $($rest:tt)*) => {};
     (#[route($route:ident)] AppStatePut => $($rest:tt)*) => {};
     (#[route($route:ident)] AppStateDelete => $($rest:tt)*) => {};
-    // Server registry operations; the Host has no workbench methods.
-    (#[route($route:ident)] WorkbenchList => $($rest:tt)*) => {};
-    (#[route($route:ident)] WorkbenchClose => $($rest:tt)*) => {};
-    (#[route($route:ident)] WorkbenchAttach => $($rest:tt)*) => {};
-    (#[route($route:ident)] WorkbenchDetach => $($rest:tt)*) => {};
-    (#[route($route:ident)] WorkbenchRecover => $($rest:tt)*) => {};
-    (#[route($route:ident)] WorkbenchSave => $($rest:tt)*) => {};
+    (#[route(connection)] $($rest:tt)*) => {};
+    (#[route(run)] $($rest:tt)*) => {};
     (
         #[route(server)]
         SettingsPatchGlobalSection => $method:ident(
@@ -390,7 +390,7 @@ macro_rules! dispatch_operation {
     ) => {
         async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
             reject_native_section(&$input.section)?;
-            self.host.$method($input).await.map_err(Into::into)
+            self.on_host(move |host| host.$method($input)).await
         }
     };
     (
@@ -401,7 +401,7 @@ macro_rules! dispatch_operation {
     ) => {
         /// The daemon is the server: its own global settings are the target.
         async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
-            self.host.$method($($argument),*).await.map_err(Into::into)
+            self.on_host(move |host| host.$method($($argument),*)).await
         }
     };
     // Session-keyed ops answer only to the connection holding that session's
@@ -418,32 +418,7 @@ macro_rules! dispatch_operation {
                 Some(folder) => Some(self.claim(folder, "folder_path").await?),
                 None => None,
             };
-            self.host.$method($folder_path).await.map_err(Into::into)
-        }
-    };
-    (
-        #[route(input_folder_path)]
-        $variant:ident => $method:ident(
-            $input:ident: $input_type:ty $(,)?
-        ) -> $return_type:ty;
-    ) => {
-        async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
-            let _folder = match $input.folder_path.as_deref() {
-                Some(folder) => Some(self.claim(folder, "folder_path").await?),
-                None => None,
-            };
-            self.host.$method($input).await.map_err(Into::into)
-        }
-    };
-    (
-        #[route(input_path)]
-        $variant:ident => $method:ident(
-            $input:ident: $input_type:ty $(,)?
-        ) -> $return_type:ty;
-    ) => {
-        async fn $method(&self, $input: $input_type) -> Result<$return_type, WireError> {
-            let _folder = self.claim(&$input.folder_path, "folder_path").await?;
-            self.host.$method($input).await.map_err(Into::into)
+            self.on_host(move |host| host.$method($folder_path)).await
         }
     };
     (
@@ -453,7 +428,7 @@ macro_rules! dispatch_operation {
         ) -> $return_type:ty;
     ) => {
         async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
-            self.host.$method($($argument),*).await.map_err(Into::into)
+            self.on_host(move |host| host.$method($($argument),*)).await
         }
     };
     (
@@ -464,7 +439,7 @@ macro_rules! dispatch_operation {
     ) => {
         async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
             let _folder = self.claim(&$route, stringify!($route)).await?;
-            self.host.$method($($argument),*).await.map_err(Into::into)
+            self.on_host(move |host| host.$method($($argument),*)).await
         }
     };
 }
@@ -604,6 +579,16 @@ pub(crate) async fn claim_file_read(
 }
 
 impl DispatchRuntime<'_> {
+    async fn on_host<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&Arc<Host>) -> Result<T, ApiError> + Send + 'static,
+    ) -> Result<T, WireError> {
+        let host = Arc::clone(self.host);
+        Ok(tokio::task::spawn_blocking(move || op(&host))
+            .await
+            .map_err(ApiError::from)??)
+    }
+
     async fn claim(&self, path: &str, field: &str) -> Result<FolderOperation, WireError> {
         require_absolute(path, field)?;
         let folder = self
@@ -696,17 +681,17 @@ impl DispatchRuntime<'_> {
         path: String,
     ) -> Result<sworm_protocol::folder::PathRoot, WireError> {
         require_absolute(&path, "path")?;
-        self.host.folder_path_root(path).await.map_err(Into::into)
+        self.on_host(move |host| host.folder_path_root(path)).await
     }
 
     async fn app_runtime_info(&self) -> Result<sworm_protocol::app::AppRuntimeInfo, WireError> {
-        self.host
-            .app_runtime_info(
+        self.on_host(move |host| {
+            host.app_runtime_info(
                 env!("CARGO_PKG_NAME").into(),
                 env!("CARGO_PKG_VERSION").into(),
             )
-            .await
-            .map_err(Into::into)
+        })
+        .await
     }
 
     /// Writes mirror the read ceiling: a file too large to read back is not
@@ -726,10 +711,10 @@ impl DispatchRuntime<'_> {
             });
         }
         let _folder = self.claim(&project_path, "project_path").await?;
-        self.host
-            .file_write(project_path, file_path, content, expected_version)
-            .await
-            .map_err(Into::into)
+        self.on_host(move |host| {
+            host.file_write(project_path, file_path, content, expected_version)
+        })
+        .await
     }
 
     /// Browsing is not ownership: the folder switcher walks directories the
@@ -740,10 +725,8 @@ impl DispatchRuntime<'_> {
         show_hidden: bool,
     ) -> Result<Vec<sworm_protocol::folder::FolderEntry>, WireError> {
         require_absolute(&path, "path")?;
-        self.host
-            .folder_list_entries(path, show_hidden)
+        self.on_host(move |host| host.folder_list_entries(path, show_hidden))
             .await
-            .map_err(Into::into)
     }
 
     async fn files_watch_dirs(
@@ -753,19 +736,15 @@ impl DispatchRuntime<'_> {
     ) -> Result<(), WireError> {
         let _folder = self.claim(&project_path, "project_path").await?;
         let subscriber = self.session.lock().await.subscriber_id.clone();
-        self.host
-            .files_watch_dirs(subscriber, project_path, dirs)
+        self.on_host(move |host| host.files_watch_dirs(subscriber, project_path, dirs))
             .await
-            .map_err(Into::into)
     }
 
     async fn git_watch(&self, project_path: String) -> Result<(), WireError> {
         let _folder = self.claim(&project_path, "project_path").await?;
         // The shared folder guard fences publication against release.
-        self.host
-            .git_watch(project_path, |_| true)
+        self.on_host(move |host| host.git_watch(project_path, |_| true))
             .await
-            .map_err(Into::into)
     }
 
     async fn session_start(
@@ -787,9 +766,11 @@ impl DispatchRuntime<'_> {
         tokio::spawn(async move {
             let _folder = folder;
             let _operation = context.run_operation(&run_id).await;
-            let info = host
-                .session_start(
-                    run_id.clone(),
+            let id = run_id.clone();
+            let start_host = Arc::clone(&host);
+            let info = tokio::task::spawn_blocking(move || {
+                start_host.session_start(
+                    id,
                     folder_path,
                     provider_id,
                     resume_token,
@@ -798,14 +779,10 @@ impl DispatchRuntime<'_> {
                     None,
                     owner,
                 )
-                .await
-                .map_err(WireError::from)?;
-            let state_host = Arc::clone(&host);
-            let id = run_id.clone();
-            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
-                .await
-                .map_err(run_operation_join)?;
-            context.publish_run(&run_id, live).await?;
+            })
+            .await
+            .map_err(ApiError::from)??;
+            context.publish_if_live(&host, &run_id).await?;
             Ok(info)
         })
         .await
@@ -829,25 +806,24 @@ impl DispatchRuntime<'_> {
         tokio::spawn(async move {
             let _folder = folder;
             let _operation = context.run_operation(&run_id).await;
-            host.tasks_start(
-                run_id.clone(),
-                folder_path,
-                task_id,
-                active_file_path,
-                cols,
-                rows,
-                None,
-                owner,
-                attach_only,
-            )
-            .await
-            .map_err(WireError::from)?;
-            let state_host = Arc::clone(&host);
             let id = run_id.clone();
-            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
-                .await
-                .map_err(run_operation_join)?;
-            context.publish_run(&run_id, live).await
+            let start_host = Arc::clone(&host);
+            tokio::task::spawn_blocking(move || {
+                start_host.tasks_start(
+                    id,
+                    folder_path,
+                    task_id,
+                    active_file_path,
+                    cols,
+                    rows,
+                    None,
+                    owner,
+                    attach_only,
+                )
+            })
+            .await
+            .map_err(ApiError::from)??;
+            context.publish_if_live(&host, &run_id).await
         })
         .await
         .map_err(run_operation_join)?
@@ -860,9 +836,10 @@ impl DispatchRuntime<'_> {
         tokio::spawn(async move {
             let _operation = context.run_operation(&run_id).await;
             check_run_owner(&host, owner, &run_id).await?;
-            host.session_stop(run_id.clone())
+            let id = run_id.clone();
+            tokio::task::spawn_blocking(move || host.session_stop(id))
                 .await
-                .map_err(WireError::from)?;
+                .map_err(ApiError::from)??;
             context.invalidate_run(&run_id).await
         })
         .await
@@ -876,9 +853,10 @@ impl DispatchRuntime<'_> {
         tokio::spawn(async move {
             let _operation = context.run_operation(&run_id).await;
             check_run_owner(&host, owner, &run_id).await?;
-            host.tasks_stop(run_id.clone())
+            let id = run_id.clone();
+            tokio::task::spawn_blocking(move || host.tasks_stop(id))
                 .await
-                .map_err(WireError::from)?;
+                .map_err(ApiError::from)??;
             context.invalidate_run(&run_id).await
         })
         .await
@@ -888,11 +866,7 @@ impl DispatchRuntime<'_> {
     async fn run_status(&self, run_id: String) -> Result<RunStatus, WireError> {
         let _operation = self.context.run_operation(&run_id).await;
         check_run_owner(self.host, self.run_owner(), &run_id).await?;
-        let host = Arc::clone(self.host);
-        tokio::task::spawn_blocking(move || host.run_status(&run_id))
-            .await
-            .map_err(run_operation_join)?
-            .map_err(Into::into)
+        self.on_host(move |host| host.run_status(&run_id)).await
     }
     fn run_owner(&self) -> Option<String> {
         self.scope.run_owner().map(str::to_owned)
@@ -940,23 +914,22 @@ impl DispatchRuntime<'_> {
 
     async fn app_state_get(&self, key: String) -> Result<Option<String>, WireError> {
         self.app_state_scope(&key, false).await?;
-        self.host.app_state_get(key).await.map_err(Into::into)
+        self.on_host(move |host| host.app_state_get(key)).await
     }
 
     async fn app_state_put(&self, key: String, value_json: String) -> Result<(), WireError> {
         match self.app_state_scope(&key, false).await? {
             Some(id) => workbenches::put_snapshot(self.host, id, value_json).await,
-            None => self
-                .host
-                .app_state_put(key, value_json)
-                .await
-                .map_err(Into::into),
+            None => {
+                self.on_host(move |host| host.app_state_put(key, value_json))
+                    .await
+            }
         }
     }
 
     async fn app_state_delete(&self, key: String) -> Result<(), WireError> {
         self.app_state_scope(&key, true).await?;
-        self.host.app_state_delete(key).await.map_err(Into::into)
+        self.on_host(move |host| host.app_state_delete(key)).await
     }
 
     async fn workbench_list(&self) -> Result<Vec<sworm_protocol::rpc::WorkbenchInfo>, WireError> {
@@ -1125,12 +1098,12 @@ impl DispatchRuntime<'_> {
         }
         let (attempt, leases) = {
             let mut session = self.session.lock().await;
-            let attempt = session
+            let Some(attempt) = session
                 .attach_attempts
                 .get(&id)
                 .filter(|attempt| attempt.attachment_id == attachment_id)
-                .cloned();
-            if attempt.is_none() {
+                .cloned()
+            else {
                 if session
                     .cancelled_attachments
                     .get(&id)
@@ -1148,11 +1121,8 @@ impl DispatchRuntime<'_> {
                     .insert(attachment_id);
                 session.cancelled_attachment_count += 1;
                 return Ok(None);
-            }
+            };
             (attempt, session.leases.clone())
-        };
-        let Some(attempt) = attempt else {
-            return Ok(None);
         };
         let mut finished = attempt.finished.subscribe();
         let _ = finished.wait_for(|done| *done).await;
@@ -1234,20 +1204,22 @@ impl DispatchRuntime<'_> {
                 message: format!("no LSP stream is open for session {session_id}"),
             }
         })?;
-        self.host
-            .lsp_start(
+        let id = session_id.clone();
+        self.on_host(move |host| {
+            host.lsp_start(
                 Some(owner),
-                session_id.clone(),
+                id,
                 folder_path,
                 server_definition_id,
                 root_path,
                 lease.events,
             )
-            .await?;
+        })
+        .await?;
         // The stream can close while the server is starting; a process whose
         // lease is gone answers to nobody, so stop it instead of leaking it.
         if !self.context.lsp.is_current(&session_id, lease.token) {
-            let _ = self.host.lsp_stop(session_id).await;
+            let _ = self.on_host(move |host| host.lsp_stop(session_id)).await;
             return Err(WireError::InvalidArgument {
                 message: "LSP stream closed before its server started".to_owned(),
             });
@@ -1264,7 +1236,7 @@ impl DispatchRuntime<'_> {
                 message: format!("no LSP stream is open for session {session_id}"),
             });
         }
-        self.host.lsp_stop(session_id).await.map_err(Into::into)
+        self.on_host(move |host| host.lsp_stop(session_id)).await
     }
 
     async fn pair(&self, token: String, name: String) -> Result<(), WireError> {
@@ -1342,7 +1314,7 @@ pub(crate) fn unauthorized(message: &str) -> WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::future::Future;
+    use crate::test_support::{isolated, pending};
 
     #[tokio::test]
     async fn canceled_folder_waiter_releases_its_gate() {
@@ -1355,12 +1327,7 @@ mod tests {
             operation.write().await;
             operation
         });
-        assert!(
-            std::future::poll_fn(|cx| {
-                std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())
-            })
-            .await
-        );
+        assert!(pending(&mut waiting).await);
         drop(held);
         drop(waiting);
         assert!(context.folders.lock().is_empty());
@@ -1371,12 +1338,7 @@ mod tests {
         let context = ServerContext::new(PathBuf::new(), None, events);
         let held = context.run_operation("same").await;
         let mut waiting = Box::pin(context.run_operation("same"));
-        assert!(
-            std::future::poll_fn(|cx| {
-                std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())
-            })
-            .await
-        );
+        assert!(pending(&mut waiting).await);
         drop(held);
         drop(waiting);
         assert!(context.runs.lock().gates.is_empty());
@@ -1404,12 +1366,7 @@ mod tests {
         });
         // Poll once while Start holds the gate: Stop is now an actual queued
         // waiter, not merely an RPC sent on a different QUIC stream.
-        assert!(
-            std::future::poll_fn(|cx| {
-                std::task::Poll::Ready(stop.as_mut().poll(cx).is_pending())
-            })
-            .await
-        );
+        assert!(pending(&mut stop).await);
         release.send(()).unwrap();
         start.await.unwrap();
         stop.await;
@@ -1437,21 +1394,7 @@ mod tests {
 
     #[test]
     fn attach_recovery_is_connection_bound_and_supersession_safe() {
-        if std::env::var_os("SWORM_ATTACH_RECOVERY_CHILD").is_none() {
-            let home = tempfile::tempdir().unwrap();
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("--exact")
-                .arg("dispatch::tests::attach_recovery_is_connection_bound_and_supersession_safe")
-                .arg("--nocapture")
-                .env("SWORM_ATTACH_RECOVERY_CHILD", "1")
-                .env("HOME", home.path())
-                .env("XDG_CONFIG_HOME", home.path().join("config"))
-                .env("XDG_DATA_HOME", home.path().join("data"))
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .status()
-                .unwrap();
-            assert!(status.success(), "isolated attach recovery test failed");
+        if !isolated("dispatch::tests::attach_recovery_is_connection_bound_and_supersession_safe") {
             return;
         }
         tokio::runtime::Builder::new_multi_thread()
@@ -1460,7 +1403,6 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                use std::{future::Future, task::Poll};
                 use sworm_protocol::rpc::{AttachMode, WorkbenchAttached};
                 let scratch = tempfile::tempdir().unwrap();
                 let host = Arc::new(
@@ -1493,18 +1435,10 @@ mod tests {
                     "desktop".into(),
                 );
                 tokio::pin!(attach);
-                assert!(
-                    std::future::poll_fn(|cx| Poll::Ready(attach.as_mut().poll(cx)))
-                        .await
-                        .is_pending()
-                );
+                assert!(pending(&mut attach).await);
                 let recover = runtime.workbench_recover(id.clone(), "first".into());
                 tokio::pin!(recover);
-                assert!(
-                    std::future::poll_fn(|cx| Poll::Ready(recover.as_mut().poll(cx)))
-                        .await
-                        .is_pending()
-                );
+                assert!(pending(&mut recover).await);
                 drop(blocked);
                 let (attached, recovered) = tokio::join!(&mut attach, &mut recover);
                 let attached = attached.unwrap();
@@ -1611,11 +1545,7 @@ mod tests {
                 }
                 let lost = runtime.workbench_recover(id.clone(), "superseded".into());
                 tokio::pin!(lost);
-                assert!(
-                    std::future::poll_fn(|cx| Poll::Ready(lost.as_mut().poll(cx)))
-                        .await
-                        .is_pending()
-                );
+                assert!(pending(&mut lost).await);
                 let second = runtime.workbench_attach(
                     id.clone(),
                     "winner".into(),
@@ -1623,11 +1553,7 @@ mod tests {
                     "desktop".into(),
                 );
                 tokio::pin!(second);
-                assert!(
-                    std::future::poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx)))
-                        .await
-                        .is_pending()
-                );
+                assert!(pending(&mut second).await);
                 assert_eq!(lost.await.unwrap(), None);
                 drop(tracking);
                 let (first, second) = tokio::join!(&mut first, &mut second);
@@ -1794,21 +1720,7 @@ mod tests {
     // other concurrently running unit tests.
     #[test]
     fn folder_ownership_and_concurrent_rearm() {
-        if std::env::var_os("SWORM_DISPATCH_OWNERSHIP_CHILD").is_none() {
-            let home = tempfile::tempdir().unwrap();
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("--exact")
-                .arg("dispatch::tests::folder_ownership_and_concurrent_rearm")
-                .arg("--nocapture")
-                .env("SWORM_DISPATCH_OWNERSHIP_CHILD", "1")
-                .env("HOME", home.path())
-                .env("XDG_CONFIG_HOME", home.path().join("config"))
-                .env("XDG_DATA_HOME", home.path().join("data"))
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .status()
-                .unwrap();
-            assert!(status.success(), "isolated folder ownership test failed");
+        if !isolated("dispatch::tests::folder_ownership_and_concurrent_rearm") {
             return;
         }
         let scratch = tempfile::tempdir().unwrap();
@@ -2080,19 +1992,14 @@ mod tests {
                     .unwrap(),
                 );
                 let mut releasing = Box::pin(release(&b, &path));
-                assert!(
-                    std::future::poll_fn(|cx| {
-                        std::task::Poll::Ready(releasing.as_mut().poll(cx).is_pending())
-                    })
-                    .await
-                );
+                assert!(pending(&mut releasing).await);
                 let other = scratch.path().join("other");
                 std::fs::create_dir(&other).unwrap();
                 let other_path = other.to_string_lossy().into_owned();
                 tokio::time::timeout(std::time::Duration::from_secs(2), claim(&b, &other_path))
                     .await
                     .unwrap();
-                host.tasks_list(path.clone()).await.unwrap();
+                host.tasks_list(path.clone()).unwrap();
                 drop(publication);
                 tokio::time::timeout(std::time::Duration::from_secs(2), releasing)
                     .await

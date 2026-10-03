@@ -37,9 +37,6 @@ const ENV_ALLOWLIST: &[&str] = &[
 pub struct EnvironmentService {
     /// The user's login shell (from $SHELL)
     pub detected_shell: String,
-    /// Merged PATH: login-shell PATH preferred, fallback to the PATH
-    /// inherited by the host process
-    pub merged_path: String,
     /// Merged environment for child processes
     pub child_env: HashMap<String, String>,
 }
@@ -79,12 +76,13 @@ impl EnvironmentService {
         // Build the allowlisted child environment
         let mut child_env = HashMap::new();
         for &key in ENV_ALLOWLIST {
-            if key == "PATH" {
-                child_env.insert("PATH".to_string(), merged_path.clone());
-            } else if let Ok(val) = std::env::var(key) {
-                child_env.insert(key.to_string(), val);
+            if key != "PATH" {
+                if let Ok(val) = std::env::var(key) {
+                    child_env.insert(key.to_string(), val);
+                }
             }
         }
+        child_env.insert("PATH".to_string(), merged_path);
 
         // Ensure TERM is set
         child_env
@@ -103,9 +101,37 @@ impl EnvironmentService {
 
         Self {
             detected_shell,
-            merged_path,
             child_env,
         }
+    }
+
+    /// Login-shell PATH preferred, falling back to the host process PATH.
+    pub fn path(&self) -> &str {
+        &self.child_env["PATH"]
+    }
+
+    /// Overlay Nix tools while preserving host session integration and credentials.
+    pub fn with_nix(&self, nix: Option<&HashMap<String, String>>) -> HashMap<String, String> {
+        let mut merged = self.child_env.clone();
+        let Some(nix) = nix else {
+            return merged;
+        };
+
+        for (key, value) in nix {
+            if key == "PATH" {
+                merged.insert(key.clone(), merge_paths(value, self.path()));
+            } else if !ENV_ALLOWLIST.contains(&key.as_str()) {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+
+        // NixOS shell init re-sources set-environment, replacing PATH, unless
+        // this is set. Session-launched hosts pass it through `nix develop`; a
+        // systemd daemon has none, so its fish children would drop the devshell.
+        merged
+            .entry("__NIXOS_SET_ENVIRONMENT_DONE".to_string())
+            .or_insert_with(|| "1".to_string());
+        merged
     }
 }
 
@@ -175,18 +201,13 @@ fn probe_shell_path(shell: &str) -> (Option<String>, bool) {
 
 /// Merge two PATH strings, preferring entries from `primary` but
 /// appending unique entries from `secondary`.
-pub(crate) fn merge_paths(primary: &str, secondary: &str) -> String {
+fn merge_paths(primary: &str, secondary: &str) -> String {
     let mut seen = std::collections::HashSet::new();
     let mut parts = Vec::new();
 
-    for entry in primary.split(':') {
-        if !entry.is_empty() && seen.insert(entry.to_string()) {
-            parts.push(entry.to_string());
-        }
-    }
-    for entry in secondary.split(':') {
-        if !entry.is_empty() && seen.insert(entry.to_string()) {
-            parts.push(entry.to_string());
+    for entry in primary.split(':').chain(secondary.split(':')) {
+        if !entry.is_empty() && seen.insert(entry) {
+            parts.push(entry);
         }
     }
 
@@ -196,6 +217,76 @@ pub(crate) fn merge_paths(primary: &str, secondary: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_merge_env_host_authoritative_preserved() {
+        let mut child_env = HashMap::new();
+        let mut nix = HashMap::new();
+        for &key in ENV_ALLOWLIST {
+            if key != "PATH" {
+                child_env.insert(key.to_string(), format!("host-{key}"));
+                nix.insert(key.to_string(), format!("nix-{key}"));
+            }
+        }
+        child_env.insert("PATH".to_string(), "/usr/bin".to_string());
+        child_env.insert("CC".to_string(), "gcc".to_string());
+        nix.insert("CC".to_string(), "/nix/store/cc".to_string());
+        nix.insert("NEW_VAR".to_string(), "from-nix".to_string());
+        let env = EnvironmentService {
+            detected_shell: "/bin/sh".to_string(),
+            child_env,
+        };
+
+        let merged = env.with_nix(Some(&nix));
+        for &key in ENV_ALLOWLIST {
+            if key != "PATH" {
+                assert_eq!(merged.get(key), env.child_env.get(key), "{key}");
+            }
+        }
+        assert_eq!(merged["PATH"], "/usr/bin");
+        assert_eq!(merged["CC"], "/nix/store/cc");
+        assert_eq!(merged["NEW_VAR"], "from-nix");
+        assert_eq!(merged["__NIXOS_SET_ENVIRONMENT_DONE"], "1");
+    }
+
+    #[test]
+    fn test_merge_env_path_prepended() {
+        let env = EnvironmentService {
+            detected_shell: "/bin/sh".to_string(),
+            child_env: HashMap::from([("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string())]),
+        };
+        let nix = HashMap::from([(
+            "PATH".to_string(),
+            "/nix/store/a:/nix/store/b:/usr/bin".to_string(),
+        )]);
+
+        let merged = env.with_nix(Some(&nix));
+        assert_eq!(
+            merged["PATH"],
+            "/nix/store/a:/nix/store/b:/usr/bin:/usr/local/bin"
+        );
+        assert_eq!(env.path(), "/usr/bin:/usr/local/bin");
+    }
+
+    #[test]
+    fn nix_cannot_supply_missing_host_authoritative_vars() {
+        let env = EnvironmentService {
+            detected_shell: "/bin/sh".to_string(),
+            child_env: HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+        };
+        let nix = ENV_ALLOWLIST
+            .iter()
+            .filter(|&&key| key != "PATH")
+            .map(|&key| (key.to_string(), "from-nix".to_string()))
+            .collect();
+        let merged = env.with_nix(Some(&nix));
+        for &key in ENV_ALLOWLIST {
+            if key != "PATH" {
+                assert!(!merged.contains_key(key), "{key}");
+            }
+        }
+        assert_eq!(env.with_nix(None), env.child_env);
+    }
 
     #[test]
     fn test_merge_paths_deduplicates() {

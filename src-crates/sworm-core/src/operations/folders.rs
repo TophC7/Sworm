@@ -11,7 +11,7 @@ const RECENT_FOLDERS_KEY: &str = "recent_folders";
 
 impl Host {
     /// Canonicalize a folder path and return its display name.
-    pub async fn folder_resolve(&self, path: String) -> Result<FolderInfo, ApiError> {
+    pub fn folder_resolve(&self, path: String) -> Result<FolderInfo, ApiError> {
         let folder = resolve_folder(&path)?;
         Ok(FolderInfo {
             name: folder_name(&folder),
@@ -20,16 +20,16 @@ impl Host {
     }
 
     /// The path-root anchor is for browsing, not folder ownership.
-    pub async fn folder_path_root(&self, path: String) -> Result<PathRoot, ApiError> {
+    pub fn folder_path_root(&self, path: String) -> Result<PathRoot, ApiError> {
         Ok(find_path_root(&resolve_folder(&path)?))
     }
 
-    pub async fn recent_folders_list(&self) -> Result<Vec<RecentFolder>, ApiError> {
+    pub fn recent_folders_list(&self) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.read();
         read_recent_folders(db.conn())
     }
 
-    pub async fn recent_folders_touch(&self, path: String) -> Result<Vec<RecentFolder>, ApiError> {
+    pub fn recent_folders_touch(&self, path: String) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.write();
         let mut folders = read_recent_folders(db.conn())?;
         folders.retain(|folder| folder.path != path);
@@ -42,27 +42,22 @@ impl Host {
         );
         folders.truncate(12);
         save_recent_folders(db.conn(), &folders)?;
-        (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
-            .map_err(ApiError::Internal)?;
+        self.emit(HostEvent::RecentFoldersChanged(folders.clone()));
         Ok(folders)
     }
 
-    pub async fn recent_folders_remove(
-        &self,
-        paths: Vec<String>,
-    ) -> Result<Vec<RecentFolder>, ApiError> {
+    pub fn recent_folders_remove(&self, paths: Vec<String>) -> Result<Vec<RecentFolder>, ApiError> {
         let db = self.db.write();
         let mut folders = read_recent_folders(db.conn())?;
         folders.retain(|folder| !paths.contains(&folder.path));
         save_recent_folders(db.conn(), &folders)?;
-        (self.events)(HostEvent::RecentFoldersChanged(folders.clone()))
-            .map_err(ApiError::Internal)?;
+        self.emit(HostEvent::RecentFoldersChanged(folders.clone()));
         Ok(folders)
     }
 
     /// Immediate children of a canonicalized directory; directories first, then
     /// case-insensitive by name.
-    pub async fn folder_list_entries(
+    pub fn folder_list_entries(
         &self,
         path: String,
         show_hidden: bool,
@@ -72,8 +67,7 @@ impl Host {
 }
 
 fn read_recent_folders(conn: &Connection) -> Result<Vec<RecentFolder>, ApiError> {
-    AppStateKvService::new()
-        .get(conn, RECENT_FOLDERS_KEY)
+    AppStateKvService::get(conn, RECENT_FOLDERS_KEY)
         .map_err(ApiError::Database)?
         .map(|json| {
             serde_json::from_str(&json).map_err(|error| ApiError::Database(error.to_string()))
@@ -85,9 +79,7 @@ fn read_recent_folders(conn: &Connection) -> Result<Vec<RecentFolder>, ApiError>
 fn save_recent_folders(conn: &Connection, folders: &[RecentFolder]) -> Result<(), ApiError> {
     let json =
         serde_json::to_string(folders).map_err(|error| ApiError::Internal(error.to_string()))?;
-    AppStateKvService::new()
-        .put(conn, RECENT_FOLDERS_KEY, &json)
-        .map_err(ApiError::Database)
+    AppStateKvService::put(conn, RECENT_FOLDERS_KEY, &json).map_err(ApiError::Database)
 }
 
 fn list_entries(path: &str, show_hidden: bool) -> Result<Vec<FolderEntry>, ApiError> {

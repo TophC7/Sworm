@@ -1,5 +1,7 @@
+mod common;
+
 use serde_json::json;
-use std::{collections::HashMap, fs, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use sworm_core::{errors::ApiError, Host};
 use sworm_lib::router::WorkspaceRouter;
 use sworm_protocol::settings::PatchSettingsSectionInput;
@@ -13,31 +15,31 @@ use tempfile::tempdir;
 async fn pending_stops_follow_remote_renames() -> anyhow::Result<()> {
     // This binary owns process-global XDG/HOME for its whole lifetime.
     let temporary = tempdir()?;
-    let home = temporary.path().join("home");
-    fs::create_dir_all(&home)?;
-    std::env::set_var("XDG_CONFIG_HOME", temporary.path().join("config-home"));
-    std::env::set_var("XDG_DATA_HOME", temporary.path().join("data-home"));
-    std::env::set_var("HOME", &home);
+    common::isolate(temporary.path())?;
 
     let fingerprint = Identity::load_or_generate(temporary.path(), "server")?.fingerprint();
     let host = Arc::new(Host::new(
         temporary.path().join("sworm.db"),
         Arc::new(|_| Ok(())),
     )?);
-    host.settings_patch_global_section(PatchSettingsSectionInput {
-        section: "remotes".into(),
-        value: json!({
-            "old": {
-                "address": "sworm-unreachable.invalid:7420",
-                "fingerprint": fingerprint.to_string(),
-            }
-        }),
-    })
-    .await?;
     let router = WorkspaceRouter::new(Arc::clone(&host));
+    router
+        .settings_patch_global_section(
+            None,
+            PatchSettingsSectionInput {
+                section: "remotes".into(),
+                value: json!({
+                    "old": {
+                        "address": "sworm-unreachable.invalid:7420",
+                        "fingerprint": fingerprint.to_string(),
+                    }
+                }),
+            },
+        )
+        .await?;
 
     router.queue_stop_for_test("old", "orphan-run");
-    router.change_remote_for_test("old", Some("new")).await?;
+    router.change_remote("old", Some("new")).await?;
     let expected = HashMap::from([("orphan-run".to_owned(), "new".to_owned())]);
     assert_eq!(router.pending_stops_for_test(), expected);
     assert_eq!(
@@ -46,7 +48,7 @@ async fn pending_stops_follow_remote_renames() -> anyhow::Result<()> {
         "the rename must reach the persisted stops"
     );
 
-    let removed = router.change_remote_for_test("new", None).await;
+    let removed = router.change_remote("new", None).await;
     assert!(
         matches!(removed, Err(ApiError::InvalidArgument(_))),
         "removing a remote with a pending stop must be refused, got {removed:?}"

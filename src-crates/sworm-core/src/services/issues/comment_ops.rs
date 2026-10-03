@@ -1,8 +1,10 @@
 //! Comment CRUD: add, list, update, delete.
 
 use super::queries::{append_event, ensure_issue_exists, list_comments_conn, next_id};
-use super::validators::{actor, validate_title, DEFAULT_ACTOR};
-use super::IssueService;
+use super::rows::row_to_comment;
+use super::validators::{actor, validate_non_empty, DEFAULT_ACTOR};
+use super::{db_error, IssueService};
+use crate::errors::ApiError;
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
@@ -15,22 +17,22 @@ impl IssueService {
         &self,
         project_path: &Path,
         input: IssueCommentCreateInput,
-    ) -> Result<IssueComment, String> {
-        validate_title(&input.body)?;
-        validate_title(&input.author)?;
+    ) -> Result<IssueComment, ApiError> {
+        validate_non_empty(&input.body)?;
+        validate_non_empty(&input.author)?;
         let actor = actor(input.actor.as_deref());
         let db = self.db(project_path)?;
         let mut conn = db.write();
         let tx = conn
             .transaction()
-            .map_err(|e| format!("Failed to start comment create tx: {}", e))?;
+            .map_err(db_error("Failed to start comment create tx"))?;
         ensure_issue_exists(&tx, &input.issue_id)?;
-        let id = next_id(&tx, "comment", "comment_prefix")?;
+        let id = next_id(&tx, "comment")?;
         let now = Utc::now().to_rfc3339();
         tx.execute(
             "INSERT INTO issue_comments(id, issue_id, author, body, created_by, updated_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?6)",
             params![id, input.issue_id, input.author, input.body, actor, now],
-        ).map_err(|e| format!("Failed to create comment: {}", e))?;
+        ).map_err(db_error("Failed to create comment"))?;
         append_event(
             &tx,
             actor,
@@ -41,12 +43,17 @@ impl IssueService {
             None,
         )?;
         tx.commit()
-            .map_err(|e| format!("Failed to commit comment create: {}", e))?;
-        drop(conn);
-        self.list_comments(project_path, &input.issue_id)?
-            .into_iter()
-            .find(|c| c.id == id)
-            .ok_or_else(|| format!("Comment missing after create: {}", id))
+            .map_err(db_error("Failed to commit comment create"))?;
+        Ok(IssueComment {
+            id,
+            issue_id: input.issue_id,
+            author: input.author,
+            body: input.body,
+            created_by: actor.to_string(),
+            updated_by: actor.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
     }
 
     /// All comments on an issue, ordered created-at ascending.
@@ -54,7 +61,7 @@ impl IssueService {
         &self,
         project_path: &Path,
         issue_id: &str,
-    ) -> Result<Vec<IssueComment>, String> {
+    ) -> Result<Vec<IssueComment>, ApiError> {
         let db = self.db(project_path)?;
         let conn = db.read();
         ensure_issue_exists(&conn, issue_id)?;
@@ -67,29 +74,29 @@ impl IssueService {
         project_path: &Path,
         comment_id: &str,
         input: IssueCommentUpdateInput,
-    ) -> Result<IssueComment, String> {
-        validate_title(&input.body)?;
+    ) -> Result<IssueComment, ApiError> {
+        validate_non_empty(&input.body)?;
         let actor = actor(input.actor.as_deref());
         let db = self.db(project_path)?;
         let mut conn = db.write();
         let tx = conn
             .transaction()
-            .map_err(|e| format!("Failed to start comment update tx: {}", e))?;
-        let issue_id: String = tx
+            .map_err(db_error("Failed to start comment update tx"))?;
+        let existing = tx
             .query_row(
-                "SELECT issue_id FROM issue_comments WHERE id = ?1",
+                "SELECT id, issue_id, author, body, created_by, updated_by, created_at, updated_at FROM issue_comments WHERE id = ?1",
                 params![comment_id],
-                |row| row.get(0),
+                row_to_comment,
             )
             .optional()
-            .map_err(|e| format!("Failed to load comment: {}", e))?
-            .ok_or_else(|| format!("Comment not found: {}", comment_id))?;
+            .map_err(db_error("Failed to load comment"))?
+            .ok_or_else(|| ApiError::NotFound(format!("Comment not found: {}", comment_id)))?;
         let now = Utc::now().to_rfc3339();
         tx.execute(
             "UPDATE issue_comments SET body = ?1, updated_by = ?2, updated_at = ?3 WHERE id = ?4",
             params![input.body, actor, now, comment_id],
         )
-        .map_err(|e| format!("Failed to update comment: {}", e))?;
+        .map_err(db_error("Failed to update comment"))?;
         append_event(
             &tx,
             actor,
@@ -100,21 +107,22 @@ impl IssueService {
             Some(json!({"updated": true}).to_string()),
         )?;
         tx.commit()
-            .map_err(|e| format!("Failed to commit comment update: {}", e))?;
-        drop(conn);
-        self.list_comments(project_path, &issue_id)?
-            .into_iter()
-            .find(|c| c.id == comment_id)
-            .ok_or_else(|| format!("Comment missing after update: {}", comment_id))
+            .map_err(db_error("Failed to commit comment update"))?;
+        Ok(IssueComment {
+            body: input.body,
+            updated_by: actor.to_string(),
+            updated_at: now,
+            ..existing
+        })
     }
 
     /// Hard-delete a comment.
-    pub fn delete_comment(&self, project_path: &Path, comment_id: &str) -> Result<(), String> {
+    pub fn delete_comment(&self, project_path: &Path, comment_id: &str) -> Result<(), ApiError> {
         let db = self.db(project_path)?;
         let mut conn = db.write();
         let tx = conn
             .transaction()
-            .map_err(|e| format!("Failed to start comment delete tx: {}", e))?;
+            .map_err(db_error("Failed to start comment delete tx"))?;
         let exists: Option<String> = tx
             .query_row(
                 "SELECT id FROM issue_comments WHERE id = ?1",
@@ -122,9 +130,12 @@ impl IssueService {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| format!("Failed to load comment: {}", e))?;
+            .map_err(db_error("Failed to load comment"))?;
         if exists.is_none() {
-            return Err(format!("Comment not found: {}", comment_id));
+            return Err(ApiError::NotFound(format!(
+                "Comment not found: {}",
+                comment_id
+            )));
         }
         append_event(
             &tx,
@@ -139,8 +150,8 @@ impl IssueService {
             "DELETE FROM issue_comments WHERE id = ?1",
             params![comment_id],
         )
-        .map_err(|e| format!("Failed to delete comment: {}", e))?;
+        .map_err(db_error("Failed to delete comment"))?;
         tx.commit()
-            .map_err(|e| format!("Failed to commit comment delete: {}", e))
+            .map_err(db_error("Failed to commit comment delete"))
     }
 }

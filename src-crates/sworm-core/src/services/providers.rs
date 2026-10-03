@@ -1,9 +1,31 @@
 use crate::services::folders::home_dir;
-use std::collections::{HashMap, HashSet};
+use crate::services::{codex_state::CodexStateReader, omp};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use sworm_protocol::provider::{ProviderConnectionStatus, ProviderId, ProviderStatus, ResumeMode};
+use sworm_protocol::provider::{ProviderConnectionStatus, ProviderId, ProviderStatus};
 use tracing::{info, warn};
+
+pub(crate) fn binary_override(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+pub fn resume_token_exists(provider: ProviderId, cwd: &str, token: &str) -> bool {
+    match provider {
+        ProviderId::ClaudeCode => claude_session_transcript_exists(cwd, token),
+        ProviderId::Codex => CodexStateReader::thread_exists(token, cwd).unwrap_or(false),
+        ProviderId::Omp => omp::session_exists(cwd, token),
+        ProviderId::Antigravity => antigravity_conversation_exists(token),
+        ProviderId::Terminal => false,
+    }
+}
+
+pub fn discovers_resume_token(provider: ProviderId) -> bool {
+    matches!(
+        provider,
+        ProviderId::Codex | ProviderId::Antigravity | ProviderId::Omp
+    )
+}
 
 /// Encode a working directory the same way Claude Code does for its
 /// `~/.claude/projects/<dir>/<uuid>.jsonl` transcript layout: every `/`
@@ -29,7 +51,7 @@ pub fn claude_transcript_path(cwd: &str, session_uuid: &str) -> Option<PathBuf> 
 
 /// Whether a Claude Code session transcript already exists on disk.
 /// Used to choose between `--session-id` (new) and `--resume` (existing).
-pub fn claude_session_transcript_exists(cwd: &str, session_uuid: &str) -> bool {
+fn claude_session_transcript_exists(cwd: &str, session_uuid: &str) -> bool {
     claude_transcript_path(cwd, session_uuid)
         .map(|p| p.exists())
         .unwrap_or(false)
@@ -42,22 +64,20 @@ fn antigravity_dir() -> Option<PathBuf> {
 
 /// Whether an Antigravity conversation store exists for `id`.
 /// Used to choose between `--conversation <id>` and a fresh start.
-pub fn antigravity_conversation_exists(id: &str) -> bool {
+fn antigravity_conversation_exists(id: &str) -> bool {
     antigravity_dir()
         .map(|dir| dir.join("conversations").join(format!("{id}.db")).exists())
         .unwrap_or(false)
 }
 
 /// Visit `conversations/*.db` files whose birth time is at or after
-/// `since`, oldest first, excluding known ids. Returning `false` stops
-/// iteration.
+/// `since`, oldest first. Returning `false` stops iteration.
 ///
 /// Fails closed: any error from `read_dir`, an entry, its metadata or
 /// `created()` yields `None`, so a filesystem without birth times never
 /// binds a conversation rather than binding the wrong one.
 pub fn antigravity_visit_conversations_created_since(
     since: SystemTime,
-    exclude: &HashSet<String>,
     mut visit: impl FnMut(SystemTime, String) -> bool,
 ) -> Option<()> {
     let entries = std::fs::read_dir(antigravity_dir()?.join("conversations")).ok()?;
@@ -75,9 +95,7 @@ pub fn antigravity_visit_conversations_created_since(
         let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if !exclude.contains(id) {
-            candidates.push((created_at, id.to_string()));
-        }
+        candidates.push((created_at, id.to_string()));
     }
     candidates.sort_by_key(|(created_at, _)| *created_at);
     for (created_at, id) in candidates {
@@ -93,11 +111,7 @@ pub struct ProviderDef {
     pub id: ProviderId,
     pub label: &'static str,
     pub cli_command: &'static str,
-    pub detect_commands: &'static [&'static str],
-    pub version_args: &'static [&'static str],
     pub install_hint: &'static str,
-    pub resume_mode: ResumeMode,
-    pub default_args: &'static [&'static str],
 }
 
 const PROVIDERS: &[ProviderDef] = &[
@@ -105,60 +119,31 @@ const PROVIDERS: &[ProviderDef] = &[
         id: ProviderId::ClaudeCode,
         label: "Claude Code",
         cli_command: "claude",
-        detect_commands: &["claude"],
-        version_args: &["--version"],
         install_hint: "Install with: npm install -g @anthropic-ai/claude-code",
-        resume_mode: ResumeMode::SessionId {
-            session_flag: "--session-id",
-            continue_flags: &["--resume"],
-        },
-        default_args: &[],
     },
     ProviderDef {
         id: ProviderId::Codex,
         label: "Codex",
         cli_command: "codex",
-        detect_commands: &["codex"],
-        version_args: &["--version"],
         install_hint: "Install with: npm install -g @openai/codex",
-        resume_mode: ResumeMode::ThreadId {
-            resume_command: "resume",
-        },
-        default_args: &[],
     },
     ProviderDef {
         id: ProviderId::Omp,
         label: "OMP",
         cli_command: "omp",
-        detect_commands: &["omp"],
-        version_args: &["--version"],
         install_hint: "Install OMP from your Nix/home-manager configuration or package manager.",
-        resume_mode: ResumeMode::ThreadId {
-            resume_command: "--resume",
-        },
-        default_args: &[],
     },
     ProviderDef {
         id: ProviderId::Antigravity,
         label: "Antigravity",
         cli_command: "agy",
-        detect_commands: &["agy"],
-        version_args: &["--version"],
         install_hint: "Install the Antigravity CLI (agy).",
-        resume_mode: ResumeMode::ConversationId {
-            flag: "--conversation",
-        },
-        default_args: &[],
     },
     ProviderDef {
         id: ProviderId::Terminal,
         label: "Terminal",
         cli_command: "sh",
-        detect_commands: &[], // detected via $SHELL, not PATH lookup
-        version_args: &["--version"],
         install_hint: "",
-        resume_mode: ResumeMode::None,
-        default_args: &[],
     },
 ];
 
@@ -206,28 +191,21 @@ impl ProviderService {
             .find(|provider| provider.id.as_str() == provider_id)
     }
 
-    pub fn cli_command(provider_id: &str) -> Option<&'static str> {
-        Self::definition(provider_id).map(|provider| provider.cli_command)
-    }
     pub fn resolve_command_path(
         provider_id: &str,
         merged_path: &str,
-        binary_override: Option<&str>,
+        override_path: Option<&str>,
     ) -> Option<String> {
-        if let Some(override_path) = binary_override {
-            let trimmed = override_path.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+        if let Some(override_path) = binary_override(override_path) {
+            return Some(override_path.to_string());
         }
 
         let definition = Self::definition(provider_id)?;
-        definition
-            .detect_commands
-            .iter()
-            .find_map(|command| which::which_in(command, Some(merged_path), ".").ok())
-            .map(|path| path.to_string_lossy().to_string())
-            .or_else(|| Some(definition.cli_command.to_string()))
+        Some(
+            which::which_in(definition.cli_command, Some(merged_path), ".")
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| definition.cli_command.to_string()),
+        )
     }
 
     /// Build a provider-specific argument vector for session start/resume.
@@ -236,48 +214,22 @@ impl ProviderService {
         resume_token: Option<&str>,
         session_app_id: Option<&str>,
     ) -> Vec<String> {
-        let Some(definition) = Self::definition(provider_id) else {
-            return Vec::new();
+        let args = match (
+            Self::definition(provider_id).map(|def| def.id),
+            resume_token,
+            session_app_id,
+        ) {
+            (Some(ProviderId::ClaudeCode | ProviderId::Omp), Some(token), _) => {
+                Some(("--resume", token))
+            }
+            (Some(ProviderId::ClaudeCode), None, Some(app_id)) => Some(("--session-id", app_id)),
+            (Some(ProviderId::Codex), Some(token), _) => Some(("resume", token)),
+            (Some(ProviderId::Antigravity), Some(token), _) => Some(("--conversation", token)),
+            _ => None,
         };
-
-        let mut args = Vec::new();
-
-        match &definition.resume_mode {
-            ResumeMode::None => {}
-            ResumeMode::SessionId {
-                session_flag,
-                continue_flags,
-            } => {
-                if let Some(token) = resume_token {
-                    // Resume existing session: e.g. `claude --resume <uuid>`
-                    // The session ID is the VALUE of the resume flag, not --session-id
-                    if let Some(flag) = continue_flags.first() {
-                        args.push((*flag).to_string());
-                        args.push(token.to_string());
-                    }
-                } else if let Some(app_id) = session_app_id {
-                    // First start with a fresh ID: e.g. `claude --session-id <uuid>`
-                    args.push((*session_flag).to_string());
-                    args.push(app_id.to_string());
-                }
-            }
-            ResumeMode::ThreadId { resume_command } => {
-                if let Some(thread_id) = resume_token {
-                    args.push((*resume_command).to_string());
-                    args.push(thread_id.to_string());
-                }
-            }
-            ResumeMode::ConversationId { flag } => {
-                if let Some(conversation_id) = resume_token {
-                    args.push((*flag).to_string());
-                    args.push(conversation_id.to_string());
-                }
-            }
-        }
-
-        args.extend(definition.default_args.iter().map(|arg| (*arg).to_string()));
-
-        args
+        args.map_or_else(Vec::new, |(flag, value)| {
+            vec![flag.to_string(), value.to_string()]
+        })
     }
 }
 
@@ -329,26 +281,19 @@ fn errored_provider_status(definition: &ProviderDef, message: &str) -> ProviderS
 fn detect_provider(
     definition: &ProviderDef,
     merged_path: &str,
-    binary_override: Option<&str>,
+    override_path: Option<&str>,
 ) -> ProviderStatus {
-    let resolved = if let Some(override_path) = binary_override {
-        let trimmed = override_path.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    } else {
-        definition
-            .detect_commands
-            .iter()
-            .find_map(|command| which::which_in(command, Some(merged_path), ".").ok())
-            .map(|path| path.to_string_lossy().to_string())
-    };
+    let resolved = binary_override(override_path)
+        .map(str::to_string)
+        .or_else(|| {
+            which::which_in(definition.cli_command, Some(merged_path), ".")
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        });
 
     if let Some(ref path) = resolved {
         match std::process::Command::new(path)
-            .args(definition.version_args)
+            .args(["--version"])
             .output()
         {
             Ok(output) if output.status.success() => {
@@ -423,6 +368,30 @@ fn detect_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn blank_override_detects_provider_on_path() {
+        let folder = std::env::temp_dir().join(format!("sworm-provider-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let binary = folder.join("claude");
+        std::os::unix::fs::symlink(which::which("bash").unwrap(), &binary).unwrap();
+        let path = folder.to_str().unwrap();
+        let detected = detect_provider(
+            ProviderService::definition("claude_code").unwrap(),
+            path,
+            Some(" \t "),
+        );
+        let resolved = ProviderService::resolve_command_path("claude_code", path, Some(" \t "));
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert!(
+            matches!(detected.status, ProviderConnectionStatus::Connected),
+            "{detected:?}"
+        );
+        assert_eq!(detected.resolved_path.as_deref(), binary.to_str());
+        assert_eq!(resolved.as_deref(), binary.to_str());
+    }
 
     // Encoding observed in real ~/.claude/projects/* dirs.
     #[test]

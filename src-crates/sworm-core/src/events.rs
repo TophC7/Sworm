@@ -9,6 +9,12 @@ use sworm_protocol::settings::SettingsChangedEvent;
 /// service or wait for asynchronous delivery while its state is locked.
 pub type EventSink<T> = Arc<dyn Fn(T) -> Result<(), String> + Send + Sync + 'static>;
 
+pub(crate) fn deliver(events: &EventSink<HostEvent>, event: HostEvent) {
+    if let Err(error) = events(event) {
+        tracing::warn!("host event delivery failed after commit: {error}");
+    }
+}
+
 /// In-process host notifications; desktop audiences and IPC encoding stay in
 /// the adapter. This is not a network protocol envelope.
 pub enum HostEvent {
@@ -26,18 +32,4 @@ pub enum HostEvent {
         replace_destination: bool,
     },
     FileDeleted(PathBuf),
-    RemoteStatus {
-        server: String,
-        connected: bool,
-        last_error: Option<String>,
-        state: String,
-    },
-    RemoteRunStatus {
-        run_id: String,
-        state: String,
-    },
-    /// `server`'s workbench registry changed; the desktop re-lists it.
-    RemoteWorkbenchesChanged {
-        server: String,
-    },
 }

@@ -4,7 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-pub use sworm_protocol::server_config::{ServerConfig, WebConfig, SERVER_CONFIG_FILE};
+use sworm_protocol::server_config::{ServerConfig, WebConfig, SERVER_CONFIG_FILE};
 use sworm_remote::Identity;
 
 pub fn default_path(config_dir: &Path) -> PathBuf {

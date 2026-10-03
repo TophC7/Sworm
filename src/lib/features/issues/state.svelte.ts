@@ -5,7 +5,6 @@ import type {
   IssueEpic,
   IssueEpicUpdateInput,
   IssueListFilters,
-  IssueSearchFilters,
   IssueUpdateInput
 } from '$lib/types/backend'
 
@@ -134,7 +133,7 @@ export function refreshIssuesForFolder(folderPath: string): void {
 export async function searchIssues(
   folderPath: string,
   query: string,
-  filters: IssueSearchFilters = {}
+  filters: IssueListFilters = {}
 ): Promise<Issue[]> {
   if (!query.trim()) return getIssues(folderPath)
   return backend.issues.search(folderPath, query.trim(), filters)

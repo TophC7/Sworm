@@ -1,17 +1,18 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, CommitFileChange, GitBrief, GitChange, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, CommitFileChange, GitBrief, GitChange, GitQuickDiffData, GitSummary, GraphCommit,
+    StashEntry,
 };
 use tracing::warn;
 
 /// Hard limit on file content sent over IPC to prevent OOM on large files.
-pub(crate) const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
+const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
 /// TTL for the [`GitService::get_summary`] cache. Coalesces bursts of
 /// concurrent callers (status bar, sidebar, diff signature watchers,
@@ -142,20 +143,7 @@ impl GitService {
     }
 
     pub fn repo_root(path: &Path) -> Option<PathBuf> {
-        let output = std::process::Command::new("git")
-            .args(["--no-optional-locks", "rev-parse", "--show-toplevel"])
-            .current_dir(path)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let raw = String::from_utf8(output.stdout).ok()?;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        std::fs::canonicalize(trimmed).ok()
+        std::fs::canonicalize(git_line(path, &["rev-parse", "--show-toplevel"])?).ok()
     }
 
     /// A fresh cached summary, or the slot generation a new computation
@@ -187,8 +175,7 @@ impl GitService {
 
     /// Drop any cached summary for `path` and advance its generation. Call
     /// after any mutation so the next [`Self::get_summary`] reflects the new
-    /// state. Public so command-layer mutators that bypass [`Self::run_mutate`]
-    /// (hunk staging in `commands/git.rs`) and the git-dir watcher can invalidate.
+    /// state. Public so the git-dir watcher can invalidate external mutations.
     pub fn invalidate(&self, path: &Path) {
         let mut cache = self.summary_cache.lock();
         let slot = cache.entry(path.to_path_buf()).or_default();
@@ -213,12 +200,6 @@ impl GitService {
         result
     }
 
-    /// Check if a path is inside a git work tree. Callers that need the
-    /// failure reason should use [`Self::repository_state`] instead.
-    pub fn is_git_repo(&self, path: &Path) -> bool {
-        self.repository_state(path).unwrap_or(false)
-    }
-
     /// Distinguish an ordinary non-repository folder from operational Git
     /// failures such as a missing cwd, unsafe ownership, or broken metadata.
     fn repository_state(&self, path: &Path) -> Result<bool, String> {
@@ -235,71 +216,29 @@ impl GitService {
         if stderr.contains("not a git repository") {
             Ok(false)
         } else {
-            let detail = stderr.trim();
-            Err(if detail.is_empty() {
-                format!(
-                    "Failed to inspect repository: git exited with {}",
-                    output.status
-                )
-            } else {
-                format!("Failed to inspect repository: {detail}")
-            })
+            Err(git_failure("inspect repository", &output))
         }
     }
 
     /// Get the current branch name.
     pub fn current_branch(&self, path: &Path) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .args(["--no-optional-locks", "branch", "--show-current"])
-            .current_dir(path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if branch.is_empty() {
-                None
-            } else {
-                Some(branch)
-            }
-        } else {
-            None
-        }
+        git_line(path, &["branch", "--show-current"])
     }
 
     /// Attempt to detect the default base ref (e.g. origin/main).
     pub fn default_base_ref(&self, path: &Path) -> Option<String> {
-        // Try symbolic-ref first
-        let output = std::process::Command::new("git")
-            .args([
-                "--no-optional-locks",
-                "symbolic-ref",
-                "--short",
-                "refs/remotes/origin/HEAD",
-            ])
-            .current_dir(path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let base = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !base.is_empty() {
-                return Some(base);
-            }
-        }
-
-        for candidate in &["origin/main", "origin/master"] {
-            let check = std::process::Command::new("git")
-                .args(["--no-optional-locks", "rev-parse", "--verify", candidate])
-                .current_dir(path)
-                .output()
-                .ok()?;
-            if check.status.success() {
-                return Some(candidate.to_string());
-            }
-        }
-
-        None
+        git_line(
+            path,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .or_else(|| {
+            ["origin/main", "origin/master"]
+                .into_iter()
+                .find_map(|candidate| {
+                    git_line(path, &["rev-parse", "--verify", candidate])
+                        .map(|_| candidate.to_string())
+                })
+        })
     }
 
     /// Get full git summary for a project path.
@@ -373,138 +312,41 @@ impl GitService {
     /// Uncached: Home asks once per card per visit. Error handling mirrors
     /// [`Self::get_summary`]: a missing directory fails, a plain one is `is_repo: false`.
     pub fn get_brief(&self, path: &Path) -> Result<GitBrief, String> {
-        let output = std::process::Command::new("git")
-            .args([
-                "--no-optional-locks",
-                "status",
-                "--porcelain=v2",
-                "--branch",
-                "-z",
-                "--untracked-files=all",
-            ])
-            .env("LC_ALL", "C")
-            .current_dir(path)
-            .output()
-            .map_err(|error| format!("Failed to read Git status: {error}"))?;
-        let mut brief = GitBrief {
-            is_repo: false,
-            branch: None,
-            changed: 0,
-            ahead: None,
-            behind: None,
-        };
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("not a git repository")
-                || stderr.contains("must be run in a work tree")
-            {
-                return Ok(brief);
-            }
-            let detail = stderr.trim();
-            return Err(if detail.is_empty() {
-                format!(
-                    "Failed to read Git status: git exited with {}",
-                    output.status
-                )
-            } else {
-                format!("Failed to read Git status: {detail}")
-            });
-        }
-
-        brief.is_repo = true;
-        let mut records = output.stdout.split(|byte| *byte == 0);
-        while let Some(record) = records.next() {
-            match record.first() {
-                Some(b'#') => {
-                    let header = String::from_utf8_lossy(record);
-                    if let Some(head) = header.strip_prefix("# branch.head ") {
-                        brief.branch = (head != "(detached)").then(|| head.to_string());
-                    } else if let Some(ab) = header.strip_prefix("# branch.ab ") {
-                        let (ahead, behind) = ab.split_once(' ').unwrap_or_default();
-                        brief.ahead = ahead.trim_start_matches('+').parse().ok();
-                        brief.behind = behind.trim_start_matches('-').parse().ok();
-                    }
-                }
-                Some(b'1' | b'u' | b'?') => brief.changed += 1,
-                Some(b'2') => {
-                    brief.changed += 1;
-                    // Renames and copies carry their original path as a separate record.
-                    records.next();
-                }
-                _ => {}
-            }
-        }
-        Ok(brief)
+        let status = status_records(path, true)?;
+        Ok(match status {
+            Some(status) => GitBrief {
+                is_repo: true,
+                branch: status.branch,
+                changed: status.records.len() as u32,
+                ahead: status.ahead,
+                behind: status.behind,
+            },
+            None => GitBrief {
+                is_repo: false,
+                branch: None,
+                changed: 0,
+                ahead: None,
+                behind: None,
+            },
+        })
     }
 
     /// Get changed files using porcelain v2 + numstat.
     fn get_changes(&self, path: &Path) -> Result<Vec<GitChange>, String> {
+        let status = status_records(path, false)?.ok_or_else(|| {
+            "Failed to read Git status: not a git repository or work tree".to_string()
+        })?;
         let mut changes = Vec::new();
-        let output = std::process::Command::new("git")
-            .args([
-                "--no-optional-locks",
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--no-ahead-behind",
-                "--untracked-files=all",
-            ])
-            .current_dir(path)
-            .output()
-            .map_err(|error| format!("Failed to read Git status: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let detail = stderr.trim();
-            return Err(if detail.is_empty() {
-                format!(
-                    "Failed to read Git status: git exited with {}",
-                    output.status
-                )
-            } else {
-                format!("Failed to read Git status: {detail}")
-            });
-        }
-
-        let mut records = output.stdout.split(|byte| *byte == 0);
-        while let Some(record_bytes) = records.next() {
-            if record_bytes.is_empty() {
-                continue;
-            }
-
-            let record = String::from_utf8_lossy(record_bytes);
-            let kind = record.chars().next().unwrap_or(' ');
-            match kind {
-                '1' => {
-                    let parts: Vec<&str> = record.splitn(9, ' ').collect();
-                    if parts.len() >= 9 {
-                        push_status_entries(&mut changes, parts[8], parts[1]);
-                    }
-                }
-                '2' => {
-                    let parts: Vec<&str> = record.splitn(10, ' ').collect();
-                    if parts.len() >= 10 {
-                        push_status_entries(&mut changes, parts[9], parts[1]);
-                        let _ = records.next();
-                    }
-                }
-                'u' => {
-                    let parts: Vec<&str> = record.splitn(11, ' ').collect();
-                    if parts.len() >= 11 {
-                        push_status_entries(&mut changes, parts[10], parts[1]);
-                    }
-                }
-                '?' => {
-                    if record.len() > 2 {
-                        changes.push(GitChange {
-                            path: record[2..].to_string(),
-                            status: "?".to_string(),
-                            staged: false,
-                            additions: None,
-                            deletions: None,
-                        });
-                    }
-                }
-                _ => {}
+        for record in status.records {
+            match record {
+                StatusRecord::Tracked { path, xy } => push_status_entries(&mut changes, &path, &xy),
+                StatusRecord::Untracked(path) => changes.push(GitChange {
+                    path,
+                    status: "?".to_string(),
+                    staged: false,
+                    additions: None,
+                    deletions: None,
+                }),
             }
         }
 
@@ -679,22 +521,18 @@ impl GitService {
     pub fn get_commit_detail(&self, path: &Path, hash: &str) -> Option<CommitDetail> {
         // 1. Commit metadata
         // Use null-byte delimiters so %b (body) can contain newlines safely.
-        let info = std::process::Command::new("git")
-            .args([
+        let info = git_output(
+            path,
+            &[
                 "show",
                 "-s",
                 "--format=%H%x00%h%x00%P%x00%an%x00%aI%x00%s%x00%b",
                 hash,
-            ])
-            .current_dir(path)
-            .output()
-            .ok()?;
-
-        if !info.status.success() {
-            return None;
-        }
-
-        let info_text = String::from_utf8_lossy(&info.stdout);
+            ],
+            "read commit metadata",
+        )
+        .ok()?;
+        let info_text = String::from_utf8_lossy(&info);
         let parts: Vec<&str> = info_text.splitn(7, '\0').collect();
         if parts.len() < 6 {
             return None;
@@ -706,88 +544,12 @@ impl GitService {
             parts[2].split(' ').map(|s| s.to_string()).collect()
         };
 
-        // 2. File stats; diff against first parent (like GitHub).
-        //    For root commits, diff-tree --root shows everything as added.
-        let diff_ref = if parents.is_empty() {
-            // Root commit; use diff-tree --root
-            String::new()
-        } else {
-            format!("{}^..{}", hash, hash)
-        };
-
-        let (numstat_lines, status_lines) = if diff_ref.is_empty() {
-            let ns = std::process::Command::new("git")
-                .args([
-                    "diff-tree",
-                    "--root",
-                    "-r",
-                    "--no-commit-id",
-                    "--numstat",
-                    hash,
-                ])
-                .current_dir(path)
-                .output()
-                .ok()?;
-            let st = std::process::Command::new("git")
-                .args([
-                    "diff-tree",
-                    "--root",
-                    "-r",
-                    "--no-commit-id",
-                    "--name-status",
-                    hash,
-                ])
-                .current_dir(path)
-                .output()
-                .ok()?;
-            (
-                String::from_utf8_lossy(&ns.stdout).to_string(),
-                String::from_utf8_lossy(&st.stdout).to_string(),
-            )
-        } else {
-            let ns = std::process::Command::new("git")
-                .args(["diff", "--numstat", &diff_ref])
-                .current_dir(path)
-                .output()
-                .ok()?;
-            let st = std::process::Command::new("git")
-                .args(["diff", "--name-status", &diff_ref])
-                .current_dir(path)
-                .output()
-                .ok()?;
-            (
-                String::from_utf8_lossy(&ns.stdout).to_string(),
-                String::from_utf8_lossy(&st.stdout).to_string(),
-            )
-        };
-
-        // Parse numstat: "10\t5\tpath/to/file"
-        let mut stats = std::collections::HashMap::<String, (i32, i32)>::new();
-        for line in numstat_lines.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let adds = parts[0].parse().unwrap_or(0);
-                let dels = parts[1].parse().unwrap_or(0);
-                stats.insert(parts[2].to_string(), (adds, dels));
-            }
-        }
-
-        // Parse name-status: "M\tpath" or "R100\told\tnew"
-        let mut files: Vec<CommitFileChange> = Vec::new();
-        for line in status_lines.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status = parts[0].chars().next().unwrap_or('M').to_string();
-                let file_path = parts[parts.len() - 1].to_string();
-                let (additions, deletions) = stats.get(&file_path).copied().unwrap_or((0, 0));
-                files.push(CommitFileChange {
-                    path: file_path,
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
+        // Merges compare against their first parent; roots have no old tree.
+        let old = (!parents.is_empty()).then(|| format!("{hash}^"));
+        let files = rev_entries(path, old.as_deref(), hash)
+            .into_iter()
+            .map(CommitFileChange::from)
+            .collect();
 
         Some(CommitDetail {
             hash: parts[0].to_string(),
@@ -869,12 +631,8 @@ impl GitService {
     pub fn commit(&self, path: &Path, message: &str) -> Result<String, String> {
         self.run_mutate(path, &["commit", "-m", message])?;
         // Read back the new commit hash
-        let output = std::process::Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .current_dir(path)
-            .output()
-            .map_err(|e| e.to_string())?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let output = git_output(path, &["rev-parse", "--short", "HEAD"], "read commit hash")?;
+        Ok(String::from_utf8_lossy(&output).trim().to_string())
     }
 
     /// Soft-reset the last commit, preserving changes as staged, and
@@ -886,21 +644,16 @@ impl GitService {
         // typed into the textarea. `trim_end` removes both `\n` and
         // `\r\n` so the textarea doesn't inherit a stray CR on
         // CRLF-flavoured repos.
-        let output = std::process::Command::new("git")
-            .args(["log", "-1", "--format=%B", "HEAD"])
-            .current_dir(path)
-            .output()
-            .map_err(|e| format!("Failed to read last commit message: {}", e))?;
-        let message = if output.status.success() {
-            String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string()
-        } else {
-            warn!(
-                "git log for undo_last_commit exited non-zero ({}), proceeding with empty restore",
-                output.status
-            );
-            String::new()
+        let message = match git_output(
+            path,
+            &["log", "-1", "--format=%B", "HEAD"],
+            "read last commit message",
+        ) {
+            Ok(output) => String::from_utf8_lossy(&output).trim_end().to_string(),
+            Err(error) => {
+                warn!(%error, "git log for undo_last_commit failed, proceeding with empty restore");
+                String::new()
+            }
         };
 
         self.run_mutate(path, &["reset", "--soft", "HEAD~1"])?;
@@ -955,19 +708,7 @@ impl GitService {
 
     /// List all stash entries with their changed files.
     pub fn stash_list(&self, path: &Path) -> Vec<StashEntry> {
-        let output = std::process::Command::new("git")
-            .args(["stash", "list", "--format=%gd%x00%gs%x00%aI"])
-            .current_dir(path)
-            .output();
-
-        let Ok(output) = output else {
-            return Vec::new();
-        };
-        if !output.status.success() {
-            return Vec::new();
-        }
-
-        let text = String::from_utf8_lossy(&output.stdout);
+        let text = run_git_capture(path, &["stash", "list", "--format=%gd%x00%gs%x00%aI"]);
         text.lines()
             .filter_map(|line| {
                 let parts: Vec<&str> = line.splitn(3, '\0').collect();
@@ -980,7 +721,19 @@ impl GitService {
                     .and_then(|s| s.strip_suffix('}'))?;
                 let index: usize = idx_str.parse().ok()?;
 
-                let files = self.stash_files(path, index);
+                let (entries, _) = parse_raw_numstat(&run_git_capture(
+                    path,
+                    &[
+                        "stash",
+                        "show",
+                        "--raw",
+                        "--numstat",
+                        "-z",
+                        "--include-untracked",
+                        parts[0],
+                    ],
+                ));
+                let files = entries.into_iter().map(CommitFileChange::from).collect();
 
                 Some(StashEntry {
                     index,
@@ -990,60 +743,6 @@ impl GitService {
                 })
             })
             .collect()
-    }
-
-    /// Get changed files for a specific stash entry.
-    fn stash_files(&self, path: &Path, index: usize) -> Vec<CommitFileChange> {
-        let stash_ref = format!("stash@{{{}}}", index);
-
-        // numstat for line counts
-        let ns_output = std::process::Command::new("git")
-            .args(["stash", "show", "--numstat", &stash_ref])
-            .current_dir(path)
-            .output();
-
-        // name-status for change type
-        let st_output = std::process::Command::new("git")
-            .args(["stash", "show", "--name-status", &stash_ref])
-            .current_dir(path)
-            .output();
-
-        let mut stats = std::collections::HashMap::<String, (i32, i32)>::new();
-        if let Ok(ref o) = ns_output {
-            if o.status.success() {
-                for line in String::from_utf8_lossy(&o.stdout).lines() {
-                    let parts: Vec<&str> = line.split('\t').collect();
-                    if parts.len() >= 3 {
-                        let adds = parts[0].parse().unwrap_or(0);
-                        let dels = parts[1].parse().unwrap_or(0);
-                        stats.insert(parts[2].to_string(), (adds, dels));
-                    }
-                }
-            }
-        }
-
-        let mut files = Vec::new();
-        if let Ok(ref o) = st_output {
-            if o.status.success() {
-                for line in String::from_utf8_lossy(&o.stdout).lines() {
-                    let parts: Vec<&str> = line.split('\t').collect();
-                    if parts.len() >= 2 {
-                        let status = parts[0].chars().next().unwrap_or('M').to_string();
-                        let file_path = parts[parts.len() - 1].to_string();
-                        let (additions, deletions) =
-                            stats.get(&file_path).copied().unwrap_or((0, 0));
-                        files.push(CommitFileChange {
-                            path: file_path,
-                            status,
-                            additions,
-                            deletions,
-                        });
-                    }
-                }
-            }
-        }
-
-        files
     }
 
     /// Pop (apply + drop) a stash entry by index.
@@ -1162,19 +861,14 @@ impl GitService {
 
     /// Return true when the index, worktree, or untracked set has changes.
     pub fn is_worktree_dirty(&self, path: &Path) -> bool {
-        self.is_git_repo(path)
-            && self
-                .get_changes(path)
-                .is_ok_and(|changes| !changes.is_empty())
+        self.get_changes(path)
+            .is_ok_and(|changes| !changes.is_empty())
     }
 
     /// File metadata for `branch...HEAD` compare. Content stays lazy:
     /// the compare modal only renders status + path, and snapshots use
     /// the existing `git_show_file` path when a file is opened.
     pub fn diff_branch_against_head(&self, path: &Path, branch: &str) -> Vec<FileDiff> {
-        if !self.is_git_repo(path) {
-            return Vec::new();
-        }
         self.rev_diff_files(path, branch, Some("HEAD"), false)
     }
 
@@ -1303,7 +997,6 @@ impl GitService {
         self.run_mutate(path, &["merge", "--abort"])
     }
 
-    /// Get all file diffs for a stash entry (including untracked files).
     /// Initialize a new git repository. Repo identity changes (now a
     /// repo), so [`Self::run_mutate`]'s invalidation drops any stale
     /// "not a repo" summary on next read.
@@ -1348,22 +1041,13 @@ impl GitService {
 
     /// Read the default branch from the local ref set by fetch, avoiding a network call.
     fn detect_remote_default_branch(&self, path: &Path) -> String {
-        // After `git fetch origin`, the remote HEAD symref is available locally.
-        let output = std::process::Command::new("git")
-            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-            .current_dir(path)
-            .output();
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                let refstr = String::from_utf8_lossy(&output.stdout);
-                if let Some(branch) = refstr.trim().strip_prefix("refs/remotes/origin/") {
-                    return branch.to_string();
-                }
-            }
-        }
-
-        "main".to_string()
+        git_line(path, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .and_then(|value| {
+                value
+                    .strip_prefix("refs/remotes/origin/")
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "main".to_string())
     }
 
     // DIFF PAYLOAD //
@@ -1377,9 +1061,6 @@ impl GitService {
     /// of content attached. Skips files that are binary or oversized
     /// (still present in the list, but with `content: None` + `binary: true`).
     pub fn get_diff_files(&self, path: &Path, source: &DiffSource) -> Vec<FileDiff> {
-        if !self.is_git_repo(path) {
-            return Vec::new();
-        }
         match source {
             DiffSource::Working { staged } => self.working_diff_files(path, *staged),
             DiffSource::Commit { hash } => self.commit_diff_files(path, hash),
@@ -1392,9 +1073,6 @@ impl GitService {
     /// load each file lazily, avoiding a multi-megabyte payload to the
     /// frontend before the user has expanded any row.
     pub fn get_working_diff_index(&self, path: &Path, staged: bool) -> Vec<FileDiff> {
-        if !self.is_git_repo(path) {
-            return Vec::new();
-        }
         filter_working_changes(self.get_changes(path).unwrap_or_default(), Some(staged))
             .into_iter()
             .map(|change| FileDiff {
@@ -1411,26 +1089,13 @@ impl GitService {
             .collect()
     }
 
-    /// Per-file content for a working-tree diff. Caller passes the
-    /// file's status (so deletions, additions, and untracked variants
-    /// pick the right read strategy) and the staged side.
-    pub fn get_working_diff_file_content(
-        &self,
-        path: &Path,
-        file_path: &str,
-        status: GitStatus,
-        staged: bool,
-    ) -> (Option<String>, Option<String>, bool) {
-        self.working_file_contents(path, file_path, status, staged)
-    }
-
     fn working_diff_files(&self, path: &Path, staged_filter: Option<bool>) -> Vec<FileDiff> {
         filter_working_changes(self.get_changes(path).unwrap_or_default(), staged_filter)
             .into_iter()
             .map(|change| {
                 let status = GitStatus::from_code(&change.status);
                 let (old_content, new_content, binary) =
-                    self.working_file_contents(path, &change.path, status, change.staged);
+                    self.get_working_diff_file_content(path, &change.path, status, change.staged);
                 FileDiff {
                     path: change.path.clone(),
                     old_path: None,
@@ -1446,7 +1111,8 @@ impl GitService {
             .collect()
     }
 
-    fn working_file_contents(
+    /// Read one working-tree diff's content on the requested staged side.
+    pub fn get_working_diff_file_content(
         &self,
         path: &Path,
         file_path: &str,
@@ -1470,12 +1136,12 @@ impl GitService {
                 } else {
                     read_git_show_blob(path, &format!(":{}", file_path))
                 };
-                fold_single_side(old, true)
+                fold_both_sides(old, BlobResult::Missing)
             }
             GitStatus::Added if staged => {
                 // Staged addition: index has it, HEAD does not.
                 let new = read_git_show_blob(path, &format!(":{}", file_path));
-                fold_single_side(new, false)
+                fold_both_sides(BlobResult::Missing, new)
             }
             _ => {
                 if staged {
@@ -1502,18 +1168,8 @@ impl GitService {
     fn commit_diff_files(&self, path: &Path, hash: &str) -> Vec<FileDiff> {
         // Parents decide whether this is a root commit (one-sided diff)
         // or a normal commit diffed against its first parent.
-        let parents_out = std::process::Command::new("git")
-            .args(["rev-list", "--parents", "-n", "1", hash])
-            .current_dir(path)
-            .output();
-        let is_root = match parents_out {
-            Ok(o) if o.status.success() => {
-                let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                // Output is "<hash> <parent1> <parent2> …". No parents → root.
-                line.split_whitespace().count() <= 1
-            }
-            _ => false,
-        };
+        let is_root = git_line(path, &["rev-list", "--parents", "-n", "1", hash])
+            .is_some_and(|line| line.split_whitespace().count() <= 1);
         let old_ref = if is_root {
             None
         } else {
@@ -1530,7 +1186,7 @@ impl GitService {
         old_rev: Option<&str>,
         include_content: bool,
     ) -> Vec<FileDiff> {
-        let files = self.list_rev_files(path, new_rev, old_rev);
+        let files = rev_entries(path, old_rev, new_rev);
         let mut out = Vec::new();
         for entry in files {
             let old_content = match (include_content, old_rev, &entry.old_path_for_diff) {
@@ -1632,65 +1288,6 @@ impl GitService {
         out
     }
 
-    /// Parse name-status + numstat for a rev range so we get per-file
-    /// status + rename detection + line counts in one place. Used by
-    /// commit diffs (and reusable for other rev-based callers later).
-    fn list_rev_files(
-        &self,
-        path: &Path,
-        new_rev: &str,
-        old_rev: Option<&str>,
-    ) -> Vec<RevFileEntry> {
-        // `-z` keeps paths NUL-delimited. Without it, paths with tabs /
-        // newlines misparse, AND renames collapse into a single
-        // `{old => new}` field that breaks numstat lookups by new path.
-        let (status_text, numstat_text) = match old_rev {
-            Some(old) => {
-                let range = format!("{}..{}", old, new_rev);
-                (
-                    run_git_capture(path, &["diff", "--name-status", "-z", "-M", "-C", &range]),
-                    run_git_capture(path, &["diff", "--numstat", "-z", &range]),
-                )
-            }
-            None => (
-                run_git_capture(
-                    path,
-                    &[
-                        "diff-tree",
-                        "--root",
-                        "-r",
-                        "-z",
-                        "--no-commit-id",
-                        "--name-status",
-                        new_rev,
-                    ],
-                ),
-                run_git_capture(
-                    path,
-                    &[
-                        "diff-tree",
-                        "--root",
-                        "-r",
-                        "-z",
-                        "--no-commit-id",
-                        "--numstat",
-                        new_rev,
-                    ],
-                ),
-            ),
-        };
-
-        let stats = parse_numstat(&numstat_text);
-        let mut entries = parse_name_status(&status_text);
-        for entry in entries.iter_mut() {
-            if let Some((a, d)) = stats.get(&entry.path).copied() {
-                entry.additions = Some(a);
-                entry.deletions = Some(d);
-            }
-        }
-        entries
-    }
-
     /// Resolve the current git identity for `path`. Prefers `user.email`,
     /// falls back to `user.name`. Returns `None` when neither is set.
     pub fn current_user_identity(&self, path: &Path) -> Option<String> {
@@ -1699,21 +1296,154 @@ impl GitService {
     }
 
     fn git_config_value(&self, path: &Path, key: &str) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .args(["--no-optional-locks", "config", "--get", key])
-            .current_dir(path)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
+        git_line(path, &["config", "--get", key])
+    }
+
+    pub fn show_file(&self, repo: &Path, rev: &str, file: &str) -> Option<String> {
+        git_show_raw_text(repo, &format!("{rev}:{file}"))
+    }
+
+    pub fn quick_diff_data(&self, repo: &Path, file: &str) -> GitQuickDiffData {
+        let index_content = git_show_raw_text(repo, &format!(":{file}"));
+        let head_content = git_show_raw_text(repo, &format!("HEAD:{file}"));
+        // The dirty-diff editor is text-only, so mode-only changes do not count.
+        let has_index_changes = index_content != head_content;
+        GitQuickDiffData {
+            index_content,
+            head_content,
+            has_index_changes,
         }
     }
+
+    pub fn stage_file_content(
+        &self,
+        repo: &Path,
+        file: &str,
+        content: Option<&str>,
+    ) -> Result<(), String> {
+        match content {
+            Some(content) => {
+                let mode = git_file_mode(repo, file)?;
+                let hash = git_hash_object(repo, file, content)?;
+                self.run_mutate(
+                    repo,
+                    &["update-index", "--add", "--cacheinfo", &mode, &hash, file],
+                )
+            }
+            None => self.run_mutate(repo, &["update-index", "--force-remove", "--", file]),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StatusV2 {
+    branch: Option<String>,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    records: Vec<StatusRecord>,
+}
+
+enum StatusRecord {
+    Tracked { path: String, xy: String },
+    Untracked(String),
+}
+
+fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, String> {
+    let output = Command::new("git")
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+        ])
+        .arg(if with_branch {
+            "--branch"
+        } else {
+            "--no-ahead-behind"
+        })
+        .env("LC_ALL", "C")
+        .current_dir(path)
+        .output()
+        .map_err(|error| format!("Failed to read Git status: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a git repository") || stderr.contains("must be run in a work tree")
+        {
+            return Ok(None);
+        }
+        return Err(git_failure("read Git status", &output));
+    }
+    let mut status = StatusV2::default();
+    let mut records = output.stdout.split(|byte| *byte == 0);
+    while let Some(bytes) = records.next() {
+        let record = String::from_utf8_lossy(bytes);
+        match bytes.first() {
+            Some(b'#') => {
+                if let Some(head) = record.strip_prefix("# branch.head ") {
+                    status.branch = (head != "(detached)").then(|| head.to_string());
+                } else if let Some(ab) = record.strip_prefix("# branch.ab ") {
+                    let (ahead, behind) = ab.split_once(' ').unwrap_or_default();
+                    status.ahead = ahead.trim_start_matches('+').parse().ok();
+                    status.behind = behind.trim_start_matches('-').parse().ok();
+                }
+            }
+            Some(kind @ (b'1' | b'2' | b'u')) => {
+                let fields = match kind {
+                    b'1' => 9,
+                    b'2' => 10,
+                    _ => 11,
+                };
+                let mut parts = record.splitn(fields, ' ');
+                parts.next();
+                let xy = parts.next().unwrap_or_default();
+                if let Some(path) = parts.nth(fields - 3) {
+                    status.records.push(StatusRecord::Tracked {
+                        path: path.to_string(),
+                        xy: xy.to_string(),
+                    });
+                }
+                if *kind == b'2' {
+                    // Original rename/copy path is a separate NUL record, never a status row.
+                    records.next();
+                }
+            }
+            Some(b'?') => {
+                if let Some(path) = record.strip_prefix("? ") {
+                    status
+                        .records
+                        .push(StatusRecord::Untracked(path.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Some(status))
+}
+
+fn rev_entries(path: &Path, old: Option<&str>, new: &str) -> Vec<RevFileEntry> {
+    let text = match old {
+        Some(old) => run_git_capture(
+            path,
+            &["diff", "--raw", "--numstat", "-z", "-M", "-C", old, new],
+        ),
+        None => run_git_capture(
+            path,
+            &[
+                "diff-tree",
+                "--root",
+                "-r",
+                "-z",
+                "-M",
+                "-C",
+                "--raw",
+                "--numstat",
+                "--no-commit-id",
+                new,
+            ],
+        ),
+    };
+    parse_raw_numstat(&text).0
 }
 
 /// Intermediate rev-walk entry. Keeps the old-path separate so the
@@ -1728,8 +1458,20 @@ struct RevFileEntry {
     /// in parsing, not reading.
     old_path_for_diff: Option<String>,
     status: GitStatus,
+    raw_status: char,
     additions: Option<i32>,
     deletions: Option<i32>,
+}
+
+impl From<RevFileEntry> for CommitFileChange {
+    fn from(entry: RevFileEntry) -> Self {
+        Self {
+            path: entry.path,
+            status: entry.raw_status.to_string(),
+            additions: entry.additions.unwrap_or(0),
+            deletions: entry.deletions.unwrap_or(0),
+        }
+    }
 }
 
 /// Outcome of reading a blob: text, binary, oversized, or missing.
@@ -1757,27 +1499,13 @@ fn fold_both_sides(old: BlobResult, new: BlobResult) -> (Option<String>, Option<
     (to_opt(old), to_opt(new), binary)
 }
 
-/// Single-sided fold: `on_old` selects whether the blob is the old or new side.
-fn fold_single_side(blob: BlobResult, on_old: bool) -> (Option<String>, Option<String>, bool) {
-    let binary = matches!(blob, BlobResult::Binary | BlobResult::Oversized);
-    let text = match blob {
-        BlobResult::Text(s) => Some(s),
-        _ => None,
-    };
-    if on_old {
-        (text, None, binary)
-    } else {
-        (None, text, binary)
-    }
-}
-
-pub(crate) enum ShowOutput {
+enum ShowOutput {
     Bytes(Vec<u8>),
     Oversized,
     Failed,
 }
 
-pub(crate) fn git_show_bounded(repo: &Path, args: &[&str]) -> ShowOutput {
+fn git_show_bounded(repo: &Path, args: &[&str]) -> ShowOutput {
     let mut child = match Command::new("git")
         .arg("--no-optional-locks")
         .args(args)
@@ -1895,12 +1623,6 @@ fn parse_numstat_fields<'a>(fields: impl Iterator<Item = &'a str>) -> HashMap<St
         if tab_parts.len() < 3 {
             continue;
         }
-        let Ok(adds) = tab_parts[0].parse::<i32>() else {
-            continue;
-        };
-        let Ok(dels) = tab_parts[1].parse::<i32>() else {
-            continue;
-        };
         let path = if tab_parts[2].is_empty() {
             let _old = fields.next();
             let Some(new_path) = fields.next() else {
@@ -1910,26 +1632,15 @@ fn parse_numstat_fields<'a>(fields: impl Iterator<Item = &'a str>) -> HashMap<St
         } else {
             tab_parts[2].to_string()
         };
+        let Ok(adds) = tab_parts[0].parse::<i32>() else {
+            continue;
+        };
+        let Ok(dels) = tab_parts[1].parse::<i32>() else {
+            continue;
+        };
         map.insert(path, (adds, dels));
     }
     map
-}
-
-/// Parse `git diff --name-status -z -M -C` output into structured entries.
-///
-/// `-z` format alternates status and path(s), all NUL-delimited:
-///   regular: `<status>\0<path>\0`
-///   rename:  `R<score>\0<oldpath>\0<newpath>\0`
-fn parse_name_status(text: &str) -> Vec<RevFileEntry> {
-    let mut out = Vec::new();
-    let mut fields = text.split('\0').filter(|field| !field.is_empty());
-    while let Some(code) = fields.next() {
-        let Some(entry) = name_status_entry(code, &mut fields) else {
-            break;
-        };
-        out.push(entry);
-    }
-    out
 }
 
 fn name_status_entry<'a>(
@@ -1951,6 +1662,7 @@ fn name_status_entry<'a>(
         old_path,
         old_path_for_diff,
         status,
+        raw_status: code.chars().next().unwrap_or('M'),
         additions: None,
         deletions: None,
     })
@@ -1970,7 +1682,14 @@ fn parse_raw_numstat(text: &str) -> (Vec<RevFileEntry>, HashMap<String, (i32, i3
         };
         entries.push(entry);
     }
-    (entries, parse_numstat_fields(fields))
+    let stats = parse_numstat_fields(fields);
+    for entry in &mut entries {
+        if let Some(&(additions, deletions)) = stats.get(&entry.path) {
+            entry.additions = Some(additions);
+            entry.deletions = Some(deletions);
+        }
+    }
+    (entries, stats)
 }
 
 /// Filter and dedupe `git status --porcelain` entries for a working-tree
@@ -1979,6 +1698,7 @@ fn parse_raw_numstat(text: &str) -> (Vec<RevFileEntry>, HashMap<String, (i32, i3
 ///     file appearing as both staged and unstaged keeps both copies.
 ///   * `Some(want)`: restrict to that side only; dedupe by `path` since
 ///     only one copy survives.
+///
 /// Untracked files always live on the unstaged side and are dropped from
 /// the staged-side filter.
 fn filter_working_changes(changes: Vec<GitChange>, staged_filter: Option<bool>) -> Vec<GitChange> {
@@ -2004,16 +1724,126 @@ fn filter_working_changes(changes: Vec<GitChange>, staged_filter: Option<bool>) 
     out
 }
 
+fn git_show_raw_text(repo: &Path, spec: &str) -> Option<String> {
+    // Quick-diff bases feed hunk staging/reverting, so they must be the
+    // actual blob text, not display-only textconv output.
+    match git_show_bounded(repo, &["show", "--no-textconv", spec]) {
+        ShowOutput::Bytes(bytes) => String::from_utf8(bytes).ok(),
+        ShowOutput::Oversized | ShowOutput::Failed => None,
+    }
+}
+
+fn git_file_mode(repo: &Path, file: &str) -> Result<String, String> {
+    for args in [
+        ["ls-files", "-s", "--", file],
+        ["ls-tree", "HEAD", "--", file],
+    ] {
+        if let Some(mode) = run_git_capture(repo, &args).split_whitespace().next() {
+            return Ok(mode.to_string());
+        }
+    }
+    Ok(git_worktree_file_mode(repo, file)?.unwrap_or_else(|| "100644".to_string()))
+}
+
+#[cfg(unix)]
+fn git_worktree_file_mode(repo: &Path, file_path: &str) -> Result<Option<String>, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = match std::fs::symlink_metadata(repo.join(file_path)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Failed to read worktree file mode: {error}")),
+    };
+    let mode = if metadata.file_type().is_symlink() {
+        "120000"
+    } else if metadata.permissions().mode() & 0o111 != 0 {
+        "100755"
+    } else {
+        "100644"
+    };
+    Ok(Some(mode.to_string()))
+}
+
+#[cfg(not(unix))]
+fn git_worktree_file_mode(_repo: &Path, _file_path: &str) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+fn git_hash_object(repo: &Path, file: &str, content: &str) -> Result<String, String> {
+    let output = git_with_stdin(
+        repo,
+        &["hash-object", "--stdin", "-w", "--path", file],
+        content.as_bytes(),
+    )?;
+    let hash = String::from_utf8_lossy(&output).trim().to_string();
+    if hash.is_empty() {
+        return Err("git hash-object returned an empty object id".to_string());
+    }
+    Ok(hash)
+}
+
+pub(crate) fn git_with_stdin(path: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>, String> {
+    let action = format!("run git {}", args.first().copied().unwrap_or_default());
+    let mut child = Command::new("git")
+        .arg("--no-optional-locks")
+        .args(args)
+        .current_dir(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to {action}: {error}"))?;
+    let mut stdin = child.stdin.take().expect("piped git stdin");
+    // Drain output while writing: check-ignore may emit more than a pipe can hold.
+    let (output, written) = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input));
+        let output = child.wait_with_output();
+        (output, writer.join().expect("git stdin writer panicked"))
+    });
+    let output = output.map_err(|error| format!("Failed to {action}: {error}"))?;
+    // check-ignore uses 1 for no matches; hash-object uses nonzero for real failures.
+    if !output.status.success()
+        && !(args.first() == Some(&"check-ignore") && output.status.code() == Some(1))
+    {
+        return Err(git_failure(&action, &output));
+    }
+    written.map_err(|error| format!("Failed to {action}: {error}"))?;
+    Ok(output.stdout)
+}
+
+pub(crate) fn git_line(path: &Path, args: &[&str]) -> Option<String> {
+    let output = git_output(path, args, "read Git output").ok()?;
+    let value = String::from_utf8_lossy(&output).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+pub(crate) fn git_output(folder: &Path, args: &[&str], action: &str) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .arg("--no-optional-locks")
+        .args(args)
+        .current_dir(folder)
+        .output()
+        .map_err(|error| format!("Failed to {action}: {error}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(git_failure(action, &output))
+    }
+}
+
+pub(crate) fn git_failure(action: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        format!("Failed to {action}: git exited with {}", output.status)
+    } else {
+        format!("Failed to {action}: {detail}")
+    }
+}
 /// Run a git command and return stdout as a String (empty on failure).
 fn run_git_capture(path: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .args(std::iter::once("--no-optional-locks").chain(args.iter().copied()))
-        .current_dir(path)
-        .output();
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => String::new(),
-    }
+    git_output(path, args, "read Git output")
+        .map(|output| String::from_utf8_lossy(&output).into_owned())
+        .unwrap_or_default()
 }
 
 /// Resolve a Monaco language id from a file path. Falls back to
@@ -2092,12 +1922,7 @@ fn lang_from_path(path: &str) -> &'static str {
 
 /// Run a `git diff` variant and return stdout as a String, or `None` if empty.
 fn run_diff(path: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .ok()?;
-    let body = String::from_utf8_lossy(&output.stdout).into_owned();
+    let body = run_git_capture(path, args);
     if body.trim().is_empty() {
         None
     } else {
@@ -2140,10 +1965,9 @@ fn parse_branch_row(line: &str) -> Option<BranchRefRow> {
     let refname = parts[0];
     let (name, kind) = if let Some(rest) = refname.strip_prefix("refs/heads/") {
         (rest.to_string(), BranchKind::Local)
-    } else if let Some(rest) = refname.strip_prefix("refs/remotes/") {
-        (rest.to_string(), BranchKind::Remote)
     } else {
-        return None;
+        let rest = refname.strip_prefix("refs/remotes/")?;
+        (rest.to_string(), BranchKind::Remote)
     };
     let upstream = if parts[4].is_empty() {
         None
@@ -2189,20 +2013,7 @@ fn parse_tracking_counts(track: &str) -> (i32, i32) {
 /// when the branch has no tracking ref.
 fn upstream_of(path: &Path, branch: &str) -> Option<String> {
     let arg = format!("{}@{{upstream}}", branch);
-    let output = std::process::Command::new("git")
-        .args(["--no-optional-locks", "rev-parse", "--abbrev-ref", &arg])
-        .current_dir(path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    git_line(path, &["rev-parse", "--abbrev-ref", &arg])
 }
 
 /// Resolve the path to the repo's `.git` directory. Worktrees and
@@ -2210,23 +2021,7 @@ fn upstream_of(path: &Path, branch: &str) -> Option<String> {
 /// the authoritative answer. Falls back to `<path>/.git` if the call
 /// fails so paused-state detection still works on a basic repo.
 fn resolve_git_dir(path: &Path) -> PathBuf {
-    let output = std::process::Command::new("git")
-        .args(["--no-optional-locks", "rev-parse", "--git-dir"])
-        .current_dir(path)
-        .output();
-    if let Ok(o) = output {
-        if o.status.success() {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !s.is_empty() {
-                let candidate = PathBuf::from(&s);
-                if candidate.is_absolute() {
-                    return candidate;
-                }
-                return path.join(s);
-            }
-        }
-    }
-    path.join(".git")
+    path.join(git_line(path, &["rev-parse", "--git-dir"]).unwrap_or_else(|| ".git".to_string()))
 }
 
 /// Run a mutating git command, returning `Ok(())` on success or
@@ -2293,6 +2088,33 @@ mod tests {
     use std::process::Command;
     use sworm_protocol::file_diff::GitStatus;
 
+    #[cfg(unix)]
+    #[test]
+    fn worktree_file_mode_preserves_executable_bit() {
+        use super::git_worktree_file_mode;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = std::env::temp_dir().join(format!(
+            "sworm-git-mode-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&repo).expect("create temp repo dir");
+
+        let script = repo.join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").expect("write script");
+        let mut permissions = fs::metadata(&script)
+            .expect("read script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("mark script executable");
+
+        let mode = git_worktree_file_mode(&repo, "script.sh").expect("read worktree mode");
+        fs::remove_dir_all(&repo).expect("remove temp repo dir");
+
+        assert_eq!(mode.as_deref(), Some("100755"));
+    }
     fn git(repo: &Path, args: &[&str]) {
         let out = Command::new("git")
             .args(args)
@@ -2514,7 +2336,7 @@ mod tests {
 
     #[test]
     fn parse_raw_numstat_splits_raw_and_stat_records() {
-        let text = ":100644 100644 aaaa bbbb M\0a.txt\0:100644 100644 aaaa bbbb R099\0old.txt\0new.txt\0:000000 100644 0000 cccc A\0new file.txt\01\t1\ta.txt\01\t0\t\0old.txt\0new.txt\05\t0\tnew file.txt\0";
+        let text = ":100644 100644 aaaa bbbb M\0a.txt\0:100644 100644 aaaa bbbb R099\0old.txt\0new.txt\0:000000 100644 0000 cccc A\0new file.txt\x001\t1\ta.txt\x001\t0\t\0old.txt\0new.txt\x005\t0\tnew file.txt\0";
         let (entries, stats) = parse_raw_numstat(text);
 
         assert_eq!(entries.len(), 3);
@@ -2524,6 +2346,9 @@ mod tests {
         assert_eq!(entries[1].path, "new.txt");
         assert_eq!(entries[1].old_path.as_deref(), Some("old.txt"));
         assert_eq!(entries[1].status, GitStatus::Renamed);
+        assert_eq!(entries[1].raw_status, 'R');
+        assert_eq!(entries[1].additions, Some(1));
+        assert_eq!(entries[1].deletions, Some(0));
         assert_eq!(entries[2].path, "new file.txt");
         assert_eq!(entries[2].status, GitStatus::Added);
         assert_eq!(stats.get("a.txt"), Some(&(1, 1)));

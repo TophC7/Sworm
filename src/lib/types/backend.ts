@@ -275,8 +275,6 @@ export interface FileReadProgress {
 export interface EffectiveLspServerSettings {
   enabled: boolean
   binary_path_override: string | null
-  runtime_path_override: string | null
-  runtime_args: string[]
   extra_args: string[]
   trace: LspTraceLevel
   settings: unknown | null
@@ -419,8 +417,6 @@ export interface LspServerConfig {
   server_definition_id: string
   enabled: boolean
   binary_path_override: string | null
-  runtime_path_override: string | null
-  runtime_args: string[]
   extra_args: string[]
   trace: LspTraceLevel
   settings: unknown | null
@@ -434,7 +430,6 @@ export interface LspServerStatus {
   enabled: boolean
   status: LspServerConnectionStatus
   resolved_path: string | null
-  runtime_resolved_path: string | null
   message: string | null
   install_hint: string
   document_selectors: LspDocumentSelector[]
@@ -453,7 +448,6 @@ export type LspEvent =
       session_id: string
       pid: number | null
       resolved_path: string | null
-      runtime_resolved_path: string | null
     }
   | {
       type: 'message'
@@ -691,13 +685,6 @@ export interface IssueListFilters {
 
 export interface IssueReadyFilters {
   epicId?: string
-  limit?: number
-}
-
-export interface IssueSearchFilters {
-  status?: IssueStatus
-  epicId?: string
-  includeArchived?: boolean
   limit?: number
 }
 

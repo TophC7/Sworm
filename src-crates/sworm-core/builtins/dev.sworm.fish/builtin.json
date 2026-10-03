@@ -15,10 +15,7 @@
         "id": "fish-lsp",
         "label": "fish-lsp",
         "applies_to_languages": ["fish"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "fish-lsp"
-        },
+        "command": "fish-lsp",
         "args": ["start"],
         "install_hint": "Install `fish-lsp` and ensure `fish-lsp` and `fish` are on PATH.",
         "document_selectors": [

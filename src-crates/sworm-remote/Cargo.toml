@@ -13,7 +13,6 @@ tokio.workspace = true
 thiserror = "2"
 quinn.workspace = true
 rustls.workspace = true
-rustls-pki-types.workspace = true
 rcgen.workspace = true
 sha2 = "0.10"
 hex = "0.4"

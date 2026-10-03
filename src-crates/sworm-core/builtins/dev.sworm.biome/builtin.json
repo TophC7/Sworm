@@ -15,10 +15,7 @@
         "id": "biome",
         "label": "Biome",
         "applies_to_languages": ["javascript", "typescript", "json"],
-        "runtime": {
-          "kind": "host_binary",
-          "command": "biome"
-        },
+        "command": "biome",
         "args": ["lsp-proxy"],
         "install_hint": "Install Biome so `biome` is available on PATH",
         "document_selectors": [

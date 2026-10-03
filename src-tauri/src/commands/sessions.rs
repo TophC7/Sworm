@@ -32,7 +32,7 @@ pub async fn session_start(
             Some(owner.clone()),
         )
         .await?;
-    if !state.windows.has_window(&owner) && !state.windows.destroy_detaches_runs() {
+    if state.windows.owner_closed(&owner) {
         state.router.session_stop(run_id).await?;
     }
     Ok(info)
@@ -44,7 +44,7 @@ pub async fn session_write(
     data: Vec<u8>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.router.session_write(run_id, data).await
+    state.router.run_write(run_id, data).await
 }
 
 #[tauri::command]
@@ -54,22 +54,5 @@ pub async fn session_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
-    state.router.session_resize(run_id, cols, rows).await
-}
-
-#[tauri::command]
-pub async fn session_stop(
-    run_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ApiError> {
-    state.router.session_stop(run_id).await
-}
-
-#[tauri::command]
-pub async fn omp_resolve_uri(
-    uri: String,
-    cwd: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<sworm_protocol::omp::OmpResolvedTarget, ApiError> {
-    state.router.omp_resolve_uri(uri, cwd).await
+    state.router.run_resize(run_id, cols, rows).await
 }

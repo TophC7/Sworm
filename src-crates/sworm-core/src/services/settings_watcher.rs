@@ -1,4 +1,4 @@
-use crate::events::{EventSink, HostEvent};
+use crate::events::{deliver, EventSink, HostEvent};
 use crate::services::settings::SettingsService;
 use crate::services::settings_resolution::{
     parse_error_diagnostic, resolve_effective_settings_for_folder_path,
@@ -21,16 +21,28 @@ struct FolderSettingsWatcher {
 }
 
 pub struct SettingsWatcherService {
+    events: EventSink<HostEvent>,
+    generation: Arc<AtomicU64>,
     global_watcher: Mutex<Option<RecommendedWatcher>>,
     folder_watchers: Mutex<HashMap<PathBuf, Arc<Mutex<Option<FolderSettingsWatcher>>>>>,
 }
 
 impl SettingsWatcherService {
-    pub fn new() -> Self {
+    pub fn new(events: EventSink<HostEvent>) -> Self {
         Self {
+            events,
+            generation: Arc::new(AtomicU64::new(0)),
             global_watcher: Mutex::new(None),
             folder_watchers: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn notify(&self, layer: SettingsLayerKind, folder: Option<&Path>) {
+        emit_settings_changed(&self.events, &self.generation, layer, folder);
     }
 
     pub fn is_watching(&self, folder: &Path) -> bool {
@@ -51,11 +63,7 @@ impl SettingsWatcherService {
         })
     }
 
-    pub fn watch_global(
-        &self,
-        events: EventSink<HostEvent>,
-        generation: Arc<Mutex<u64>>,
-    ) -> Result<(), String> {
+    pub fn watch_global(&self) -> Result<(), String> {
         let mut slot = self.global_watcher.lock();
         if slot.is_some() {
             return Ok(());
@@ -64,7 +72,8 @@ impl SettingsWatcherService {
         let settings_file = SettingsService::global_settings_path()?;
         let watch_path = existing_watch_parent(&settings_file)
             .ok_or_else(|| format!("No existing parent for {}", settings_file.display()))?;
-        let events = Arc::clone(&events);
+        let events = Arc::clone(&self.events);
+        let generation = Arc::clone(&self.generation);
         let settings_file_for_events = settings_file.clone();
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -76,7 +85,7 @@ impl SettingsWatcherService {
             {
                 return;
             }
-            emit_settings_changed(&events, &generation, SettingsLayerKind::Global, None, None);
+            emit_settings_changed(&events, &generation, SettingsLayerKind::Global, None);
         })
         .map_err(|error| format!("Failed to create global settings watcher: {error}"))?;
 
@@ -87,12 +96,7 @@ impl SettingsWatcherService {
         Ok(())
     }
 
-    pub fn watch_folder(
-        &self,
-        events: EventSink<HostEvent>,
-        folder_path: &Path,
-        generation: Arc<Mutex<u64>>,
-    ) -> Result<(), String> {
+    pub fn watch_folder(&self, folder_path: &Path) -> Result<(), String> {
         let slot = Arc::clone(
             self.folder_watchers
                 .lock()
@@ -114,7 +118,8 @@ impl SettingsWatcherService {
         let sworm_dir = folder_path.join(".sworm");
 
         let settings_file = SettingsService::folder_settings_path(&folder_path);
-        let events = Arc::clone(&events);
+        let events = Arc::clone(&self.events);
+        let generation = Arc::clone(&self.generation);
         let settings_file_for_events = settings_file.clone();
         let folder_path_for_events = folder_path.clone();
         let directory_generation = Arc::new(AtomicU64::new(0));
@@ -140,7 +145,6 @@ impl SettingsWatcherService {
                 &generation,
                 SettingsLayerKind::Folder,
                 Some(folder_path_for_events.as_path()),
-                None,
             );
         })
         .map_err(|error| format!("Failed to create folder settings watcher: {error}"))?;
@@ -191,33 +195,26 @@ fn existing_watch_parent(path: &Path) -> Option<PathBuf> {
 }
 
 fn is_settings_event_path(path: &Path, settings_file: &Path) -> bool {
-    path == settings_file
-        || Some(path) == settings_file.parent()
-        || (path.parent() == settings_file.parent()
-            && path
-                .file_name()
-                .is_some_and(|name| name == "settings.jsonc"))
+    path == settings_file || Some(path) == settings_file.parent()
 }
 
 fn emit_settings_changed(
     events: &EventSink<HostEvent>,
-    generation: &Arc<Mutex<u64>>,
+    generation: &AtomicU64,
     layer: SettingsLayerKind,
     folder_path: Option<&Path>,
-    diagnostics: Option<Vec<SettingsDiagnostic>>,
 ) {
-    let diagnostics = diagnostics.unwrap_or_else(|| diagnostics_for(folder_path));
-    let generation = {
-        let mut generation = generation.lock();
-        *generation += 1;
-        *generation
-    };
-    let _ = events(HostEvent::SettingsChanged(SettingsChangedEvent {
-        layer,
-        folder_path: folder_path.map(|path| path.to_string_lossy().into_owned()),
-        generation,
-        diagnostics,
-    }));
+    let generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let diagnostics = diagnostics_for(folder_path);
+    deliver(
+        events,
+        HostEvent::SettingsChanged(SettingsChangedEvent {
+            layer,
+            folder_path: folder_path.map(|path| path.to_string_lossy().into_owned()),
+            generation,
+            diagnostics,
+        }),
+    );
 }
 
 fn diagnostics_for(folder_path: Option<&Path>) -> Vec<SettingsDiagnostic> {
