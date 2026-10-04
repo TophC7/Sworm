@@ -44,6 +44,7 @@ import {
 import { clampTabInsertionToGroup, compactGroupTabs, computeTabInsertion, reorderWithinGroup } from './tabInsertion'
 import {
   ensureTextFileSyncListeners,
+  isTextSurfaceDirty,
   openTextFile,
   revealTextTab,
   type TextRevealTarget
@@ -259,6 +260,20 @@ export function getActiveTab(): Tab | null {
   return workbench.activeTabId ? (findTab(workbench.activeTabId) ?? null) : null
 }
 
+/** Preview replacement must never discard edits or overwrite a locked/promoted tab. */
+export function getReplaceableTemporaryTab(
+  tabId: TabId | null = workbench.activeTabId
+): Exclude<Tab, SessionTab | TaskTab> | null {
+  const tab = tabId ? findTab(tabId) : undefined
+  return tab &&
+    'temporary' in tab &&
+    tab.temporary &&
+    !tab.locked &&
+    !(tab.kind === 'text' && isTextSurfaceDirty(tab.id))
+    ? tab
+    : null
+}
+
 export function getActiveTabId(): TabId | null {
   return workbench.activeTabId
 }
@@ -372,10 +387,10 @@ export function toggleTabLocked(tabId: TabId): void {
 
 // FOLDER ENTRY //
 /**
- * Open a folder: canonicalize, remember it, then focus its most recently
- * active tab or seed a new tab page when the folder has none.
+ * Open a folder: canonicalize and remember it, then replace the requesting
+ * preview or focus the folder's last tab (seed a new tab page when absent).
  */
-export async function openFolder(path: string): Promise<void> {
+export async function openFolder(path: string, replaceTabId?: TabId): Promise<void> {
   let folderPath: string
   try {
     folderPath = (await backend.folders.resolve(path)).path
@@ -384,6 +399,27 @@ export async function openFolder(path: string): Promise<void> {
     return
   }
   pushRecentFolder(folderPath)
+
+  const tab = replaceTabId ? getReplaceableTemporaryTab(replaceTabId) : null
+  if (tab) {
+    if (tab.folderPath === folderPath) {
+      setActiveTab(tab.id)
+      return
+    }
+    const replacement: NewTab = { kind: 'new-tab', id: tab.id, folderPath, locked: false, temporary: true }
+    if (isTabInert(tab) || isTabInert(replacement)) {
+      notify.error('Open folder failed', 'This server workbench is not controlled by this window')
+      return
+    }
+    const tabs = workbench.tabs
+      .filter(
+        (candidate) => candidate.id === tab.id || candidate.kind !== 'new-tab' || candidate.folderPath !== folderPath
+      )
+      .map((candidate) => (candidate.id === tab.id ? replacement : candidate))
+    releaseTextFileClaim(tab)
+    commit({ tabs, activeTabId: tab.id })
+    return
+  }
 
   const remembered = lastActiveByFolder.get(folderPath)
   const existing =
@@ -394,39 +430,6 @@ export async function openFolder(path: string): Promise<void> {
     return
   }
   openNewTab(folderPath)
-}
-
-/** Turn the originating new tab page into another folder without adding a tab. */
-export async function retargetNewTab(tabId: TabId, path: string): Promise<void> {
-  let folderPath: string
-  try {
-    folderPath = (await backend.folders.resolve(path)).path
-  } catch (error) {
-    notify.error('Open folder failed', getErrorMessage(error))
-    return
-  }
-  pushRecentFolder(folderPath)
-
-  const tab = findTab(tabId)
-  if (tab?.kind !== 'new-tab') {
-    await openFolder(folderPath)
-    return
-  }
-  if (tab.folderPath === folderPath) {
-    setActiveTab(tabId)
-    return
-  }
-  const replacement: NewTab = { ...tab, folderPath }
-  if (isTabInert(tab) || isTabInert(replacement)) {
-    notify.error('Open folder failed', 'This server workbench is not controlled by this window')
-    return
-  }
-  const tabs = workbench.tabs
-    .filter(
-      (candidate) => candidate.id === tabId || candidate.kind !== 'new-tab' || candidate.folderPath !== folderPath
-    )
-    .map((candidate) => (candidate.id === tabId ? replacement : candidate))
-  commit({ tabs, activeTabId: tabId })
 }
 
 // RESTORE //
@@ -642,6 +645,12 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
   }
 }
 
+function releaseTextFileClaim(tab: Tab): void {
+  if (platform.capabilities.fileClaims && tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
+    void requireNative().files.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
+  }
+}
+
 /**
  * Generic content-tab helper. Handles the 3-phase pattern:
  * 1. Replace the single temporary tab of this kind (global, any folder)
@@ -667,15 +676,12 @@ function addContentTab(
       if (isTabInert(newTab)) throw new Error('This server workbench is not controlled by this window')
       if (
         existingTemp.kind === 'text' &&
-        existingTemp.filePath != null &&
-        !existingTemp.gitRef &&
         (newTab.kind !== 'text' ||
           newTab.folderPath !== existingTemp.folderPath ||
           newTab.filePath !== existingTemp.filePath ||
           newTab.gitRef)
       ) {
-        if (platform.capabilities.fileClaims)
-          void requireNative().files.releaseFile(resolveProjectFile(existingTemp.folderPath, existingTemp.filePath))
+        releaseTextFileClaim(existingTemp)
       }
       // Skip mutation when tab data hasn't changed (second click of a
       // double-click on the same file).
@@ -982,9 +988,7 @@ export function closeTab(tabId: TabId): void {
   } else if (tab.kind === 'task') {
     taskRegistry.dispose(tab.runId)
   }
-  if (platform.capabilities.fileClaims && tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
-    void requireNative().files.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
-  }
+  releaseTextFileClaim(tab)
 
   const tabs = workbench.tabs.filter((t) => t.id !== tabId)
   let activeTabId = workbench.activeTabId

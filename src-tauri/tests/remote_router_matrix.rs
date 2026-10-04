@@ -1,5 +1,5 @@
-//! Remote spawn failures, workbench leases and file URIs stay on the daemon;
-//! desktop settings and recent folders stay local.
+//! Remote spawn failures, workbench leases, file URIs and breadcrumb roots stay
+//! on the daemon; desktop settings and recent folders stay local.
 
 mod common;
 
@@ -12,6 +12,7 @@ use sworm_core::{
 };
 use sworm_lib::host_events::DesktopEvent;
 use sworm_lib::router::{Target, WorkspaceRouter};
+use sworm_protocol::folder::PathRootKind;
 use sworm_protocol::rpc::{AttachMode, RecentFolder, Request};
 use sworm_protocol::{lsp::LspEvent, pty::PtyEvent, settings::PatchSettingsSectionInput};
 use sworm_remote::{Identity, RemoteClient};
@@ -995,13 +996,18 @@ async fn local_only_ops_stay_on_desktop(fixture: &Fixture) -> anyhow::Result<()>
     )
     .await?;
     assert_eq!(root.path, home.to_string_lossy().as_ref());
-    let error = bounded(
+    let remote_path = Target::remote_uri("loop", &local_path.to_string_lossy());
+    let root = bounded(
         "folder_path_root remote",
-        router.folder_path_root(workspace.remote.clone()),
+        router.folder_path_root(remote_path),
     )
-    .await
-    .expect_err("path root is desktop-local");
-    assert!(matches!(error, ApiError::Remote(_)));
+    .await?;
+    assert_eq!(
+        root.path,
+        Target::remote_uri("loop", &home.to_string_lossy())
+    );
+    assert!(matches!(root.kind, PathRootKind::Home));
+    assert_eq!(root.label, "Home");
     let error = bounded(
         "omp_resolve_uri remote cwd",
         router.omp_resolve_uri("local://probe.md".into(), Some(workspace.remote.clone())),

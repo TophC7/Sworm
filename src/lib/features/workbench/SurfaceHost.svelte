@@ -26,7 +26,7 @@
     {/if}
   </div>
 {:else if activeTab.kind === 'new-tab'}
-  <NewTabSurface folderPath={activeTab.folderPath} newTabId={activeTab.id} />
+  <NewTabSurface folderPath={activeTab.folderPath} />
 {:else if activeTab.kind === 'session'}
   <SessionSurface tab={activeTab} />
 {:else if activeTab.kind === 'text'}

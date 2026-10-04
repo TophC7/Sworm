@@ -1,12 +1,12 @@
 // Browser — the one surface for going somewhere else: a places list
 // (workbenches, recent folders, servers) and folder columns that browse any
-// host. A request names where browsing starts and which new tab page, if
-// any, the chosen place turns into.
+// host. A request captures which temporary tab, if any, the chosen place
+// replaces.
 
 import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 import { openWorkbench } from '$lib/features/workbench/groups.svelte'
 import type { TabId } from '$lib/features/workbench/model'
-import { closeTab, openFolder, retargetNewTab } from '$lib/features/workbench/state.svelte'
+import { closeTab, getReplaceableTemporaryTab, openFolder } from '$lib/features/workbench/state.svelte'
 import { platform } from '$lib/platform'
 import type { WorkbenchInfo } from '$lib/types/backend'
 import { closeTransientModals, registerModal } from '$lib/utils/modalRegistry.svelte'
@@ -16,8 +16,8 @@ export interface BrowserRequest {
   path?: string
   /** Start inside this host's home folder; `null` is this host. Wins over `path`. */
   server?: string | null
-  /** New tab page that becomes the chosen place instead of staying behind. */
-  newTabId?: TabId
+  /** Captured preview that the chosen place replaces, if it is still replaceable. */
+  replaceTabId?: TabId
 }
 
 let request = $state<BrowserRequest | null>(null)
@@ -31,8 +31,9 @@ export function getBrowserRequest(): BrowserRequest | null {
 }
 
 export function openBrowser(options: BrowserRequest = {}): void {
+  const replaceTabId = options.replaceTabId ?? getReplaceableTemporaryTab()?.id
   if (!request) closeTransientModals()
-  request = options
+  request = { ...options, replaceTabId }
 }
 
 export function closeBrowser(): void {
@@ -56,26 +57,25 @@ export function localHostLabel(): string {
  * Browse a host from inside its home folder; `server` null is this host. An
  * unreachable server opens at its root so the listing shows why.
  */
-export function browseServer(server: string | null, newTabId?: TabId): void {
-  openBrowser({ server, newTabId })
+export function browseServer(server: string | null): void {
+  openBrowser({ server })
 }
 
-/** Open a folder, turning `newTabId` into it when the request came from a new tab page. */
-export async function goToFolder(path: string, newTabId?: TabId): Promise<void> {
+/** Open the chosen folder without retaining the requesting preview. */
+export async function goToFolder(path: string, replaceTabId?: TabId): Promise<void> {
   closeBrowser()
-  if (newTabId) await retargetNewTab(newTabId, path)
-  else await openFolder(path)
+  await openFolder(path, replaceTabId)
 }
 
 /**
  * Join a workbench: a server's attaches into this window, the web page's
- * own host switches this page to it. The new tab page that asked for it closes.
+ * own host switches this page to it. A requesting preview closes after a join.
  */
 export async function goToWorkbench(
   workbench: WorkbenchInfo,
   server?: string,
   takeover = false,
-  newTabId?: TabId
+  replaceTabId?: TabId
 ): Promise<void> {
   closeBrowser()
   const joined = await runNotifiedTask(
@@ -90,5 +90,6 @@ export async function goToWorkbench(
       error: { title: takeover ? 'Take over failed' : 'Open workbench failed' }
     }
   )
-  if (joined && newTabId) closeTab(newTabId)
+  // Web navigation replaces the document; cancellation must retain its tabs.
+  if (joined && server && replaceTabId && getReplaceableTemporaryTab(replaceTabId)) closeTab(replaceTabId)
 }

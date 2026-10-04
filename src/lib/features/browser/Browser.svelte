@@ -136,7 +136,7 @@
     { server: null, label: localHostLabel(), state: 'connected', lastError: null },
     ...getServers().map(({ name, state, lastError }) => ({ server: name, label: name, state, lastError }))
   ])
-  let newTabId = $derived(request?.newTabId)
+  let replaceTabId = $derived(request?.replaceTabId)
   let currentHost = $derived(atHosts ? selectedHost : hostOf(containerPath))
   let q = $derived(filterQuery.trim().toLowerCase())
   let leftRows = $derived(
@@ -208,10 +208,10 @@
   function activatePlace(place: Place): void {
     switch (place.kind) {
       case 'workbench':
-        void goToWorkbench(place.workbench, place.server, false, newTabId)
+        void goToWorkbench(place.workbench, place.server, false, replaceTabId)
         return
       case 'recent':
-        void goToFolder(place.path, newTabId)
+        void goToFolder(place.path, replaceTabId)
         return
       case 'host':
         void enterHost(place.host.server)
@@ -352,7 +352,7 @@
   }
 
   function enterFolder(path: string): void {
-    void goToFolder(path, newTabId)
+    void goToFolder(path, replaceTabId)
   }
 
   function selectPreviewFolder(path: string): void {
@@ -676,7 +676,7 @@
   }
 
   async function openWithSystemDialog(): Promise<void> {
-    const tabId = newTabId
+    const tabId = replaceTabId
     closeBrowser()
     try {
       const path = await requireNative().dialogs.selectDirectory()
@@ -941,7 +941,7 @@
       {@render sideRow(
         workbenchTitle(workbench),
         workbenchDetail(workbench),
-        () => void goToWorkbench(workbench, host.server ?? undefined, false, newTabId),
+        () => void goToWorkbench(workbench, host.server ?? undefined, false, replaceTabId),
         'workbench'
       )}
     {/each}

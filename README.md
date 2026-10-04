@@ -117,6 +117,8 @@ Browse files, edit code, and review changes before committing:
 
 Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command palette also has modes for editor commands (`>`), runnable tasks (`!`), and files (`/`). Shortcuts are customizable.
 
+`Ctrl+O` opens the Browser. Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open.
+
 ### Use your project's Nix environment
 
 Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate an environment from the status bar; once ready, it is used for new terminals, agent sessions, and runnable tasks. Without a ready Nix environment, sessions use the host environment.

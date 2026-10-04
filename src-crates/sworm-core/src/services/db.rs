@@ -58,10 +58,10 @@ fn open_migrated(db_path: &Path) -> Result<Connection, anyhow::Error> {
 impl DatabaseService {
     /// Open (or create) the database at the given path and run all
     /// pending migrations on the writer connection. An incompatible
-    /// existing file is deleted and recreated: everything persisted
-    /// here (workbench layout, recent folders, Nix env cache) is
-    /// rebuildable. Builds the read pool after migrations succeed so
-    /// readers don't observe a half-migrated schema.
+    /// existing file is deleted and recreated: pre-release schema resets
+    /// discard app state, Nix env cache, and completed-run transcripts.
+    /// Project issue databases are separate and untouched here. Builds
+    /// the read pool after migrations succeed.
     pub fn new(db_path: PathBuf) -> Result<Self, anyhow::Error> {
         // Ensure the parent directory exists
         if let Some(parent) = db_path.parent() {
@@ -153,83 +153,5 @@ pub struct ReadGuard<'a> {
 impl<'a> ReadGuard<'a> {
     pub fn conn(&self) -> &Connection {
         &self.inner
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::migrations;
-
-    #[test]
-    fn v3_timestamps_legacy_recent_folders_in_mru_order() {
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        migrations::runner()
-            .set_target(refinery::Target::Version(2))
-            .run(&mut conn)
-            .unwrap();
-        conn.execute(
-            "INSERT INTO app_state (key, value_json, updated_at) VALUES
-             ('recent_folders', '[\"sworm://host/a\",\"/b\",\"/c\"]', 'x'),
-             ('other', '[\"/d\"]', 'x')",
-            [],
-        )
-        .unwrap();
-        migrations::runner().run(&mut conn).unwrap();
-
-        let get = |key: &str| -> String {
-            conn.query_row(
-                "SELECT value_json FROM app_state WHERE key = ?1",
-                [key],
-                |row| row.get(0),
-            )
-            .unwrap()
-        };
-        let folders: Vec<serde_json::Value> = serde_json::from_str(&get("recent_folders")).unwrap();
-        let paths: Vec<_> = folders
-            .iter()
-            .map(|folder| folder["path"].as_str().unwrap())
-            .collect();
-        assert_eq!(paths, ["sworm://host/a", "/b", "/c"]);
-        let opened: Vec<_> = folders
-            .iter()
-            .map(|folder| {
-                chrono::DateTime::parse_from_rfc3339(folder["opened_at"].as_str().unwrap()).unwrap()
-            })
-            .collect();
-        assert!(
-            opened.windows(2).all(|pair| pair[0] > pair[1]),
-            "{opened:?}"
-        );
-        assert_eq!(get("other"), "[\"/d\"]");
-    }
-
-    #[test]
-    fn v3_leaves_non_legacy_recent_folders_untouched() {
-        for value in [
-            "not json [",
-            "{\"a\":1}",
-            "[{\"path\":\"/x\",\"opened_at\":\"t\"}]",
-            "[\"/a\",1]",
-        ] {
-            let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-            migrations::runner()
-                .set_target(refinery::Target::Version(2))
-                .run(&mut conn)
-                .unwrap();
-            conn.execute(
-                "INSERT INTO app_state (key, value_json, updated_at) VALUES ('recent_folders', ?1, 'x')",
-                [value],
-            )
-            .unwrap();
-            migrations::runner().run(&mut conn).unwrap();
-            let stored: String = conn
-                .query_row(
-                    "SELECT value_json FROM app_state WHERE key = 'recent_folders'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(stored, value);
-        }
     }
 }

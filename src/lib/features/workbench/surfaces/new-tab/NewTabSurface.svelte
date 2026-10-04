@@ -19,7 +19,6 @@
   import { startSession } from '$lib/features/sessions/service.svelte'
   import { openTaskTab } from '$lib/features/tasks/service.svelte'
   import { getTasksReactive } from '$lib/features/tasks/state.svelte'
-  import type { TabId } from '$lib/features/workbench/model'
   import { createUntitledTextSurface } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { MONO_FONT_FAMILY } from '$lib/fonts'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
@@ -41,7 +40,7 @@
   import { basename, splitRemotePath } from '$lib/utils/paths'
   import { getPathColor } from '$lib/utils/pathColor'
 
-  let { folderPath, newTabId }: { folderPath: string; newTabId: TabId } = $props()
+  let { folderPath }: { folderPath: string } = $props()
 
   let remote = $derived(splitRemotePath(folderPath))
   let folderName = $derived(basename(remote?.path ?? folderPath) || '/')
@@ -134,7 +133,7 @@
 
 <StageView>
   {#snippet footer()}
-    <Button variant="outline" size="sm" class="text-muted" onclick={() => openBrowser({ newTabId })}>
+    <Button variant="outline" size="sm" class="text-muted" onclick={() => openBrowser()}>
       <ArrowUpRightIcon size={14} class="shrink-0" />
       Open Another Project…
       <KbdGroup class="ml-1">
