@@ -313,22 +313,18 @@ macro_rules! sworm_rpc_ops {
                 hash: String,
             ) -> Option<$crate::git::CommitDetail>;
             #[route(path)]
-            DiffGetFiles => diff_get_files(
+            DiffGetFile => diff_get_file(
                 path: String,
                 source: $crate::file_diff::DiffSource,
-            ) -> Vec<$crate::file_diff::FileDiff>;
+                file_path: String,
+                old_path: Option<String>,
+                status: $crate::file_diff::GitStatus,
+            ) -> $crate::git::DiffFileContent;
             #[route(path)]
             DiffGetWorkingIndex => diff_get_working_index(
                 path: String,
                 staged: bool,
             ) -> Vec<$crate::file_diff::FileDiff>;
-            #[route(path)]
-            DiffGetWorkingFile => diff_get_working_file(
-                path: String,
-                file_path: String,
-                status: $crate::file_diff::GitStatus,
-                staged: bool,
-            ) -> $crate::git::DiffFileContent;
             #[route(path)]
             GitGetGraph => git_get_graph(
                 path: String,

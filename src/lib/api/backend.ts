@@ -220,34 +220,25 @@ export const backend = {
       })
     },
     /**
-     * Unified payload for the Monaco multi-file diff viewer.
-     * Returns one `FileDiff` per changed file with both sides of
-     * content attached. Source-agnostic (working / commit / stash).
+     * Load one file's contents for a working-tree, commit or stash diff.
      */
-    getDiffFiles(path: string, source: DiffSource): Promise<FileDiff[]> {
-      return invoke<FileDiff[]>('diff_get_files', { path, source })
+    getDiffFile(
+      path: string,
+      source: DiffSource,
+      filePath: string,
+      oldPath: string | null,
+      status: FileDiff['status']
+    ): Promise<DiffFileContent> {
+      return invoke<DiffFileContent>('diff_get_file', { path, source, filePath, oldPath, status })
     },
     /**
      * Cheap working-tree diff index; file list + metadata only,
-     * no content. Pair with [`getWorkingDiffFile`] to load each
+     * no content. Pair with [`getDiffFile`] to load each
      * file lazily so a 200-file working tree doesn't ship a
      * multi-megabyte payload before the user has expanded any row.
      */
     getWorkingDiffIndex(path: string, staged: boolean): Promise<FileDiff[]> {
       return invoke<FileDiff[]>('diff_get_working_index', { path, staged })
-    },
-    getWorkingDiffFile(
-      path: string,
-      filePath: string,
-      status: FileDiff['status'],
-      staged: boolean
-    ): Promise<DiffFileContent> {
-      return invoke<DiffFileContent>('diff_get_working_file', {
-        path,
-        filePath,
-        status,
-        staged
-      })
     },
 
     // Write operations

@@ -50,6 +50,8 @@ type Monaco = typeof import('monaco-editor')
 type IStandaloneDiffEditor = import('monaco-editor').editor.IStandaloneDiffEditor
 type ILineChange = import('monaco-editor').editor.ILineChange
 
+const DIFF_MAX_COMPUTATION_MS = 5000
+
 let computeHost: HTMLDivElement | null = null
 let computeEditor: IStandaloneDiffEditor | null = null
 let computeChain: Promise<unknown> = Promise.resolve()
@@ -85,6 +87,7 @@ function ensureEditor(monaco: Monaco): IStandaloneDiffEditor {
       renderIndicators: false,
       renderMarginRevertIcon: false,
       contextmenu: false,
+      maxComputationTime: DIFF_MAX_COMPUTATION_MS,
       hideUnchangedRegions: { enabled: false }
     })
   }
@@ -146,7 +149,7 @@ async function computeNow(
   originalContent: string,
   modifiedContent: string,
   language: string
-): Promise<ChangeHunk[]> {
+): Promise<ChangeHunk[] | null> {
   if (originalContent === modifiedContent) return []
 
   const editor = ensureEditor(monaco)
@@ -154,23 +157,23 @@ async function computeNow(
   const modified = monaco.editor.createModel(modifiedContent, language)
 
   try {
-    const waitForDiff = new Promise<void>((resolve) => {
+    const waitForDiff = new Promise<boolean>((resolve) => {
       let settled = false
       let off: { dispose(): void } | null = null
       let timer: number | null = null
-      const finish = () => {
+      const finish = (completed: boolean) => {
         if (settled) return
         settled = true
         off?.dispose()
         if (timer) window.clearTimeout(timer)
-        resolve()
+        resolve(completed)
       }
-      off = editor.onDidUpdateDiff(finish)
-      timer = window.setTimeout(finish, 1000)
+      off = editor.onDidUpdateDiff(() => finish(true))
+      timer = window.setTimeout(() => finish(false), DIFF_MAX_COMPUTATION_MS + 1000)
     })
 
     editor.setModel({ original, modified })
-    await waitForDiff
+    if (!(await waitForDiff)) return null
     return toHunks(originalContent, modifiedContent, editor.getLineChanges() ?? [])
   } finally {
     editor.setModel(null)
@@ -179,16 +182,16 @@ async function computeNow(
   }
 }
 
+/** Null means superseded or timed out; callers keep their previous hunks. */
 export function computeChangeHunks(
   monaco: Monaco,
   originalContent: string,
   modifiedContent: string,
-  language = 'plaintext'
-): Promise<ChangeHunk[]> {
-  const task = computeChain.then(
-    () => computeNow(monaco, originalContent, modifiedContent, language),
-    () => computeNow(monaco, originalContent, modifiedContent, language)
-  )
+  language = 'plaintext',
+  isCurrent: () => boolean = () => true
+): Promise<ChangeHunk[] | null> {
+  const run = () => (isCurrent() ? computeNow(monaco, originalContent, modifiedContent, language) : null)
+  const task = computeChain.then(run, run)
   computeChain = task.catch(() => undefined)
   return task
 }

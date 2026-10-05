@@ -284,6 +284,12 @@
     return () => io.disconnect()
   })
 
+  // Binary classification arrives asynchronously, after the first body render.
+  let binary = $derived.by(() => {
+    void store.version
+    return store.get(path)?.binary ?? false
+  })
+
   // Per-row signature gate over the store's global broadcast counter.
   //
   // `store.version` bumps whenever ANY lazy content load resolves; if
@@ -580,7 +586,7 @@
   })
 </script>
 
-{#if store.get(path)?.binary}
+{#if binary}
   <DiffBinaryPlaceholder reason="Binary file; content not shown" />
 {:else}
   <div bind:this={host} class="relative w-full" style:height="{height}px"></div>

@@ -518,14 +518,7 @@ export interface CommitDetail {
   date: string
   message: string
   body: string
-  files: CommitFileChange[]
-}
-
-export interface CommitFileChange {
-  path: string
-  status: string
-  additions: number
-  deletions: number
+  files: FileDiff[]
 }
 
 export interface GitQuickDiffData {
@@ -534,32 +527,28 @@ export interface GitQuickDiffData {
   hasIndexChanges: boolean
 }
 
-// DIFF PAYLOAD //
+// DIFF METADATA //
 //
-// Mirrors `src-tauri/src/models/file_diff.rs`. One `FileDiff` per
-// changed file; the frontend pairs `oldContent`/`newContent` into two
-// Monaco models and hands them to a `DiffEditor`.
+// Mirrors `src-crates/sworm-protocol/src/file_diff.rs`: metadata for
+// one changed file; contents via `DiffFileContent`.
 
 export type GitStatusKind =
   'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'unmerged' | 'unknown'
 
 export type DiffSource =
-  { kind: 'working'; staged: boolean | null } | { kind: 'commit'; hash: string } | { kind: 'stash'; index: number }
+  { kind: 'working'; staged: boolean } | { kind: 'commit'; hash: string } | { kind: 'stash'; index: number }
 
 export interface FileDiff {
   path: string
   oldPath: string | null
   status: GitStatusKind
   lang: string
-  oldContent: string | null
-  newContent: string | null
-  binary: boolean
   additions: number | null
   deletions: number | null
 }
 
-// Per-file content payload for the lazy working-tree diff path.
-// Mirrors `DiffFileContent` in `src-tauri/src/commands/git.rs`.
+// Per-file content payload for working-tree, commit and stash diffs.
+// Mirrors `DiffFileContent` in `src-crates/sworm-protocol/src/git.rs`.
 export interface DiffFileContent {
   oldContent: string | null
   newContent: string | null
@@ -758,7 +747,7 @@ export interface StashEntry {
   index: number
   message: string
   date: string
-  files: CommitFileChange[]
+  files: FileDiff[]
 }
 
 // BRANCHES //

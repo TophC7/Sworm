@@ -1,7 +1,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { TabId } from '$lib/features/workbench/model'
-  import type { CommitFileChange } from '$lib/types/backend'
+  import type { FileDiff } from '$lib/types/backend'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { parseStashMessage } from '$lib/features/git/git'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
@@ -116,8 +116,8 @@
           {@const parsed = parseStashMessage(stash.message)}
           {@const color = parsed.branch ? branchColor(parsed.branch) : GRAPH_COLORS[0]}
           {@const fileCount = stash.files.length}
-          {@const totalAdds = stash.files.reduce((s, f) => s + f.additions, 0)}
-          {@const totalDels = stash.files.reduce((s, f) => s + f.deletions, 0)}
+          {@const totalAdds = stash.files.reduce((s, f) => s + (f.additions ?? 0), 0)}
+          {@const totalDels = stash.files.reduce((s, f) => s + (f.deletions ?? 0), 0)}
 
           <!-- Row is a wrapping div so the action buttons can sit as siblings
                to the tooltip-triggering row button. Nesting <button>s inside
@@ -211,7 +211,7 @@
                   }}
                   onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
                 >
-                  {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
+                  {#snippet fileTrailing(node: FileTreeNode<FileDiff>)}
                     {#if node.change}
                       <GitStatusBadge status={node.change.status} />
                     {/if}

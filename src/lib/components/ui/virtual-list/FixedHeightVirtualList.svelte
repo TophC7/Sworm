@@ -5,8 +5,9 @@
   Renders only the rows currently inside (or near) the visible window
   and absolute-positions them within a spacer sized to the full content
   height. Only kicks in once `items.length` exceeds `threshold` and a
-  scrollable ancestor was found at mount; below the threshold, rows
-  render in normal flow so small lists pay no virtualization tax.
+  scrollable ancestor exists; below the threshold, rows render in normal
+  flow. The viewport is measured live on scroll and on resize of the
+  scroller or any ancestor between the list and the scroller.
 
   Caller responsibilities:
    - Every row must be exactly `rowHeight` px tall. Variable-height
@@ -56,67 +57,47 @@
   } = $props()
 
   let anchorEl = $state<HTMLElement | null>(null)
-  let hasScrollParent = $state(false)
-  let scrollTop = $state(0)
-  let containerHeight = $state(0)
-  // The list's offset inside the scroll parent's content. Constant
-  // across scroll (it's a content-space offset, not viewport-space)
-  // but changes if siblings above us resize. Cached to avoid running
-  // `getBoundingClientRect` on every reactive tick.
-  let anchorOffset = $state(0)
+  // Undefined until the mount effect resolves the scroll parent; null when none exists.
+  let scrollParent = $state<HTMLElement | null | undefined>(undefined)
+  // Viewport top relative to the list; negative while the list starts below it.
+  let viewportTop = $state(0)
+  let viewportHeight = $state(0)
 
   $effect(() => {
     const anchor = anchorEl
     if (!anchor) return
     const parent = findScrollParent(anchor)
-    if (!parent) {
-      hasScrollParent = false
-      return
-    }
-    hasScrollParent = true
+    scrollParent = parent
+    if (!parent) return
 
-    const recomputeOffset = () => {
-      const a = anchor.getBoundingClientRect()
-      const s = parent.getBoundingClientRect()
-      anchorOffset = a.top - s.top + parent.scrollTop
+    // Live rects pick up sibling shifts that do not resize the list itself.
+    const measure = () => {
+      viewportTop = parent.getBoundingClientRect().top + parent.clientTop - anchor.getBoundingClientRect().top
+      viewportHeight = parent.clientHeight
     }
-    const onScroll = () => {
-      scrollTop = parent.scrollTop
-    }
-    const sync = () => {
-      containerHeight = parent.clientHeight
-      scrollTop = parent.scrollTop
-      recomputeOffset()
-    }
-    sync()
-
-    parent.addEventListener('scroll', onScroll, { passive: true })
-    // Observe both the parent (viewport size) and the anchor (its
-    // offset inside the parent's content shifts when siblings above
-    // it grow/shrink, common in panels with collapsible headers).
-    const ro = new ResizeObserver(sync)
+    measure()
+    parent.addEventListener('scroll', measure, { passive: true })
+    const ro = new ResizeObserver(measure)
     ro.observe(parent)
-    ro.observe(anchor)
+    for (let el: HTMLElement | null = anchor; el && el !== parent; el = el.parentElement) ro.observe(el)
 
     return () => {
-      parent.removeEventListener('scroll', onScroll)
+      parent.removeEventListener('scroll', measure)
       ro.disconnect()
-      hasScrollParent = false
     }
   })
 
-  let virtualize = $derived(items.length > threshold && hasScrollParent)
+  // Unresolved parents still render a bounded first window, never the full list.
+  let virtualize = $derived(items.length > threshold && scrollParent !== null)
   let totalHeight = $derived(items.length * rowHeight)
-  let windowStart = $derived.by(() => {
-    if (!virtualize) return 0
-    const localTop = scrollTop - anchorOffset
-    return Math.max(0, Math.floor(localTop / rowHeight) - overscan)
-  })
-  let windowEnd = $derived.by(() => {
-    if (!virtualize) return items.length
-    const localTop = scrollTop - anchorOffset
-    return Math.min(items.length, Math.ceil((localTop + containerHeight) / rowHeight) + overscan)
-  })
+  let windowStart = $derived(
+    virtualize ? Math.min(items.length, Math.max(0, Math.floor(viewportTop / rowHeight) - overscan)) : 0
+  )
+  let windowEnd = $derived(
+    virtualize
+      ? Math.min(items.length, Math.max(windowStart, Math.ceil((viewportTop + viewportHeight) / rowHeight) + overscan))
+      : items.length
+  )
   let offsetTop = $derived(windowStart * rowHeight)
 </script>
 

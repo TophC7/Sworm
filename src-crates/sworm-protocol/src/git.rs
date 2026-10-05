@@ -57,16 +57,7 @@ pub struct CommitDetail {
     pub date: String,
     pub message: String,
     pub body: String,
-    pub files: Vec<CommitFileChange>,
-}
-
-/// Single file entry within a commit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommitFileChange {
-    pub path: String,
-    pub status: String,
-    pub additions: i32,
-    pub deletions: i32,
+    pub files: Vec<crate::file_diff::FileDiff>,
 }
 
 /// A single stash entry with its file changes.
@@ -75,7 +66,7 @@ pub struct StashEntry {
     pub index: usize,
     pub message: String,
     pub date: String,
-    pub files: Vec<CommitFileChange>,
+    pub files: Vec<crate::file_diff::FileDiff>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

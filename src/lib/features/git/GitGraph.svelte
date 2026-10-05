@@ -1,7 +1,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import type { TabId } from '$lib/features/workbench/model'
-  import type { CommitDetail, CommitFileChange } from '$lib/types/backend'
+  import type { CommitDetail, FileDiff } from '$lib/types/backend'
   import { computeGraph, computeRowRender } from '$lib/features/git/graph'
   import type { GraphRow } from '$lib/features/git/graph'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
@@ -42,7 +42,7 @@
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
   let expandedDetail = $state<CommitDetail | null>(null)
-  let expandedTree = $state<FileTreeNode<CommitFileChange>[]>([])
+  let expandedTree = $state<FileTreeNode<FileDiff>[]>([])
   let collapsedDirs = new SvelteSet<string>()
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
@@ -215,7 +215,7 @@
                       expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
                     onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
                   >
-                    {#snippet fileTrailing(node: FileTreeNode<CommitFileChange>)}
+                    {#snippet fileTrailing(node: FileTreeNode<FileDiff>)}
                       {#if node.change}
                         <GitStatusBadge status={node.change.status} />
                       {/if}

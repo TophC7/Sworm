@@ -49,6 +49,10 @@
   let statusLetter = $derived(gitStatusDisplay(file.status))
   let statusColor = $derived(gitStatusColor(file.status))
   let statusLabel = $derived(gitStatusLabel(file.status))
+  let binary = $derived.by(() => {
+    void store.version
+    return store.get(file.path)?.binary ?? false
+  })
 
   function openInEditor(filePath: string) {
     if (!folderPath) return
@@ -136,7 +140,7 @@
            View control: it changes what you see inside this diff,
            not where the file opens. Hidden until the row is expanded,
            since it has no effect on a collapsed body. -->
-      {#if expanded && storeReady && !file.binary}
+      {#if expanded && storeReady && !binary}
         {@render headerAction(
           hasExpandedUnchanged ? ChevronsDownUp : ChevronsUpDown,
           hasExpandedUnchanged ? 'Collapse unchanged code' : 'Expand all unchanged code',
@@ -144,7 +148,7 @@
         )}
       {/if}
       {#if folderPath}
-        {#if expanded && storeReady && !file.binary}
+        {#if expanded && storeReady && !binary}
           <Separator orientation="vertical" class="mx-1 h-4" />
         {/if}
         {#if commitHash}

@@ -170,25 +170,8 @@ impl Host {
         Ok(self.git.get_commit_detail(Path::new(&path), &hash))
     }
 
-    /// Unified diff payload for the Monaco multi-file viewer. Returns one
-    /// `FileDiff` per changed file, with both sides of content attached,
-    /// regardless of whether the source is the working tree, a commit,
-    /// or a stash. Replaces the mixed-shape `git_get_*_diffs` family.
-    pub fn diff_get_files(
-        &self,
-        path: String,
-        source: DiffSource,
-    ) -> Result<Vec<FileDiff>, ApiError> {
-        // Validate refs up front so invalid input fails before we hit git.
-        match &source {
-            DiffSource::Commit { hash } => validated_git_ref(hash)?,
-            DiffSource::Stash { .. } | DiffSource::Working { .. } => {}
-        }
-        Ok(self.git.get_diff_files(Path::new(&path), &source))
-    }
-
     /// Cheap working-tree diff index: file list + metadata, no content.
-    /// Pair with [`diff_get_working_file`] to load each file's content
+    /// Pair with [`Self::diff_get_file`] to load each file's content
     /// lazily; keeps the initial payload small even when the working
     /// tree has hundreds of changed files.
     pub fn diff_get_working_index(
@@ -199,26 +182,34 @@ impl Host {
         Ok(self.git.get_working_diff_index(Path::new(&path), staged))
     }
 
-    /// Working-tree per-file content. Returns the same shape as one
-    /// `FileDiff` entry from [`diff_get_files`], but with only the
-    /// requested file's content (rest of metadata fields populate from
-    /// what the caller already has via the index).
+    /// Load both sides of one working-tree, commit, or stash diff.
     ///
-    /// Validates `file_path` stays within `path` before touching disk so
-    /// a malicious or buggy frontend can't read arbitrary worktree files
-    /// via `../` traversal. Mirrors the guard on `git_get_quick_diff_data`,
+    /// Validates `file_path` and `old_path` stay within `path` before touching
+    /// disk so a malicious or buggy frontend can't read arbitrary worktree
+    /// files via `../` traversal. Mirrors the guard on `git_get_quick_diff_data`,
     /// `git_stage_file_content`, and `git_show_file`.
-    pub fn diff_get_working_file(
+    pub fn diff_get_file(
         &self,
         path: String,
+        source: DiffSource,
         file_path: String,
+        old_path: Option<String>,
         status: GitStatus,
-        staged: bool,
     ) -> Result<DiffFileContent, ApiError> {
+        if let DiffSource::Commit { hash } = &source {
+            validated_git_ref(hash)?;
+        }
         validated_project_file(&path, &file_path)?;
-        let (old_content, new_content, binary) =
-            self.git
-                .get_working_diff_file_content(Path::new(&path), &file_path, status, staged);
+        if let Some(old) = &old_path {
+            validated_project_file(&path, old)?;
+        }
+        let (old_content, new_content, binary) = self.git.get_diff_file_content(
+            Path::new(&path),
+            &source,
+            &file_path,
+            old_path.as_deref(),
+            status,
+        );
         Ok(DiffFileContent {
             old_content,
             new_content,

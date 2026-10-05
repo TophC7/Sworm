@@ -213,9 +213,8 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         git_get_graph,
         git_get_branch_commits,
         git_get_commit_detail,
-        diff_get_files,
+        diff_get_file,
         diff_get_working_index,
-        diff_get_working_file,
         // Git write commands
         git_stage_all,
         git_stage_files,

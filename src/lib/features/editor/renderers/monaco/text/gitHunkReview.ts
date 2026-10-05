@@ -174,6 +174,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
   let visibleHunks: ProviderHunk[] = []
   let updateTimer: number | null = null
   let updateSeq = 0
+  let baseSeq = 0
   let activePeek: ActivePeek | null = null
 
   function clearPeek(refocus = false) {
@@ -462,15 +463,18 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
   async function update() {
     if (disposed || !baseLoaded) return
     const seq = ++updateSeq
+    const isCurrent = () => !disposed && seq === updateSeq
     const current = model.getValue()
     const base = primaryBase(indexContent, headContent)
 
     const [nextPrimary, nextSecondary] = await Promise.all([
-      base == null ? Promise.resolve([]) : computeChangeHunks(monaco, base, current, language),
-      hasIndexChanges ? computeChangeHunks(monaco, headContent ?? '', current, language) : Promise.resolve([])
+      base == null ? Promise.resolve([]) : computeChangeHunks(monaco, base, current, language, isCurrent),
+      hasIndexChanges
+        ? computeChangeHunks(monaco, headContent ?? '', current, language, isCurrent)
+        : Promise.resolve([])
     ])
 
-    if (disposed || seq !== updateSeq) return
+    if (!isCurrent() || nextPrimary === null || nextSecondary === null) return
     primaryHunks = nextPrimary
     secondaryHunks = nextSecondary
     rebuildVisibleHunks()
@@ -491,21 +495,25 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
   }
 
   async function refreshBase() {
+    const seq = ++baseSeq
+    const isCurrent = () => !disposed && seq === baseSeq
     try {
       const data = await backend.git.getQuickDiffData(folderPath, filePath)
-      if (disposed) return
+      if (!isCurrent()) return
       indexContent = data.indexContent
       headContent = data.headContent
       hasIndexChanges = data.hasIndexChanges
       // Recompute only when HEAD/index changed; the result is independent of editor content.
-      stagedIndexHunks =
+      const nextStaged =
         hasIndexChanges && indexContent != null
-          ? await computeChangeHunks(monaco, headContent ?? '', indexContent, language)
+          ? await computeChangeHunks(monaco, headContent ?? '', indexContent, language, isCurrent)
           : []
-      if (disposed) return
+      if (!isCurrent()) return
+      if (nextStaged !== null) stagedIndexHunks = nextStaged
       baseLoaded = true
       scheduleUpdate()
     } catch (error) {
+      if (!isCurrent()) return
       console.warn('git-quick-diff-data:', error)
       baseLoaded = false
       indexContent = null

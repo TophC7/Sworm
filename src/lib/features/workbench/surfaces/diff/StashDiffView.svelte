@@ -1,7 +1,8 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import type { FileDiff, StashEntry } from '$lib/types/backend'
+  import type { StashEntry } from '$lib/types/backend'
   import DiffStack from '$lib/features/workbench/surfaces/diff/DiffStack.svelte'
+  import type { DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
   import { parseStashMessage } from '$lib/features/git/git'
   import { PackageIcon, GitBranchIcon, CalendarIcon } from '$lib/icons/lucideExports'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
@@ -18,7 +19,7 @@
   } = $props()
 
   let stashEntry = $state<StashEntry | null>(null)
-  let files = $state<FileDiff[]>([])
+  let files = $derived(stashEntry?.files ?? [])
   const stashLoad = createTrackedAsyncLoad<number>()
   let loading = $derived(stashLoad.loading)
 
@@ -29,16 +30,14 @@
     const path = folderPath
     stashLoad.run(idx, async (isCurrent) => {
       stashEntry = null
-      files = []
-      const [list, f] = await Promise.all([
-        backend.git.stashList(path),
-        backend.git.getDiffFiles(path, { kind: 'stash', index: idx })
-      ])
+      const list = await backend.git.stashList(path)
       if (!isCurrent()) return
       stashEntry = list.find((s) => s.index === idx) ?? null
-      files = f
     })
   })
+
+  const contentFetcher: DiffContentFetcher = (entry) =>
+    backend.git.getDiffFile(folderPath, { kind: 'stash', index: stashIndex }, entry.path, entry.oldPath, entry.status)
 </script>
 
 {#if !stashEntry}
@@ -67,6 +66,6 @@
       </div>
     </div>
 
-    <DiffStack {files} {loading} {initialFile} idPrefix="stash-file" {folderPath} {stashIndex} />
+    <DiffStack {files} {loading} {initialFile} idPrefix="stash-file" {folderPath} {stashIndex} {contentFetcher} />
   </div>
 {/if}

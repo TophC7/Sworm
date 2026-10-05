@@ -3,14 +3,15 @@
 // Models (ITextModel) are heavy: tokenization, worker, text buffer.
 // Keeping one original+modified pair alive for every file in a large
 // diff trips Monaco's internal listener leak heuristic long before the
-// app is actually leaking. We therefore cache file data + view state
-// for every row, but materialize Monaco models only while that row's
-// diff body is mounted.
+// app is actually leaking. We therefore cache metadata, lazily loaded
+// content + view state for every row, but materialize Monaco models
+// only while that row's diff body is mounted.
 //
 // Ownership (mirrors VSCode's MultiDiffEditor):
 //   - Models owned here, not by the pool.
-//   - `sync(files)` reconciles metadata + content for every file.
-//   - `retain(path)` / `release(path)` lazily create and dispose models.
+//   - `sync(files)` reconciles metadata for every file.
+//   - `retain(path)` loads content and creates models on demand.
+//   - `release(path)` disposes models once no body retains them.
 //   - `setViewState` / `setHeight` survive mount/unmount via this cache.
 
 import type { DiffFileContent, FileDiff } from '$lib/types/backend'
@@ -19,7 +20,7 @@ type Monaco = typeof import('monaco-editor')
 type ITextModel = import('monaco-editor').editor.ITextModel
 type IDiffEditorViewState = import('monaco-editor').editor.IDiffEditorViewState
 
-/** Per-file content fetcher for lazy mode. Returns the same shape the
+/** Per-file content fetcher. Returns the same shape the
  *  backend's per-file content endpoint produces (`DiffFileContent`). */
 export type DiffContentFetcher = (entry: DiffModelEntry) => Promise<DiffFileContent>
 
@@ -66,9 +67,7 @@ export interface DiffModelEntry {
   pendingRemoval: boolean
   /**
    * `true` once the entry has real content (or we know it's binary).
-   * `false` for lazy index entries waiting on the content loader. The
-   * eager `sync` path always sets this to `true`; only the index +
-   * loader flow uses `false`.
+   * `false` until the per-file content loader resolves.
    */
   contentLoaded: boolean
   /**
@@ -93,7 +92,6 @@ const MAX_LIVE_ENTRIES = 500
 export class DiffModelStore {
   private entries = new Map<string, DiffModelEntry>()
   private monaco: Monaco | null = null
-  private fetcher: DiffContentFetcher | null = null
   // In-flight content loads keyed by path: dedupes concurrent requests.
   private inflight = new Map<string, Promise<void>>()
   // Monotonic access clock for LRU eviction.
@@ -113,20 +111,11 @@ export class DiffModelStore {
     this.monaco = monaco
   }
 
-  /**
-   * Register a per-file content fetcher for the lazy/index flow.
-   * When set, `retain(path)` will fetch content for any entry that
-   * was synced without it. The fetcher is keyed by the entry, so
-   * callers can read `entry.path`, `entry.oldPath`, etc.
-   */
-  setContentFetcher(fetcher: DiffContentFetcher | null): void {
-    this.fetcher = fetcher
-  }
+  constructor(private readonly fetcher: DiffContentFetcher) {}
 
   /**
-   * Reconcile the entry set against a new file list. Metadata and raw
-   * content are always updated; Monaco models are patched only while a
-   * row actively retains them.
+   * Reconcile metadata against a new file list without changing cached
+   * contents or binary state. Reconcile language on live Monaco models.
    */
   sync(files: FileDiff[]): void {
     const nextPaths = new Set(files.map((f) => f.path))
@@ -145,7 +134,7 @@ export class DiffModelStore {
       const existing = this.entries.get(file.path)
       if (existing) {
         existing.pendingRemoval = false
-        this.applyContent(existing, file)
+        this.applyMetadata(existing, file)
         continue
       }
       this.entries.set(file.path, this.build(file))
@@ -169,10 +158,9 @@ export class DiffModelStore {
    * diff bodies call this on attach and pair it with `release(path)` on
    * teardown so large diffs do not keep hundreds of dormant models live.
    *
-   * For lazy-mode entries (no content yet), kicks off the content
-   * loader in the background. The returned entry will have
-   * `original`/`modified` = null until the load resolves; consumers
-   * should re-evaluate when `version` bumps.
+   * Without loaded content, kicks off the content loader in the
+   * background. The returned entry has `original`/`modified` = null
+   * until the load resolves; consumers re-evaluate when `version` bumps.
    */
   retain(path: string): DiffModelEntry | null {
     const entry = this.entries.get(path)
@@ -234,12 +222,12 @@ export class DiffModelStore {
   private build(file: FileDiff): DiffModelEntry {
     return {
       path: file.path,
-      originalContent: file.oldContent ?? '',
-      modifiedContent: file.newContent ?? '',
+      originalContent: '',
+      modifiedContent: '',
       original: null,
       modified: null,
       lang: file.lang,
-      binary: file.binary,
+      binary: false,
       viewState: null,
       height: null,
       hideUnchanged: true,
@@ -249,43 +237,23 @@ export class DiffModelStore {
       oldPath: file.oldPath,
       retainCount: 0,
       pendingRemoval: false,
-      contentLoaded: hasContent(file),
+      contentLoaded: false,
       lastAccess: ++this.accessClock
     }
   }
 
   /**
-   * Patch an existing entry's metadata + cached content. Live Monaco
-   * models are updated only while a mounted diff body retains them.
+   * Patch metadata without touching loaded content or binary state.
+   * Reconcile language while live Monaco models exist.
    */
-  private applyContent(entry: DiffModelEntry, file: FileDiff): void {
+  private applyMetadata(entry: DiffModelEntry, file: FileDiff): void {
     entry.lang = file.lang
     entry.additions = file.additions
     entry.deletions = file.deletions
     entry.status = file.status
     entry.oldPath = file.oldPath
 
-    const incoming = hasContent(file)
-    if (incoming) {
-      entry.originalContent = file.oldContent ?? ''
-      entry.modifiedContent = file.newContent ?? ''
-      entry.contentLoaded = true
-    }
-    // Else: keep cached content untouched. `sync` may be called from a
-    // re-fetch of the cheap index; we don't want to clobber loaded
-    // content with empty placeholders.
-
-    if (file.binary) {
-      entry.binary = true
-      entry.contentLoaded = true
-      if (entry.retainCount === 0) {
-        this.disposeModels(entry)
-      }
-      return
-    }
-
-    entry.binary = false
-    if (entry.contentLoaded && (entry.retainCount > 0 || entry.original || entry.modified)) {
+    if (!entry.binary && entry.contentLoaded && (entry.retainCount > 0 || entry.original || entry.modified)) {
       this.ensureModels(entry)
     }
   }
@@ -354,20 +322,17 @@ export class DiffModelStore {
   }
 
   /**
-   * Kick off a per-file content load via the registered fetcher.
-   * No-op when there's no fetcher, when content is already loaded,
-   * or when a load is already in-flight. On success, bumps the path's
-   * own version so only this file's MonacoDiffBody re-fires.
+   * Kick off a per-file content load. No-op when content is already
+   * loaded or a load is in-flight. On completion, bumps the store's
+   * version so consumers pick up loaded contents and binary state.
    */
   private kickoffContentLoad(entry: DiffModelEntry): void {
     if (entry.contentLoaded) return
     if (this.inflight.has(entry.path)) return
-    const fetcher = this.fetcher
-    if (!fetcher) return
 
     const promise = (async () => {
       try {
-        const result = await fetcher(entry)
+        const result = await this.fetcher(entry)
         // Entry may have been retired while we were awaiting.
         if (!this.entries.has(entry.path)) return
         entry.contentLoaded = true
@@ -395,15 +360,4 @@ export class DiffModelStore {
     })()
     this.inflight.set(entry.path, promise)
   }
-}
-
-/**
- * Heuristic: a `FileDiff` from the eager backend always has at least
- * one content side populated (even if it's an empty string), or has
- * `binary: true`. The lazy index path leaves both sides null with
- * `binary: false`, which we use as the "needs loading" signal.
- */
-function hasContent(file: FileDiff): boolean {
-  if (file.binary) return true
-  return file.oldContent !== null || file.newContent !== null
 }

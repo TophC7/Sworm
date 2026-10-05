@@ -1,8 +1,9 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { copyToClipboard } from '$lib/utils/clipboard'
-  import type { CommitDetail, FileDiff } from '$lib/types/backend'
+  import type { CommitDetail } from '$lib/types/backend'
   import DiffStack from '$lib/features/workbench/surfaces/diff/DiffStack.svelte'
+  import type { DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { GitCommitIcon, GitBranchIcon, UserIcon, CalendarIcon, CopyIcon, Check } from '$lib/icons/lucideExports'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
@@ -19,7 +20,7 @@
   } = $props()
 
   let detail = $state<CommitDetail | null>(null)
-  let files = $state<FileDiff[]>([])
+  let files = $derived(detail?.files ?? [])
   let copied = $state(false)
   const commitLoad = createTrackedAsyncLoad<string>()
   let loading = $derived(commitLoad.loading)
@@ -29,16 +30,14 @@
     const path = folderPath
     commitLoad.run(hash, async (isCurrent) => {
       detail = null
-      files = []
-      const [d, f] = await Promise.all([
-        backend.git.getCommitDetail(path, hash),
-        backend.git.getDiffFiles(path, { kind: 'commit', hash })
-      ])
+      const d = await backend.git.getCommitDetail(path, hash)
       if (!isCurrent()) return
       detail = d
-      files = f
     })
   })
+
+  const contentFetcher: DiffContentFetcher = (entry) =>
+    backend.git.getDiffFile(folderPath, { kind: 'commit', hash: commitHash }, entry.path, entry.oldPath, entry.status)
 
   function formatDate(iso: string): string {
     try {
@@ -104,6 +103,6 @@
       </div>
     </div>
 
-    <DiffStack {files} {loading} {initialFile} idPrefix="commit-file" {folderPath} {commitHash} />
+    <DiffStack {files} {loading} {initialFile} idPrefix="commit-file" {folderPath} {commitHash} {contentFetcher} />
   </div>
 {/if}

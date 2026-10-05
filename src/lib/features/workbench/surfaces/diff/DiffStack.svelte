@@ -27,7 +27,7 @@
     workingStaged = null,
     commitHash = null,
     stashIndex = null,
-    contentFetcher = null
+    contentFetcher
   }: {
     files: FileDiff[]
     loading?: boolean
@@ -40,13 +40,9 @@
     commitHash?: string | null
     stashIndex?: number | null
     /**
-     * Optional per-file content fetcher. When provided, `files` may
-     * arrive without `oldContent`/`newContent` populated; the store
-     * fetches them lazily via this fetcher as rows are retained. Pass
-     * `null` for callers that ship full content eagerly (commit /
-     * stash diffs, where total payload is bounded by commit size).
+     * Loads each file's contents when its row is retained.
      */
-    contentFetcher?: DiffContentFetcher | null
+    contentFetcher: DiffContentFetcher
   } = $props()
 
   let expandedFiles = $state<Set<string>>(new Set())
@@ -55,7 +51,7 @@
   let wrap = $state(false)
   let fontSize = $state(13)
 
-  const store = new DiffModelStore()
+  const store = new DiffModelStore((entry) => contentFetcher(entry))
   const pool = getDiffEditorPool()
   const preloader = getDiffHeightPreloader()
 
@@ -70,9 +66,6 @@
 
   onMount(() => {
     let disposed = false
-    // Wire up the lazy fetcher before the first sync. Entries with no
-    // content arrive in `files` already, and `retain` triggers loads.
-    store.setContentFetcher(contentFetcher)
     void (async () => {
       const monaco = await pool.ready()
       if (disposed) return
@@ -94,12 +87,6 @@
       disposed = true
       store.dispose()
     }
-  })
-
-  // If the caller swaps the fetcher after mount (rare, but supported),
-  // propagate it without rebuilding the store.
-  $effect(() => {
-    store.setContentFetcher(contentFetcher)
   })
 
   // Keep the model store in sync with the file list.

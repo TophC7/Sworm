@@ -32,8 +32,8 @@
     let ins = 0
     let del = 0
     for (const f of detail.files) {
-      ins += f.additions
-      del += f.deletions
+      ins += f.additions ?? 0
+      del += f.deletions ?? 0
     }
     return { files: detail.files.length, insertions: ins, deletions: del }
   })

@@ -59,9 +59,8 @@
   // content the first time it's retained. Most large diffs have only
   // a handful of rows scrolled into view at a time, so the total bytes
   // pulled stays a tiny fraction of the eager-payload version.
-  const contentFetcher: DiffContentFetcher = async (entry) => {
-    return await backend.git.getWorkingDiffFile(folderPath, entry.path, entry.status, staged)
-  }
+  const contentFetcher: DiffContentFetcher = (entry) =>
+    backend.git.getDiffFile(folderPath, { kind: 'working', staged }, entry.path, entry.oldPath, entry.status)
 </script>
 
 <DiffStack
