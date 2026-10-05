@@ -117,7 +117,9 @@ Browse files, edit code, and review changes before committing:
 
 Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command palette also has modes for editor commands (`>`), runnable tasks (`!`), and files (`/`). Shortcuts are customizable.
 
-`Ctrl+O` opens the Browser. Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open.
+`Ctrl+O` opens the location browser in the same wider shell as the command palette. The current folder starts selected, followed by recent folders, workbenches, and servers—no Places/Folders tabs. Right browses the selected folder, Left goes to its parent, and Enter opens it; while filtering, use Alt+Right/Left so text caret keys keep working. `Ctrl+L` edits the path, Tab completes it, and Escape cancels path editing before closing. The Servers control is keyboard-focusable from every location; `Alt+Home` returns to the locations list. Server entry starts at its working directory, while explicit `~` still goes home.
+
+Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open. The folder view keeps a contents preview and an Open Folder action (`Ctrl+Enter`) for its current directory.
 
 ### Use your project's Nix environment
 
@@ -179,6 +181,8 @@ Backend ownership:
 - `src-tauri/src`: desktop commands, routing, window coordination, and desktop event delivery.
 
 Desktop and daemon adapters move blocking Host operations off the async runtime. Settings mutations share one locked atomic-write path; notification failures after a committed write are logged rather than reported as failed mutations.
+
+Folder navigation uses the host process's canonical working directory; explicit `~` still uses `$HOME`. The NixOS server module sets both `HOME` and systemd `WorkingDirectory` to the service user's home by default. Override the service's `WorkingDirectory` or launch the daemon from another folder to choose a different starting location; `server.jsonc` has no working-directory setting.
 
 ## Feedback
 

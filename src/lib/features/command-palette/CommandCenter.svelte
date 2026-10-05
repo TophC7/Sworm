@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { DialogRoot, DialogPortal, DialogOverlay, DialogContentRaw } from '$lib/components/ui/dialog'
   import {
     Command,
     CommandEmpty,
@@ -8,7 +7,9 @@
     CommandInput,
     CommandItem,
     CommandList,
-    CommandSeparator
+    CommandSeparator,
+    PaletteDialog,
+    PaletteFooter
   } from '$lib/components/ui/command'
   import { Kbd } from '$lib/components/ui/kbd'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
@@ -310,141 +311,129 @@
   }
 </script>
 
-<DialogRoot {open} onOpenChange={(v) => setCommandPaletteOpen(v)}>
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogContentRaw
-      class="fixed inset-0 z-50 flex translate-y-[-5vh] items-start justify-center pt-[20vh]"
-      aria-label="Command center"
-    >
-      <div class={cn('w-full max-w-xl overflow-hidden rounded-xl border border-edge', 'bg-raised shadow-popover')}>
-        <Command
-          bind:value={commandValue}
-          vimBindings={false}
-          shouldFilter={false}
-          disablePointerSelection={suppressPointerSelection}
-          onkeydown={handleCommandKeydown}
-          onpointermovecapture={handleCommandPointerMove}
-          onpointerleavecapture={handleCommandPointerLeave}
-          class="overflow-visible rounded-none"
-        >
-          <CommandInput placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
-          <CommandList bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
-            <CommandEmpty />
+<PaletteDialog {open} onOpenChange={(v) => setCommandPaletteOpen(v)} label="Command center">
+  <Command
+    bind:value={commandValue}
+    vimBindings={false}
+    shouldFilter={false}
+    disablePointerSelection={suppressPointerSelection}
+    onkeydown={handleCommandKeydown}
+    onpointermovecapture={handleCommandPointerMove}
+    onpointerleavecapture={handleCommandPointerLeave}
+    class="min-h-0 overflow-visible rounded-none"
+  >
+    <CommandInput aria-label="Search commands" placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
+    <CommandList bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
+      <CommandEmpty />
 
-            {#each activeGroups as group, i (group.heading)}
-              {#if i > 0}
-                <CommandSeparator />
-              {/if}
-              <CommandGroup heading={group.heading}>
-                {#each group.commands as cmd (cmd.id)}
-                  {@const Icon = cmd.icon}
-                  {@const defaultKeybindings = commandDefaultKeybindings(cmd)}
-                  {@const effectiveShortcuts = getEffectiveBindings(commandBindingId(cmd), defaultKeybindings)}
-                  {@const canEditShortcut = commandCanEditShortcut(cmd)}
-                  <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
-                    {#if Icon}
-                      <Icon />
-                    {:else if cmd.iconSrc}
-                      <img src={cmd.iconSrc} alt="" class="h-4 w-4 shrink-0 opacity-60" />
-                    {:else if cmd.lucideIcon}
-                      <!-- LucideIcon lazy-loads a Svelte chunk per icon name.
+      {#each activeGroups as group, i (group.heading)}
+        {#if i > 0}
+          <CommandSeparator />
+        {/if}
+        <CommandGroup heading={group.heading}>
+          {#each group.commands as cmd (cmd.id)}
+            {@const Icon = cmd.icon}
+            {@const defaultKeybindings = commandDefaultKeybindings(cmd)}
+            {@const effectiveShortcuts = getEffectiveBindings(commandBindingId(cmd), defaultKeybindings)}
+            {@const canEditShortcut = commandCanEditShortcut(cmd)}
+            <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
+              {#if Icon}
+                <Icon />
+              {:else if cmd.iconSrc}
+                <img src={cmd.iconSrc} alt="" class="h-4 w-4 shrink-0 opacity-60" />
+              {:else if cmd.lucideIcon}
+                <!-- LucideIcon lazy-loads a Svelte chunk per icon name.
                            Callers pass a fallback (e.g. 'terminal') at command
                            build time so invalid names degrade to no icon rather
                            than layout shift. -->
-                      <LucideIcon name={cmd.lucideIcon} size={16} class="shrink-0 opacity-60" />
+                <LucideIcon name={cmd.lucideIcon} size={16} class="shrink-0 opacity-60" />
+              {/if}
+              {#if cmd.serverState}
+                <span
+                  class="size-2 shrink-0 rounded-full {remoteDotClass(cmd.serverState)}"
+                  aria-label={cmd.serverState}
+                ></span>
+              {/if}
+              {#if cmd.subtitle}
+                <span class="truncate">{cmd.label}</span>
+                <span class="ml-auto truncate text-xs text-subtle">{cmd.subtitle}</span>
+              {:else}
+                {cmd.label}
+              {/if}
+              {#if canEditShortcut || effectiveShortcuts.length > 0}
+                {@const primaryShortcut = effectiveShortcuts[0]}
+                <span class="ml-auto flex items-center gap-1.5">
+                  {#if canEditShortcut}
+                    <button
+                      type="button"
+                      aria-label={primaryShortcut ? 'Edit shortcut' : 'Add shortcut'}
+                      title={primaryShortcut ? 'Edit shortcut' : 'Add shortcut'}
+                      onpointerdown={(e) => openRebind(cmd, e)}
+                      class={cn(
+                        'invisible cursor-pointer rounded text-muted group-focus-within:visible group-hover:visible group-data-selected:visible hover:bg-raised/70 hover:text-fg focus-visible:visible focus-visible:shadow-focus-ring focus-visible:outline-none',
+                        primaryShortcut
+                          ? 'p-1'
+                          : 'flex w-28 items-center justify-end gap-1 px-1.5 py-1 text-xs whitespace-nowrap'
+                      )}
+                    >
+                      <PencilIcon class="size-3" />
+                      {#if !primaryShortcut}
+                        <span>Add shortcut</span>
+                      {/if}
+                    </button>
+                  {/if}
+                  {#if primaryShortcut}
+                    <ShortcutPreview spec={primaryShortcut} class="flex-nowrap" />
+                    {#if effectiveShortcuts.length > 1}
+                      <span class="text-xs text-subtle">+{effectiveShortcuts.length - 1}</span>
                     {/if}
-                    {#if cmd.serverState}
-                      <span
-                        class="size-2 shrink-0 rounded-full {remoteDotClass(cmd.serverState)}"
-                        aria-label={cmd.serverState}
-                      ></span>
-                    {/if}
-                    {#if cmd.subtitle}
-                      <span class="truncate">{cmd.label}</span>
-                      <span class="ml-auto truncate text-xs text-subtle">{cmd.subtitle}</span>
-                    {:else}
-                      {cmd.label}
-                    {/if}
-                    {#if canEditShortcut || effectiveShortcuts.length > 0}
-                      {@const primaryShortcut = effectiveShortcuts[0]}
-                      <span class="ml-auto flex items-center gap-1.5">
-                        {#if canEditShortcut}
-                          <button
-                            type="button"
-                            aria-label={primaryShortcut ? 'Edit shortcut' : 'Add shortcut'}
-                            title={primaryShortcut ? 'Edit shortcut' : 'Add shortcut'}
-                            onpointerdown={(e) => openRebind(cmd, e)}
-                            class={cn(
-                              'invisible cursor-pointer rounded text-muted group-focus-within:visible group-hover:visible group-data-selected:visible hover:bg-raised/70 hover:text-fg focus-visible:visible focus-visible:shadow-focus-ring focus-visible:outline-none',
-                              primaryShortcut
-                                ? 'p-1'
-                                : 'flex w-28 items-center justify-end gap-1 px-1.5 py-1 text-xs whitespace-nowrap'
-                            )}
-                          >
-                            <PencilIcon class="size-3" />
-                            {#if !primaryShortcut}
-                              <span>Add shortcut</span>
-                            {/if}
-                          </button>
-                        {/if}
-                        {#if primaryShortcut}
-                          <ShortcutPreview spec={primaryShortcut} class="flex-nowrap" />
-                          {#if effectiveShortcuts.length > 1}
-                            <span class="text-xs text-subtle">+{effectiveShortcuts.length - 1}</span>
-                          {/if}
-                        {/if}
-                      </span>
-                    {/if}
-                  </CommandItem>
-                {/each}
-              </CommandGroup>
-            {/each}
-          </CommandList>
-        </Command>
-        <!-- Footer hints surface core palette shortcuts so users learn -->
-        <!-- navigation/editor-mode affordances without a separate help pane. -->
-        <div
-          class="flex items-center justify-between gap-4 border-t border-edge bg-surface/60 px-3 py-2 text-xs text-muted"
-        >
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <span class="flex items-center gap-1.5">
-              <Kbd>↑</Kbd>
-              <Kbd>↓</Kbd>
-              navigate
-            </span>
-            <span class="flex items-center gap-1.5">
-              <Kbd>↵</Kbd>
-              run
-            </span>
-            {#if !isPrefixedMode}
-              <span class="flex items-center gap-1.5">
-                <Kbd>&gt;</Kbd>
-                editor
-              </span>
-              <span class="flex items-center gap-1.5">
-                <Kbd>!</Kbd>
-                tasks
-              </span>
-              <span class="flex items-center gap-1.5">
-                <Kbd>/</Kbd>
-                files
-              </span>
-              <span class="flex items-center gap-1.5">
-                <Kbd>@</Kbd>
-                places
-              </span>
-            {/if}
-          </div>
-          <span class="flex items-center gap-1.5">
-            <Kbd>Esc</Kbd>
-            close
-          </span>
-        </div>
-      </div>
-    </DialogContentRaw>
-  </DialogPortal>
-</DialogRoot>
+                  {/if}
+                </span>
+              {/if}
+            </CommandItem>
+          {/each}
+        </CommandGroup>
+      {/each}
+    </CommandList>
+  </Command>
+  <!-- Footer hints surface core palette shortcuts so users learn -->
+  <!-- navigation/editor-mode affordances without a separate help pane. -->
+  <PaletteFooter>
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <span class="flex items-center gap-1.5">
+        <Kbd>↑</Kbd>
+        <Kbd>↓</Kbd>
+        navigate
+      </span>
+      <span class="flex items-center gap-1.5">
+        <Kbd>↵</Kbd>
+        run
+      </span>
+      {#if !isPrefixedMode}
+        <span class="flex items-center gap-1.5">
+          <Kbd>&gt;</Kbd>
+          editor
+        </span>
+        <span class="flex items-center gap-1.5">
+          <Kbd>!</Kbd>
+          tasks
+        </span>
+        <span class="flex items-center gap-1.5">
+          <Kbd>/</Kbd>
+          files
+        </span>
+        <span class="flex items-center gap-1.5">
+          <Kbd>@</Kbd>
+          places
+        </span>
+      {/if}
+    </div>
+    <span class="flex items-center gap-1.5">
+      <Kbd>Esc</Kbd>
+      close
+    </span>
+  </PaletteFooter>
+</PaletteDialog>
 
 {#if rebindTarget}
   <RebindDialog

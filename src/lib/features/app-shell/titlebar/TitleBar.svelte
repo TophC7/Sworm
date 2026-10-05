@@ -10,7 +10,7 @@
   import { isBrowserOpen, toggleBrowser } from '$lib/features/browser/state.svelte'
   import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
 
-  let placesShortcut = $derived(getEffectiveSpec('open-folder', 'Ctrl+O'))
+  let browserShortcut = $derived(getEffectiveSpec('open-folder', 'Ctrl+O'))
 
   function openPalette() {
     setCommandPaletteOpen(true)
@@ -22,9 +22,8 @@
     <TitleBarMenu />
     <IconButton
       size="md"
-      tooltip="Places"
-      shortcut={placesShortcut}
-      data-browser-toggle="true"
+      tooltip="Open Folder"
+      shortcut={browserShortcut}
       aria-expanded={isBrowserOpen()}
       onclick={() => toggleBrowser()}
     >

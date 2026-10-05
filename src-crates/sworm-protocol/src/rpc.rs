@@ -196,6 +196,8 @@ macro_rules! sworm_rpc_ops {
             FolderPathRoot => folder_path_root(path: String) -> $crate::folder::PathRoot;
             #[route(server)]
             FolderHome => folder_home() -> String;
+            #[route(server)]
+            FolderWorkingDirectory => folder_working_directory() -> String;
             #[route(none)]
             ProviderList => provider_list() -> Vec<$crate::provider::ProviderStatus>;
             #[route(none)]

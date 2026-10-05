@@ -1,7 +1,6 @@
-// Browser — the one surface for going somewhere else: a places list
-// (workbenches, recent folders, servers) and folder columns that browse any
-// host. A request captures which temporary tab, if any, the chosen place
-// replaces.
+// Browser — one location palette for current/recent folders, workbenches,
+// servers, and folder navigation. A request captures the temporary tab, if
+// any, that the chosen location replaces.
 
 import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 import { openWorkbench } from '$lib/features/workbench/groups.svelte'
@@ -12,9 +11,9 @@ import type { WorkbenchInfo } from '$lib/types/backend'
 import { closeTransientModals, registerModal } from '$lib/utils/modalRegistry.svelte'
 
 export interface BrowserRequest {
-  /** Start in the folder columns with this folder selected in its parent. */
+  /** Start browsing inside this folder. */
   path?: string
-  /** Start inside this host's home folder; `null` is this host. Wins over `path`. */
+  /** Start inside this host's working directory; `null` is this host. Wins over `path`. */
   server?: string | null
   /** Captured preview that the chosen place replaces, if it is still replaceable. */
   replaceTabId?: TabId
@@ -40,7 +39,7 @@ export function closeBrowser(): void {
   request = null
 }
 
-/** Status-bar folder chip: toggles the columns at `path`. */
+/** Status-bar folder chip: toggles browsing inside `path`. */
 export function toggleBrowser(options: BrowserRequest = {}): void {
   if (request) closeBrowser()
   else openBrowser(options)
@@ -53,10 +52,7 @@ export function localHostLabel(): string {
   return platform.native ? 'This Machine' : 'This Server'
 }
 
-/**
- * Browse a host from inside its home folder; `server` null is this host. An
- * unreachable server opens at its root so the listing shows why.
- */
+/** Browse a host's working directory; `server` null is this host. */
 export function browseServer(server: string | null): void {
   openBrowser({ server })
 }

@@ -642,6 +642,9 @@ fn workbench_operations_over_paired_quic() -> Result<()> {
         return Ok(());
     }
     let home = std::path::PathBuf::from(std::env::var_os("HOME").context("missing HOME")?);
+    let working_directory = home.join("host-working-directory");
+    fs::create_dir(&working_directory)?;
+    std::env::set_current_dir(&working_directory)?;
     for path in [
         SettingsService::global_settings_path(),
         SettingsService::global_shortcuts_path(),
@@ -658,6 +661,21 @@ fn workbench_operations_over_paired_quic() -> Result<()> {
         let mut daemon = Daemon::start(None).await?;
         kv_and_recent(&mut daemon).await?;
         let client = daemon.paired_client().await?;
+        let actual_home = client
+            .call_as(&Request::FolderHome {}, Reply::folder_home)
+            .await?;
+        let actual_working_directory = client
+            .call_as(
+                &Request::FolderWorkingDirectory {},
+                Reply::folder_working_directory,
+            )
+            .await?;
+        assert_eq!(actual_home, path_string(&fs::canonicalize(&home)?));
+        assert_eq!(
+            actual_working_directory,
+            path_string(&fs::canonicalize(&working_directory)?)
+        );
+        assert_ne!(actual_working_directory, actual_home);
         shortcuts(&client, home.as_path()).await?;
         catalogs_and_providers(&client, home.as_path()).await?;
         activity_and_root(&client, home.as_path()).await?;

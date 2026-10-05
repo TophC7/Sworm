@@ -600,8 +600,7 @@ macro_rules! define_router_operation {
             $($argument:ident: $argument_type:ty),* $(,)?
         ) -> $return_type:ty;
     ) => {
-        /// Host-owned settings belong to whichever server runs the workspace
-        /// being edited, so the caller names it instead of a path.
+        /// Host-global operations target the named server, or the desktop host.
         pub async fn $method(
             &self,
             server: Option<String>,

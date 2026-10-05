@@ -24,10 +24,18 @@ impl Host {
         Ok(find_path_root(&resolve_folder(&path)?))
     }
 
-    /// Canonical `$HOME`, where browsing a host starts.
+    /// Canonical `$HOME`, used for explicit home navigation.
     pub fn folder_home(&self) -> Result<String, ApiError> {
         let home = home_dir().ok_or_else(|| ApiError::NotFound("HOME is not set".to_owned()))?;
         Ok(resolve_folder(&home.to_string_lossy())?
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    /// Canonical process working directory, including a service's WorkingDirectory.
+    pub fn folder_working_directory(&self) -> Result<String, ApiError> {
+        Ok(std::env::current_dir()?
+            .canonicalize()?
             .to_string_lossy()
             .into_owned())
     }

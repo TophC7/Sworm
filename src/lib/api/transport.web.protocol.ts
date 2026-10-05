@@ -30,7 +30,8 @@ const globalMethods: Record<string, true> = {
   settings_set_formatting: true,
   settings_set_provider_config: true,
   lsp_set_server_config: true,
-  folder_home: true
+  folder_home: true,
+  folder_working_directory: true
 }
 
 export function toWireParams(method: string, params: object): Record<string, unknown> {

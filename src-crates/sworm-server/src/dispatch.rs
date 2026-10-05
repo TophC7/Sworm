@@ -399,7 +399,7 @@ macro_rules! dispatch_operation {
             $($argument:ident: $argument_type:ty),* $(,)?
         ) -> $return_type:ty;
     ) => {
-        /// The daemon is the server: its own global settings are the target.
+        /// Host-global operations run on the daemon, without claiming a folder.
         async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
             self.on_host(move |host| host.$method($($argument),*)).await
         }

@@ -1,3 +1,11 @@
+<script lang="ts" module>
+  import { tv } from 'tailwind-variants'
+
+  export const commandGroupHeadingVariants = tv({
+    base: 'px-2 py-1.5 text-xs font-medium text-muted'
+  })
+</script>
+
 <script lang="ts">
   import { Command } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
@@ -19,7 +27,7 @@
 
 <Command.Group class={cn('overflow-hidden p-1', className)} {...rest}>
   {#if heading}
-    <Command.GroupHeading class="px-2 py-1.5 text-xs font-medium text-muted">
+    <Command.GroupHeading class={commandGroupHeadingVariants()}>
       {heading}
     </Command.GroupHeading>
   {/if}

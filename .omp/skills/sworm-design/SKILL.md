@@ -506,7 +506,7 @@ Separator = `mx-2 my-1 h-px bg-edge`.
 
 ### 11.12 Command palette
 
-`bg-raised border border-edge rounded-xl shadow-popover` with `Dialog.Overlay` backdrop. See the live `CommandCenter.svelte` for the canonical layout.
+`bg-raised border border-edge rounded-xl shadow-popover` with `Dialog.Overlay` backdrop. `PaletteDialog` in `ui/command` owns the shared shell for `CommandCenter.svelte` and the location browser: `max-w-3xl` (48rem), 12px viewport gutters, top at 15vh, height capped at 80dvh. The dialog boundary is the visible palette so backdrop clicks dismiss it. Reuse `PaletteSearch`, `PaletteFooter`, and `commandItemVariants` for both surfaces; folder previews step down to `bg-surface`.
 
 ### 11.13 Toast / notification
 

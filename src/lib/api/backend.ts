@@ -158,6 +158,13 @@ export const backend = {
       const home = await invoke<string>('folder_home', { folderPath: server ? `sworm://${server}/` : null })
       return server ? `sworm://${server}${home}` : home
     },
+    /** Canonical process working folder of `server`, or of this host when omitted. */
+    async workingDirectory(server?: string): Promise<string> {
+      const path = await invoke<string>('folder_working_directory', {
+        folderPath: server ? `sworm://${server}/` : null
+      })
+      return server ? `sworm://${server}${path}` : path
+    },
     /** Drop backend resources scoped to a folder that no longer has any open tab. */
     release(folderPath: string): Promise<void> {
       return invoke<void>('folder_release', { folderPath })

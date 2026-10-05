@@ -152,6 +152,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         folder_list_entries,
         folder_path_root,
         folder_home,
+        folder_working_directory,
         folders::folder_open_in_terminal,
         recent_folders_list,
         recent_folders_touch,

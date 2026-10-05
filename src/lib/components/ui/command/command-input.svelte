@@ -1,28 +1,13 @@
 <script lang="ts">
   import { Command } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
-  import { SearchIcon } from '$lib/icons/lucideExports'
+  import PaletteSearch from './palette-search.svelte'
 
-  let {
-    class: className,
-    value = $bindable(''),
-    ...rest
-  }: {
-    class?: string
-    value?: string
-    placeholder?: string
-  } = $props()
+  let { class: className, value = $bindable(''), ...rest }: Omit<Command.InputProps, 'child' | 'children'> = $props()
 </script>
 
-<div class="flex items-center gap-2 border-b border-edge px-3" data-slot="command-input-wrapper">
-  <SearchIcon class="size-4 shrink-0 text-muted" />
-  <Command.Input
-    class={cn(
-      'flex h-10 w-full bg-transparent py-3 text-sm text-fg outline-none',
-      'placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-50',
-      className
-    )}
-    bind:value
-    {...rest}
-  />
-</div>
+<PaletteSearch>
+  {#snippet children(inputClass)}
+    <Command.Input class={cn(inputClass, className)} bind:value {...rest} />
+  {/snippet}
+</PaletteSearch>
