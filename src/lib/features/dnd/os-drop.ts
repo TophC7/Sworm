@@ -1,48 +1,37 @@
-import { platform, requireNative } from '$lib/platform'
+import { platform, type NativePlatform } from '$lib/platform'
 import type { Unsubscribe } from '$lib/api/transport'
 import type { DragPayload } from '$lib/features/dnd/payload'
 import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 
 let unlisten: Unsubscribe | null = null
-let hoverPayload: DragPayload | null = null
 let lastPaths: string[] = []
 let mountCount = 0
 let registering: Promise<void> | null = null
 
 export async function initOsDrop(): Promise<void> {
-  if (!platform.capabilities.osDragDrop) return
+  const native = platform.native
+  if (!native) return
   mountCount += 1
   if (unlisten) return
-  registering ??= register()
+  registering ??= register(native)
   await registering
 }
 
-async function register(): Promise<void> {
+async function register(native: NativePlatform): Promise<void> {
   try {
-    const stop = await requireNative().osDrop.onEvent((event) => {
+    const stop = await native.osDrop.onEvent((event) => {
       const deviceScale = window.devicePixelRatio || 1
 
-      if (event.type === 'enter') {
-        lastPaths = event.paths
+      if (event.type === 'enter') lastPaths = event.paths
+      if (event.type === 'enter' || event.type === 'over') {
         if (lastPaths.length === 0) return
-        hoverPayload = {
+        const payload: DragPayload = {
           source: 'external',
           items: [{ kind: 'os-files', paths: [...lastPaths] }]
         }
-        LocalTransfer.set(hoverPayload)
-        DropRegistry.hoverAt(event.position.x / deviceScale, event.position.y / deviceScale, hoverPayload)
-        return
-      }
-
-      if (event.type === 'over') {
-        if (lastPaths.length === 0) return
-        hoverPayload = {
-          source: 'external',
-          items: [{ kind: 'os-files', paths: [...lastPaths] }]
-        }
-        LocalTransfer.set(hoverPayload)
-        DropRegistry.hoverAt(event.position.x / deviceScale, event.position.y / deviceScale, hoverPayload)
+        LocalTransfer.set(payload)
+        DropRegistry.hoverAt(event.position.x / deviceScale, event.position.y / deviceScale, payload)
         return
       }
 
@@ -73,7 +62,6 @@ async function register(): Promise<void> {
 }
 
 export function disposeOsDrop(): void {
-  if (!platform.capabilities.osDragDrop) return
   mountCount = Math.max(0, mountCount - 1)
   if (mountCount > 0) return
   if (!unlisten) return
@@ -85,6 +73,5 @@ export function disposeOsDrop(): void {
 function clearHoverState(): void {
   DropRegistry.clearHover()
   LocalTransfer.clear()
-  hoverPayload = null
   lastPaths = []
 }

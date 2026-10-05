@@ -4,7 +4,7 @@
 // vs "bash", "plaintext" vs "text"). This map is tailored for Monaco's
 // built-in Monarch tokenizers.
 
-import { getBuiltinLanguageForFilePath } from '$lib/features/builtins/catalog'
+import { getBuiltinLanguageForFilePath } from '$lib/features/builtins/catalog.svelte'
 import { basename } from '$lib/utils/paths'
 
 // Map of file extension (without dot) to Monaco language ID.

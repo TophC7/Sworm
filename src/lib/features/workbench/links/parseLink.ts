@@ -14,7 +14,7 @@ const SCHEME_REGEX = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(.*)$/
 /**
  * Strip surrounding quotes, backticks, parens, brackets from raw terminal or markdown token.
  */
-export function sanitizeLinkCandidate(raw: string): string {
+function sanitizeLinkCandidate(raw: string): string {
   let text = raw.trim()
   if (
     (text.startsWith('"') && text.endsWith('"')) ||

@@ -1,242 +1,203 @@
+import { SvelteMap } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
-import type {
-  Issue,
-  IssueDetail,
-  IssueEpic,
-  IssueEpicUpdateInput,
-  IssueListFilters,
-  IssueUpdateInput
-} from '$lib/types/backend'
+import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
+import { getErrorMessage } from '$lib/utils/client-error'
+import type { Issue, IssueDetail, IssueEpic, IssueEpicUpdateInput, IssueUpdateInput } from '$lib/types/backend'
 
-let issuesByFolder = $state<Map<string, Issue[]>>(new Map())
-let readyByFolder = $state<Map<string, Issue[]>>(new Map())
-let epicsByFolder = $state<Map<string, IssueEpic[]>>(new Map())
-let issueDetailsByFolder = $state<Map<string, Map<string, IssueDetail>>>(new Map())
-let epicDetailsByFolder = $state<Map<string, Map<string, IssueEpic>>>(new Map())
-let loadingByFolder = $state<Map<string, boolean>>(new Map())
-let errorByFolder = $state<Map<string, string | null>>(new Map())
+const lists = createFolderKeyedStore<{
+  issues: Issue[]
+  epics: IssueEpic[]
+  loading: boolean
+  error: string | null
+}>()
 
-function setMapValue<K, V>(map: Map<K, V>, key: K, value: V): Map<K, V> {
-  return new Map(map).set(key, value)
-}
+type DetailSlot<T> = { value: T | null; error: string | null; sequence: number }
+const issueDetails = new SvelteMap<string, DetailSlot<IssueDetail>>()
+const epicDetails = new SvelteMap<string, DetailSlot<IssueEpic>>()
+const refreshQueues = new Map<string, { again: boolean; promise: Promise<void> }>()
 
-// Update one entry inside a per-folder nested map. Clones both levels
-// so $state's reference equality treats it as a real change and
-// downstream $derived caches re-run.
-function setNested<V>(
-  outer: Map<string, Map<string, V>>,
-  folderPath: string,
-  innerKey: string,
-  value: V
-): Map<string, Map<string, V>> {
-  const next = new Map(outer)
-  const inner = new Map(next.get(folderPath) ?? new Map())
-  inner.set(innerKey, value)
-  next.set(folderPath, inner)
-  return next
-}
-
-function deleteNested<V>(
-  outer: Map<string, Map<string, V>>,
-  folderPath: string,
-  innerKey: string
-): Map<string, Map<string, V>> {
-  const inner = outer.get(folderPath)
-  if (!inner || !inner.has(innerKey)) return outer
-  const next = new Map(outer)
-  const cloned = new Map(inner)
-  cloned.delete(innerKey)
-  next.set(folderPath, cloned)
-  return next
-}
-
-function messageFromError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function setLoading(folderPath: string, loading: boolean) {
-  loadingByFolder = setMapValue(loadingByFolder, folderPath, loading)
-}
-
-function setError(folderPath: string, message: string | null) {
-  errorByFolder = setMapValue(errorByFolder, folderPath, message)
+function detailKey(folderPath: string, id: string): string {
+  return `${folderPath}\0${id}`
 }
 
 export function getIssues(folderPath: string): Issue[] {
-  return issuesByFolder.get(folderPath) ?? []
-}
-
-export function getReadyIssues(folderPath: string): Issue[] {
-  return readyByFolder.get(folderPath) ?? []
+  return lists.get(folderPath)?.issues ?? []
 }
 
 export function getIssueEpics(folderPath: string): IssueEpic[] {
-  return epicsByFolder.get(folderPath) ?? []
+  return lists.get(folderPath)?.epics ?? []
 }
 
-// Per-id detail lookup. Each tab subscribes to its own slot so
-// multiple tabs doesn't fight over a single shared
-// cache entry.
-export function getIssueDetail(folderPath: string, issueId: string): IssueDetail | null {
-  return issueDetailsByFolder.get(folderPath)?.get(issueId) ?? null
+export function getIssueDetail(folderPath: string, issueId: string): DetailSlot<IssueDetail> | null {
+  return issueDetails.get(detailKey(folderPath, issueId)) ?? null
 }
 
-export function getEpicDetail(folderPath: string, epicId: string): IssueEpic | null {
-  return epicDetailsByFolder.get(folderPath)?.get(epicId) ?? null
+export function getEpicDetail(folderPath: string, epicId: string): DetailSlot<IssueEpic> | null {
+  return epicDetails.get(detailKey(folderPath, epicId)) ?? null
 }
 
 export function isIssuesLoading(folderPath: string): boolean {
-  return loadingByFolder.get(folderPath) ?? false
+  return lists.get(folderPath)?.loading ?? false
 }
 
 export function getIssuesError(folderPath: string): string | null {
-  return errorByFolder.get(folderPath) ?? null
+  return lists.get(folderPath)?.error ?? null
 }
 
-export async function loadIssues(folderPath: string, filters: IssueListFilters = {}) {
-  setLoading(folderPath, true)
-  setError(folderPath, null)
+async function refreshDetail<T>(
+  details: SvelteMap<string, DetailSlot<T>>,
+  key: string,
+  slot: DetailSlot<T>,
+  load: () => Promise<T>
+): Promise<void> {
+  const sequence = ++slot.sequence
+  slot.error = null
   try {
-    const [issues, ready, epics] = await Promise.all([
-      backend.issues.list(folderPath, filters),
-      backend.issues.ready(folderPath, 20),
-      backend.issues.epics.list(folderPath)
-    ])
-    issuesByFolder = setMapValue(issuesByFolder, folderPath, issues)
-    readyByFolder = setMapValue(readyByFolder, folderPath, ready)
-    epicsByFolder = setMapValue(epicsByFolder, folderPath, epics)
+    const value = await load()
+    if (details.get(key) === slot && slot.sequence === sequence) slot.value = value
   } catch (error) {
-    setError(folderPath, messageFromError(error))
-  } finally {
-    setLoading(folderPath, false)
+    if (details.get(key) === slot && slot.sequence === sequence) slot.error = getErrorMessage(error)
   }
 }
 
-export function refreshIssuesForFolder(folderPath: string): void {
-  if (issuesByFolder.has(folderPath)) {
-    void loadIssues(folderPath)
+export function refreshIssuesForFolder(folderPath: string): Promise<void> {
+  const prefix = `${folderPath}\0`
+  const mountedIssues = () => [...issueDetails].filter(([key]) => key.startsWith(prefix))
+  const mountedEpics = () => [...epicDetails].filter(([key]) => key.startsWith(prefix))
+  if (!lists.has(folderPath) && !mountedIssues().length && !mountedEpics().length) return Promise.resolve()
+  const existing = refreshQueues.get(folderPath)
+  if (existing) {
+    existing.again = true
+    return existing.promise
   }
-  const issueDetails = issueDetailsByFolder.get(folderPath)
-  if (issueDetails) {
-    for (const id of issueDetails.keys()) {
-      void openIssueDetail(folderPath, id)
-    }
-  }
-  const epicDetails = epicDetailsByFolder.get(folderPath)
-  if (epicDetails) {
-    for (const id of epicDetails.keys()) {
-      void openEpicDetail(folderPath, id)
-    }
-  }
-}
 
-export async function searchIssues(
-  folderPath: string,
-  query: string,
-  filters: IssueListFilters = {}
-): Promise<Issue[]> {
-  if (!query.trim()) return getIssues(folderPath)
-  return backend.issues.search(folderPath, query.trim(), filters)
-}
-
-export async function openIssueDetail(folderPath: string, issueId: string): Promise<IssueDetail> {
-  const detail = await backend.issues.get(folderPath, issueId)
-  issueDetailsByFolder = setNested(issueDetailsByFolder, folderPath, issueId, detail)
-  return detail
-}
-
-export function closeIssueDetail(folderPath: string, issueId: string) {
-  issueDetailsByFolder = deleteNested(issueDetailsByFolder, folderPath, issueId)
-}
-
-export async function createIssue(
-  folderPath: string,
-  title: string,
-  epicId: string,
-  parentIssueId?: string | null
-): Promise<Issue | null> {
-  const trimmed = title.trim()
-  if (!trimmed || (!epicId && !parentIssueId)) return null
-  const issue = await backend.issues.create(folderPath, {
-    title: trimmed,
-    epicId: epicId || null,
-    parentIssueId: parentIssueId ?? null,
-    actor: 'human'
+  const generation = lists.generation(folderPath)
+  const queue = { again: false, promise: Promise.resolve() }
+  const current = () => lists.generation(folderPath) === generation && refreshQueues.get(folderPath) === queue
+  refreshQueues.set(folderPath, queue)
+  queue.promise = (async () => {
+    do {
+      queue.again = false
+      const reloadLists = async () => {
+        if (!lists.has(folderPath)) return
+        lists.patch(folderPath, { loading: true, error: null })
+        try {
+          const [issues, epics] = await Promise.all([
+            backend.issues.list(folderPath),
+            backend.issues.epics.list(folderPath)
+          ])
+          if (current()) lists.patch(folderPath, { issues, epics })
+        } catch (error) {
+          if (current()) lists.patch(folderPath, { error: getErrorMessage(error) })
+        } finally {
+          if (current()) lists.patch(folderPath, { loading: false })
+        }
+      }
+      await Promise.all([
+        reloadLists(),
+        ...mountedIssues().map(([key, slot]) =>
+          refreshDetail(issueDetails, key, slot, () => backend.issues.get(folderPath, key.slice(prefix.length)))
+        ),
+        ...mountedEpics().map(([key, slot]) =>
+          refreshDetail(epicDetails, key, slot, () => backend.issues.epics.get(folderPath, key.slice(prefix.length)))
+        )
+      ])
+    } while (current() && queue.again)
+  })().finally(() => {
+    if (refreshQueues.get(folderPath) === queue) refreshQueues.delete(folderPath)
   })
-  await loadIssues(folderPath)
+  return queue.promise
+}
+
+export function loadIssues(folderPath: string): Promise<void> {
+  if (!lists.has(folderPath)) lists.set(folderPath, { issues: [], epics: [], loading: false, error: null })
+  return refreshIssuesForFolder(folderPath)
+}
+
+export function watchIssueDetail(folderPath: string, issueId: string): () => void {
+  const key = detailKey(folderPath, issueId)
+  const slot = $state<DetailSlot<IssueDetail>>({ value: null, error: null, sequence: 0 })
+  issueDetails.set(key, slot)
+  void refreshIssuesForFolder(folderPath)
+  return () => {
+    if (issueDetails.get(key) === slot) issueDetails.delete(key)
+  }
+}
+
+export function watchEpicDetail(folderPath: string, epicId: string): () => void {
+  const key = detailKey(folderPath, epicId)
+  const slot = $state<DetailSlot<IssueEpic>>({ value: null, error: null, sequence: 0 })
+  epicDetails.set(key, slot)
+  void refreshIssuesForFolder(folderPath)
+  return () => {
+    if (epicDetails.get(key) === slot) epicDetails.delete(key)
+  }
+}
+
+export function reloadIssueDetail(folderPath: string, issueId: string): Promise<void> {
+  if (!issueDetails.has(detailKey(folderPath, issueId))) return Promise.resolve()
+  return refreshIssuesForFolder(folderPath)
+}
+
+export function reloadEpicDetail(folderPath: string, epicId: string): Promise<void> {
+  if (!epicDetails.has(detailKey(folderPath, epicId))) return Promise.resolve()
+  return refreshIssuesForFolder(folderPath)
+}
+
+export function releaseIssueFolder(folderPath: string): void {
+  lists.delete(folderPath)
+  refreshQueues.delete(folderPath)
+  const prefix = `${folderPath}\0`
+  for (const key of issueDetails.keys()) if (key.startsWith(prefix)) issueDetails.delete(key)
+  for (const key of epicDetails.keys()) if (key.startsWith(prefix)) epicDetails.delete(key)
+}
+
+export async function createIssue(folderPath: string, title: string, epicId: string): Promise<Issue | null> {
+  const trimmed = title.trim()
+  if (!trimmed || !epicId) return null
+  const issue = await backend.issues.create(folderPath, { title: trimmed, epicId, actor: 'human' })
+  await refreshIssuesForFolder(folderPath)
   return issue
 }
 
 export async function createEpic(folderPath: string, title: string): Promise<IssueEpic | null> {
   const trimmed = title.trim()
   if (!trimmed) return null
-  const epic = await backend.issues.epics.create(folderPath, {
-    title: trimmed,
-    actor: 'human'
-  })
-  await loadIssues(folderPath)
+  const epic = await backend.issues.epics.create(folderPath, { title: trimmed, actor: 'human' })
+  await refreshIssuesForFolder(folderPath)
   return epic
 }
 
 export async function updateIssue(folderPath: string, issueId: string, patch: IssueUpdateInput): Promise<Issue> {
-  const issue = await backend.issues.update(folderPath, issueId, {
-    ...patch,
-    actor: patch.actor ?? 'human'
-  })
-  await Promise.all([loadIssues(folderPath), openIssueDetail(folderPath, issueId)])
+  const issue = await backend.issues.update(folderPath, issueId, { ...patch, actor: patch.actor ?? 'human' })
+  await refreshIssuesForFolder(folderPath)
   return issue
 }
 
 export async function claimIssue(folderPath: string, issueId: string): Promise<Issue> {
   const gitUser = await backend.issues.currentGitUser(folderPath)
-  return updateIssue(folderPath, issueId, {
-    status: 'in_progress',
-    assigneeKind: 'human',
-    assigneeId: gitUser
-  })
-}
-
-export async function openEpicDetail(folderPath: string, epicId: string): Promise<IssueEpic | null> {
-  const epic = await backend.issues.epics.get(folderPath, epicId)
-  if (epic) {
-    epicDetailsByFolder = setNested(epicDetailsByFolder, folderPath, epicId, epic)
-  }
-  return epic
-}
-
-export function closeEpicDetail(folderPath: string, epicId: string) {
-  epicDetailsByFolder = deleteNested(epicDetailsByFolder, folderPath, epicId)
+  return updateIssue(folderPath, issueId, { status: 'in_progress', assigneeKind: 'human', assigneeId: gitUser })
 }
 
 export async function updateEpic(folderPath: string, epicId: string, patch: IssueEpicUpdateInput): Promise<IssueEpic> {
-  const epic = await backend.issues.epics.update(folderPath, epicId, {
-    ...patch,
-    actor: patch.actor ?? 'human'
-  })
-  await Promise.all([loadIssues(folderPath), openEpicDetail(folderPath, epicId)])
+  const epic = await backend.issues.epics.update(folderPath, epicId, { ...patch, actor: patch.actor ?? 'human' })
+  await refreshIssuesForFolder(folderPath)
   return epic
 }
 
 export async function deleteEpic(folderPath: string, epicId: string): Promise<void> {
   await backend.issues.epics.delete(folderPath, epicId)
-  closeEpicDetail(folderPath, epicId)
-  await loadIssues(folderPath)
+  await refreshIssuesForFolder(folderPath)
 }
 
 export async function deleteIssue(folderPath: string, issueId: string): Promise<void> {
   await backend.issues.delete(folderPath, issueId)
-  closeIssueDetail(folderPath, issueId)
-  await loadIssues(folderPath)
+  await refreshIssuesForFolder(folderPath)
 }
 
 export async function addIssueComment(folderPath: string, issueId: string, body: string): Promise<void> {
   const trimmed = body.trim()
   if (!trimmed) return
-  await backend.issues.comments.add(folderPath, {
-    issueId,
-    author: 'human',
-    body: trimmed,
-    actor: 'human'
-  })
-  await openIssueDetail(folderPath, issueId)
+  await backend.issues.comments.add(folderPath, { issueId, author: 'human', body: trimmed, actor: 'human' })
+  await refreshIssuesForFolder(folderPath)
 }

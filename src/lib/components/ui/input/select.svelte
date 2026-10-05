@@ -7,6 +7,7 @@
   import type { Snippet } from 'svelte'
   import type { HTMLSelectAttributes } from 'svelte/elements'
   import { cn } from '$lib/utils/cn'
+  import { inputVariants } from './input.svelte'
 
   let {
     class: className,
@@ -23,10 +24,7 @@
 <select
   data-slot="select"
   bind:value
-  class={cn(
-    'w-full rounded border border-edge bg-surface px-2.5 py-1.5 text-base text-fg transition-colors outline-none focus:border-accent',
-    className
-  )}
+  class={cn(inputVariants(), className)}
   {...rest}
 >
   {#if children}{@render children()}{/if}

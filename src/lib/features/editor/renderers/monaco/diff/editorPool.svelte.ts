@@ -92,7 +92,7 @@ const MAX_UNUSED = 6
  * `{ enabled }` alone resets the tuning fields. Built via a factory so
  * the toggle can flip `enabled` without repeating the tuning everywhere.
  */
-export function hideUnchangedOpts(enabled: boolean) {
+function hideUnchangedOpts(enabled: boolean) {
   return {
     enabled,
     contextLineCount: 3,
@@ -391,16 +391,6 @@ export class DiffEditorPool {
     return this.settings
   }
 
-  /** Dispose every editor. Call on viewer teardown / folder switch. */
-  dispose(): void {
-    this.trimHandle?.dispose()
-    this.trimHandle = null
-    for (const ref of this.used) ref.destroy()
-    for (const ref of this.unused) ref.destroy()
-    this.used.clear()
-    this.unused = []
-  }
-
   private createRef(monaco: Monaco): PoolRef {
     // Stable container. Lives in the parking area until the first
     // acquire moves it into a real row host.
@@ -447,9 +437,4 @@ let poolInstance: DiffEditorPool | null = null
 export function getDiffEditorPool(): DiffEditorPool {
   if (!poolInstance) poolInstance = new DiffEditorPool()
   return poolInstance
-}
-
-export function disposeDiffEditorPool(): void {
-  poolInstance?.dispose()
-  poolInstance = null
 }

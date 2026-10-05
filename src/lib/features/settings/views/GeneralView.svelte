@@ -22,14 +22,14 @@
     <span class="w-36 shrink-0 text-sm text-muted">Theme</span>
     <div class="flex flex-1 items-center gap-2">
       <span class="rounded-md border border-edge bg-surface px-3 py-1.5 text-sm text-fg"> Dark </span>
-      <Badge variant="muted">WIP</Badge>
+      <Badge>WIP</Badge>
     </div>
   </div>
 
   <p class="pl-36 text-xs text-subtle">Custom themes are in the works.</p>
 </section>
 
-{#if platform.capabilities.zoom}
+{#if platform.native}
   <section class="flex flex-col gap-3 px-5 py-4">
     <h3 class="text-md font-semibold text-bright">Zoom</h3>
 

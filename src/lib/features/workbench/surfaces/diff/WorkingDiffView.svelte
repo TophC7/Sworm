@@ -9,7 +9,7 @@
   import type { FileDiff } from '$lib/types/backend'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import DiffStack from '$lib/features/workbench/surfaces/diff/DiffStack.svelte'
-  import type { DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import type { DiffContentFetcher } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
 
   let {

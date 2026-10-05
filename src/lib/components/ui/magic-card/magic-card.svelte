@@ -5,10 +5,6 @@
   let {
     children,
     class: className,
-    gradientSize = 200,
-    // Defaults track design tokens — see src/app.css (@theme).
-    gradientColor = 'var(--color-raised)',
-    gradientOpacity = 0.8,
     gradientFrom = 'var(--color-accent)',
     gradientTo = 'var(--color-warm)',
     disabled = false,
@@ -16,22 +12,19 @@
   }: {
     children?: Snippet
     class?: string
-    gradientSize?: number
-    gradientColor?: string
-    gradientOpacity?: number
     gradientFrom?: string
     gradientTo?: string
     disabled?: boolean
     onclick?: () => void
   } = $props()
 
-  let offScreen = $derived(-gradientSize)
-  let mouseX = $state(-200)
-  let mouseY = $state(-200)
+  const OFF_SCREEN = -200
+  let mouseX = $state(OFF_SCREEN)
+  let mouseY = $state(OFF_SCREEN)
 
   function reset() {
-    mouseX = offScreen
-    mouseY = offScreen
+    mouseX = OFF_SCREEN
+    mouseY = OFF_SCREEN
   }
 
   function handlePointerMove(e: PointerEvent) {
@@ -42,10 +35,10 @@
   }
 
   let borderBg = $derived(
-    `radial-gradient(${gradientSize}px circle at ${mouseX}px ${mouseY}px, ${gradientFrom}, ${gradientTo}, var(--color-edge) 100%)`
+    `radial-gradient(200px circle at ${mouseX}px ${mouseY}px, ${gradientFrom}, ${gradientTo}, var(--color-edge) 100%)`
   )
   let overlayBg = $derived(
-    `radial-gradient(${gradientSize}px circle at ${mouseX}px ${mouseY}px, ${gradientColor}, transparent 100%)`
+    `radial-gradient(200px circle at ${mouseX}px ${mouseY}px, var(--color-raised), transparent 100%)`
   )
 </script>
 
@@ -72,10 +65,10 @@
   <!-- Inner background -->
   <div class="absolute inset-px rounded-[inherit] bg-surface" aria-hidden="true"></div>
 
-  <!-- Spotlight on hover: lifts the fill toward `gradientColor` around the cursor -->
+  <!-- Spotlight on hover: lifts the fill toward raised around the cursor -->
   <div
-    class="pointer-events-none absolute inset-px rounded-[inherit] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-    style="background: {overlayBg}; opacity: {mouseX > 0 ? gradientOpacity : 0};"
+    class="pointer-events-none absolute inset-px rounded-[inherit] transition-opacity duration-300"
+    style="background: {overlayBg}; opacity: {mouseX > 0 ? 0.8 : 0};"
     aria-hidden="true"
   ></div>
 

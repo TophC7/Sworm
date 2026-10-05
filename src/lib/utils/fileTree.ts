@@ -1,11 +1,8 @@
 /**
- * Converts a flat list of GitChange paths into a nested tree structure
- * for VS Code-style file tree rendering in the git panel.
+ * Converts a flat list of paths into a generic nested tree.
  */
 
-import type { GitChange } from '$lib/types/backend'
-
-export interface FileTreeNode<T extends { path: string } = GitChange> {
+export interface FileTreeNode<T extends { path: string }> {
   /** Segment name (e.g. "components" or "Foo.svelte") */
   name: string
   /** Full relative path from project root */
@@ -128,16 +125,6 @@ function compactTree<T extends { path: string }>(nodes: FileTreeNode<T>[]): File
 
     return { ...node, children: compactedChildren }
   })
-}
-
-/** Count leaf files in a tree (for group header counts). */
-export function countFiles(nodes: FileTreeNode<{ path: string }>[]): number {
-  let count = 0
-  for (const node of nodes) {
-    if (node.type === 'file') count++
-    else count += countFiles(node.children)
-  }
-  return count
 }
 
 /** A flat row produced by [`flattenVisibleTree`]; node + indent depth. */

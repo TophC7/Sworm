@@ -4,7 +4,6 @@
 
   @param commandId - stable command id to update
   @param commandLabel - visible command label
-  @param defaultSpec - legacy single default shortcut
   @param defaultKeybindings - default shortcut list
   @param onClose - close callback
 -->
@@ -26,18 +25,14 @@
   import { logicalKey } from '$lib/utils/keyboardEvent'
 
   let {
-    open = false,
     commandId,
     commandLabel,
-    defaultSpec,
-    defaultKeybindings = defaultSpec ? [defaultSpec] : [],
+    defaultKeybindings,
     onClose
   }: {
-    open?: boolean
     commandId: string
     commandLabel: string
-    defaultSpec?: string | undefined
-    defaultKeybindings?: string[]
+    defaultKeybindings: string[]
     onClose: () => void
   } = $props()
 
@@ -47,7 +42,6 @@
   let rejectedHint = $state<string | null>(null)
   let chordTimer: ReturnType<typeof setTimeout> | null = null
   let releaseRecord: (() => void) | null = null
-  let releaseDialog: (() => void) | null = null
 
   let currentBindings = $derived(getEffectiveBindings(commandId, defaultKeybindings))
   let conflict = $derived(captured ? findShortcutConflict(commandId, captured) : null)
@@ -160,15 +154,10 @@
   }
 
   $effect(() => {
-    if (!open) {
-      stopRecording()
-      captured = null
-      return
-    }
-    releaseDialog = suspendKeybindings()
+    const release = suspendKeybindings()
     return () => {
-      releaseDialog?.()
-      releaseDialog = null
+      stopRecording()
+      release()
     }
   })
 </script>
@@ -176,7 +165,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <DialogRoot
-  {open}
+  open
   onOpenChange={(v) => {
     if (!v) close()
   }}

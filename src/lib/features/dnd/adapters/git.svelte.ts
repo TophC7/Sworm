@@ -1,14 +1,14 @@
-import { DND_MIME, type DragPayload, stampDataTransfer } from '$lib/features/dnd/payload'
-import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
+import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
+import { SvelteSet } from 'svelte/reactivity'
 import { dragObserver } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
-import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
+import { dragSource } from '$lib/features/dnd/transfer.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import type { GitChange } from '$lib/types/backend'
 
 interface GitSourceArgs {
   folderPath: string
-  changes: Pick<GitChange, 'path' | 'staged'>[] | (() => Pick<GitChange, 'path' | 'staged'>[])
+  changes: () => Pick<GitChange, 'path' | 'staged'>[]
 }
 
 interface GitDropZoneArgs {
@@ -17,7 +17,7 @@ interface GitDropZoneArgs {
   onDropFiles: (filePaths: string[], staged: boolean) => void | Promise<void>
 }
 
-const zoneStore = createHoverStore<true>()
+const zoneStore = new SvelteSet<string>()
 
 function zoneKey(folderPath: string, staged: boolean): string {
   return `${folderPath}:${staged ? 'staged' : 'unstaged'}`
@@ -43,42 +43,22 @@ function extractFiles(payload: DragPayload, folderPath: string, staged: boolean)
 }
 
 export function gitChangeDragSource(args: GitSourceArgs) {
-  return (element: HTMLElement) => {
-    const onDragStart = (event: DragEvent) => {
-      const changes = typeof args.changes === 'function' ? args.changes() : args.changes
-      const transfer = event.dataTransfer
-      if (!transfer || changes.length === 0) {
-        event.preventDefault()
-        return
-      }
-      const payload: DragPayload = {
-        source: 'internal',
-        items: changes.map((change) => ({
-          kind: 'git-change',
-          path: change.path,
-          staged: change.staged,
-          folderPath: args.folderPath
-        }))
-      }
-      LocalTransfer.set(payload)
-      transfer.effectAllowed = 'move'
-      stampDataTransfer(transfer, payload)
+  return dragSource(
+    () => args.changes().map((change) => ({
+      kind: 'git-change',
+      path: change.path,
+      staged: change.staged,
+      folderPath: args.folderPath
+    })),
+    () => {
+      const prefix = `${args.folderPath}:`
+      for (const key of zoneStore) if (key.startsWith(prefix)) zoneStore.delete(key)
     }
-    const onDragEnd = () => {
-      LocalTransfer.clear()
-      zoneStore.clearByPrefix(`${args.folderPath}:`)
-    }
-    element.addEventListener('dragstart', onDragStart)
-    element.addEventListener('dragend', onDragEnd)
-    return () => {
-      element.removeEventListener('dragstart', onDragStart)
-      element.removeEventListener('dragend', onDragEnd)
-    }
-  }
+  )
 }
 
 export function gitDropZone(args: GitDropZoneArgs) {
-  const clear = () => zoneStore.clear(zoneKey(args.folderPath, args.staged))
+  const clear = () => zoneStore.delete(zoneKey(args.folderPath, args.staged))
   const drop = async (payload: DragPayload) => {
     clear()
     const files = extractFiles(payload, args.folderPath, args.staged)
@@ -86,7 +66,7 @@ export function gitDropZone(args: GitDropZoneArgs) {
   }
   const observer = dragObserver({
     accept: (payload, types) => (payload ? canAccept(payload, args.staged) : types.includes(DND_MIME.SWORM_GIT_CHANGE)),
-    onOver: () => zoneStore.set(zoneKey(args.folderPath, args.staged), true),
+    onOver: () => zoneStore.add(zoneKey(args.folderPath, args.staged)),
     onLeave: clear,
     onDrop: (_event, payload) => drop(payload)
   })
@@ -97,7 +77,7 @@ export function gitDropZone(args: GitDropZoneArgs) {
       id: `git-zone:${args.folderPath}:${args.staged ? 'staged' : 'unstaged'}`,
       element,
       accept: (payload) => canAccept(payload, args.staged),
-      hover: () => zoneStore.set(zoneKey(args.folderPath, args.staged), true),
+      hover: () => zoneStore.add(zoneKey(args.folderPath, args.staged)),
       leave: clear,
       dispatch: drop
     })

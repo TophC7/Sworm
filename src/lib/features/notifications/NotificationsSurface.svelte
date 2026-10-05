@@ -5,14 +5,6 @@
   import { Button } from '$lib/components/ui/button'
   import NotificationItem from '$lib/features/notifications/NotificationItem.svelte'
   import {
-    MAX_VISIBLE_ACTIVE_NOTIFICATIONS,
-    NOTIFICATION_EMPTY_STATE_CLASS,
-    NOTIFICATION_LIST_CLASS,
-    NOTIFICATION_PANEL_WIDTH_CLASS,
-    NOTIFICATION_SURFACE_CLASS,
-    NOTIFICATION_VIEWPORT_CLASS
-  } from '$lib/features/notifications/notificationUi'
-  import {
     clearAllNotifications,
     dismissNotification,
     getActiveNotifications,
@@ -21,6 +13,14 @@
     setNotificationCenterOpen
   } from '$lib/features/notifications/state.svelte'
   import { cn } from '$lib/utils/cn'
+
+  const NOTIFICATION_PANEL_WIDTH_CLASS = 'w-80'
+  const NOTIFICATION_LIST_CLASS = 'flex flex-col gap-1.5 p-2'
+  const NOTIFICATION_EMPTY_STATE_CLASS = 'flex items-center justify-center px-3 py-6 text-center text-sm text-subtle'
+  const NOTIFICATION_SURFACE_CLASS =
+    'pointer-events-auto overflow-hidden rounded-xl border border-edge bg-raised shadow-[0_10px_30px_rgba(0,0,0,0.45)]'
+  const NOTIFICATION_VIEWPORT_CLASS = 'max-h-96 overflow-y-auto'
+  const MAX_VISIBLE_ACTIVE_NOTIFICATIONS = 3
 
   let notifications = $derived(getNotifications())
   let activeNotifications = $derived(getActiveNotifications())
@@ -47,10 +47,6 @@
     return target instanceof Element && target.closest('[data-notifications-toggle="true"]') !== null
   }
 
-  function isSurfaceInteractiveTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && target.closest('.notifications-surface-interactive') !== null
-  }
-
   $effect(() => {
     if (!expanded) return
 
@@ -65,7 +61,6 @@
       if (!(target instanceof Node)) return
       if (surfaceRef?.contains(target)) return
       if (isToggleTarget(target)) return
-      if (isSurfaceInteractiveTarget(target)) return
       closeNotificationCenter()
     }
 

@@ -1,6 +1,7 @@
 use crate::{
     errors::ApiError,
     services::{
+        builtins::BuiltinCatalogService,
         settings::SettingsService,
         settings_resolution::{
             parse_error_diagnostic, provider_binary_overrides, provider_config_record,
@@ -32,12 +33,19 @@ impl Host {
                 ProviderSettingsEntry { provider, config }
             })
             .collect();
+        let mut lsp = resolved.settings.lsp;
+        for server in BuiltinCatalogService::server_definitions() {
+            lsp.servers
+                .entry(server.server_definition_id.clone())
+                .or_default();
+        }
 
         Ok(SettingsPayload {
             window: resolved.settings.window,
             terminal: resolved.settings.terminal,
             nix: resolved.settings.nix,
             formatting: resolved.settings.formatting,
+            lsp,
             providers,
         })
     }

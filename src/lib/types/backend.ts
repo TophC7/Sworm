@@ -1,5 +1,5 @@
 // Typed interfaces for the Rust backend IPC responses.
-// Keep in sync with models in src-tauri/src/models/ and commands/.
+// Keep in sync with types in src-crates/sworm-protocol/src/.
 
 import type { TextRevealTarget } from '$lib/features/workbench/surfaces/text/service.svelte'
 
@@ -312,13 +312,6 @@ export interface EffectiveSettingsPayload {
   diagnostics: SettingsDiagnostic[]
 }
 
-export interface SettingsLayerPayload {
-  path: string
-  loaded: boolean
-  value: unknown
-  diagnostics: SettingsDiagnostic[]
-}
-
 export interface SettingsFileResult {
   path: string
 }
@@ -350,6 +343,7 @@ export interface SettingsPayload {
   terminal: TerminalSettings
   nix: NixSettings
   formatting: FormattingSettings
+  lsp: EffectiveSettings['lsp']
   providers: ProviderSettingsEntry[]
 }
 
@@ -576,7 +570,7 @@ export interface ConfigSchemaEntry {
   schema: unknown
 }
 
-// Mirror of Rust `TaskDefinition` (src-tauri/src/models/task.rs).
+// Mirror of Rust `TaskDefinition` (src-crates/sworm-protocol/src/task.rs).
 // camelCase here matches the `#[serde(rename_all = "camelCase")]` on
 // the source type.
 export interface TaskDefinition {
@@ -672,11 +666,6 @@ export interface IssueListFilters {
   limit?: number
 }
 
-export interface IssueReadyFilters {
-  epicId?: string
-  limit?: number
-}
-
 export interface IssueCreateInput {
   title: string
   description?: string | null
@@ -727,22 +716,6 @@ export interface IssueCommentCreateInput {
   actor?: string
 }
 
-export interface IssueCommentUpdateInput {
-  body: string
-  actor?: string
-}
-
-export interface IssueDependencyInput {
-  issueId: string
-  dependsOnIssueId: string
-  actor?: string
-}
-
-export interface IssueConfigEntry {
-  key: string
-  value: string
-}
-
 export interface StashEntry {
   index: number
   message: string
@@ -752,7 +725,7 @@ export interface StashEntry {
 
 // BRANCHES //
 //
-// Mirror of `src-tauri/src/models/branch.rs`. The Rust types use
+// Mirror of `src-crates/sworm-protocol/src/branch.rs`. The Rust types use
 // `#[serde(rename_all = "camelCase")]` so JSON keys match the TS
 // shape directly.
 

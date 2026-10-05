@@ -7,7 +7,8 @@ import { backend } from '$lib/api/backend'
 import { platform, requireNative } from '$lib/platform'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
+import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
 import { startSession } from '$lib/features/sessions/service.svelte'
 import { setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
@@ -15,39 +16,28 @@ import { getLastTaskId, rerunLastTask } from '$lib/features/tasks/service.svelte
 import { openCommandPaletteWithSearch } from '$lib/features/command-palette/state.svelte'
 import {
   createUntitledTextSurface,
-  getDirtyTextSurfaceCount,
-  hasAnyDirtyTextSurfaces,
+  confirmDiscardDirtyText,
   isTextSurfaceDirty,
   openTextFile
 } from '$lib/features/workbench/surfaces/text/service.svelte'
-import { flushWorkbench } from '$lib/features/workbench/persistence'
 import {
+  flushWorkbench,
   getActiveFolderPath,
   getTabs,
-  getWorkbenchId,
   openFolder,
   reopenLastClosedTab
 } from '$lib/features/workbench/state.svelte'
 import { closeFocusedTab } from '$lib/features/workbench/tabActions.svelte'
+import type { TabId } from '$lib/features/workbench/model'
 import { takeBackGroup, moveGroupToNewWindow, removeGroupFromWindow } from '$lib/features/workbench/groups.svelte'
 import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 /** Managed reload: confirm unsaved, flush persistence, then reload. */
 export async function reloadView(): Promise<void> {
   // Web: the document's beforeunload guard owns the dirty prompt.
-  if (platform.native && hasAnyDirtyTextSurfaces()) {
-    const count = getDirtyTextSurfaceCount()
-    const noun = count === 1 ? 'file' : 'files'
-    const proceed = await confirmAsync({
-      title: 'Unsaved changes',
-      message: `You have ${count} unsaved ${noun}. Reload and lose changes?`,
-      confirmLabel: 'Reload',
-      cancelLabel: 'Keep editing'
-    })
-    if (!proceed) return
-  }
+  if (platform.native && !(await confirmDiscardDirtyText('Reload'))) return
   try {
-    await flushWorkbench(getWorkbenchId())
+    await flushWorkbench()
   } catch (error) {
     console.warn('Reload flush failed:', error)
   }
@@ -127,10 +117,10 @@ export function newEmptyFile(): void {
 }
 
 /** Native directory picker → open (or focus) that folder. */
-export async function openFolderPicker(): Promise<void> {
+export async function openFolderPicker(replaceTabId?: TabId): Promise<void> {
   try {
     const path = await requireNative().dialogs.selectDirectory()
-    if (path) await openFolder(path)
+    if (path) await openFolder(path, replaceTabId)
   } catch (error) {
     notify.error('Open folder failed', getErrorMessage(error))
   }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ContextMenu } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
+  import { menuContentClass } from '../menu-recipe'
   import type { Snippet } from 'svelte'
 
   let {
@@ -15,7 +16,7 @@
 
 <ContextMenu.Portal>
   <ContextMenu.Content
-    class={cn('z-50 min-w-[180px] rounded-lg border border-edge bg-raised py-1 text-base shadow-popover', className)}
+    class={cn(menuContentClass, className)}
     {...rest}
   >
     {#if children}{@render children()}{/if}

@@ -17,7 +17,7 @@ const KIND_STATUS: Record<GitStatusKind, GitStatusMeta> = {
   unknown: { color: 'text-muted', letter: ' ', label: 'Unknown' }
 }
 
-function gitStatusMeta(status: string): GitStatusMeta {
+export function gitStatusMeta(status: string): GitStatusMeta {
   if (status in KIND_STATUS) {
     return KIND_STATUS[status as GitStatusKind]
   }
@@ -37,17 +37,3 @@ function gitStatusMeta(status: string): GitStatusMeta {
   }
 }
 
-/** Normalize git status letter. */
-export function gitStatusDisplay(status: string): string {
-  return gitStatusMeta(status).letter
-}
-
-/** Map a git status letter to a Tailwind text color class. */
-export function gitStatusColor(status: string): string {
-  return gitStatusMeta(status).color
-}
-
-/** Map a git status letter to a human-readable label. */
-export function gitStatusLabel(status: string): string {
-  return gitStatusMeta(status).label
-}

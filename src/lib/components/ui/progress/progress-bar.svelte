@@ -6,25 +6,6 @@
   track with no fill.
 -->
 
-<script lang="ts" module>
-  import { tv, type VariantProps } from 'tailwind-variants'
-
-  export const progressBarVariants = tv({
-    base: 'relative shrink-0 overflow-hidden rounded-sm bg-edge',
-    variants: {
-      size: {
-        sm: 'h-1 w-12',
-        md: 'h-1.5 w-20'
-      }
-    },
-    defaultVariants: {
-      size: 'sm'
-    }
-  })
-
-  export type ProgressBarSize = VariantProps<typeof progressBarVariants>['size']
-</script>
-
 <script lang="ts">
   import { cn } from '$lib/utils/cn'
 
@@ -32,28 +13,24 @@
     done,
     active = 0,
     total,
-    size = 'sm' as ProgressBarSize,
-    class: className,
-    title
+    class: className
   }: {
     done: number
     active?: number
     total: number
-    size?: ProgressBarSize
     class?: string
-    title?: string
   } = $props()
 
   let pctDone = $derived(total > 0 ? Math.round((done / total) * 100) : 0)
   let pctActive = $derived(total > 0 ? Math.round((active / total) * 100) : 0)
   let resolvedTitle = $derived(
-    title ?? (total > 0 ? `${done} done, ${active} active, ${total - done - active} open` : 'No items')
+    total > 0 ? `${done} done, ${active} active, ${total - done - active} open` : 'No items'
   )
 </script>
 
 <div
   data-slot="progress-bar"
-  class={cn(progressBarVariants({ size }), className)}
+  class={cn('relative h-1 w-12 shrink-0 overflow-hidden rounded-sm bg-edge', className)}
   title={resolvedTitle}
   role="progressbar"
   aria-valuemin={0}

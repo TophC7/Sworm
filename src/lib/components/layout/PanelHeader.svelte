@@ -1,10 +1,6 @@
 <!--
   @component
-  PanelHeader — reusable panel header with left/right content areas.
-
-  Provides consistent header chrome (height, border, background) for panels
-  and sidebars. Used by SidebarPanel; available for any view that needs a
-  standard header bar.
+  PanelHeader — shared header bar for panels and surfaces.
 
   @param left - optional snippet rendered on the left
   @param right - optional snippet rendered on the right

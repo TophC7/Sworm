@@ -28,10 +28,6 @@ export interface BranchTreeNode {
   children: BranchTreeNode[]
 }
 
-export interface BranchTree {
-  roots: BranchTreeNode[]
-}
-
 const SELF_LABEL = '(self)'
 
 /**
@@ -42,7 +38,7 @@ const SELF_LABEL = '(self)'
  * their first occurrence as well. Sorting by date / alpha is the
  * caller's job; handle it on the input list.
  */
-export function groupBySlash(branches: BranchSummary[]): BranchTree {
+export function groupBySlash(branches: BranchSummary[]): BranchTreeNode[] {
   const roots: BranchTreeNode[] = []
   const lookup = new Map<string, BranchTreeNode>()
 
@@ -87,7 +83,7 @@ export function groupBySlash(branches: BranchSummary[]): BranchTree {
     }
   }
 
-  return { roots }
+  return roots
 }
 
 function splitName(name: string): string[] {

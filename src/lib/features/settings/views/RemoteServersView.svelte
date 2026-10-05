@@ -1,18 +1,17 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { backend } from '$lib/api/backend'
-  import { requireNative } from '$lib/platform'
+  import { platform, requireNative } from '$lib/platform'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import RemotePairForm from '$lib/features/remotes/RemotePairForm.svelte'
   import { pairForm } from '$lib/features/remotes/state.svelte'
   import { remoteDotClass } from '$lib/features/remotes/remoteDot'
-  import type { RemoteSettings, RemoteStatus } from '$lib/types/backend'
+  import { getRemoteStatus, refreshRemoteStatus, watchRemoteStatuses } from '$lib/features/remotes/status.svelte'
+  import type { RemoteSettings } from '$lib/types/backend'
 
   let remotes = $state<Record<string, RemoteSettings>>({})
-  let statuses = $state<Record<string, RemoteStatus>>({})
   let renameServer = $state<string | null>(null)
   let name = $state('')
   let busy = $state<string | null>(null)
@@ -21,6 +20,7 @@
   let deviceFingerprint = $state('')
 
   onMount(() => {
+    const stopStatuses = watchRemoteStatuses()
     let disposed = false
     requireNative()
       .remotes.clientFingerprint()
@@ -32,6 +32,7 @@
       })
     let generation = 0
     async function refresh() {
+      if (disposed) return
       const current = ++generation
       try {
         // No folder argument: remotes always belong to this desktop's global settings.
@@ -39,12 +40,7 @@
         if (disposed || current !== generation) return
         remotes = settings.remotes
         loaded = true
-        await Promise.all(
-          Object.keys(remotes).map(async (server) => {
-            const status = await requireNative().remotes.status(server)
-            if (!disposed && current === generation) statuses[server] = status
-          })
-        )
+        await Promise.all(Object.keys(remotes).map(refreshRemoteStatus))
       } catch (cause) {
         if (!disposed) error = getErrorMessage(cause)
       }
@@ -52,15 +48,13 @@
     const listeners = [
       backend.settings.onChanged(({ layer }) => {
         if (layer === 'global') void refresh()
-      }),
-      requireNative().remotes.onStatus(({ server, ...status }) => {
-        if (!disposed) statuses[server] = status
       })
     ]
     // Fetch after subscribing so no transition lands between the two.
     void Promise.allSettled(listeners).then(() => refresh())
     return () => {
       disposed = true
+      stopStatuses()
       for (const listener of listeners) void listener.then((cleanup) => cleanup()).catch(() => {})
     }
   })
@@ -83,7 +77,7 @@
 
   async function copy(value: string) {
     try {
-      await copyToClipboard(value)
+      await platform.clipboard.writeText(value)
     } catch {
       error = 'Could not copy to the clipboard.'
     }
@@ -126,7 +120,7 @@
   {#if !loaded}<p class="text-sm text-muted">Loading servers…</p>
   {:else if !Object.keys(remotes).length}<p class="text-sm text-muted">No servers paired yet.</p>{/if}
   {#each Object.entries(remotes) as [server, remote] (server)}
-    {@const status = statuses[server]}
+    {@const status = getRemoteStatus(server)}
     <article
       class="flex flex-col gap-3 rounded-lg border bg-surface p-3 {pairForm.name === server
         ? 'border-accent/50'

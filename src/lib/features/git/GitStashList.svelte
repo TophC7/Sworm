@@ -1,13 +1,10 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import type { TabId } from '$lib/features/workbench/model'
-  import type { FileDiff } from '$lib/types/backend'
-  import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
-  import { parseStashMessage } from '$lib/features/git/git'
-  import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
+  import { parseStashMessage } from '$lib/features/git/gitRefs'
+  import ChangedFilesTree from '$lib/features/git/ChangedFilesTree.svelte'
+  import { openStashDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
-  import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
+  import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
   import { sidebarRowVariants } from '$lib/components/ui/sidebar-row'
@@ -15,37 +12,17 @@
   import { GRAPH_COLORS } from '$lib/features/git/graph'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getStashes, loadStashes, runGitAction } from '$lib/features/git/state.svelte'
-  import { SvelteSet } from 'svelte/reactivity'
 
-  let {
-    folderPath,
-    branchColorMap = new Map(),
-    onFileClick,
-    onPersistTab
-  }: {
+  let { folderPath, branchColorMap = new Map() }: {
     folderPath: string
     branchColorMap?: Map<string, string>
-    onFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
-    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
   } = $props()
 
   let stashes = $derived(getStashes(folderPath) ?? [])
   let expandedIndex = $state<number | null>(null)
-  let expandedTree = $derived.by(() => {
-    if (expandedIndex === null) return []
-    const entry = stashes.find((s) => s.index === expandedIndex)
-    return entry ? buildFileTree(entry.files) : []
-  })
-  let collapsedDirs = new SvelteSet<string>()
-  let pendingOpenedTab = $state<Promise<TabId> | null>(null)
-
-  // Drop confirmation
-  let dropIndex = $state<number | null>(null)
-  let showDropConfirm = $derived(dropIndex !== null)
 
   $effect(() => {
     void loadStashes(folderPath)
-    expandedIndex = null
   })
 
   /** Look up a branch's color from the graph lane assignments. */
@@ -65,13 +42,8 @@
       return
     }
     expandedIndex = index
-    collapsedDirs.clear()
   }
 
-  function toggleDir(path: string) {
-    if (collapsedDirs.has(path)) collapsedDirs.delete(path)
-    else collapsedDirs.add(path)
-  }
 
   async function handlePop(index: number) {
     await runNotifiedTask(
@@ -87,10 +59,13 @@
     )
   }
 
-  async function handleDrop() {
-    if (dropIndex === null) return
-    const idx = dropIndex
-    dropIndex = null
+  async function handleDrop(idx: number) {
+    const proceed = await confirmAsync({
+      title: 'Drop Stash?',
+      message: 'This will permanently delete this stash entry. This cannot be undone.',
+      confirmLabel: 'Drop'
+    })
+    if (!proceed) return
     await runNotifiedTask(
       async () => {
         await runGitAction(folderPath, (path) => backend.git.stashDrop(path, idx))
@@ -186,7 +161,7 @@
                 tooltip="Drop stash"
                 tooltipSide="left"
                 tone="danger"
-                onclick={() => (dropIndex = stash.index)}
+                onclick={() => handleDrop(stash.index)}
               >
                 <Trash2 size={12} />
               </IconButton>
@@ -195,29 +170,10 @@
 
           {#if isExpanded}
             <div class="border-t border-edge/30 bg-surface py-1">
-              {#if expandedTree.length === 0}
-                <div class="px-4 py-1.5 text-xs text-subtle">No files changed.</div>
-              {:else}
-                <FileTreeItems
-                  nodes={expandedTree}
-                  isCollapsed={(node) => collapsedDirs.has(node.path)}
-                  onToggleDir={toggleDir}
-                  onFileClick={(node) => {
-                    if (expandedIndex !== null && node.change) {
-                      const entry = stashes.find((s) => s.index === expandedIndex)
-                      const openedTab = onFileClick?.(expandedIndex, entry?.message ?? '', node.change.path)
-                      pendingOpenedTab = openedTab == null ? null : Promise.resolve(openedTab)
-                    }
-                  }}
-                  onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
-                >
-                  {#snippet fileTrailing(node: FileTreeNode<FileDiff>)}
-                    {#if node.change}
-                      <GitStatusBadge status={node.change.status} />
-                    {/if}
-                  {/snippet}
-                </FileTreeItems>
-              {/if}
+              <ChangedFilesTree
+                files={stash.files}
+                open={(path) => openStashDiff(folderPath, stash.index, stash.message, path)}
+              />
             </div>
           {/if}
         {/each}
@@ -226,11 +182,3 @@
   {/if}
 </div>
 
-<ConfirmDialog
-  open={showDropConfirm}
-  title="Drop Stash?"
-  message="This will permanently delete this stash entry. This cannot be undone."
-  confirmLabel="Drop"
-  onConfirm={handleDrop}
-  onCancel={() => (dropIndex = null)}
-/>

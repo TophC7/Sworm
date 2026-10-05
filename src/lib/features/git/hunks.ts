@@ -1,49 +1,10 @@
+import type { LineChange } from '$lib/features/git/lineChanges'
+
 export type ChangeHunkKind = 'add' | 'delete' | 'modify'
 
-export interface ChangeHunk {
+export interface ChangeHunk extends LineChange {
   id: string
   kind: ChangeHunkKind
-  originalStartLineNumber: number
-  originalEndLineNumber: number
-  modifiedStartLineNumber: number
-  modifiedEndLineNumber: number
-  originalLines: string[]
-  modifiedLines: string[]
-}
-
-interface TextLine {
-  start: number
-  end: number
-}
-
-class TextSnapshot {
-  readonly lines: TextLine[]
-
-  constructor(readonly content: string) {
-    this.lines = parseLines(content)
-  }
-
-  get lineCount(): number {
-    return this.lines.length
-  }
-
-  lineLength(line: number): number {
-    const entry = this.lines[Math.min(Math.max(line, 0), this.lines.length - 1)]
-    return Math.max(0, entry.end - entry.start)
-  }
-
-  offsetAt(line: number, character: number): number {
-    if (line <= 0) return Math.max(0, character)
-    if (line >= this.lines.length) return this.content.length
-    const entry = this.lines[line]
-    return Math.min(entry.end, entry.start + Math.max(0, character))
-  }
-
-  textInRange(startLine: number, startCharacter: number, endLine: number, endCharacter: number): string {
-    const start = this.offsetAt(startLine, startCharacter)
-    const end = this.offsetAt(endLine, endCharacter)
-    return this.content.slice(start, end)
-  }
 }
 
 type Monaco = typeof import('monaco-editor')
@@ -94,41 +55,13 @@ function ensureEditor(monaco: Monaco): IStandaloneDiffEditor {
   return computeEditor
 }
 
-function splitLines(content: string): string[] {
-  if (content.length === 0) return []
-  return content.split(/\r\n|\r|\n/)
-}
-
-function parseLines(content: string): TextLine[] {
-  if (content.length === 0) return [{ start: 0, end: 0 }]
-
-  const lines: TextLine[] = []
-  let start = 0
-  const eol = /\r\n|\r|\n/g
-  let match: RegExpExecArray | null
-  while ((match = eol.exec(content))) {
-    lines.push({ start, end: match.index })
-    start = match.index + match[0].length
-  }
-  lines.push({ start, end: content.length })
-  return lines
-}
-
-function lineSlice(lines: string[], start: number, end: number): string[] {
-  if (start <= 0 || end <= 0 || end < start) return []
-  return lines.slice(start - 1, end)
-}
-
 function kindOf(change: ILineChange): ChangeHunkKind {
   if (change.originalEndLineNumber === 0) return 'add'
   if (change.modifiedEndLineNumber === 0) return 'delete'
   return 'modify'
 }
 
-function toHunks(originalContent: string, modifiedContent: string, changes: readonly ILineChange[]): ChangeHunk[] {
-  const originalLines = splitLines(originalContent)
-  const modifiedLines = splitLines(modifiedContent)
-
+function toHunks(changes: readonly ILineChange[]): ChangeHunk[] {
   return changes.map((change, index) => {
     const kind = kindOf(change)
     return {
@@ -137,9 +70,7 @@ function toHunks(originalContent: string, modifiedContent: string, changes: read
       originalStartLineNumber: change.originalStartLineNumber,
       originalEndLineNumber: change.originalEndLineNumber,
       modifiedStartLineNumber: change.modifiedStartLineNumber,
-      modifiedEndLineNumber: change.modifiedEndLineNumber,
-      originalLines: lineSlice(originalLines, change.originalStartLineNumber, change.originalEndLineNumber),
-      modifiedLines: lineSlice(modifiedLines, change.modifiedStartLineNumber, change.modifiedEndLineNumber)
+      modifiedEndLineNumber: change.modifiedEndLineNumber
     }
   })
 }
@@ -174,7 +105,7 @@ async function computeNow(
 
     editor.setModel({ original, modified })
     if (!(await waitForDiff)) return null
-    return toHunks(originalContent, modifiedContent, editor.getLineChanges() ?? [])
+    return toHunks(editor.getLineChanges() ?? [])
   } finally {
     editor.setModel(null)
     original.dispose()
@@ -196,31 +127,6 @@ export function computeChangeHunks(
   return task
 }
 
-export function hunkLabel(hunk: ChangeHunk): string {
-  switch (hunk.kind) {
-    case 'add':
-      return `Added ${lineRangeLabel(hunk.modifiedStartLineNumber, hunk.modifiedEndLineNumber)}`
-    case 'delete':
-      return `Deleted after line ${Math.max(1, hunk.modifiedStartLineNumber)}`
-    case 'modify':
-      return `Changed ${lineRangeLabel(hunk.modifiedStartLineNumber, hunk.modifiedEndLineNumber)}`
-  }
-}
-
-export function lineRangeLabel(start: number, end: number): string {
-  if (start <= 0 && end <= 0) return 'line 1'
-  if (end <= 0 || end === start) return `line ${Math.max(1, start)}`
-  return `lines ${start}-${end}`
-}
-
-export function hunkModifiedText(hunk: ChangeHunk): string {
-  return hunk.modifiedLines.join('\n')
-}
-
-export function hunkOriginalText(hunk: ChangeHunk): string {
-  return hunk.originalLines.join('\n')
-}
-
 export function hunkRevealLine(hunk: ChangeHunk): number {
   return Math.max(1, hunk.modifiedStartLineNumber || hunk.originalStartLineNumber || 1)
 }
@@ -240,60 +146,4 @@ export function hunksIntersectOrTouch(a: ChangeHunk, b: ChangeHunk): boolean {
   const bStart = Math.max(1, b.modifiedStartLineNumber)
   const bEnd = Math.max(bStart, b.modifiedEndLineNumber || b.modifiedStartLineNumber)
   return aStart <= bEnd + 1 && bStart <= aEnd + 1
-}
-
-export function compareHunks(a: ChangeHunk, b: ChangeHunk): number {
-  return (
-    a.modifiedStartLineNumber - b.modifiedStartLineNumber ||
-    a.modifiedEndLineNumber - b.modifiedEndLineNumber ||
-    a.originalStartLineNumber - b.originalStartLineNumber ||
-    a.originalEndLineNumber - b.originalEndLineNumber
-  )
-}
-
-export function applyChangeHunks(
-  originalContent: string,
-  modifiedContent: string,
-  hunksToApply: readonly ChangeHunk[]
-): string {
-  if (hunksToApply.length === 0) return originalContent
-
-  const original = new TextSnapshot(originalContent)
-  const modified = new TextSnapshot(modifiedContent)
-  const result: string[] = []
-  let currentLine = 0
-
-  for (const hunk of [...hunksToApply].sort(compareHunks)) {
-    const isInsertion = hunk.originalEndLineNumber === 0
-    const isDeletion = hunk.modifiedEndLineNumber === 0
-
-    let endLine = isInsertion ? hunk.originalStartLineNumber : hunk.originalStartLineNumber - 1
-    let endCharacter = 0
-
-    if (isDeletion && hunk.originalEndLineNumber === original.lineCount) {
-      endLine -= 1
-      endCharacter = endLine < 0 ? 0 : original.lineLength(endLine)
-      endLine = Math.max(0, endLine)
-    }
-
-    result.push(original.textInRange(currentLine, 0, endLine, endCharacter))
-
-    if (!isDeletion) {
-      let fromLine = hunk.modifiedStartLineNumber - 1
-      let fromCharacter = 0
-
-      if (isInsertion && hunk.originalStartLineNumber === original.lineCount) {
-        fromLine -= 1
-        fromCharacter = fromLine < 0 ? 0 : modified.lineLength(fromLine)
-        fromLine = Math.max(0, fromLine)
-      }
-
-      result.push(modified.textInRange(fromLine, fromCharacter, hunk.modifiedEndLineNumber, 0))
-    }
-
-    currentLine = isInsertion ? hunk.originalStartLineNumber : hunk.originalEndLineNumber
-  }
-
-  result.push(original.textInRange(currentLine, 0, original.lineCount, 0))
-  return result.join('')
 }

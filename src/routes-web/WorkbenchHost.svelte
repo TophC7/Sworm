@@ -7,11 +7,11 @@
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
   import { cn } from '$lib/utils/cn'
   import { backend } from '$lib/api/backend'
-  import { setWorkbenchId } from '$lib/features/workbench/state.svelte'
-  import { flushWorkbench, stopWorkbenchPersistence } from '$lib/features/workbench/persistence'
+  import { flushWorkbench } from '$lib/features/workbench/state.svelte'
+  import { stopWorkbenchPersistence } from '$lib/features/workbench/persistence'
   import {
-    getDirtyTextSurfaceCount,
-    hasAnyDirtyTextSurfaces
+    confirmDiscardDirtyText,
+    getDirtyTextSurfaceCount
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
@@ -26,11 +26,9 @@
   import { createWebPlatform } from '$lib/platform/web'
   import { createWebRecovery } from './recovery'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-  import { logClientError } from '$lib/utils/client-error'
+  import { getErrorMessage, logClientError } from '$lib/utils/client-error'
   import { consumeTakeover, takeOverWorkbench } from '$lib/features/home/workbenchLink'
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
-  import { confirmAsync } from '$lib/features/confirm/service.svelte'
 
   // Busy (never controlled) and revoked (lost control) are one surface: open elsewhere, offer Take Over.
   type Surface = 'connecting' | 'workbench' | 'elsewhere' | 'closed' | 'error'
@@ -52,7 +50,7 @@
   // This document is navigating away on purpose after confirmation (or a bfcache reload); skip the leave prompt.
   let leaving = false
 
-  const recovery = createWebRecovery(workbenchId)
+  const recovery = createWebRecovery()
   installPlatform(
     createWebPlatform(workbenchId, {
       closeCurrent,
@@ -65,7 +63,6 @@
   // fences callbacks from a disposed busy adapter after Take Over.
   let attempt = 0
   let transport = connect(consumeTakeover(workbenchId))
-  setWorkbenchId(workbenchId)
 
   function connect(takeover: boolean): WebHostTransport {
     const current = ++attempt
@@ -73,7 +70,7 @@
     const adapter = createWebHostTransport({
       // `bun run dev:web` serves this shell from Vite; the dev daemon lists that
       // origin in web.allowed_origins (.sworm/scripts/dev-remote.fish).
-      url: new URL('/ws', import.meta.env.DEV ? 'http://127.0.0.1:7421' : window.location.href),
+      origin: import.meta.env.DEV ? 'http://127.0.0.1:7421' : window.location.href,
       workbenchId,
       takeover,
       onConnectionState(state, error) {
@@ -120,14 +117,14 @@
     return adapter
   }
 
-  /** Stops this page's writers and detaches (never stops) its runs; only a fresh document may control the workbench again. */
+  /** Stops this page's writers and releases (never stops) its runs; only a fresh document may control the workbench again. */
   function teardown(): void {
     if (tornDown) return
     tornDown = true
     recovery.dispose()
     stopWorkbenchPersistence()
-    sessionRegistry.disposeAll()
-    taskRegistry.disposeAll()
+    sessionRegistry.releaseAll()
+    taskRegistry.releaseAll()
   }
 
   function terminate(state: 'busy' | 'revoked' | 'closed' | 'error', error?: WebHandshakeError): void {
@@ -182,17 +179,7 @@
     if (leaving || disposed || takeoverPending) return
     takeoverPending = true
     try {
-      const count = getDirtyTextSurfaceCount()
-      if (count > 0) {
-        const noun = count === 1 ? 'file' : 'files'
-        const proceed = await confirmAsync({
-          title: 'Unsaved changes',
-          message: `You have ${count} unsaved ${noun}. Take over and lose changes?`,
-          confirmLabel: 'Take Over',
-          cancelLabel: 'Keep editing'
-        })
-        if (!proceed) return
-      }
+      if (!(await confirmDiscardDirtyText('Take over', 'Take Over'))) return
       if (leaving || disposed) return
       // Native beforeunload cannot cancel after the intent is stored: the explicit prompt owns consent.
       takeOverWorkbench(id, leave, id === workbenchId)
@@ -229,7 +216,7 @@
 
   // Document-scoped: stays armed on revoked/closed surfaces while discarded edits remain dirty.
   $effect(() => {
-    if (!hasAnyDirtyTextSurfaces()) return
+    if (getDirtyTextSurfaceCount() === 0) return
     const guard = (event: BeforeUnloadEvent) => {
       // `leaving` is read at event time: effect cleanup would run after a synchronous navigation.
       if (leaving) return
@@ -253,7 +240,7 @@
         return
       }
       // Failures requeue inside persistence; reconnect recovery or the next mutation retries.
-      void flushWorkbench(workbenchId).catch((error: unknown) => {
+      void flushWorkbench().catch((error: unknown) => {
         logClientError('workbench flush on hide failed', { error })
       })
     }

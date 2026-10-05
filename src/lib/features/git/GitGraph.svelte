@@ -1,12 +1,9 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import type { TabId } from '$lib/features/workbench/model'
-  import type { CommitDetail, FileDiff } from '$lib/types/backend'
+  import type { CommitDetail } from '$lib/types/backend'
   import { computeGraph, computeRowRender } from '$lib/features/git/graph'
-  import type { GraphRow } from '$lib/features/git/graph'
-  import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
-  import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
-  import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
+  import ChangedFilesTree from '$lib/features/git/ChangedFilesTree.svelte'
+  import { openCommitDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import GitStashList from '$lib/features/git/GitStashList.svelte'
   import GitBranches from '$lib/features/git/GitBranches.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
@@ -14,23 +11,13 @@
   import { TooltipProvider } from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
   import { GitBranchPlusIcon, GitGraphIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity'
+  import { SvelteMap } from 'svelte/reactivity'
   import * as branches from '$lib/features/git/branches.svelte'
-  import { getGitSidebarTab, setGitSidebarTab, type GitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
+  import { getGitSidebarTab, setGitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
   import { getGitGraph, getStashCount, loadGraph } from '$lib/features/git/state.svelte'
   import { untrack } from 'svelte'
 
-  let {
-    folderPath,
-    onFileClick,
-    onStashFileClick,
-    onPersistTab
-  }: {
-    folderPath: string
-    onFileClick?: (hash: string, shortHash: string, message: string, filePath: string) => TabId | Promise<TabId> | void
-    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
-    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
-  } = $props()
+  let { folderPath }: { folderPath: string } = $props()
 
   let activeTab = $derived(getGitSidebarTab())
   let commits = $derived(getGitGraph(folderPath))
@@ -42,9 +29,6 @@
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
   let expandedDetail = $state<CommitDetail | null>(null)
-  let expandedTree = $state<FileTreeNode<FileDiff>[]>([])
-  let collapsedDirs = new SvelteSet<string>()
-  let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
   // Shared detail cache (tooltip prefetch + expand reuse the same data)
   let detailCache = new SvelteMap<string, CommitDetail>()
@@ -61,7 +45,6 @@
       if (expandedHash && !hashes.has(expandedHash)) {
         expandedHash = null
         expandedDetail = null
-        expandedTree = []
       }
       for (const hash of [...detailCache.keys()]) {
         if (!hashes.has(hash)) detailCache.delete(hash)
@@ -87,36 +70,17 @@
     if (expandedHash === hash) {
       expandedHash = null
       expandedDetail = null
-      expandedTree = []
       return
     }
 
     expandedHash = hash
     expandedDetail = null
-    expandedTree = []
-    collapsedDirs.clear()
 
     const detail = await fetchDetail(hash)
     if (expandedHash !== hash) return
     expandedDetail = detail
-    if (detail) {
-      expandedTree = buildFileTree(detail.files)
-    }
   }
 
-  function handleFileClick(hash: string, filePath: string) {
-    if (!expandedDetail) {
-      pendingOpenedTab = null
-      return
-    }
-    const openedTab = onFileClick?.(hash, expandedDetail.short_hash, expandedDetail.message, filePath)
-    pendingOpenedTab = openedTab == null ? null : Promise.resolve(openedTab)
-  }
-
-  function toggleDir(path: string) {
-    if (collapsedDirs.has(path)) collapsedDirs.delete(path)
-    else collapsedDirs.add(path)
-  }
 
   /** Map branch names to their graph lane colors (first occurrence wins). */
   let branchColorMap = $derived.by(() => {
@@ -131,9 +95,6 @@
     return map
   })
 
-  function setActiveTab(tab: GitSidebarTab) {
-    setGitSidebarTab(tab)
-  }
 </script>
 
 <div class="flex h-full flex-col text-base">
@@ -153,25 +114,22 @@
     <div class="flex items-center gap-0.5">
       <IconButton
         tooltip="Commit graph"
-        tooltipSide="bottom"
         active={activeTab === 'graph'}
-        onclick={() => setActiveTab('graph')}
+        onclick={() => setGitSidebarTab('graph')}
       >
         <GitGraphIcon size={13} />
       </IconButton>
       <IconButton
         tooltip="Stashes{stashCount > 0 ? ` (${stashCount})` : ''}"
-        tooltipSide="bottom"
         active={activeTab === 'stashes'}
-        onclick={() => setActiveTab('stashes')}
+        onclick={() => setGitSidebarTab('stashes')}
       >
         <PackageIcon size={13} />
       </IconButton>
       <IconButton
         tooltip="Branches"
-        tooltipSide="bottom"
         active={activeTab === 'branches'}
-        onclick={() => setActiveTab('branches')}
+        onclick={() => setGitSidebarTab('branches')}
       >
         <GitBranchPlusIcon size={13} />
       </IconButton>
@@ -204,23 +162,12 @@
               <div class="border-t border-edge/30 bg-surface py-1">
                 {#if !expandedDetail}
                   <div class="px-4 py-1.5 text-xs text-subtle">Loading files...</div>
-                {:else if expandedTree.length === 0}
-                  <div class="px-4 py-1.5 text-xs text-subtle">No files changed.</div>
                 {:else}
-                  <FileTreeItems
-                    nodes={expandedTree}
-                    isCollapsed={(node) => collapsedDirs.has(node.path)}
-                    onToggleDir={toggleDir}
-                    onFileClick={(node) =>
-                      expandedHash && node.change && handleFileClick(expandedHash, node.change.path)}
-                    onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
-                  >
-                    {#snippet fileTrailing(node: FileTreeNode<FileDiff>)}
-                      {#if node.change}
-                        <GitStatusBadge status={node.change.status} />
-                      {/if}
-                    {/snippet}
-                  </FileTreeItems>
+                  {@const detail = expandedDetail}
+                  <ChangedFilesTree
+                    files={detail.files}
+                    open={(path) => openCommitDiff(folderPath, row.commit.hash, detail.short_hash, detail.message, path)}
+                  />
                 {/if}
               </div>
             {/if}
@@ -229,7 +176,7 @@
       </TooltipProvider>
     {/if}
   {:else if activeTab === 'stashes'}
-    <GitStashList {folderPath} {branchColorMap} onFileClick={onStashFileClick} {onPersistTab} />
+    <GitStashList {folderPath} {branchColorMap} />
   {:else}
     <GitBranches {folderPath} {branchColorMap} />
   {/if}

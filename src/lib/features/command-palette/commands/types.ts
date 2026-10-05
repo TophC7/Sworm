@@ -1,5 +1,4 @@
 import type { Component } from 'svelte'
-import type { ServerState } from '$lib/features/browser/places.svelte'
 
 export interface Command {
   id: string
@@ -7,7 +6,6 @@ export interface Command {
   subtitle?: string
   icon?: Component
   iconSrc?: string
-  serverState?: ServerState
   /**
    * Kebab-case Lucide icon name rendered via the shared LucideIcon
    * component. Lets entries defined by user config (e.g. tasks) ship
@@ -15,7 +13,6 @@ export interface Command {
    */
   lucideIcon?: string
   keywords: string[]
-  shortcut?: string
   defaultKeybindings?: string[]
   onSelect: () => void
 }

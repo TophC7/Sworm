@@ -1,18 +1,19 @@
 import { backend } from '$lib/api/backend'
 import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
+import { invalidateLspServerEntries, restartLspServerDefinition } from '$lib/features/editor/lsp/registry'
+import { loadLspServers } from './lspSettings.svelte'
 import type {
   FormattingSettings,
+  LspServerConfig,
   NixSettings,
   ProviderConfig,
   SettingsPayload,
-  TerminalSettings,
   WindowSettings
 } from '$lib/types/backend'
 
 const REMOTE_PREFIX = 'sworm://'
 
 let settings = $state<SettingsPayload | null>(null)
-let loading = $state(false)
 /**
  * Remote folder whose daemon owns the host sections in `settings`, or null
  * when they came from this desktop. Reads, writes and the dialog caption all
@@ -25,10 +26,6 @@ let loadGeneration = 0
 
 export function getSettings() {
   return settings
-}
-
-export function getSettingsLoading() {
-  return loading
 }
 
 async function fetchSettings(host: string | null): Promise<SettingsPayload> {
@@ -54,7 +51,6 @@ export async function loadSettings(folderPath: string | null = getActiveFolderPa
   const request = ++loadGeneration
   const promise = fetchSettings(host)
   inFlightLoad = { host, promise }
-  loading = true
   try {
     const next = await promise
     if (request === loadGeneration) {
@@ -64,7 +60,6 @@ export async function loadSettings(folderPath: string | null = getActiveFolderPa
     return next
   } finally {
     if (inFlightLoad?.promise === promise) inFlightLoad = null
-    if (request === loadGeneration) loading = false
   }
 }
 
@@ -79,56 +74,57 @@ export async function saveWindowSettings(nextSettings: WindowSettings) {
   return saved
 }
 
-export async function saveTerminalSettings(nextSettings: TerminalSettings) {
-  const saved = await backend.settings.setTerminal(nextSettings)
-  if (settings) {
-    settings = {
-      ...settings,
-      terminal: saved
-    }
-  }
+async function saveHostSection<T>(
+  host: string | null,
+  write: (folder?: string) => Promise<T>,
+  merge: (current: SettingsPayload, saved: T) => SettingsPayload
+): Promise<T> {
+  const saved = await write(host ?? undefined)
+  if (settings && settingsHost === host) settings = merge(settings, saved)
   return saved
 }
 
-// Host sections live on the machine that owns the values the user just edited,
-// so every write below carries `settingsHost` rather than whatever folder is
-// active by the time it flushes; window and terminal above stay on this
-// desktop. A response is merged only while that host still owns the store.
-export async function saveNixSettings(nextSettings: NixSettings) {
-  const host = settingsHost
-  const saved = await backend.settings.setNix(nextSettings, host ?? undefined)
-  if (settings && settingsHost === host) {
-    settings = {
-      ...settings,
-      nix: saved
-    }
-  }
-  return saved
+export async function saveNixSettings(nextSettings: NixSettings, host: string | null) {
+  return saveHostSection(host, (folder) => backend.settings.setNix(nextSettings, folder), (current, saved) => ({
+    ...current,
+    nix: saved
+  }))
 }
 
-export async function saveFormattingSettings(nextSettings: FormattingSettings) {
-  const host = settingsHost
-  const saved = await backend.settings.setFormatting(nextSettings, host ?? undefined)
-  if (settings && settingsHost === host) {
-    settings = {
-      ...settings,
-      formatting: saved
-    }
-  }
-  return saved
+export async function saveFormattingSettings(nextSettings: FormattingSettings, host: string | null) {
+  return saveHostSection(host, (folder) => backend.settings.setFormatting(nextSettings, folder), (current, saved) => ({
+    ...current,
+    formatting: saved
+  }))
 }
 
-export async function saveProviderConfig(nextConfig: ProviderConfig) {
-  const host = settingsHost
-  const saved = await backend.settings.setProviderConfig(nextConfig, host ?? undefined)
-  if (settings && settingsHost === host) {
-    settings = {
-      ...settings,
-      providers: settings.providers.map((entry) =>
-        entry.provider.id === saved.provider_id ? { ...entry, config: saved } : entry
-      )
+export async function saveProviderConfig(nextConfig: ProviderConfig, host: string | null) {
+  return saveHostSection(host, (folder) => backend.settings.setProviderConfig(nextConfig, folder), (current, saved) => ({
+    ...current,
+    providers: current.providers.map((entry) =>
+      entry.provider.id === saved.provider_id ? { ...entry, config: saved } : entry
+    )
+  }))
+}
+
+export async function saveLspServerConfig(
+  nextConfig: LspServerConfig,
+  host: string | null
+): Promise<LspServerConfig> {
+  const saved = await saveHostSection(
+    host,
+    (folder) => backend.lsp.setServerConfig(nextConfig, folder),
+    (current, saved) => {
+      const { server_definition_id, ...config } = saved
+      return {
+        ...current,
+        lsp: { ...current.lsp, servers: { ...current.lsp.servers, [server_definition_id]: config } }
+      }
     }
-  }
+  )
+  invalidateLspServerEntries()
+  await restartLspServerDefinition(saved.server_definition_id)
+  await loadLspServers(getActiveFolderPath() ?? undefined)
   return saved
 }
 

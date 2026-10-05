@@ -17,7 +17,7 @@
 ### UI
 
 - [ ] `VariableHeightVirtualList` sibling primitive
-  Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent and unblocks reusing `LazyRender.svelte` inside `MonacoDiffBody.svelte`.
+  Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent.
   `DiffStack.svelte` mounts a `DiffStackFile` header for every file (measured: 1,000 files ≈ 305 ms mount, ~12k DOM nodes); window headers as part of this migration.
 - [ ] Pane overscroll feature
   Allow elastic overscroll when scrolling past the end of a pane.

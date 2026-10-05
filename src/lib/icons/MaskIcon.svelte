@@ -12,7 +12,7 @@
     height = width,
     label,
     class: className
-  }: { src: string; width: number; height?: number; label: string; class?: string } = $props()
+  }: { src: string; width: number; height?: number; label?: string; class?: string } = $props()
 
   // Quoted: builds inline small SVGs as data URIs, which contain single quotes and parentheses.
   let mask = $derived(`url("${src}") no-repeat center / contain`)
@@ -21,6 +21,7 @@
 <span
   class={cn('inline-block shrink-0 bg-current', className)}
   style="width: {width}px; height: {height}px; -webkit-mask: {mask}; mask: {mask};"
-  role="img"
+  role={label ? 'img' : undefined}
   aria-label={label}
+  aria-hidden={label ? undefined : 'true'}
 ></span>

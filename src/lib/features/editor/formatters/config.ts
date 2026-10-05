@@ -1,7 +1,5 @@
-import { getBuiltinSettingsPageForGroup, getBuiltinSettingsPages } from '$lib/features/builtins/catalog'
-import type { FormatterSelection } from '$lib/types/backend'
-
-export type FormattingGroupId = 'javascript_typescript' | 'json' | 'nix'
+import { getBuiltinSettingsPages } from '$lib/features/builtins/catalog.svelte'
+import type { BuiltinFormatterPolicy } from '$lib/types/backend'
 
 export function formatterManagedLanguageIds(): string[] {
   return [
@@ -14,30 +12,12 @@ export function formatterManagedLanguageIds(): string[] {
 }
 
 export function isFormatterManagedLanguage(languageId: string): boolean {
-  return formattingGroupForLanguageId(languageId) !== null
+  return formatterPolicyForLanguage(languageId) !== null
 }
 
-export function formattingGroupForLanguageId(languageId: string): FormattingGroupId | null {
+export function formatterPolicyForLanguage(languageId: string): BuiltinFormatterPolicy | null {
   return (
-    getBuiltinSettingsPages().find((page) => page.formatter && page.language_ids.includes(languageId))?.formatter
-      ?.group ?? null
+    getBuiltinSettingsPages().find((page) => page.formatter && page.language_ids.includes(languageId))?.formatter ??
+    null
   )
-}
-
-export function defaultFormatterForGroup(group: FormattingGroupId): FormatterSelection {
-  return getBuiltinSettingsPageForGroup(group)?.formatter?.default ?? fallbackDefault(group)
-}
-
-export function formatterOptionsForGroup(group: FormattingGroupId): FormatterSelection[] {
-  return getBuiltinSettingsPageForGroup(group)?.formatter?.options ?? []
-}
-
-function fallbackDefault(group: FormattingGroupId): FormatterSelection {
-  switch (group) {
-    case 'javascript_typescript':
-    case 'json':
-      return 'biome'
-    case 'nix':
-      return 'nixfmt'
-  }
 }

@@ -14,7 +14,7 @@ import {
 
 /**
  * Open a dormant session tab for `folderPath`. The mounted
- * SessionTerminal spawns the process; nothing is persisted beyond the
+ * SessionSurface spawns the process; nothing is persisted beyond the
  * tab itself.
  */
 export function startSession(folderPath: string, providerId: string, title: string): TabId {
@@ -42,6 +42,12 @@ export async function startSessionProcess(manager: TerminalSessionManager, tab: 
     clearSessionTabResumeToken(tab.id, supplied)
     notify.info('Started a new conversation', 'The previous one no longer exists.')
   }
+}
+
+export async function restartSessionProcess(tab: SessionTab): Promise<void> {
+  const manager = sessionRegistry.getOrCreate(tab.id)
+  if (manager.isPtyActive()) await manager.stopPty()
+  await startSessionProcess(manager, tab)
 }
 
 /** Stop a mounted session or its saved, currently unmounted run. */

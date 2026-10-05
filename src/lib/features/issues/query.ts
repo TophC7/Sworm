@@ -11,7 +11,11 @@
 // tokens via toggleToken / hasToken instead of owning parallel state.
 
 import type { Issue, IssueStatus } from '$lib/types/backend'
-import { isOpen } from './visual'
+const TERMINAL: Partial<Record<IssueStatus, true>> = { completed: true, wont_fix: true, archived: true }
+
+function isOpen(status: IssueStatus): boolean {
+  return !TERMINAL[status]
+}
 
 export type Term =
   | { kind: 'is'; value: 'open' | 'active' | 'done' | 'archived' }
@@ -19,7 +23,7 @@ export type Term =
   | { kind: 'epic'; id: string }
   | { kind: 'text'; value: string }
 
-export function splitTokens(query: string): string[] {
+function splitTokens(query: string): string[] {
   return query.split(/\s+/).filter(Boolean)
 }
 

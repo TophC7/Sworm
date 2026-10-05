@@ -1,0 +1,59 @@
+@import 'github-markdown-css/github-markdown.css';
+@reference '../../../app.css';
+
+/* GitHub markdown layout, using Sworm's palette and type scale. */
+.markdown-body {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  --fontStack-monospace: var(--font-mono);
+  --bgColor-default: transparent;
+  --bgColor-muted: var(--color-surface);
+  --bgColor-neutral-muted: var(--color-raised);
+  --bgColor-attention-muted: var(--color-warning-bg);
+  --fgColor-default: var(--color-fg);
+  --fgColor-muted: var(--color-muted);
+  --fgColor-accent: var(--color-accent);
+  --fgColor-attention: var(--color-warning);
+  --fgColor-danger: var(--color-danger);
+  --fgColor-success: var(--color-success);
+  --fgColor-done: var(--color-pink);
+  --borderColor-default: var(--color-edge);
+  --borderColor-muted: var(--color-edge);
+  --borderColor-neutral-muted: var(--color-edge);
+  --borderColor-accent-emphasis: var(--color-accent);
+  --borderColor-attention-emphasis: var(--color-warning);
+  --borderColor-danger-emphasis: var(--color-danger);
+  --borderColor-success-emphasis: var(--color-success);
+  --borderColor-done-emphasis: var(--color-pink);
+  --focus-outlineColor: var(--color-accent);
+}
+
+/* The alert plugin emits an icon without GitHub's spacing class. */
+.markdown-body .markdown-alert-title {
+  @apply gap-2;
+}
+
+/* Restore browser markers removed by Tailwind's preflight. */
+.markdown-body ul {
+  @apply list-disc;
+}
+
+.markdown-body ol {
+  @apply list-decimal;
+}
+
+/* Shiki's inline background must not override the muted code surface. */
+.markdown-body pre.shiki {
+  background-color: var(--color-surface) !important;
+}
+
+.markdown-body pre.shiki .line:empty::after {
+  content: ' ';
+}
+
+/* remark-gfm checkboxes lack GitHub's task-list-item-checkbox class. */
+.markdown-body .task-list-item input[type='checkbox'] {
+  margin: 0 0.2em 0.25em -1.4em;
+  vertical-align: middle;
+}

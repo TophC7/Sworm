@@ -7,7 +7,7 @@
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
-import { getWorkbenchId } from '$lib/features/workbench/state.svelte'
+import { platform } from '$lib/platform'
 import type { BranchOpState, BranchSummary, GitSummary } from '$lib/types/backend'
 
 // TYPES //
@@ -50,11 +50,6 @@ const branchStore = createFolderKeyedStore<FolderEntry>()
 // different folder starts a fresh fetch.
 const inFlightLoads = new Map<string, Promise<void>>()
 const inFlightFetches = new Map<string, Promise<void>>()
-const folderGenerations = new Map<string, number>()
-
-function folderGeneration(folderPath: string): number {
-  return folderGenerations.get(folderPath) ?? 0
-}
 const OP_STATE_POLL_MS = 1500
 
 interface LoadOptions {
@@ -74,7 +69,6 @@ export const byFolder = {
 
 /** Forget the folder's branch state and stop op-state polling; called when the workbench releases the folder. */
 export function releaseBranchFolder(folderPath: string) {
-  folderGenerations.set(folderPath, folderGeneration(folderPath) + 1)
   branchStore.delete(folderPath)
   inFlightLoads.delete(folderPath)
   inFlightFetches.delete(folderPath)
@@ -83,7 +77,7 @@ export function releaseBranchFolder(folderPath: string) {
 // PERSISTENCE //
 
 async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
-  const key = `branchesView:${getWorkbenchId()}:${folderPath}`
+  const key = `branchesView:${platform.workbench.id}:${folderPath}`
   let raw: string | null
   try {
     raw = await backend.app.stateGet(key)
@@ -114,7 +108,7 @@ async function loadPrefs(folderPath: string): Promise<BranchesViewPrefs> {
 
 async function persistPrefs(folderPath: string, prefs: BranchesViewPrefs): Promise<void> {
   try {
-    await backend.app.statePut(`branchesView:${getWorkbenchId()}:${folderPath}`, JSON.stringify(prefs))
+    await backend.app.statePut(`branchesView:${platform.workbench.id}:${folderPath}`, JSON.stringify(prefs))
   } catch (e) {
     console.error('Failed to persist branchesView prefs:', e)
   }
@@ -150,7 +144,7 @@ function patchPrefs(folderPath: string, patch: Partial<BranchesViewPrefs>) {
  * immediately; use `refresh` to force a re-fetch. */
 export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<void> {
   const autoFetch = options.autoFetch ?? true
-  const generation = folderGeneration(folderPath)
+  const generation = branchStore.generation(folderPath)
   const existing = inFlightLoads.get(folderPath)
   if (existing) {
     if (!autoFetch) return existing
@@ -171,7 +165,7 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
     } catch (e) {
       console.error(`Failed to load branches for ${folderPath}:`, e)
     }
-    if (folderGeneration(folderPath) !== generation) return
+    if (branchStore.generation(folderPath) !== generation) return
     branchStore.set(folderPath, {
       list,
       opState,
@@ -191,14 +185,14 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
 /** Re-pull `branch.list` + `branch.status` and merge into the entry.
  * Prefs and transient flags survive. Runs as part of every full repo
  * refresh (see `onRepoRefresh` below); not called directly by feature code. */
-export async function refresh(folderPath: string): Promise<void> {
-  const generation = folderGeneration(folderPath)
+async function refresh(folderPath: string): Promise<void> {
+  const generation = branchStore.generation(folderPath)
   try {
     const [list, opState] = await Promise.all([
       backend.git.branch.list(folderPath),
       backend.git.branch.status(folderPath)
     ])
-    if (folderGeneration(folderPath) !== generation) return
+    if (branchStore.generation(folderPath) !== generation) return
     branchStore.patch(folderPath, { list, opState })
   } catch (e) {
     console.error(`Failed to refresh branches for ${folderPath}:`, e)
@@ -233,7 +227,7 @@ export function markRecent(folderPath: string, name: string) {
 // FETCH STATE //
 
 export function fetchBranches(folderPath: string): Promise<void> {
-  const generation = folderGeneration(folderPath)
+  const generation = branchStore.generation(folderPath)
   const existing = inFlightFetches.get(folderPath)
   if (existing) return existing
 
@@ -245,10 +239,10 @@ export function fetchBranches(folderPath: string): Promise<void> {
   promise = (async () => {
     try {
       await runGitAction(folderPath, (path) => backend.git.fetch(path))
-      if (folderGeneration(folderPath) !== generation) return
+      if (branchStore.generation(folderPath) !== generation) return
       branchStore.patch(folderPath, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
     } catch (e) {
-      if (folderGeneration(folderPath) === generation) {
+      if (branchStore.generation(folderPath) === generation) {
         branchStore.patch(folderPath, { fetching: false })
       }
       throw e
@@ -297,9 +291,6 @@ export class DirtyCheckoutError extends Error {
   }
 }
 
-export function isDirtyCheckoutError(err: unknown): err is DirtyCheckoutError {
-  return err instanceof DirtyCheckoutError
-}
 
 interface BackendDirtyWorktreeError {
   kind: 'dirtyWorktree'

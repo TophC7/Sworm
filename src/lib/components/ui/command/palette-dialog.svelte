@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { Dialog } from 'bits-ui'
+  import { Dialog } from 'bits-ui'
   import type { Snippet } from 'svelte'
-  import { DialogRoot, DialogPortal, DialogOverlay, DialogContentRaw } from '$lib/components/ui/dialog'
+  import DialogOverlay from '../dialog/dialog-overlay.svelte'
 
   let {
     open,
@@ -20,11 +20,11 @@
   } = $props()
 </script>
 
-<DialogRoot {open} {onOpenChange}>
-  <DialogPortal>
+<Dialog.Root {open} {onOpenChange}>
+  <Dialog.Portal>
     <DialogOverlay />
     <!-- Keep the modal boundary on the palette, not the viewport, so backdrop clicks dismiss it. -->
-    <DialogContentRaw
+    <Dialog.Content
       data-slot="palette-dialog"
       class="fixed inset-x-3 top-[15vh] z-50 mx-auto flex max-h-[80dvh] max-w-3xl flex-col overflow-hidden rounded-xl border border-edge bg-raised shadow-popover"
       aria-label={label}
@@ -32,6 +32,6 @@
       {onOpenAutoFocus}
     >
       {#if children}{@render children()}{/if}
-    </DialogContentRaw>
-  </DialogPortal>
-</DialogRoot>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>

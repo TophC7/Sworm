@@ -5,6 +5,7 @@
 // state. Each workbench stores its own blob under `workbench:<id>`.
 
 import { backend } from '$lib/api/backend'
+import { platform } from '$lib/platform'
 import {
   isProcessLive,
   type PersistedTab,
@@ -13,7 +14,6 @@ import {
   type Workbench
 } from '$lib/features/workbench/model'
 import { basename } from '$lib/utils/paths'
-import { flushActiveGroups } from './groups.svelte'
 
 const WORKBENCH_DEBOUNCE_MS = 250
 
@@ -53,30 +53,12 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
         folderPath: tab.folderPath,
         source:
           tab.source.kind === 'working'
-            ? {
-                kind: 'working',
-                staged: tab.source.staged,
-                scopePath: tab.source.scopePath
-              }
-            : tab.source.kind === 'commit'
-              ? {
-                  kind: 'commit',
-                  commitHash: tab.source.commitHash,
-                  shortHash: tab.source.shortHash,
-                  message: tab.source.message
-                }
-              : {
-                  kind: 'stash',
-                  stashIndex: tab.source.stashIndex,
-                  message: tab.source.message
-                },
+            ? { kind: 'working', staged: tab.source.staged, scopePath: tab.source.scopePath }
+            : tab.source,
         initialFile: tab.initialFile,
         temporary: tab.temporary,
         locked: tab.locked
       }
-    case 'tool':
-      // Dev-only tab; don't let it show up on next launch.
-      return null
     case 'issue':
       // Title is a cache; on hydrate we re-fetch detail and refresh it.
       return {
@@ -308,18 +290,14 @@ export function createWorkbenchWriter(save: (json: string) => Promise<void>): Wo
   }
 }
 
-const localWriter = createWorkbenchWriter((json) => backend.app.statePut(`workbench:${localWorkbenchId}`, json))
-let localWorkbenchId = 'main'
+const localWriter = createWorkbenchWriter((json) => backend.app.statePut(`workbench:${platform.workbench.id}`, json))
 
-export function schedulePersistWorkbench(workbenchId: string, produce: () => PersistedWorkbenchV4): void {
-  localWorkbenchId = workbenchId
+export function schedulePersistWorkbench(produce: () => PersistedWorkbenchV4): void {
   localWriter.schedule(produce)
 }
 
-export async function flushWorkbench(workbenchId: string): Promise<void> {
-  localWorkbenchId = workbenchId
+export async function flushLocalWorkbench(): Promise<void> {
   await localWriter.flush()
-  await flushActiveGroups()
 }
 
 /** Permanently suspend this document's persistence after web takeover/Close. */
@@ -348,9 +326,9 @@ export function parsePersistedWorkbench(value: unknown): PersistedWorkbenchV4 | 
   return { ...snapshot, tabs, activeTabIndex: Math.min(activeTabIndex, tabs.length - 1) }
 }
 
-export async function loadPersistedWorkbench(workbenchId: string): Promise<PersistedWorkbenchV4 | null> {
+export async function loadPersistedWorkbench(): Promise<PersistedWorkbenchV4 | null> {
   try {
-    const raw = await backend.app.stateGet(`workbench:${workbenchId}`)
+    const raw = await backend.app.stateGet(`workbench:${platform.workbench.id}`)
     if (!raw) return null
     const parsed = parsePersistedWorkbench(JSON.parse(raw))
     if (!parsed) {

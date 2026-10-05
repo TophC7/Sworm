@@ -14,7 +14,7 @@
   } from '$lib/features/editor/renderers/monaco/diff/scrollContext.svelte'
   import { getDiffEditorPool } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { getDiffHeightPreloader } from '$lib/features/editor/renderers/monaco/diff/heightPreloader.svelte'
-  import { DiffModelStore, type DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import { DiffModelStore, type DiffContentFetcher } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
 
   let {
     files,
@@ -59,17 +59,12 @@
   // `ready()` is idempotent and cached, so multiple DiffStack mounts
   // share the single Monaco module load.
   let storeReady = $state(false)
-  // Cached Monaco module reference for the preloader. Populated once
-  // `pool.ready()` resolves; saves re-awaiting the cached promise on
-  // every preloadPendingHeights() call.
-  let monacoRef: typeof import('monaco-editor') | null = null
 
   onMount(() => {
     let disposed = false
     void (async () => {
       const monaco = await pool.ready()
       if (disposed) return
-      monacoRef = monaco
       store.attach(monaco)
       // Reflect initial Svelte state onto the pool so already-pooled
       // editors pick up settings before their first acquire.
@@ -104,9 +99,7 @@
   // layout shift is eliminated (or, for files still preloading, bounded
   // to a single transition).
   function preloadPendingHeights(): void {
-    const monaco = monacoRef
-    if (!monaco) return
-    const settings = { renderSideBySide: sideBySide, wordWrap: wrap, fontSize }
+    if (!storeReady) return
     for (const file of files) {
       const entry = store.get(file.path)
       if (!entry || entry.binary || entry.height != null) continue
@@ -116,7 +109,7 @@
       // preloader queue stays focused on already-resident content
       // rather than fanning out to fetch every file up-front.
       if (!entry.contentLoaded) continue
-      preloader.preload({ monaco, store, path: file.path, settings })
+      preloader.preload(store, file.path)
     }
   }
 

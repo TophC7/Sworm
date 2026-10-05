@@ -8,16 +8,16 @@
 // overlap or build a backlog.
 //
 // Two guards keep concurrent reads from fighting a mutation:
-//   - `epochs`: bumped by `runGitAction` when a mutation lands; a summary read
+//   - `epoch`: bumped by `runGitAction` when a mutation lands; a summary read
 //     that started before the bump is discarded on arrival.
 //   - `lastApplied`: a summary read never overwrites one that started later.
 // Without them a slow pre-mutation `git status` lands after the post-mutation
 // one and the working tree visibly bounces.
 
 import { backend } from '$lib/api/backend'
-import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/git'
+import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/summaryPatches'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import type { GitSummary, GraphCommit, StashEntry } from '$lib/types/backend'
 import { platform } from '$lib/platform'
 
@@ -47,18 +47,20 @@ interface RefreshQueue {
   promise: Promise<void>
 }
 
-const epochs = new Map<string, number>()
-const lastApplied = new Map<string, number>()
-const inFlightActions = new Map<string, number>()
-const pendingActionScopes = new Map<string, RefreshScope>()
-const inFlightLoads = new Map<string, Promise<void>>()
-const refreshQueues = new Map<string, RefreshQueue>()
-const reconciliations = new Map<string, Promise<void>>()
-const activeFolderRefs = new Map<string, number>()
-const activeReady = new Map<string, Promise<void>>()
-const lifecycles = new Map<string, number>()
+interface FolderRuntime {
+  epoch: number
+  lastApplied: number
+  inFlightActions: number
+  pendingActionScope: RefreshScope | null
+  loads: Map<'graph' | 'stashes' | 'watch', Promise<void>>
+  refreshQueue: RefreshQueue | null
+  reconciliation: Promise<void> | null
+  activeRefs: number
+  activeReady: Promise<void> | null
+}
+
+const runtimes = new Map<string, FolderRuntime>()
 let nextSeq = 0
-let nextLifecycle = 0
 
 function ensureEntry(folderPath: string) {
   if (!gitStore.has(folderPath)) {
@@ -70,16 +72,18 @@ function ensureEntry(folderPath: string) {
       readError: null,
       watchError: null
     })
-    lifecycles.set(folderPath, ++nextLifecycle)
+    runtimes.set(folderPath, {
+      epoch: 0,
+      lastApplied: 0,
+      inFlightActions: 0,
+      pendingActionScope: null,
+      loads: new Map(),
+      refreshQueue: null,
+      reconciliation: null,
+      activeRefs: 0,
+      activeReady: null
+    })
   }
-}
-
-function lifecycleFor(folderPath: string): number | null {
-  return gitStore.has(folderPath) ? (lifecycles.get(folderPath) ?? null) : null
-}
-
-function isCurrentLifecycle(folderPath: string, lifecycle: number | null): boolean {
-  return lifecycle !== null && lifecycles.get(folderPath) === lifecycle && gitStore.has(folderPath)
 }
 
 function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolean {
@@ -152,17 +156,17 @@ export function getStashes(folderPath: string): StashEntry[] | null {
 
 // REFRESH //
 async function refreshGitNow(folderPath: string): Promise<void> {
-  const lifecycle = lifecycleFor(folderPath)
-  if (lifecycle === null) return
-  const epoch = epochs.get(folderPath) ?? 0
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
+  const epoch = rt.epoch
   const seq = ++nextSeq
   try {
     const summary = await backend.git.getSummary(folderPath)
     // A mutation landed meanwhile; its own refresh follows.
-    if (!isCurrentLifecycle(folderPath, lifecycle) || (epochs.get(folderPath) ?? 0) !== epoch) return
+    if (runtimes.get(folderPath) !== rt || rt.epoch !== epoch) return
     // A read that started later already settled.
-    if ((lastApplied.get(folderPath) ?? 0) > seq) return
-    lastApplied.set(folderPath, seq)
+    if (rt.lastApplied > seq) return
+    rt.lastApplied = seq
     const patch: Partial<RepoState> = { readError: null }
     if (!summariesEqual(getGitSummary(folderPath), summary)) patch.summary = summary
     // Non-repositories have nothing to watch; never report that expected state
@@ -171,24 +175,24 @@ async function refreshGitNow(folderPath: string): Promise<void> {
     gitStore.patch(folderPath, patch)
   } catch (error) {
     if (
-      !isCurrentLifecycle(folderPath, lifecycle) ||
-      (epochs.get(folderPath) ?? 0) !== epoch ||
-      (lastApplied.get(folderPath) ?? 0) > seq
+      runtimes.get(folderPath) !== rt ||
+      rt.epoch !== epoch ||
+      rt.lastApplied > seq
     ) {
       return
     }
-    lastApplied.set(folderPath, seq)
+    rt.lastApplied = seq
     gitStore.patch(folderPath, { readError: getErrorMessage(error) })
     console.error(`Failed to refresh git for ${folderPath}:`, error)
   }
 }
 
 async function refreshGraph(folderPath: string): Promise<void> {
-  const lifecycle = lifecycleFor(folderPath)
-  if (lifecycle === null) return
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
   try {
     const graph = await backend.git.getGraph(folderPath, GRAPH_LIMIT)
-    if (!isCurrentLifecycle(folderPath, lifecycle)) return
+    if (runtimes.get(folderPath) !== rt) return
     if (graphsEqual(getGitGraph(folderPath), graph)) return
     gitStore.patch(folderPath, { graph })
   } catch (e) {
@@ -197,11 +201,11 @@ async function refreshGraph(folderPath: string): Promise<void> {
 }
 
 async function refreshStashCount(folderPath: string): Promise<void> {
-  const lifecycle = lifecycleFor(folderPath)
-  if (lifecycle === null) return
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
   try {
     const stashCount = await backend.git.stashCount(folderPath)
-    if (!isCurrentLifecycle(folderPath, lifecycle)) return
+    if (runtimes.get(folderPath) !== rt) return
     gitStore.patch(folderPath, { stashCount })
   } catch (e) {
     console.error(`Failed to count stashes for ${folderPath}:`, e)
@@ -209,11 +213,11 @@ async function refreshStashCount(folderPath: string): Promise<void> {
 }
 
 async function refreshStashes(folderPath: string): Promise<void> {
-  const lifecycle = lifecycleFor(folderPath)
-  if (lifecycle === null) return
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
   try {
     const stashes = await backend.git.stashList(folderPath)
-    if (!isCurrentLifecycle(folderPath, lifecycle)) return
+    if (runtimes.get(folderPath) !== rt) return
     gitStore.patch(folderPath, { stashes, stashCount: stashes.length })
   } catch (e) {
     console.error(`Failed to list stashes for ${folderPath}:`, e)
@@ -221,28 +225,34 @@ async function refreshStashes(folderPath: string): Promise<void> {
 }
 
 /** Coalesce a first load per folder+kind; later callers join the in-flight promise. */
-function loadOnce(key: string, load: () => Promise<void>): Promise<void> {
-  const existing = inFlightLoads.get(key)
+function loadOnce(
+  rt: FolderRuntime,
+  kind: 'graph' | 'stashes' | 'watch',
+  load: () => Promise<void>
+): Promise<void> {
+  const existing = rt.loads.get(kind)
   if (existing) return existing
   const promise = load().finally(() => {
-    if (inFlightLoads.get(key) === promise) inFlightLoads.delete(key)
+    if (rt.loads.get(kind) === promise) rt.loads.delete(kind)
   })
-  inFlightLoads.set(key, promise)
+  rt.loads.set(kind, promise)
   return promise
 }
 
 /** Load the graph if it was never loaded; refreshes keep it current afterwards. */
 export function loadGraph(folderPath: string): Promise<void> {
-  if (getGitGraph(folderPath)) return Promise.resolve()
-  return loadOnce(`graph:${folderPath}`, () =>
+  const rt = runtimes.get(folderPath)
+  if (!rt || getGitGraph(folderPath)) return Promise.resolve()
+  return loadOnce(rt, 'graph', () =>
     Promise.all([refreshGraph(folderPath), refreshStashCount(folderPath)]).then(() => undefined)
   )
 }
 
 /** Load the stash list if it was never loaded; refreshes keep it current afterwards. */
 export function loadStashes(folderPath: string): Promise<void> {
-  if (getStashes(folderPath)) return Promise.resolve()
-  return loadOnce(`stashes:${folderPath}`, () => refreshStashes(folderPath))
+  const rt = runtimes.get(folderPath)
+  if (!rt || getStashes(folderPath)) return Promise.resolve()
+  return loadOnce(rt, 'stashes', () => refreshStashes(folderPath))
 }
 
 type RepoRefreshListener = (folderPath: string) => Promise<void> | void
@@ -269,9 +279,10 @@ async function refreshRepoNow(folderPath: string, scope: RefreshScope): Promise<
   ])
 }
 
-export function refreshRepo(folderPath: string, scope: RefreshScope): Promise<void> {
-  if (!gitStore.has(folderPath)) return Promise.resolve()
-  const existing = refreshQueues.get(folderPath)
+function refreshRepo(folderPath: string, scope: RefreshScope): Promise<void> {
+  const rt = runtimes.get(folderPath)
+  if (!rt) return Promise.resolve()
+  const existing = rt.refreshQueue
   if (existing) {
     existing.pendingScope = scope === 'all' || existing.pendingScope === 'all' ? 'all' : 'summary'
     return existing.promise
@@ -280,7 +291,7 @@ export function refreshRepo(folderPath: string, scope: RefreshScope): Promise<vo
   const queue: RefreshQueue = { pendingScope: null, promise: Promise.resolve() }
   queue.promise = (async () => {
     let currentScope = scope
-    while (true) {
+    while (runtimes.get(folderPath) === rt) {
       await refreshRepoNow(folderPath, currentScope)
       const nextScope = queue.pendingScope
       if (!nextScope) return
@@ -288,9 +299,9 @@ export function refreshRepo(folderPath: string, scope: RefreshScope): Promise<vo
       currentScope = nextScope
     }
   })().finally(() => {
-    if (refreshQueues.get(folderPath) === queue) refreshQueues.delete(folderPath)
+    if (rt.refreshQueue === queue) rt.refreshQueue = null
   })
-  refreshQueues.set(folderPath, queue)
+  rt.refreshQueue = queue
   return queue.promise
 }
 
@@ -311,22 +322,19 @@ export async function runGitAction<T>(
   fn: (path: string) => Promise<T>,
   options: { scope?: RefreshScope; optimistic?: (summary: GitSummary) => GitSummary } = {}
 ): Promise<T> {
-  const lifecycle = lifecycleFor(folderPath)
-  const active = isCurrentLifecycle(folderPath, lifecycle)
+  const rt = runtimes.get(folderPath)
   const scope = options.scope ?? 'all'
-  const current = active ? getGitSummary(folderPath) : null
+  const current = rt ? getGitSummary(folderPath) : null
   if (options.optimistic && current) gitStore.patch(folderPath, { summary: options.optimistic(current) })
-  if (active) inFlightActions.set(folderPath, (inFlightActions.get(folderPath) ?? 0) + 1)
+  if (rt) rt.inFlightActions++
   try {
     return await fn(folderPath)
   } finally {
-    if (isCurrentLifecycle(folderPath, lifecycle)) {
-      const remaining = (inFlightActions.get(folderPath) ?? 1) - 1
-      if (remaining > 0) inFlightActions.set(folderPath, remaining)
-      else inFlightActions.delete(folderPath)
-      epochs.set(folderPath, (epochs.get(folderPath) ?? 0) + 1)
-      const pendingScope = remaining > 0 ? null : pendingActionScopes.get(folderPath)
-      if (pendingScope) pendingActionScopes.delete(folderPath)
+    if (rt && runtimes.get(folderPath) === rt) {
+      const remaining = --rt.inFlightActions
+      rt.epoch++
+      const pendingScope = remaining > 0 ? null : rt.pendingActionScope
+      if (pendingScope) rt.pendingActionScope = null
       await refreshRepo(folderPath, scope === 'all' || pendingScope === 'all' ? 'all' : 'summary')
     }
   }
@@ -383,7 +391,8 @@ function ensureGitChangedListener(): Promise<void> {
   if (changedListenerReady) return changedListenerReady
   changedListenerReady = backend.git
     .onChanged(({ folder_path, scope, error }) => {
-      if (!gitStore.has(folder_path)) return
+      const rt = runtimes.get(folder_path)
+      if (!rt) return
       if (error !== null) {
         if (getGitSummary(folder_path)?.is_repo !== false) {
           gitStore.patch(folder_path, { watchError: error })
@@ -392,9 +401,8 @@ function ensureGitChangedListener(): Promise<void> {
         // stay on the cheap refresh path.
         void armGitWatch(folder_path)
       }
-      if ((inFlightActions.get(folder_path) ?? 0) > 0) {
-        const pendingScope = pendingActionScopes.get(folder_path)
-        pendingActionScopes.set(folder_path, scope === 'all' || pendingScope === 'all' ? 'all' : 'summary')
+      if (rt.inFlightActions > 0) {
+        rt.pendingActionScope = scope === 'all' || rt.pendingActionScope === 'all' ? 'all' : 'summary'
         return
       }
       void refreshRepo(folder_path, scope)
@@ -412,7 +420,9 @@ function ensureFocusListener(): Promise<void> {
   focusListenerReady = platform.focus
     .onChanged((focused) => {
       if (!focused) return
-      for (const folderPath of activeFolderRefs.keys()) void reconcileActiveFolder(folderPath, true)
+      for (const [folderPath, rt] of runtimes) {
+        if (rt.activeRefs > 0) void reconcileActiveFolder(folderPath, true)
+      }
     })
     .then(() => undefined)
     .catch((error) => {
@@ -428,19 +438,19 @@ function ensureGitListeners(): Promise<void> {
 }
 
 function armGitWatch(folderPath: string): Promise<void> {
-  const lifecycle = lifecycleFor(folderPath)
-  if (lifecycle === null) return Promise.resolve()
+  const rt = runtimes.get(folderPath)
+  if (!rt) return Promise.resolve()
 
-  return loadOnce(`watch:${folderPath}`, async () => {
+  return loadOnce(rt, 'watch', async () => {
     try {
       // Listener registration must win the startup race with both watch
       // activation and the first status read.
       await ensureGitListeners()
-      if (!isCurrentLifecycle(folderPath, lifecycle)) return
+      if (runtimes.get(folderPath) !== rt) return
       await backend.git.watch(folderPath)
-      if (isCurrentLifecycle(folderPath, lifecycle)) gitStore.patch(folderPath, { watchError: null })
+      if (runtimes.get(folderPath) === rt) gitStore.patch(folderPath, { watchError: null })
     } catch (error) {
-      if (isCurrentLifecycle(folderPath, lifecycle) && getGitSummary(folderPath)?.is_repo !== false) {
+      if (runtimes.get(folderPath) === rt && getGitSummary(folderPath)?.is_repo !== false) {
         gitStore.patch(folderPath, { watchError: getErrorMessage(error) })
       }
       console.warn(`Git watch failed for ${folderPath}:`, error)
@@ -453,20 +463,23 @@ function armGitWatch(folderPath: string): Promise<void> {
  * everything loaded, since refs may have moved while events were missed.
  */
 async function reconcileActiveFolder(folderPath: string, forceFinalPass = false): Promise<void> {
-  await activeReady.get(folderPath)
-  if (!activeFolderRefs.has(folderPath) || !gitStore.has(folderPath)) return
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
+  await rt.activeReady
+  if (runtimes.get(folderPath) !== rt || rt.activeRefs === 0) return
 
   const scope: RefreshScope = forceFinalPass ? 'all' : 'summary'
-  const existing = reconciliations.get(folderPath)
+  const existing = rt.reconciliation
   if (existing) {
     if (forceFinalPass) await refreshRepo(folderPath, scope)
     return
   }
-  if (!forceFinalPass && refreshQueues.has(folderPath)) return
+  if (!forceFinalPass && rt.refreshQueue) return
 
   const reconciliation = (async () => {
     const wasRepo = gitStore.get(folderPath)?.summary?.is_repo
     await refreshRepo(folderPath, scope)
+    if (runtimes.get(folderPath) !== rt) return
     const state = gitStore.get(folderPath)
     if (
       state?.summary?.is_repo !== false &&
@@ -475,60 +488,47 @@ async function reconcileActiveFolder(folderPath: string, forceFinalPass = false)
       await armGitWatch(folderPath)
     }
   })().finally(() => {
-    if (reconciliations.get(folderPath) === reconciliation) reconciliations.delete(folderPath)
+    if (rt.reconciliation === reconciliation) rt.reconciliation = null
   })
-  reconciliations.set(folderPath, reconciliation)
+  rt.reconciliation = reconciliation
   await reconciliation
 }
 
 /** Start or repair the folder watcher, then refresh requested state. */
 export async function ensureGitWatch(folderPath: string, scope: RefreshScope = 'summary'): Promise<void> {
   // A completed init/clone must not resurrect state after its last tab closed.
-  if (!gitStore.has(folderPath)) return
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
   await armGitWatch(folderPath)
+  if (runtimes.get(folderPath) !== rt) return
   await refreshRepo(folderPath, scope)
 }
 
 /** Reconcile only while this folder is selected in the workbench. */
 export function activateGitFolder(folderPath: string): () => void {
   ensureEntry(folderPath)
-  const refs = activeFolderRefs.get(folderPath) ?? 0
-  activeFolderRefs.set(folderPath, refs + 1)
+  const rt = runtimes.get(folderPath)!
+  const refs = rt.activeRefs++
   gitStore.startPolling(folderPath, {
     intervalMs: RECONCILE_INTERVAL_MS,
     tick: (path) => reconcileActiveFolder(path)
   })
   if (refs === 0) {
     const ready: Promise<void> = Promise.resolve().then(() =>
-      activeReady.get(folderPath) === ready ? ensureGitWatch(folderPath) : undefined
+      runtimes.get(folderPath) === rt && rt.activeReady === ready ? ensureGitWatch(folderPath) : undefined
     )
-    activeReady.set(folderPath, ready)
+    rt.activeReady = ready
   }
 
   return () => {
+    if (runtimes.get(folderPath) !== rt) return
     gitStore.stopPolling(folderPath)
-    const remaining = (activeFolderRefs.get(folderPath) ?? 1) - 1
-    if (remaining > 0) activeFolderRefs.set(folderPath, remaining)
-    else {
-      activeFolderRefs.delete(folderPath)
-      activeReady.delete(folderPath)
-    }
+    if (--rt.activeRefs === 0) rt.activeReady = null
   }
 }
 
 /** Forget the folder's git state; called when the workbench releases the folder. */
 export function releaseGitFolder(folderPath: string): void {
   gitStore.delete(folderPath)
-  lifecycles.delete(folderPath)
-  epochs.delete(folderPath)
-  lastApplied.delete(folderPath)
-  inFlightActions.delete(folderPath)
-  inFlightLoads.delete(`graph:${folderPath}`)
-  inFlightLoads.delete(`stashes:${folderPath}`)
-  refreshQueues.delete(folderPath)
-  pendingActionScopes.delete(folderPath)
-  inFlightLoads.delete(`watch:${folderPath}`)
-  reconciliations.delete(folderPath)
-  activeFolderRefs.delete(folderPath)
-  activeReady.delete(folderPath)
+  runtimes.delete(folderPath)
 }

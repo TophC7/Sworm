@@ -1,15 +1,17 @@
+import type { editor, Uri } from 'monaco-editor'
 import type { TextModelTransferState } from '$lib/types/backend'
-import { splitRemotePath } from '$lib/utils/paths'
+import type { TextTab } from '$lib/features/workbench/model'
+import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 type Monaco = typeof import('monaco-editor')
-type MonacoModel = import('monaco-editor').editor.ITextModel
-type MonacoViewState = import('monaco-editor').editor.ICodeEditorViewState
+type MonacoModel = editor.ITextModel
+type MonacoViewState = editor.ICodeEditorViewState
+type TextTabRef = Pick<TextTab, 'id' | 'folderPath' | 'filePath' | 'gitRef'>
 
 interface TextModelEntry {
   key: string
   folderPath: string | null
   filePath: string | null
-  tabId: string
   model: MonacoModel
   savedValue: string
   refs: number
@@ -35,7 +37,6 @@ interface AcquireTextModelOptions {
   folderPath: string | null
   tabId: string
   filePath: string | null
-  uriPath: string | null
   value: string
   language: string
 }
@@ -53,28 +54,43 @@ function untitledKey(folderPath: string, tabId: string): string {
   return `${folderPath}:untitled:${tabId}`
 }
 
-function isDisposed(model: MonacoModel): boolean {
-  return model.isDisposed()
-}
+/** Scheme of remote model URIs; authority identifies the server. */
+export const REMOTE_MODEL_SCHEME = 'sworm'
 
 /** A remote workspace keeps its `sworm://<server>` authority in the model URI:
  * two servers' identical absolute paths must stay distinct models.
  *
  * Split by hand rather than parsed: `Uri.parse` reads `#` and `?` in a file
  * name as a fragment or query and silently truncates the path. */
-export function textModelUri(monaco: Monaco, uriPath: string) {
-  const remote = splitRemotePath(uriPath)
-  if (!remote) return monaco.Uri.file(uriPath)
+export function textModelUri(monaco: Monaco, absolutePath: string) {
+  const remote = splitRemotePath(absolutePath)
+  if (!remote) return monaco.Uri.file(absolutePath)
   return monaco.Uri.from({
-    scheme: 'sworm',
+    scheme: REMOTE_MODEL_SCHEME,
     authority: remote.server,
     path: remote.path
   })
 }
 
+function fileModelUri(monaco: Monaco, folderPath: string, filePath: string) {
+  return textModelUri(monaco, resolveProjectFile(folderPath, filePath))
+}
+
+/** Workspace-path space: the shape folderPath and openTextFile speak. */
+export function modelWorkspacePath(uri: Uri): string | null {
+  if (uri.scheme === 'file') return uri.fsPath
+  return uri.scheme === REMOTE_MODEL_SCHEME ? `${REMOTE_MODEL_SCHEME}://${uri.authority}${uri.path}` : null
+}
+
+/** Host-absolute path, without a remote model's server authority. */
+export function modelHostPath(uri: Uri): string | null {
+  if (uri.scheme === 'file') return uri.fsPath
+  return uri.scheme === REMOTE_MODEL_SCHEME ? uri.path : null
+}
+
 function disposeEntry(entry: TextModelEntry): void {
   entries.delete(entry.key)
-  if (!isDisposed(entry.model)) entry.model.dispose()
+  if (!entry.model.isDisposed()) entry.model.dispose()
 }
 
 function detachEntry(entry: TextModelEntry): void {
@@ -91,7 +107,7 @@ function modelSizeBytes(entry: TextModelEntry): number {
 }
 
 function isDirty(entry: TextModelEntry): boolean {
-  return !isDisposed(entry.model) && entry.model.getValue() !== entry.savedValue
+  return !entry.model.isDisposed() && entry.model.getValue() !== entry.savedValue
 }
 
 function trimRetainedModels(): void {
@@ -155,17 +171,17 @@ function reconcileWithDisk(entry: TextModelEntry, diskValue: string): void {
 /** Reopen dirty buffers without reading a potentially much larger replacement. */
 export function retainedTextModelBase(folderPath: string, filePath: string): string | null {
   const entry = entries.get(fileKey(folderPath, filePath))
-  return entry && !isDisposed(entry.model) ? entry.savedValue : null
+  return entry && !entry.model.isDisposed() ? entry.savedValue : null
 }
 
 export function acquireTextModel(options: AcquireTextModelOptions): TextModelHandle | null {
-  const { monaco, folderPath, tabId, filePath, uriPath, value, language } = options
+  const { monaco, folderPath, tabId, filePath, value, language } = options
   if (!folderPath) return null
 
   monacoRef = monaco
   const key = filePath != null ? fileKey(folderPath, filePath) : untitledKey(folderPath, tabId)
   const existing = entries.get(key)
-  if (existing && !isDisposed(existing.model)) {
+  if (existing && !existing.model.isDisposed()) {
     existing.discardOnRelease = false
     if (existing.skipNextReconcile) {
       existing.skipNextReconcile = false
@@ -178,7 +194,7 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
   }
   if (existing) entries.delete(key)
 
-  const uri = uriPath ? textModelUri(monaco, uriPath) : null
+  const uri = filePath != null ? fileModelUri(monaco, folderPath, filePath) : null
   const existingModel = uri ? monaco.editor.getModel(uri) : null
   if (existingModel && existingModel.getValue() !== value) {
     existingModel.setValue(value)
@@ -191,7 +207,6 @@ export function acquireTextModel(options: AcquireTextModelOptions): TextModelHan
     key,
     filePath,
     folderPath,
-    tabId,
     model,
     savedValue: value,
     refs: 1,
@@ -218,7 +233,6 @@ export function renameTextModelBuffer(
   folderPath: string,
   oldFilePath: string,
   newFilePath: string,
-  newUriPath: string,
   newFolderPath?: string | null
 ): void {
   const oldKey = fileKey(folderPath, oldFilePath)
@@ -237,7 +251,7 @@ export function renameTextModelBuffer(
     }
   }
 
-  const nextModel = createRenamedModel(entry, newUriPath)
+  const nextModel = createRenamedModel(entry, targetFolder, newFilePath)
   if (!nextModel) {
     entries.delete(oldKey)
     entry.key = newKey
@@ -267,7 +281,7 @@ export function renameTextModelBuffer(
   }
 
   entries.delete(oldKey)
-  if (nextModel !== entry.model && !isDisposed(entry.model)) entry.model.dispose()
+  if (nextModel !== entry.model && !entry.model.isDisposed()) entry.model.dispose()
   entry.key = newKey
   entry.folderPath = targetFolder
   entry.filePath = newFilePath
@@ -277,12 +291,12 @@ export function renameTextModelBuffer(
   trimRetainedModels()
 }
 
-function createRenamedModel(entry: TextModelEntry, uriPath: string): MonacoModel | null {
+function createRenamedModel(entry: TextModelEntry, folderPath: string, filePath: string): MonacoModel | null {
   if (!monacoRef) return null
 
   const value = entry.model.getValue()
   const language = entry.model.getLanguageId()
-  const uri = textModelUri(monacoRef, uriPath)
+  const uri = fileModelUri(monacoRef, folderPath, filePath)
   const existing = monacoRef.editor.getModel(uri)
   if (existing) {
     if (existing.getValue() !== value) existing.setValue(value)
@@ -312,20 +326,18 @@ export function discardUntitledTextModelBuffer(folderPath: string, tabId: string
   disposeEntry(entry)
 }
 
-function findTransferEntry(tabId: string): TextModelEntry | undefined {
-  const exact = entries.get(tabId)
-  if (exact) return exact
-  for (const entry of entries.values()) {
-    if (entry.tabId === tabId || entry.key === tabId) return entry
-  }
-  return undefined
+function transferEntry(tab: TextTabRef): TextModelEntry | undefined {
+  if (tab.gitRef) return undefined
+  return entries.get(
+    tab.filePath != null ? fileKey(tab.folderPath, tab.filePath) : untitledKey(tab.folderPath, tab.id)
+  )
 }
 
-export function exportModelTransfer(tabId: string): TextModelTransferState | null {
-  const entry = findTransferEntry(tabId)
-  if (!entry || isDisposed(entry.model)) return null
+export function exportModelTransfer(tab: TextTabRef): TextModelTransferState | null {
+  const entry = transferEntry(tab)
+  if (!entry || entry.model.isDisposed()) return null
   return {
-    tabId,
+    tabId: tab.id,
     folderPath: entry.folderPath,
     filePath: entry.filePath,
     value: entry.model.getValue(),
@@ -347,7 +359,7 @@ export function importModelTransfer(state: TextModelTransferState, monaco: Monac
 
   const uri =
     state.filePath != null && state.folderPath != null
-      ? textModelUri(monaco, `${state.folderPath.replace(/\/$/, '')}/${state.filePath}`)
+      ? fileModelUri(monaco, state.folderPath, state.filePath)
       : null
   const model = uri ? monaco.editor.getModel(uri) : null
   // setValue clears Monaco's local undo/redo stack; cross-realm history is unsupported.
@@ -361,7 +373,6 @@ export function importModelTransfer(state: TextModelTransferState, monaco: Monac
     key,
     folderPath: state.folderPath,
     filePath: state.filePath,
-    tabId: state.tabId,
     model: transferredModel,
     savedValue: state.savedValue,
     refs: 0,
@@ -374,8 +385,8 @@ export function importModelTransfer(state: TextModelTransferState, monaco: Monac
   trimRetainedModels()
 }
 
-export function detachForTransfer(tabId: string): void {
-  const entry = findTransferEntry(tabId)
+export function detachForTransfer(tab: TextTabRef): void {
+  const entry = transferEntry(tab)
   if (!entry) return
   entry.discardOnRelease = true
   if (entry.refs > 0) {

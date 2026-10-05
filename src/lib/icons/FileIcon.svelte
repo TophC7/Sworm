@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-  import { resolveFileIcon, resolveFolderIcon } from './fileIconMap'
+  import { resolveFileIcon } from './fileIconMap'
 
   let {
     filename,
@@ -22,7 +22,7 @@
     size?: number
   } = $props()
 
-  let name = $derived(folder ? resolveFolderIcon(filename, expanded) : resolveFileIcon(filename))
+  let name = $derived(folder ? (expanded ? 'folder_open' : 'folder') : resolveFileIcon(filename))
   let src = $derived(iconUrls[`../assets/bearded/${name}.svg`] ?? iconUrls['../assets/bearded/file.svg'])
 </script>
 

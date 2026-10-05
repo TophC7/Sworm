@@ -1,4 +1,4 @@
-import type { DragPayload, SwormDragKind } from '$lib/features/dnd/payload'
+import { stampDataTransfer, type DragPayload, type SwormDragKind } from '$lib/features/dnd/payload'
 
 let currentPayload = $state<DragPayload | null>(null)
 
@@ -46,5 +46,35 @@ export const LocalTransfer = {
   },
   has(kind: SwormDragKind['kind']): boolean {
     return currentPayload?.items.some((item) => item.kind === kind) ?? false
+  }
+}
+
+/** Shared source lifecycle; null or empty items refuse the drag. */
+export function dragSource(items: () => SwormDragKind[] | null, onEnd?: () => void) {
+  return (element: HTMLElement) => {
+    const onDragStart = (event: DragEvent) => {
+      const dragged = items()
+      const transfer = event.dataTransfer
+      if (!transfer || !dragged?.length) {
+        event.preventDefault()
+        return
+      }
+
+      const payload: DragPayload = { source: 'internal', items: dragged }
+      LocalTransfer.set(payload)
+      transfer.effectAllowed = 'move'
+      stampDataTransfer(transfer, payload)
+    }
+    const onDragEnd = () => {
+      LocalTransfer.clear()
+      onEnd?.()
+    }
+
+    element.addEventListener('dragstart', onDragStart)
+    element.addEventListener('dragend', onDragEnd)
+    return () => {
+      element.removeEventListener('dragstart', onDragStart)
+      element.removeEventListener('dragend', onDragEnd)
+    }
   }
 }

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import type { TabId } from '$lib/features/workbench/model'
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
+  import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
   import GitContextMenu from '$lib/features/git/GitContextMenu.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
@@ -30,57 +30,24 @@
     Undo2Icon
   } from '$lib/icons/lucideExports'
   import { discardFiles, stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
+  import {
+    commitFolder, discardAllFolder, fetchFolder, forcePushWithLease, pullFolder,
+    pushFolder, stageAllFolder, stashAllFolder, undoLastCommit, unstageAllFolder
+  } from '$lib/features/git/actions.svelte'
   import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
   import type { GitChange, GitSummary } from '$lib/types/backend'
-  import { copyToClipboard } from '$lib/utils/clipboard'
   import { notify } from '$lib/features/notifications/state.svelte'
-
-  function errMessage(e: unknown): string {
-    return e instanceof Error ? e.message : String(e)
-  }
-  import { buildFileTree, countFiles, type FileTreeNode } from '$lib/utils/fileTree'
+  import { getErrorMessage } from '$lib/utils/client-error'
+  import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
   import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
   import { SvelteSet } from 'svelte/reactivity'
 
-  let {
-    summary,
-    folderPath,
-    hasCommits = false,
-    commitMessage = $bindable(''),
-    onFileClick,
-    onPersistTab,
-    onViewAllChanges,
-    onCommit,
-    onStageAll,
-    onUnstageAll,
-    onDiscardAll,
-    onStashAll,
-    onUndoLastCommit,
-    onPush,
-    onPushForceWithLease,
-    onPull,
-    onFetch
-  }: {
-    summary: GitSummary
-    folderPath: string
-    hasCommits?: boolean
-    commitMessage?: string
-    onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
-    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
-    onViewAllChanges?: (staged: boolean) => void
-    onCommit?: (message: string) => void
-    onStageAll?: () => void
-    onUnstageAll?: () => void
-    onDiscardAll?: () => void
-    onStashAll?: () => void
-    onUndoLastCommit?: () => void
-    onPush?: () => void
-    onPushForceWithLease?: () => void
-    onPull?: () => void
-    onFetch?: () => void
-  } = $props()
+  let { summary, folderPath }: { summary: GitSummary; folderPath: string } = $props()
+  let hasCommits = $derived(!!summary.branch)
+  let commitMessage = $state('')
   let remoteFolder = $derived(splitRemotePath(folderPath))
 
   type GitTreeTargetType = 'file' | 'directory'
@@ -92,7 +59,6 @@
   }
 
   let collapsedDirs = new SvelteSet<string>()
-  let committing = $state(false)
 
   let contextFilePath = $state<string | null>(null)
   let contextTargetType = $state<GitTreeTargetType | null>(null)
@@ -100,16 +66,9 @@
   let contextCanOpenFile = $state(false)
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
 
-  let pendingDiscard = $state<GitTreeTarget | null>(null)
   const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
 
-  $effect(() => {
-    folderPath
-    collapsedDirs.clear()
-    gitSourceAttachmentCache.clear()
-    gitZoneAttachmentCache.clear()
-  })
 
   function getDirKey(section: string, path: string): string {
     return `${section}:${path}`
@@ -137,14 +96,17 @@
   let stagedFilter = $derived(buildTreeFilter(stagedTree, filterQuery))
   let unstagedFilter = $derived(buildTreeFilter(unstagedTree, filterQuery))
 
-  let canCommit = $derived(commitMessage.trim().length > 0 && stagedFiles.length > 0 && !committing)
+  let canCommit = $derived(commitMessage.trim().length > 0 && stagedFiles.length > 0)
 
   function handleCommit() {
     if (!canCommit) return
-    committing = true
-    onCommit?.(commitMessage.trim())
+    void commitFolder(folderPath, commitMessage.trim())
     commitMessage = ''
-    committing = false
+  }
+
+  async function handleUndoLastCommit() {
+    const message = await undoLastCommit(folderPath)
+    if (typeof message === 'string' && message.length > 0) commitMessage = message
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -199,24 +161,33 @@
     return `${describeFileCount(count)} under ${target.path}`
   }
 
-  function queueDiscard(target: GitTreeTarget): void {
+  async function queueDiscard(target: GitTreeTarget): Promise<void> {
     if (getActionFiles(target, 'discard').length === 0) return
-    pendingDiscard = target
+    const proceed = await confirmAsync({
+      title: 'Revert Changes?',
+      message: `This will permanently revert unstaged changes for ${describeActionTarget(target, 'discard')}. This cannot be undone.`,
+      confirmLabel: 'Revert'
+    })
+    if (!proceed) return
+    await runTreeAction('discard', target)
   }
 
-  function trackOpenedTab(openedTab: TabId | Promise<TabId> | void): void {
-    if (openedTab == null) {
-      pendingOpenedTab = null
-      return
-    }
-    pendingOpenedTab = Promise.resolve(openedTab)
+  async function confirmDiscardAll(): Promise<void> {
+    const proceed = await confirmAsync({
+      title: 'Discard All Changes?',
+      message: 'This will permanently discard all unstaged changes and remove untracked files. This cannot be undone.',
+      confirmLabel: 'Discard All'
+    })
+    if (!proceed) return
+    await discardAllFolder(folderPath)
   }
+
 
   async function openActualFile(filePath: string) {
     try {
       await openTextFile(folderPath, filePath, { temporary: false })
     } catch (e) {
-      notify.error('Open file failed', errMessage(e))
+      notify.error('Open file failed', getErrorMessage(e))
     }
   }
 
@@ -258,13 +229,6 @@
     queueDiscard({ path: contextFilePath, type: contextTargetType })
   }
 
-  function confirmDiscard() {
-    const target = pendingDiscard
-    if (!target) return
-    pendingDiscard = null
-    void runTreeAction('discard', target)
-  }
-
   async function runTreeAction(action: GitTreeActionKind, target: GitTreeTarget) {
     const files = getActionFiles(target, action)
     if (files.length === 0) return
@@ -289,37 +253,38 @@
     } catch (e) {
       notify.error(
         action === 'discard' ? 'Revert failed' : action === 'stage' ? 'Stage failed' : 'Unstage failed',
-        errMessage(e)
+        getErrorMessage(e)
       )
     }
   }
 
   async function handleCtxReveal() {
-    if (!contextFilePath || remoteFolder || !platform.capabilities.revealInFileManager) return
+    const native = platform.native
+    if (!contextFilePath || remoteFolder || !native) return
     const absPath = resolveProjectFile(folderPath, contextFilePath)
-    await requireNative().files.reveal(absPath)
+    await native.files.reveal(absPath)
   }
 
   async function handleCtxCopyPath() {
     if (!contextFilePath) return
     const absPath = resolveProjectFile(folderPath, contextFilePath)
-    await copyToClipboard(splitRemotePath(absPath)?.path ?? absPath)
+    await platform.clipboard.writeText(splitRemotePath(absPath)?.path ?? absPath)
   }
 
   async function handleCtxCopyRelativePath() {
     if (!contextFilePath) return
-    await copyToClipboard(contextFilePath)
+    await platform.clipboard.writeText(contextFilePath)
   }
 
   async function handleCtxCopyPatch() {
     if (!contextFilePath) return
     try {
       const patch = await backend.git.getPathPatch(folderPath, [contextFilePath], contextIsStaged)
-      if (patch) await copyToClipboard(patch)
+      if (patch) await platform.clipboard.writeText(patch)
       else
         notify.info('No diff to copy', `${contextFilePath} has no ${contextIsStaged ? 'staged' : 'unstaged'} changes.`)
     } catch (e) {
-      notify.error('Copy patch failed', errMessage(e))
+      notify.error('Copy patch failed', getErrorMessage(e))
     }
   }
 
@@ -329,19 +294,19 @@
     if (files.length === 0) return
     try {
       const patch = await backend.git.getPathPatch(folderPath, files, contextIsStaged)
-      if (patch) await copyToClipboard(patch)
+      if (patch) await platform.clipboard.writeText(patch)
     } catch (e) {
-      notify.error('Copy folder patch failed', errMessage(e))
+      notify.error('Copy folder patch failed', getErrorMessage(e))
     }
   }
 
   async function handleCtxCopyFullPatch() {
     try {
       const patch = await backend.git.getFullPatch(folderPath)
-      if (patch) await copyToClipboard(patch)
+      if (patch) await platform.clipboard.writeText(patch)
       else notify.info('No diff to copy', 'No changes in the working tree.')
     } catch (e) {
-      notify.error('Copy patch failed', errMessage(e))
+      notify.error('Copy patch failed', getErrorMessage(e))
     }
   }
 
@@ -380,7 +345,7 @@
             `${files.length} file${files.length === 1 ? '' : 's'}`
           )
         } catch (error) {
-          notify.error('Git drop failed', errMessage(error))
+          notify.error('Git drop failed', getErrorMessage(error))
         }
       }
     })
@@ -405,14 +370,14 @@
             <ChevronDown size={11} />
           </DropdownMenuTrigger>
           <DropdownMenuContent class="min-w-[180px] text-sm">
-            <DropdownMenuItem onclick={() => onPull?.()}>Pull</DropdownMenuItem>
-            <DropdownMenuItem onclick={() => onPush?.()}>Push</DropdownMenuItem>
-            <DropdownMenuItem onclick={() => onFetch?.()}>Fetch</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => pullFolder(folderPath)}>Pull</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => pushFolder(folderPath)}>Push</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => fetchFolder(folderPath)}>Fetch</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onclick={() => onPushForceWithLease?.()}>Force Push (with lease)</DropdownMenuItem>
+            <DropdownMenuItem onclick={() => forcePushWithLease(folderPath)}>Force Push (with lease)</DropdownMenuItem>
             {#if hasCommits}
               <DropdownMenuSeparator />
-              <DropdownMenuItem destructive onclick={() => onUndoLastCommit?.()}>Undo Last Commit</DropdownMenuItem>
+              <DropdownMenuItem destructive onclick={handleUndoLastCommit}>Undo Last Commit</DropdownMenuItem>
             {/if}
           </DropdownMenuContent>
         </DropdownMenuRoot>
@@ -441,16 +406,14 @@
     {/if}
   {/snippet}
 
-  {#snippet fileGroup(label: string, tree: FileTreeNode<GitChange>[], keySuffix: string, isStaged: boolean)}
+  {#snippet fileGroup(label: string, tree: FileTreeNode<GitChange>[], keySuffix: string, isStaged: boolean, count: number)}
     {#if hasChanges}
-      {@const fileCount = countFiles(tree)}
       <div class="relative py-1" {@attach gitZoneAttachment(isStaged)}>
         {#snippet rowActions(node: FileTreeNode<GitChange>)}
           {@const target = makeTreeTarget(node)}
           {#if !isStaged}
             <IconButton
               tooltip="Revert changes"
-              tooltipSide="bottom"
               tone="danger"
               onclick={() => queueDiscard(target)}
             >
@@ -460,7 +423,6 @@
           {#if isStaged}
             <IconButton
               tooltip="Unstage changes"
-              tooltipSide="bottom"
               onclick={() => void runTreeAction('unstage', target)}
             >
               <MinusCircle size={13} />
@@ -468,7 +430,6 @@
           {:else}
             <IconButton
               tooltip="Stage changes"
-              tooltipSide="bottom"
               onclick={() => void runTreeAction('stage', target)}
             >
               <PlusCircle size={13} />
@@ -477,7 +438,6 @@
           {#if node.type === 'file' && canOpenActualFile(node)}
             <IconButton
               tooltip="Open actual file"
-              tooltipSide="bottom"
               onclick={() => void openActualFile(target.path)}
             >
               <SquareArrowOutUpRight size={13} />
@@ -487,44 +447,40 @@
 
         <div class="group/hdr relative flex items-center px-2.5 py-1">
           <span class="text-xs font-medium tracking-wide text-muted uppercase">
-            {label} ({fileCount})
+            {label} ({count})
           </span>
-          {#if fileCount > 0}
+          {#if count > 0}
             <div class="ml-auto flex items-center gap-0.5 opacity-0 transition-all group-hover/hdr:opacity-100">
-              {#if isStaged && onUnstageAll}
-                <IconButton tooltip="Unstage all" tooltipSide="bottom" onclick={() => onUnstageAll?.()}>
+              {#if isStaged}
+                <IconButton tooltip="Unstage all" onclick={() => unstageAllFolder(folderPath)}>
                   <MinusCircle size={13} />
                 </IconButton>
               {/if}
-              {#if !isStaged && onStageAll}
-                <IconButton tooltip="Stage all" tooltipSide="bottom" onclick={() => onStageAll?.()}>
+              {#if !isStaged}
+                <IconButton tooltip="Stage all" onclick={() => stageAllFolder(folderPath)}>
                   <PlusCircle size={13} />
                 </IconButton>
               {/if}
-              {#if !isStaged && onStashAll}
-                <IconButton tooltip="Stash all" tooltipSide="bottom" onclick={() => onStashAll?.()}>
+              {#if !isStaged}
+                <IconButton tooltip="Stash all" onclick={() => stashAllFolder(folderPath)}>
                   <PackageIcon size={13} />
                 </IconButton>
               {/if}
-              {#if !isStaged && onDiscardAll}
+              {#if !isStaged}
                 <IconButton
                   tooltip="Discard all changes"
-                  tooltipSide="bottom"
                   class="rounded p-0.5 text-muted hover:text-danger"
-                  onclick={() => onDiscardAll?.()}
+                  onclick={confirmDiscardAll}
                 >
                   <Trash2 size={13} />
                 </IconButton>
               {/if}
-              {#if onViewAllChanges}
-                <IconButton
-                  tooltip="View all {label.toLowerCase()} diffs"
-                  tooltipSide="bottom"
-                  onclick={() => onViewAllChanges?.(isStaged)}
-                >
-                  <FileDiff size={13} />
-                </IconButton>
-              {/if}
+              <IconButton
+                tooltip="View all {label.toLowerCase()} diffs"
+                onclick={() => openWorkingTreeDiff(folderPath, isStaged, null, null, { temporary: false })}
+              >
+                <FileDiff size={13} />
+              </IconButton>
             </div>
           {/if}
           <DropOverlay visible={isGitDropZoneActive(folderPath, isStaged)} label={isStaged ? 'Stage' : 'Unstage'} />
@@ -541,13 +497,12 @@
             onToggleDir={(path) => toggleDir(keySuffix, path)}
             onFileClick={(node) => {
               if (!node.change) return
-              trackOpenedTab(onFileClick?.(node.change.path, node.change.staged))
+              pendingOpenedTab = openWorkingTreeDiff(folderPath, node.change.staged, null, node.change.path)
             }}
-            onFileDblClick={() => onPersistTab?.(pendingOpenedTab)}
+            onFileDblClick={() => promoteTabWhenReady(pendingOpenedTab)}
             onFileContextMenu={(e, node) => handleContextMenu(e, node, isStaged)}
             {fileTrailing}
             {rowActions}
-            dndEnabled={true}
             dndSourceAttachment={(node) => gitSourceAttachment(node, isStaged)}
           />
         {:else}
@@ -573,7 +528,7 @@
     targetType={contextTargetType}
     isStaged={contextIsStaged}
     canOpenFile={contextCanOpenFile}
-    canRevealInFileManager={!remoteFolder && platform.capabilities.revealInFileManager}
+    canRevealInFileManager={!remoteFolder && platform.native !== null}
     onOpenChanges={handleCtxOpenChanges}
     onOpenFile={handleCtxOpenFile}
     onOpenFileHead={handleCtxOpenFileHead}
@@ -585,9 +540,9 @@
     onCopyRelativePath={handleCtxCopyRelativePath}
     onCopyPatch={handleCtxCopyPatch}
     onCopyFolderPatch={handleCtxCopyFolderPatch}
-    onPush={() => onPush?.()}
-    onPull={() => onPull?.()}
-    onFetch={() => onFetch?.()}
+    onPush={() => pushFolder(folderPath)}
+    onPull={() => pullFolder(folderPath)}
+    onFetch={() => fetchFolder(folderPath)}
     onCopyFullPatch={handleCtxCopyFullPatch}
     onResetTarget={resetContextTarget}
   >
@@ -595,20 +550,8 @@
       <div class="px-2.5 py-2 text-sm text-subtle">No changes.</div>
     {/if}
 
-    {@render fileGroup('Staged', stagedTree, 'staged', true)}
-    {@render fileGroup('Changes', unstagedTree, 'unstaged', false)}
+    {@render fileGroup('Staged', stagedTree, 'staged', true, stagedFiles.length)}
+    {@render fileGroup('Changes', unstagedTree, 'unstaged', false, unstagedFiles.length)}
   </GitContextMenu>
 </div>
 
-<ConfirmDialog
-  open={pendingDiscard !== null}
-  title="Revert Changes?"
-  message={pendingDiscard
-    ? `This will permanently revert unstaged changes for ${describeActionTarget(pendingDiscard, 'discard')}. This cannot be undone.`
-    : ''}
-  confirmLabel="Revert"
-  onConfirm={confirmDiscard}
-  onCancel={() => {
-    pendingDiscard = null
-  }}
-/>

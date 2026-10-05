@@ -51,10 +51,6 @@ export interface DragPayload {
   source: 'internal' | 'external'
 }
 
-export function serializePayload(payload: DragPayload): string {
-  return JSON.stringify(payload)
-}
-
 export function parsePayload(raw: string | null | undefined): DragPayload | null {
   if (!raw) return null
   try {
@@ -66,7 +62,7 @@ export function parsePayload(raw: string | null | undefined): DragPayload | null
 }
 
 export function stampDataTransfer(dataTransfer: DataTransfer, payload: DragPayload): void {
-  dataTransfer.setData(DND_MIME.SWORM_ITEM, serializePayload(payload))
+  dataTransfer.setData(DND_MIME.SWORM_ITEM, JSON.stringify(payload))
   if (payload.items.some((item) => item.kind === 'tab')) {
     dataTransfer.setData(DND_MIME.SWORM_TAB, '')
   }
@@ -87,23 +83,6 @@ export function stampDataTransfer(dataTransfer: DataTransfer, payload: DragPaylo
 
 export function dragTypes(event: DragEvent): readonly string[] {
   return Array.from(event.dataTransfer?.types ?? [])
-}
-
-export function hasKnownDragType(types: readonly string[]): boolean {
-  return (
-    types.includes(DND_MIME.SWORM_ITEM) ||
-    types.includes(DND_MIME.SWORM_TAB) ||
-    types.includes(DND_MIME.SWORM_WORKBENCH) ||
-    types.includes(DND_MIME.SWORM_FILE) ||
-    types.includes(DND_MIME.SWORM_GIT_CHANGE) ||
-    types.includes(DND_MIME.URI_LIST) ||
-    types.includes(DND_MIME.FILES) ||
-    types.includes(DND_MIME.TEXT)
-  )
-}
-
-export function payloadHasKind(payload: DragPayload | null, kind: SwormDragKind['kind']): boolean {
-  return payload?.items.some((item) => item.kind === kind) ?? false
 }
 
 function payloadText(payload: DragPayload): string {

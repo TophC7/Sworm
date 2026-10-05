@@ -50,32 +50,27 @@
   import {
     getActiveTabId,
     getTabs,
-    isTabTransferring,
     promoteTab,
     reorderTab,
     setActiveTab,
-    setTaskTabStatus,
     toggleTabLocked
   } from '$lib/features/workbench/state.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
   import { groupDragSource, tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-  import { dropFromOtherWindow } from '$lib/features/workbench/transferService.svelte'
-  import { startSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
+  import { dropFromOtherWindow, isTabTransferring } from '$lib/features/workbench/transferService.svelte'
+  import { restartSessionProcess, stopSessionProcess } from '$lib/features/sessions/service.svelte'
   import ProviderIcon from '$lib/features/sessions/providers/ProviderIcon.svelte'
-  import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
-  import * as taskRegistry from '$lib/features/tasks/taskRegistry'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
   import { findTask } from '$lib/features/tasks/state.svelte'
   import { openTaskTab, stopTaskProcess } from '$lib/features/tasks/service.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { FileDiff, BellIcon, Layers, Lock, Plus, CircleDot, TerminalIcon, ServerIcon } from '$lib/icons/lucideExports'
+  import { FileDiff, Layers, Lock, Plus, CircleDot, TerminalIcon, ServerIcon } from '$lib/icons/lucideExports'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import { onMount, tick } from 'svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getTabPresentation } from '$lib/features/workbench/presentation.svelte'
-  import { getSurfaceKind } from '$lib/features/workbench/surfaces'
   import { getSettings } from '$lib/features/settings/state/settings.svelte'
   import { getPathColor } from '$lib/utils/pathColor'
   import NewTabButton from './NewTabButton.svelte'
@@ -160,7 +155,7 @@
     return (
       dragFrom >= 0 ||
       draggedGroup !== null ||
-      (platform.capabilities.tabTransfer &&
+      (platform.native !== null &&
         (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)))
     )
   }
@@ -238,7 +233,7 @@
       return
     }
 
-    if (platform.capabilities.tabTransfer && (slot === null || allowed)) dropFromOtherWindow(e, slot ?? tabs.length)
+    if (platform.native && (slot === null || allowed)) dropFromOtherWindow(e, slot ?? tabs.length)
     clearDropTarget()
   }
 
@@ -264,29 +259,18 @@
   async function restartSession(tab: SessionTab) {
     setActiveTab(tab.id)
     await tick()
-    await runNotifiedTask(
-      async () => {
-        const manager = sessionRegistry.getOrCreate(tab.id)
-        if (manager.isPtyActive()) await manager.stopPty()
-        await startSessionProcess(manager, tab)
-      },
-      {
-        loading: { title: 'Restarting session', description: tab.title },
-        success: { title: 'Session restarted', description: tab.title },
-        error: { title: 'Restart session failed' }
-      }
-    )
+    await runNotifiedTask(() => restartSessionProcess(tab), {
+      loading: { title: 'Restarting session', description: tab.title },
+      success: { title: 'Session restarted', description: tab.title },
+      error: { title: 'Restart session failed' }
+    })
   }
 
   // TASK MENU //
   async function handleTaskStop(tab: Tab) {
     if (tab.kind !== 'task') return
-    const manager = taskRegistry.get(tab.runId)
     await runNotifiedTask(
-      async () => {
-        await stopTaskProcess(tab.runId)
-        if (!manager) setTaskTabStatus(tab.id, 'exited', null)
-      },
+      () => stopTaskProcess(tab),
       {
         loading: { title: 'Stopping task', description: tab.label },
         error: { title: 'Stop task failed' }
@@ -307,7 +291,6 @@
 
 {#snippet tabItem(tab: Tab, i: number)}
   {@const presentation = getTabPresentation(tab)}
-  {@const surfaceKind = getSurfaceKind(tab)}
   {@const sessionLive = tab.kind === 'session' && isProcessLive(tab.status)}
   {@const transferring = isTabTransferring(tab.id)}
   {@const tabColor = getPathColor(tab.folderPath)}
@@ -329,7 +312,7 @@
         title="{tab.folderPath} — {presentation.title}"
         onclick={() => setActiveTab(tab.id)}
         ondblclick={() => {
-          if (surfaceKind !== 'session' && surfaceKind !== 'new-tab' && presentation.preview) {
+          if (tab.kind !== 'new-tab' && presentation.preview) {
             promoteTab(tab.id)
           }
         }}
@@ -339,22 +322,20 @@
         onClose={tab.locked || transferring || inert ? undefined : (e) => handleTabClose(e, tab.id)}
       >
         {#snippet leading()}
-          {#if surfaceKind === 'diff'}
+          {#if tab.kind === 'diff'}
             <FileDiff size={14} class="shrink-0 text-accent" />
-          {:else if surfaceKind === 'tool'}
-            <BellIcon size={14} class="shrink-0 text-accent" />
-          {:else if surfaceKind === 'issue'}
+          {:else if tab.kind === 'issue'}
             <CircleDot size={14} class="shrink-0 text-accent" />
-          {:else if surfaceKind === 'epic'}
+          {:else if tab.kind === 'epic'}
             <Layers size={14} class="shrink-0 text-warning" />
           {:else if tab.kind === 'text' && presentation.fileName}
             <!-- Pass the full relative path so the resolver can apply
                      directory-aware rules (e.g. .sworm/*.json → sworm icon).
                      Falls back to the basename for unsaved "Untitled" tabs. -->
             <FileIcon filename={tab.filePath ?? presentation.fileName} size={14} />
-          {:else if surfaceKind === 'new-tab'}
+          {:else if tab.kind === 'new-tab'}
             <Plus size={14} class="shrink-0 text-accent" />
-          {:else if surfaceKind === 'task'}
+          {:else if tab.kind === 'task'}
             <!-- Task icon comes from .sworm/tasks.jsonc. Any Lucide name
                      is valid; fall back to the terminal glyph when the
                      dynamic loader can't find a match. -->
@@ -523,7 +504,7 @@
 
   <!-- Keep trailing title-bar space both draggable and a tab drop target. -->
   <div
-    data-tauri-drag-region={platform.capabilities.nativeWindowControls ? '' : undefined}
+    data-tauri-drag-region={platform.native ? '' : undefined}
     class="min-w-0 flex-1 self-stretch"
   ></div>
 </div>

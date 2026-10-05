@@ -1,39 +1,23 @@
-// Global keyboard shortcut registry.
-//
-// One capture-phase listener on window. Handlers register normalized
-// shortcut specs ("ctrl+shift+p", "ctrl+k ctrl+s") and can be rebound
-// through the user keybinding settings store.
+// One capture-phase listener dispatches effective app command bindings.
 
-import { getEffectiveBindings, onOverridesChange } from '$lib/features/command-palette/shortcuts/overrides.svelte'
 import {
-  formatShortcut,
-  normalizeShortcut,
-  normalizeShortcutKey,
-  splitShortcut
-} from '$lib/features/command-palette/shortcuts/spec'
+  getAppCommandDefinitions,
+  type AppCommandDefinition
+} from '$lib/features/command-palette/commands/registry.svelte'
+import {
+  getEffectiveBindings,
+  loadShortcutOverrides,
+  onOverridesChange
+} from '$lib/features/command-palette/shortcuts/overrides.svelte'
+import { normalizeShortcut, normalizeShortcutKey } from '$lib/features/command-palette/shortcuts/spec'
 import { logicalKey } from '$lib/utils/keyboardEvent'
 import { closeTransientModals } from '$lib/utils/modalRegistry.svelte'
 
-export { formatShortcut, splitShortcut }
 
-type ShortcutHandler = (event: KeyboardEvent) => void
-
-interface RegisteredBinding {
-  spec: string
-  handler: ShortcutHandler
-  skipShell: boolean
-  keepsModals: boolean
-}
-
-export interface ShortcutOptions {
-  skipShell?: boolean
-  keepsModals?: boolean
-}
-
-const bindings = new Map<string, RegisteredBinding>()
+const bindings = new Map<string, Pick<AppCommandDefinition, 'run' | 'terminalPolicy'>>()
 
 let suspendCount = 0
-let pendingChord: { sequence: string; label: string; timer: ReturnType<typeof setTimeout> } | null = null
+let pendingChord: { sequence: string; timer: ReturnType<typeof setTimeout> } | null = null
 
 export function suspendKeybindings(): () => void {
   suspendCount += 1
@@ -75,48 +59,22 @@ function hasChordPrefix(sequence: string): boolean {
   return false
 }
 
-export function registerShortcut(spec: string, handler: ShortcutHandler, options: ShortcutOptions = {}): () => void {
-  const key = normalizeShortcut(spec)
-  if (!key) return () => {}
-  if (bindings.has(key)) {
-    console.warn(`[keybindings] overwriting existing binding for "${key}"`)
-  }
-  const entry: RegisteredBinding = {
-    spec: key,
-    handler,
-    skipShell: options.skipShell ?? false,
-    keepsModals: options.keepsModals ?? false
-  }
-  bindings.set(key, entry)
-  return () => {
-    if (bindings.get(key) === entry) bindings.delete(key)
-    if (pendingChord && (pendingChord.sequence === key || key.startsWith(`${pendingChord.sequence} `))) {
-      clearPendingChord()
-    }
-  }
-}
-
-export function isBoundShortcut(e: KeyboardEvent): boolean {
-  const stroke = normalizeEvent(e)
-  if (!stroke) return false
-  if (bindings.has(stroke)) return true
-  return hasChordPrefix(stroke)
-}
 
 function isTerminalFocused(): boolean {
   const el = document.activeElement as HTMLElement | null
   return !!el?.closest('[data-terminal-focus-scope]')
 }
 
-function dispatchBinding(entry: RegisteredBinding, event: KeyboardEvent): void {
+function dispatchBinding(entry: Pick<AppCommandDefinition, 'run' | 'terminalPolicy'>, event: KeyboardEvent): void {
   event.preventDefault()
   event.stopPropagation()
   clearPendingChord()
-  if (!entry.keepsModals) closeTransientModals()
-  entry.handler(event)
+  const keepsModals = entry.terminalPolicy === 'skip-shell-keeps-modals'
+  if (!keepsModals) closeTransientModals()
+  void entry.run()
 }
 
-export function installKeybindingListener(): () => void {
+function installKeybindingListener(): () => void {
   function onKeyDown(e: KeyboardEvent) {
     if (suspendCount > 0) return
     const stroke = normalizeEvent(e)
@@ -135,7 +93,8 @@ export function installKeybindingListener(): () => void {
       return
     }
 
-    if (isTerminalFocused() && !(entry?.skipShell ?? false)) {
+    const skipShell = !!entry?.terminalPolicy
+    if (isTerminalFocused() && !skipShell) {
       if (!pendingChord) return
       e.preventDefault()
       e.stopPropagation()
@@ -154,7 +113,6 @@ export function installKeybindingListener(): () => void {
       clearPendingChord()
       pendingChord = {
         sequence,
-        label: sequence,
         timer: setTimeout(clearPendingChord, 5000)
       }
       return
@@ -166,72 +124,31 @@ export function installKeybindingListener(): () => void {
   }
 
   window.addEventListener('keydown', onKeyDown, { capture: true })
-  const unsubscribe = onOverridesChange(reapplyAllGlobalBindings)
   return () => {
     clearPendingChord()
     window.removeEventListener('keydown', onKeyDown, { capture: true })
-    unsubscribe()
   }
 }
 
-interface BindingEntry {
-  id: string
-  defaultSpecs: string[]
-  handler: ShortcutHandler
-  skipShell: boolean
-  keepsModals: boolean
-  disposers: Array<() => void>
-}
-
-const globalBindings = new Map<string, BindingEntry>()
-
-function defaultSpecList(defaultSpec: string | string[] | undefined): string[] {
-  if (Array.isArray(defaultSpec)) return defaultSpec
-  if (defaultSpec) return [defaultSpec]
-  return []
-}
-
-function applyBinding(entry: BindingEntry): void {
-  for (const dispose of entry.disposers) dispose()
-  entry.disposers = []
-  const specs = getEffectiveBindings(entry.id, entry.defaultSpecs)
-  for (const spec of specs) {
-    entry.disposers.push(
-      registerShortcut(spec, entry.handler, {
-        skipShell: entry.skipShell,
-        keepsModals: entry.keepsModals
-      })
-    )
+function rebuild(): void {
+  clearPendingChord()
+  bindings.clear()
+  for (const { id, defaultKeybindings, run, terminalPolicy } of getAppCommandDefinitions()) {
+    for (const spec of getEffectiveBindings(id, defaultKeybindings ?? [])) {
+      const key = normalizeShortcut(spec)
+      if (key) bindings.set(key, { run, terminalPolicy })
+    }
   }
 }
 
-function reapplyAllGlobalBindings(): void {
-  for (const entry of globalBindings.values()) applyBinding(entry)
-}
-
-export function registerGlobalBinding(
-  id: string,
-  defaultSpec: string | string[] | undefined,
-  handler: ShortcutHandler,
-  options: ShortcutOptions = {}
-): () => void {
-  const existing = globalBindings.get(id)
-  if (existing) {
-    console.warn(`[keybindings] overwriting global binding for id "${id}"`)
-    for (const dispose of existing.disposers) dispose()
-  }
-  const entry: BindingEntry = {
-    id,
-    defaultSpecs: defaultSpecList(defaultSpec),
-    handler,
-    skipShell: options.skipShell ?? false,
-    keepsModals: options.keepsModals ?? false,
-    disposers: []
-  }
-  globalBindings.set(id, entry)
-  applyBinding(entry)
+export function setupGlobalShortcuts(): () => void {
+  void loadShortcutOverrides()
+  rebuild()
+  const unsubscribe = onOverridesChange(rebuild)
+  const uninstall = installKeybindingListener()
   return () => {
-    for (const dispose of entry.disposers) dispose()
-    if (globalBindings.get(id) === entry) globalBindings.delete(id)
+    uninstall()
+    unsubscribe()
+    bindings.clear()
   }
 }

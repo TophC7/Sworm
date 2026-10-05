@@ -1,16 +1,15 @@
 import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
-import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
+import { getBuiltinRuntimeLanguages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog.svelte'
 import { isFormatterManagedLanguage } from '$lib/features/editor/formatters/config'
 import { filePathToLanguage, isBinaryFile } from '$lib/features/editor/languageMap'
+import { modelWorkspacePath, REMOTE_MODEL_SCHEME } from '$lib/features/editor/renderers/monaco/text/modelCache'
 import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
 import type { LspDocumentSelector, LspEvent, LspServerSettingsEntry } from '$lib/types/backend'
-import { basename, splitRemotePath } from '$lib/utils/paths'
-import { getWorkbenchId } from '$lib/features/workbench/state.svelte'
+import { basename, splitRemotePath, toProjectRelativePath } from '$lib/utils/paths'
+import { platform } from '$lib/platform'
 
 const LSP_MARKER_OWNER = 'sworm-lsp'
-/** Scheme of a remote workspace's model URIs; the authority is the server. */
-const REMOTE_SCHEME = 'sworm'
 const TEXT_DOCUMENT_SYNC_FULL = 1
 const TEXT_DOCUMENT_SYNC_INCREMENTAL = 2
 const LSP_INSTANCE_IDLE_STOP_MS = 30_000
@@ -28,7 +27,6 @@ type MonacoTextEdit = import('monaco-editor').languages.TextEdit
 type MonacoDisposable = import('monaco-editor').IDisposable
 type MonacoContentChangeEvent = import('monaco-editor').editor.IModelContentChangedEvent
 type MonacoSelectionOrPosition = import('monaco-editor').IRange | import('monaco-editor').IPosition
-type MonacoUri = import('monaco-editor').Uri
 
 type JsonRpcId = number
 
@@ -71,10 +69,9 @@ interface ServerInstance {
   key: string
   sessionId: string
   folderPath: string
-  rootPath: string
   /** Set when the workspace runs on a daemon: LSP URIs carry no workspace prefix. */
   remoteServer: string | null
-  /** `rootPath` as the server sees it: always host-absolute. */
+  /** `folderPath` as the server sees it: always host-absolute. */
   rootLspPath: string
   order: number
   entry: LspServerSettingsEntry
@@ -93,7 +90,6 @@ interface ServerInstance {
 }
 
 class LspRegistry {
-  private monaco: Monaco | null = null
   private providerInitPromise: Promise<void> | null = null
   private registeredLanguages = new Set<string>()
   private documents = new Map<string, ManagedDocument>()
@@ -105,7 +101,6 @@ class LspRegistry {
   private editorOpenerRegistered = false
 
   async ensureMonaco(monaco: Monaco): Promise<void> {
-    this.monaco = monaco
     monacoRef = monaco
     if (this.providerInitPromise) {
       await this.providerInitPromise
@@ -125,7 +120,7 @@ class LspRegistry {
   }
 
   async attachModel(model: MonacoModel, context: DocumentContext): Promise<void> {
-    if (!this.monaco) return
+    if (!monacoRef) return
 
     const uri = model.uri.toString()
     this.detachModel(model)
@@ -373,13 +368,13 @@ class LspRegistry {
           return true
         }
 
-        const targetPath = workspacePathFromUri(resource)
+        const targetPath = modelWorkspacePath(resource)
         if (!targetPath || isBinaryFile(targetPath)) return false
 
         const context = this.resolveTargetContext(sourceModel.uri.toString(), targetPath)
         if (!context) return false
 
-        const relativePath = relativePathFromRoot(context.folderPath, targetPath)
+        const relativePath = toProjectRelativePath(context.folderPath, targetPath) || null
         if (!relativePath) return false
 
         const modelReady = await this.ensureFileModel(resource, context)
@@ -409,22 +404,20 @@ class LspRegistry {
   }
 
   private ensureServerInstance(context: DocumentContext, entry: LspServerSettingsEntry, order: number): ServerInstance {
-    const rootPath = context.folderPath
-    const key = `${entry.server.server_definition_id}:${rootPath}`
+    const key = `${entry.server.server_definition_id}:${context.folderPath}`
     const existing = this.serverInstances.get(key)
     if (existing) return existing
 
-    const remote = splitRemotePath(rootPath)
+    const remote = splitRemotePath(context.folderPath)
     const settings = entry.config.settings ?? null
     const instance: ServerInstance = {
       key,
       // Per workbench: two views on one folder share this key, and the host
       // grants a session id to exactly one stream at a time.
-      sessionId: `${key}@${getWorkbenchId()}`,
+      sessionId: `${key}@${platform.workbench.id}`,
       folderPath: context.folderPath,
-      rootPath,
       remoteServer: remote?.server ?? null,
-      rootLspPath: remote?.path ?? rootPath,
+      rootLspPath: remote?.path ?? context.folderPath,
       order,
       entry,
       status: 'starting',
@@ -460,7 +453,7 @@ class LspRegistry {
         instance.sessionId,
         instance.folderPath,
         instance.entry.server.server_definition_id,
-        instance.rootPath,
+        instance.folderPath,
         { onEvent: (event) => this.onServerEvent(instance, event) }
       )
       instance.stream = stream
@@ -575,7 +568,9 @@ class LspRegistry {
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => entryFilter(entry))
       .filter(({ entry }) => entry.config.enabled)
-      .filter(({ entry }) => matchesSelectors(entry.server.document_selectors, document.model))
+      .filter(({ entry }) =>
+        lspSelectorsMatch(entry.server.document_selectors, document.model.getLanguageId(), basename(document.model.uri.path))
+      )
 
     const instances: ServerInstance[] = []
     for (const { entry, index } of matches) {
@@ -615,9 +610,9 @@ class LspRegistry {
 
     const resolved = await Promise.all(
       locations.map(async (location) => {
-        if (this.monaco?.editor.getModel(location.uri)) return location
+        if (monacoRef?.editor.getModel(location.uri)) return location
 
-        const targetPath = workspacePathFromUri(location.uri)
+        const targetPath = modelWorkspacePath(location.uri)
         if (!targetPath || isBinaryFile(targetPath)) return null
 
         const context = this.resolveTargetContext(document.model.uri.toString(), targetPath)
@@ -633,31 +628,31 @@ class LspRegistry {
 
   private resolveTargetContext(sourceUri: string, targetPath: string): DocumentContext | null {
     const sourceContext = this.documents.get(sourceUri)?.context
-    if (sourceContext && isPathWithinRoot(targetPath, sourceContext.folderPath)) {
+    if (sourceContext && toProjectRelativePath(sourceContext.folderPath, targetPath) !== null) {
       return sourceContext
     }
 
     const candidates = [...this.knownFolders]
       .map((folderPath) => ({ folderPath }))
-      .filter((context) => isPathWithinRoot(targetPath, context.folderPath))
+      .filter((context) => toProjectRelativePath(context.folderPath, targetPath) !== null)
       .sort((a, b) => b.folderPath.length - a.folderPath.length)
 
     return candidates[0] ?? null
   }
 
   private async ensureFileModel(resource: import('monaco-editor').Uri, context: DocumentContext): Promise<boolean> {
-    if (!this.monaco) return false
-    if (this.monaco.editor.getModel(resource)) return true
+    if (!monacoRef) return false
+    if (monacoRef.editor.getModel(resource)) return true
 
-    const targetPath = workspacePathFromUri(resource)
+    const targetPath = modelWorkspacePath(resource)
     if (!targetPath || isBinaryFile(targetPath)) return false
 
-    const relativePath = relativePathFromRoot(context.folderPath, targetPath)
+    const relativePath = toProjectRelativePath(context.folderPath, targetPath) || null
     if (!relativePath) return false
 
     try {
       const { content } = await backend.files.read(context.folderPath, relativePath)
-      this.monaco.editor.createModel(content, filePathToLanguage(targetPath), resource)
+      monacoRef.editor.createModel(content, filePathToLanguage(targetPath), resource)
       return true
     } catch (error) {
       console.warn(`Failed to preload LSP target model ${targetPath}`, error)
@@ -886,19 +881,19 @@ class LspRegistry {
   }
 
   private applyDiagnostics(document: ManagedDocument) {
-    if (!this.monaco) return
+    if (!monacoRef) return
 
     const markers = [...document.diagnosticsByServer.values()]
       .flat()
       .map((diagnostic) => toMonacoMarker(diagnostic))
       .filter(isPresent)
 
-    this.monaco.editor.setModelMarkers(document.model, LSP_MARKER_OWNER, markers)
+    monacoRef.editor.setModelMarkers(document.model, LSP_MARKER_OWNER, markers)
   }
 
   private clearMarkers(model: MonacoModel) {
-    if (!this.monaco) return
-    this.monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, [])
+    if (!monacoRef) return
+    monacoRef.editor.setModelMarkers(model, LSP_MARKER_OWNER, [])
   }
 
   private rejectPending(instance: ServerInstance, error: unknown) {
@@ -990,11 +985,9 @@ export function getLspDocumentContext(model: MonacoModel) {
   return registry.getDocumentContext(model)
 }
 
-function matchesSelectors(selectors: LspDocumentSelector[], model: MonacoModel): boolean {
+export function lspSelectorsMatch(selectors: LspDocumentSelector[], languageId: string, fileName: string): boolean {
   if (selectors.length === 0) return false
 
-  const languageId = model.getLanguageId()
-  const fileName = basename(model.uri.path)
   const extension = normalizeExtension(fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '')
 
   return selectors.some((selector) => {
@@ -1024,15 +1017,6 @@ function isLspAlreadyActive(error: unknown): boolean {
     'kind' in error &&
     (error as { kind?: unknown }).kind === 'lspAlreadyActive'
   )
-}
-
-function isPathWithinRoot(path: string, rootPath: string): boolean {
-  return path === rootPath || path.startsWith(`${rootPath}/`)
-}
-
-function relativePathFromRoot(rootPath: string, path: string): string | null {
-  if (!isPathWithinRoot(path, rootPath) || path === rootPath) return null
-  return path.slice(rootPath.length).replace(/^\/+/, '')
 }
 
 function toLspPosition(position: MonacoPosition) {
@@ -1123,7 +1107,7 @@ function modelPathToFileUri(path: string): string {
 /** The URI a language server sees for one of our models: always `file://` with a
  * host-absolute path, remote workspace or not. */
 function lspUriForModel(model: MonacoModel): string {
-  return model.uri.scheme === REMOTE_SCHEME ? modelPathToFileUri(model.uri.path) : model.uri.toString()
+  return model.uri.scheme === REMOTE_MODEL_SCHEME ? modelPathToFileUri(model.uri.path) : model.uri.toString()
 }
 
 /** A server's URI translated into this workspace's model space. */
@@ -1133,13 +1117,7 @@ function modelUriFromLspUri(instance: ServerInstance, uri: string) {
   if (!monacoRef) {
     throw new Error('Monaco is not initialized')
   }
-  return monacoRef.Uri.from({ scheme: REMOTE_SCHEME, authority: instance.remoteServer, path: parsed.path })
-}
-
-/** Workspace-path space: the shape `folderPath` and `openTextFile` speak. */
-function workspacePathFromUri(uri: MonacoUri): string | null {
-  if (uri.scheme === 'file') return uri.fsPath
-  return uri.scheme === REMOTE_SCHEME ? `${REMOTE_SCHEME}://${uri.authority}${uri.path}` : null
+  return monacoRef.Uri.from({ scheme: REMOTE_MODEL_SCHEME, authority: instance.remoteServer, path: parsed.path })
 }
 
 function isRangeSelection(value: MonacoSelectionOrPosition): value is import('monaco-editor').IRange {
@@ -1191,16 +1169,6 @@ function toMarkdownContents(contents: unknown): import('monaco-editor').IMarkdow
   if (typeof contents === 'object') {
     if (typeof (contents as { value?: unknown }).value === 'string') {
       return [{ value: (contents as { value: string }).value }]
-    }
-    if (
-      typeof (contents as { language?: unknown }).language === 'string' &&
-      typeof (contents as { value?: unknown }).value === 'string'
-    ) {
-      return [
-        {
-          value: `\`\`\`${(contents as { language: string }).language}\n${(contents as { value: string }).value}\n\`\`\``
-        }
-      ]
     }
   }
   return []

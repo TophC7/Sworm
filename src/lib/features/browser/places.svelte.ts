@@ -4,7 +4,8 @@
 // because listing workbenches reaches every paired server.
 
 import { backend } from '$lib/api/backend'
-import { platform, requireNative } from '$lib/platform'
+import { platform } from '$lib/platform'
+import { getRemoteStatus, refreshRemoteStatus, watchRemoteStatuses } from '$lib/features/remotes/status.svelte'
 import type { RemoteStatus, WorkbenchInfo } from '$lib/types/backend'
 import { logClientError } from '$lib/utils/client-error'
 import { basename } from '$lib/utils/paths'
@@ -24,7 +25,6 @@ export interface WorkbenchSection {
 }
 
 let serverNames = $state<string[]>([])
-let statuses = $state<Record<string, RemoteStatus>>({})
 let sections = $state<WorkbenchSection[]>([])
 let watchers = 0
 let teardown: (() => void) | null = null
@@ -36,8 +36,8 @@ let generation = 0
 export function getServers(): ServerPlace[] {
   return serverNames.map((name) => ({
     name,
-    state: statuses[name]?.state ?? 'checking',
-    lastError: statuses[name]?.last_error ?? null
+    state: getRemoteStatus(name)?.state ?? 'checking',
+    lastError: getRemoteStatus(name)?.last_error ?? null
   }))
 }
 
@@ -71,7 +71,8 @@ function listable(workbench: WorkbenchInfo): boolean {
 }
 
 async function load(current: number): Promise<void> {
-  if (platform.capabilities.remoteHosts) {
+  const native = platform.native
+  if (native) {
     const names = Object.keys((await backend.settings.getEffective()).settings.remotes)
     if (current !== generation) return
     serverNames = names
@@ -86,15 +87,10 @@ async function load(current: number): Promise<void> {
           }
         })
       ),
-      Promise.all(
-        names.map(async (server) => {
-          const status = await requireNative().remotes.status(server)
-          if (current === generation) statuses[server] = status
-        })
-      )
+      Promise.all(names.map(refreshRemoteStatus))
     ])
     if (current === generation) sections = nextSections
-  } else if (platform.capabilities.durableWorkbenches) {
+  } else if (platform.workbench.takeOver) {
     const workbenches = (await backend.workbenches.list()).filter(listable)
     if (current === generation) sections = [{ workbenches }]
   }
@@ -137,16 +133,18 @@ export function watchPlaces(): () => void {
 }
 
 function subscribe(): () => void {
-  const refresh = () => void refreshPlaces()
+  let disposed = false
+  const stopStatuses = watchRemoteStatuses()
+  const refresh = () => {
+    if (!disposed) void refreshPlaces()
+  }
+  const native = platform.native
   const listeners = [
     backend.workbenches.onChanged(refresh),
-    ...(platform.capabilities.remoteHosts
+    ...(native
       ? [
           backend.settings.onChanged(({ layer }) => {
             if (layer === 'global') refresh()
-          }),
-          requireNative().remotes.onStatus(({ server, ...status }) => {
-            statuses[server] = status
           })
         ]
       : [])
@@ -155,6 +153,8 @@ function subscribe(): () => void {
   // Fetch after subscribing so no transition lands between the two.
   void Promise.allSettled(listeners).then(refresh)
   return () => {
+    disposed = true
+    stopStatuses()
     window.removeEventListener('focus', refresh)
     for (const listener of listeners) void listener.then((stop) => stop()).catch(() => {})
   }

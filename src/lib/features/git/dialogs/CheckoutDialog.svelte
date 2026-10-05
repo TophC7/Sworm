@@ -29,15 +29,13 @@
     branchName,
     remoteBranchName = null,
     summary,
-    folderPath,
-    onSwitched
+    folderPath
   }: {
     open?: boolean
     branchName: string
     remoteBranchName?: string | null
     summary: GitSummary | null
     folderPath: string
-    onSwitched?: () => void
   } = $props()
 
   let staged = $derived(summary?.staged_count ?? 0)
@@ -59,7 +57,6 @@
     },
     onDone: () => {
       open = false
-      onSwitched?.()
     }
   })
 

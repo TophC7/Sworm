@@ -10,6 +10,7 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import { initializeMonacoEditorServices } from '$lib/features/editor/renderers/monaco/core/editorServices'
 import { ensureMonacoFormatters } from '$lib/features/editor/renderers/monaco/core/formatters'
 import { attachMonacoKeybindingOverrides } from '$lib/features/editor/renderers/monaco/core/keybindings'
+import { registerNixLanguage } from '$lib/features/editor/renderers/monaco/core/languages/nix'
 import { ensureMonacoLsp } from '$lib/features/editor/lsp/registry'
 import { registerSwormTheme, SWORM_SHIKI_THEME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
 import { attachMonaco } from '$lib/features/editor/schemas/registry'
@@ -87,10 +88,10 @@ function getJsonLanguageService(monaco: typeof import('monaco-editor')): JsonLan
 let initPromise: Promise<void> | null = null
 
 export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void> {
-  initializeMonacoEditorServices()
   if (initPromise) return initPromise
 
   initPromise = (async () => {
+    initializeMonacoEditorServices()
     const [{ createHighlighter, createJavaScriptRegexEngine }, { shikiToMonaco }] = await Promise.all([
       import('shiki'),
       import('@shikijs/monaco')
@@ -149,7 +150,6 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
     }
 
     // Language-specific configuration (after Shiki registers language IDs)
-    const { registerNixLanguage } = await import('$lib/features/editor/renderers/monaco/core/languages/nix')
     registerNixLanguage(monaco)
     await ensureMonacoLsp(monaco)
     await ensureMonacoFormatters(monaco)

@@ -35,7 +35,7 @@
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { groupBySlash, type BranchTreeNode } from '$lib/utils/git/branchHierarchy'
   import { basename } from '$lib/utils/paths'
   import { localNameForRemoteRef } from '$lib/features/git/gitRefs'
@@ -74,24 +74,13 @@
     Trash2
   } from '$lib/icons/lucideExports'
   import type { BranchSummary, CommitDetail, GitSummary, GraphCommit } from '$lib/types/backend'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { platform } from '$lib/platform'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
   import { SvelteMap } from 'svelte/reactivity'
 
-  let {
-    folderPath,
-    branchColorMap,
-    onConflictNotice,
-    onFocusFileTree
-  }: {
+  let { folderPath, branchColorMap }: {
     folderPath: string
     branchColorMap?: Map<string, string>
-    /** Surface a non-modal notice when a merge / rebase ends in
-     * conflicts so the user knows to look at the working-tree pane. */
-    onConflictNotice?: (message: string) => void
-    /** Optional hook to focus the GitFileTree pane when the user
-     * clicks "View conflicted files" from the status sub-row. */
-    onFocusFileTree?: () => void
   } = $props()
 
   let entry = $derived(branches.byFolder.get(folderPath))
@@ -138,7 +127,6 @@
   let expandedBranch = $state<string | null>(null)
   let historyByBranch = new SvelteMap<string, BranchHistoryEntry>()
   let commitDetailCache = new SvelteMap<string, CommitDetail>()
-  let currentHistoryPath = ''
 
   // Mount: load entry. Don't depend on `entry` here; the load
   // populates it.
@@ -146,14 +134,6 @@
     void branches.loadFor(folderPath)
   })
 
-  $effect(() => {
-    const path = folderPath
-    if (path === currentHistoryPath) return
-    currentHistoryPath = path
-    expandedBranch = null
-    historyByBranch.clear()
-    commitDetailCache.clear()
-  })
 
   async function runFetch() {
     try {
@@ -209,7 +189,7 @@
     try {
       await branches.safeCheckout(folderPath, name)
     } catch (e) {
-      if (branches.isDirtyCheckoutError(e)) {
+      if (e instanceof branches.DirtyCheckoutError) {
         checkoutTarget = name
         checkoutRemoteTarget = null
         checkoutSummary = e.summary
@@ -438,14 +418,10 @@
     }
   }
 
-  function handleConflict(message: string) {
-    conflictNotice = message
-    onConflictNotice?.(message)
-  }
 
   async function copyName(name: string) {
     try {
-      await copyToClipboard(name)
+      await platform.clipboard.writeText(name)
     } catch (e) {
       console.error('Copy branch name failed:', e)
     }
@@ -470,7 +446,7 @@
     try {
       await branches.safeCheckoutRemoteAsLocal(folderPath, branch.name, localName)
     } catch (e) {
-      if (branches.isDirtyCheckoutError(e)) {
+      if (e instanceof branches.DirtyCheckoutError) {
         checkoutTarget = localName
         checkoutRemoteTarget = branch.name
         checkoutSummary = e.summary
@@ -496,7 +472,7 @@
     </div>
 
     <DropdownMenuRoot>
-      <DropdownMenuTrigger class={iconButtonVariants({ active: false })} aria-label="Branch actions">
+      <DropdownMenuTrigger class={iconButtonVariants()} aria-label="Branch actions">
         <MoreHorizontalIcon size={13} />
       </DropdownMenuTrigger>
       <DropdownMenuContent class="min-w-[210px] text-sm" align="end">
@@ -548,7 +524,7 @@
 
   <div class="min-h-0 flex-1 overflow-y-auto">
     {#if entry && entry.opState !== 'idle'}
-      <Alert variant="warning" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+      <Alert variant="warning" layout="banner">
         <AlertTriangle size={13} class="shrink-0" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -561,19 +537,12 @@
             {/if}
             <Button size="xs" variant="destructive" onclick={() => void abortOp()}>Abort</Button>
           </div>
-          <button
-            type="button"
-            class="mt-1 text-2xs text-muted underline hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
-            onclick={() => onFocusFileTree?.()}
-          >
-            View conflicted files
-          </button>
         </div>
       </Alert>
     {/if}
 
     {#if conflictNotice}
-      <Alert variant="error" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+      <Alert variant="danger" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="flex-1">
           <p>Merge produced conflicts. Resolve them in the file tree above.</p>
@@ -607,7 +576,7 @@
           {#if filtered.locals.length === 0}
             <div class="px-2.5 py-1 text-xs text-subtle">No matches.</div>
           {:else if prefs?.layout === 'tree' && localTree}
-            {#each localTree.roots as node (node.fullName)}
+            {#each localTree as node (node.fullName)}
               {@render treeNode(node, 0)}
             {/each}
           {:else}
@@ -766,7 +735,7 @@
                 (prefs?.layout === 'tree' && branch.kind === 'local' ? basename(branch.name) : branch.name)}
             </span>
 
-            <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" />
+            <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} />
           </TooltipTrigger>
           <TooltipContent class="max-w-90" sideOffset={6} side="right" align="center">
             {@render branchTooltip(branch, color)}
@@ -930,7 +899,7 @@
     bind:open={mergeOpen}
     source={mergeSource}
     current={currentName}
-    onConflict={handleConflict}
+    onConflict={(message) => (conflictNotice = message)}
     {folderPath}
   />
 {/if}

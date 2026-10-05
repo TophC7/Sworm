@@ -393,6 +393,7 @@ pub struct SettingsPayload {
     pub terminal: TerminalSettings,
     pub nix: NixSettings,
     pub formatting: FormattingSettings,
+    pub lsp: LspSettings,
     pub providers: Vec<ProviderSettingsEntry>,
 }
 
@@ -454,5 +455,35 @@ mod tests {
             settings.lsp.servers["dev.sworm.vtsls::vtsls"],
             LspServerSettings::default()
         );
+    }
+
+    #[test]
+    fn settings_payload_round_trips_global_lsp_defaults_and_overrides() {
+        let mut settings = EffectiveSettings::with_lsp_server_ids([
+            "dev.sworm.vtsls::vtsls",
+            "dev.sworm.rust-analyzer::rust-analyzer",
+        ]);
+        settings
+            .lsp
+            .servers
+            .get_mut("dev.sworm.vtsls::vtsls")
+            .unwrap()
+            .extra_args = vec!["--stdio".to_string()];
+        let payload = SettingsPayload {
+            window: settings.window,
+            terminal: settings.terminal,
+            nix: settings.nix,
+            formatting: settings.formatting,
+            lsp: settings.lsp,
+            providers: Vec::new(),
+        };
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            value["lsp"]["servers"]["dev.sworm.rust-analyzer::rust-analyzer"],
+            serde_json::to_value(LspServerSettings::default()).unwrap()
+        );
+        let restored: SettingsPayload = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.lsp, payload.lsp);
     }
 }

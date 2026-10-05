@@ -7,11 +7,11 @@
 
 import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
-import { platform, requireNative } from '$lib/platform'
+import { platform } from '$lib/platform'
 import { releaseFolder } from '$lib/features/folders/lifecycle'
-import { filterExistingFolders, getRecentFolders, pushRecentFolder } from '$lib/features/folders/state.svelte'
+import { filterExistingFolders, pushRecentFolder } from '$lib/features/folders/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 import type {
@@ -28,14 +28,13 @@ import type {
   TaskRunStatus,
   TaskTab,
   TextTab,
-  ToolTab,
   Workbench
 } from '$lib/features/workbench/model'
 import { canLockTab, tabServer } from '$lib/features/workbench/model'
-import { getGroupRefs, isTabInert, restoreGroups, syncGroups } from './groups.svelte'
+import { flushActiveGroups, getGroupRefs, isTabInert, restoreGroups, syncGroups } from './groups.svelte'
 import {
   loadPersistedWorkbench,
-  flushWorkbench,
+  flushLocalWorkbench,
   persistedToTab,
   schedulePersistWorkbench,
   serializeWorkbench,
@@ -51,36 +50,9 @@ import {
 } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
-export type {
-  DiffSource,
-  DiffTab,
-  EpicTab,
-  IssueTab,
-  NewTab,
-  PersistedTab,
-  SessionStatus,
-  SessionTab,
-  Tab,
-  TabId,
-  TaskRunStatus,
-  TaskTab,
-  TextTab,
-  ToolTab,
-  Workbench
-}
-export { canLockTab }
 
 // MODULE STATE //
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
-let workbenchId = 'main'
-
-export function setWorkbenchId(id: string): void {
-  workbenchId = id
-}
-
-export function getWorkbenchId(): string {
-  return workbenchId
-}
 
 // LIFO stack of recently closed tabs for Ctrl+Shift+T. In-memory only: a
 // fresh launch has nothing to reopen beyond what restore hydrates.
@@ -95,7 +67,6 @@ const lastActiveByFolder = new Map<string, TabId>()
 // seeded empty state would clobber the saved blob.
 let restored = false
 let pendingFocusTabId: TabId | null = null
-const transferringTabIds = new SvelteSet<TabId>()
 const stagedTabIds = new SvelteSet<TabId>()
 const folderOps = new Map<string, Promise<void>>()
 
@@ -111,18 +82,10 @@ function queueFolderOp(folderPath: string, op: () => Promise<void>): Promise<voi
   return next
 }
 
-export function awaitFolderOps(): Promise<void> {
+function awaitFolderOps(): Promise<void> {
   return Promise.all(folderOps.values()).then(() => {})
 }
 
-export function setTabTransferring(tabId: TabId, on: boolean): void {
-  if (on) transferringTabIds.add(tabId)
-  else transferringTabIds.delete(tabId)
-}
-
-export function isTabTransferring(tabId: TabId): boolean {
-  return transferringTabIds.has(tabId)
-}
 
 // Monotonic counter for "Untitled-N" labels on new untitled text tabs.
 let untitledCounter = 0
@@ -167,9 +130,10 @@ function findTab(tabId: TabId): Tab | undefined {
  * ownership, then schedules a debounced persist.
  */
 function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist = true): void {
+  const native = platform.native
   const previousFolders = new Set(workbench.tabs.map((tab) => tab.folderPath))
   const tabs =
-    next.tabs && platform.capabilities.remoteHosts ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
+    next.tabs && native ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
   const nextFolders = new Set(tabs.map((tab) => tab.folderPath))
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
   workbench = { tabs: [...tabs], activeTabId }
@@ -191,9 +155,10 @@ function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist
 
 export function persistWorkbench(): void {
   if (!restored) return
-  schedulePersistWorkbench(workbenchId, () => {
+  schedulePersistWorkbench(() => {
+    const native = platform.native
     const tabs = workbench.tabs.filter((tab) => !stagedTabIds.has(tab.id))
-    const local = platform.capabilities.remoteHosts ? tabs.filter((tab) => !tabServer(tab)) : tabs
+    const local = native ? tabs.filter((tab) => !tabServer(tab)) : tabs
     const activeTabId = workbench.activeTabId
     const active = tabs.find((tab) => tab.id === activeTabId)
     const activeServer = active ? tabServer(active) : null
@@ -203,7 +168,7 @@ export function persistWorkbench(): void {
         tabs: local,
         activeTabId: activeTabId != null && stagedTabIds.has(activeTabId) ? (local[0]?.id ?? null) : activeTabId
       }),
-      ...(platform.capabilities.remoteHosts
+      ...(native
         ? {
             groups: getGroupRefs(),
             ...(activeServer
@@ -213,6 +178,11 @@ export function persistWorkbench(): void {
         : {})
     }
   })
+}
+
+export async function flushWorkbench(): Promise<void> {
+  await flushLocalWorkbench()
+  await flushActiveGroups()
 }
 
 /**
@@ -292,11 +262,6 @@ export function hasClosedTabs(): boolean {
   return closedTabs.length > 0
 }
 
-/** Recent folders without an open tab; feeds the "Open Recent" menus. */
-export function getRecentUnopenedFolders(): string[] {
-  const open = new Set(workbench.tabs.map((t) => t.folderPath))
-  return getRecentFolders().flatMap(({ path }) => (open.has(path) ? [] : [path]))
-}
 
 /** Find an existing live task tab by its source task id (singleton rerun). */
 export function findTaskTabByTaskId(folderPath: string, taskId: string): TaskTab | null {
@@ -336,7 +301,6 @@ export function reorderTab(fromIndex: number, toIndex: number): void {
 /** Stage an imported tab without persisting it before the broker commits. */
 export function stageTransferredTab(tab: Tab, targetIndex: number): void {
   if (findTab(tab.id)) throw new Error(`Tab ${tab.id} already exists in target window`)
-  transferringTabIds.add(tab.id)
   stagedTabIds.add(tab.id)
   const tabs = [...workbench.tabs]
   tabs.splice(clampTabInsertionToGroup(tabs, tab, Math.max(0, Math.min(targetIndex, tabs.length))), 0, tab)
@@ -345,7 +309,6 @@ export function stageTransferredTab(tab: Tab, targetIndex: number): void {
 
 /** Remove a transferred tab without close prompts, process teardown, or file-claim release. */
 export function removeTransferredTab(tabId: TabId, persist = true): void {
-  transferringTabIds.delete(tabId)
   stagedTabIds.delete(tabId)
   const index = workbench.tabs.findIndex((tab) => tab.id === tabId)
   if (index < 0) return
@@ -373,7 +336,6 @@ export function replaceGroupTabs(server: string, replacement: Tab[], atIndex?: n
 }
 
 export function finalizeTransferredTab(tabId: TabId): void {
-  transferringTabIds.delete(tabId)
   stagedTabIds.delete(tabId)
   persistWorkbench()
 }
@@ -437,10 +399,11 @@ export async function openFolder(path: string, replaceTabId?: TabId): Promise<vo
  * Hydrate the persisted tab list. Tabs whose folder no longer resolves are
  * dropped; session tabs come back dormant and start on first activation.
  */
-export async function restoreWorkbench(workbenchId: string): Promise<void> {
+export async function restoreWorkbench(): Promise<void> {
+  const native = platform.native
   try {
     await ensureTextFileSyncListeners()
-    const persisted = await loadPersistedWorkbench(workbenchId)
+    const persisted = await loadPersistedWorkbench()
     if (persisted) {
       const folders = await filterExistingFolders([
         ...new Set(persisted.tabs.filter((t) => !splitRemotePath(t.folderPath)).map((t) => t.folderPath))
@@ -451,7 +414,7 @@ export async function restoreWorkbench(workbenchId: string): Promise<void> {
       // Keep original indices for nearest-neighbour fallback after drops.
       const candidates: Array<{ tab: Tab; index: number }> = []
       for (const [index, entry] of persisted.tabs.entries()) {
-        if (alive.has(entry.folderPath) || (platform.capabilities.remoteHosts && splitRemotePath(entry.folderPath)))
+        if (alive.has(entry.folderPath) || (native && splitRemotePath(entry.folderPath)))
           candidates.push({ tab: persistedToTab(entry, generateTabId()), index })
       }
 
@@ -459,12 +422,12 @@ export async function restoreWorkbench(workbenchId: string): Promise<void> {
         candidates.map(async (c) => ({
           c,
           redirect:
-            platform.capabilities.fileClaims &&
+            native !== null &&
             c.tab.kind === 'text' &&
             c.tab.filePath != null &&
             !c.tab.gitRef &&
-            (await requireNative().files.claimFile(resolveProjectFile(c.tab.folderPath, c.tab.filePath), c.tab.id))
-              .status === 'redirect'
+            (await native.files.claimFile(resolveProjectFile(c.tab.folderPath, c.tab.filePath), c.tab.id)).status ===
+              'redirect'
         }))
       )
       const survivors = results
@@ -483,7 +446,7 @@ export async function restoreWorkbench(workbenchId: string): Promise<void> {
       pendingFocusTabId = null
       commit({ tabs: survivors.map((candidate) => candidate.tab), activeTabId: active?.tab.id ?? null })
       await awaitFolderOps()
-      if (platform.capabilities.remoteHosts) {
+      if (native) {
         await restoreGroups(persisted.groups ?? [])
         const activeGroup = persisted.activeGroup
         if (activeGroup) {
@@ -542,7 +505,7 @@ export function setSessionTabRunId(tabId: TabId, runId: string | null): void {
  */
 export async function persistSessionTabRunId(tabId: TabId, runId: string): Promise<void> {
   setSessionTabRunId(tabId, runId)
-  await flushWorkbench(workbenchId).catch((error) => console.warn('Failed to persist session run id:', error))
+  await flushWorkbench().catch((error) => console.warn('Failed to persist session run id:', error))
 }
 
 export function setSessionTabResumeToken(tabId: TabId, resumeToken: string | null): void {
@@ -634,8 +597,6 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
       return b.kind !== 'diff' || !diffSourcesEqual(a.source, b.source) || a.initialFile !== b.initialFile
     case 'text':
       return b.kind !== 'text' || a.filePath !== b.filePath || a.gitRef !== b.gitRef
-    case 'tool':
-      return b.kind !== 'tool' || a.tool !== b.tool || a.label !== b.label
     case 'issue':
       return b.kind !== 'issue' || a.issueId !== b.issueId
     case 'epic':
@@ -646,8 +607,9 @@ function tabDataChanged(a: Tab, b: Tab): boolean {
 }
 
 function releaseTextFileClaim(tab: Tab): void {
-  if (platform.capabilities.fileClaims && tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
-    void requireNative().files.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
+  const native = platform.native
+  if (native && tab.kind === 'text' && tab.filePath != null && !tab.gitRef) {
+    void native.files.releaseFile(resolveProjectFile(tab.folderPath, tab.filePath))
   }
 }
 
@@ -904,23 +866,6 @@ export function openNewTab(folderPath: string): TabId {
   }
   const tab: NewTab = { kind: 'new-tab', id: generateTabId(), folderPath, locked: false, temporary: true }
   return insertTab(tab)
-}
-
-export function addNotificationToolTab(folderPath: string, temporary = false): TabId {
-  return addContentTab(
-    'tool',
-    (id): ToolTab => ({
-      kind: 'tool',
-      id,
-      folderPath,
-      tool: 'notification-test',
-      label: 'Notification Tester',
-      temporary,
-      locked: false
-    }),
-    temporary,
-    (t) => t.kind === 'tool' && t.folderPath === folderPath && t.tool === 'notification-test' && !t.temporary
-  )
 }
 
 export function addIssueTab(folderPath: string, issueId: string, title: string, temporary = true): TabId {

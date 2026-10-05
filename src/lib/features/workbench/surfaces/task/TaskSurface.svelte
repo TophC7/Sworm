@@ -4,8 +4,8 @@
 
   Mounts xterm inside its root, starts or reconnects the persisted run,
   and rebinds to a fresh terminal whenever `tab.runId` changes.
-  Reports lifecycle transitions back into the tab model via the tasks
-  service so the tab title/status badge stay in sync.
+  TaskTerminal owns lifecycle updates to the tab model so the title
+  and status badge stay in sync.
 
   @param tab - the TaskTab describing this run
   @param folderPath - the folder whose `.sworm/tasks.jsonc` defines the task
@@ -16,7 +16,6 @@
   import { onDestroy } from 'svelte'
   import type { TaskTab } from '$lib/features/workbench/model'
   import { findTask } from '$lib/features/tasks/state.svelte'
-  import { setTaskTabStatus } from '$lib/features/workbench/state.svelte'
   import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 
   let {
@@ -40,18 +39,8 @@
       taskRegistry.detach(attachedRunId)
     }
 
-    const terminal = taskRegistry.attach(
-      {
-        runId,
-        attachOnly: tab.attachOnly,
-        folderPath,
-        taskId: tab.taskId,
-        activeFilePath: tab.activeFilePath,
-        clearBeforeStart: def?.clearOnRerun ?? false,
-        onStatusChange: (status, exitCode) => setTaskTabStatus(tab.id, status, exitCode)
-      },
-      container
-    )
+    const terminal = taskRegistry.getOrCreate(tab, def?.clearOnRerun ?? false)
+    terminal.attach(container)
 
     attachedRunId = runId
     if (!terminal.hasStarted() && tab.status !== 'exited' && tab.status !== 'failed') {

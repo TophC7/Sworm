@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { Eye, EyeOff } from '$lib/icons/lucideExports'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
@@ -6,12 +7,12 @@
   import TreeFilterInput from '$lib/components/file-tree/TreeFilterInput.svelte'
   import ImportCollisionDialog from '$lib/features/files/ImportCollisionDialog.svelte'
   import FileContextMenu from '$lib/features/files/FileContextMenu.svelte'
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
+  import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import PromptDialog from '$lib/components/dialogs/PromptDialog.svelte'
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { backend } from '$lib/api/backend'
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import {
@@ -34,13 +35,13 @@
     revealPath,
     setShowHidden,
     toggleDir
-  } from '$lib/features/files/fileTree.svelte'
+  } from '$lib/features/files/explorer.svelte'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
   import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { getActiveTab, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import type { DragPayload } from '$lib/features/dnd/payload'
   import type { FilePasteCollision, FilePasteMapping } from '$lib/types/backend'
   import {
@@ -57,10 +58,6 @@
     splitRemotePath,
     toProjectRelativePath
   } from '$lib/utils/paths'
-
-  function errMessage(e: unknown): string {
-    return e instanceof Error ? e.message : String(e)
-  }
 
   let { folderPath }: { folderPath: string } = $props()
   let folderName = $derived(basename(normalizeAbsolutePath(folderPath)) || folderPath || 'Files')
@@ -101,8 +98,6 @@
   let newItemKind = $state<'file' | 'folder' | null>(null)
   let newItemName = $state('')
 
-  let deleteConfirmOpen = $state(false)
-  let deleteFilePath = $state<string | null>(null)
   let pendingTransfer = $state<{
     op: 'copy' | 'cut'
     targetDir: string
@@ -130,11 +125,6 @@
       dirs.map((dir) => (dir === '.' ? '' : dir))
     )
     markProjectFilesStale(folderPath)
-  }
-
-  function clearAttachmentCaches() {
-    sourceAttachmentCache.clear()
-    directoryAttachmentCache.clear()
   }
 
   function sourceAttachmentKey(path: string, type: 'file' | 'directory'): string {
@@ -186,57 +176,29 @@
 
   async function handleDirectoryDrop(targetDir: string, payload: DragPayload): Promise<void> {
     try {
-      const externalSources: string[] = []
-      const movedPaths: string[] = []
-
+      const internal: string[] = []
+      const external: string[] = []
       for (const item of payload.items) {
         if (item.kind === 'file') {
-          if (item.folderPath !== folderPath) continue
-          if (await moveTreeItemToDirectory(item.path, targetDir)) movedPaths.push(item.path)
-          if (pendingTransfer) return
+          if (item.path === targetDir) {
+            notify.info('Cannot move item', 'Destination is the same item.')
+            continue
+          }
+          if (isEqualOrParent(item.path, targetDir)) {
+            notify.warning('Cannot move item', 'A folder cannot be moved into itself or one of its children.')
+            continue
+          }
+          if ((dirname(item.path) || '.') === targetDir) continue
+          internal.push(resolveProjectFile(folderPath, item.path))
         } else if (item.kind === 'os-files' && !remoteFolder) {
-          externalSources.push(...item.paths)
+          external.push(...item.paths)
         }
       }
-
-      if (externalSources.length > 0) {
-        await runTransferWithCollisionHandling('copy', targetDir, externalSources)
-        return
-      }
-
-      if (movedPaths.length > 0) {
-        await invalidate(targetDir, ...movedPaths.map((path) => dirname(path) || ''))
-        notify.success(`Moved ${movedPaths.length} item${movedPaths.length === 1 ? '' : 's'}`)
-      }
+      if (internal.length) await runTransferWithCollisionHandling('cut', targetDir, internal)
+      else if (external.length) await runTransferWithCollisionHandling('copy', targetDir, external)
     } catch (error) {
-      notify.error('Drop failed', errMessage(error))
+      notify.error('Drop failed', getErrorMessage(error))
     }
-  }
-
-  async function moveTreeItemToDirectory(sourcePath: string, targetDir: string): Promise<boolean> {
-    if (sourcePath === targetDir) {
-      notify.info('Cannot move item', 'Destination is the same item.')
-      return false
-    }
-    if (isEqualOrParent(sourcePath, targetDir)) {
-      notify.warning('Cannot move item', 'A folder cannot be moved into itself or one of its children.')
-      return false
-    }
-    const sourceParent = dirname(sourcePath) || '.'
-    if (sourceParent === targetDir) {
-      return false
-    }
-
-    const sourceAbs = resolveProjectFile(folderPath, sourcePath)
-    const collisions = await backend.files.pasteCollisions(folderPath, targetDir, [sourceAbs])
-    if (collisions.length > 0) {
-      await runTransferWithCollisionHandling('cut', targetDir, [sourceAbs])
-      return false
-    }
-
-    const nextPath = targetDir === '.' ? basename(sourcePath) : `${targetDir}/${basename(sourcePath)}`
-    await backend.files.rename(folderPath, sourcePath, nextPath)
-    return true
   }
 
   async function runTransferWithCollisionHandling(
@@ -285,7 +247,7 @@
 
       await finalizePendingTransfer()
     } catch (error) {
-      notify.error('Transfer failed', errMessage(error))
+      notify.error('Transfer failed', getErrorMessage(error))
       abortPendingTransfer()
     }
   }
@@ -330,7 +292,7 @@
       collisionRenameValue = ''
       await continuePendingTransfer()
     } catch (error) {
-      notify.error('Transfer failed', errMessage(error))
+      notify.error('Transfer failed', getErrorMessage(error))
       abortPendingTransfer()
     }
   }
@@ -374,7 +336,7 @@
   let activeFilePath = $derived(activeTab?.kind === 'text' ? activeTab.filePath : null)
 
   // Reveal the active file by loading and expanding its ancestors. Depends on
-  // the root listing so that on mount we reveal AFTER the folder effect's
+  // the root listing so that on mount we reveal AFTER the root's
   // first load — otherwise the user opens a tab from (say) the git diff
   // sidebar, switches back to Files, and finds the tree collapsed despite a
   // file being focused. Expanding is idempotent; user-collapsed dirs only
@@ -411,17 +373,9 @@
     return dirs
   })
 
-  // Load the folder's root listing when the folder changes.
-  let prevFolderPath = ''
-  $effect(() => {
-    if (folderPath !== prevFolderPath) {
-      prevFolderPath = folderPath
-      filterQuery = ''
-      clearAttachmentCaches()
-      abortPendingTransfer()
-      ensureFileTreeListeners()
-      void loadDir(folderPath, '')
-    }
+  onMount(() => {
+    ensureFileTreeListeners()
+    void loadDir(folderPath, '')
   })
 
   function handleFileContextMenu(_e: MouseEvent, node: FileTreeNode<{ path: string }>) {
@@ -437,8 +391,9 @@
   }
 
   async function handleRevealInFolder() {
-    if (!contextFilePath || remoteFolder || !platform.capabilities.revealInFileManager) return
-    await requireNative().files.reveal(resolveProjectFile(folderPath, contextFilePath))
+    const native = platform.native
+    if (!contextFilePath || remoteFolder || !native) return
+    await native.files.reveal(resolveProjectFile(folderPath, contextFilePath))
   }
 
   function handleOpenInEditor() {
@@ -452,12 +407,13 @@
   }
 
   async function writeFileClipboard(op: 'copy' | 'cut') {
-    if (!contextFilePath) return
+    const native = platform.native
+    if (!contextFilePath || !native) return
     const source = resolveProjectFile(folderPath, contextFilePath)
     try {
-      await requireNative().files.clipboardCopyFiles([source], op)
+      await native.files.clipboardCopyFiles([source], op)
     } catch (error) {
-      notify.error(`${op === 'cut' ? 'Cut' : 'Copy'} failed`, errMessage(error))
+      notify.error(`${op === 'cut' ? 'Cut' : 'Copy'} failed`, getErrorMessage(error))
     }
   }
 
@@ -470,28 +426,30 @@
   }
 
   async function handlePaste() {
+    const native = platform.native
+    if (!native) return
     const targetDir = contextTargetType === 'directory' && contextFilePath ? contextFilePath : '.'
     try {
-      const clip = await requireNative().files.clipboardReadFiles()
+      const clip = await native.files.clipboardReadFiles()
       if (!clip || clip.paths.length === 0) {
         notify.info('Nothing to paste', 'No files on the clipboard.')
         return
       }
       await runTransferWithCollisionHandling(clip.op, targetDir, clip.paths)
     } catch (error) {
-      notify.error('Paste failed', errMessage(error))
+      notify.error('Paste failed', getErrorMessage(error))
     }
   }
 
   async function handleCopyPath() {
     if (!contextFilePath) return
     const absolutePath = resolveProjectFile(folderPath, contextFilePath)
-    await copyToClipboard(splitRemotePath(absolutePath)?.path ?? absolutePath)
+    await platform.clipboard.writeText(splitRemotePath(absolutePath)?.path ?? absolutePath)
   }
 
   async function handleCopyRelativePath() {
     if (!contextFilePath) return
-    await copyToClipboard(contextFilePath)
+    await platform.clipboard.writeText(contextFilePath)
   }
 
   function handleRename() {
@@ -510,29 +468,28 @@
       await renameTextPath(folderPath, renameFilePath, renameValue)
       await invalidate(dirname(renameFilePath) || '', dirname(renameValue) || '')
     } catch (e) {
-      notify.error('Rename failed', errMessage(e))
+      notify.error('Rename failed', getErrorMessage(e))
     } finally {
       renameFilePath = null
     }
   }
 
-  function handleDelete() {
+  async function handleDelete() {
     if (!contextFilePath) return
-    deleteFilePath = contextFilePath
-    deleteConfirmOpen = true
-  }
-
-  async function confirmDelete() {
-    if (!deleteFilePath) return
+    const deleteFilePath = contextFilePath
     try {
-      await backend.files.delete(folderPath, deleteFilePath)
-      await deleteTextPath(folderPath, deleteFilePath)
-      await invalidate(dirname(deleteFilePath) || '')
+      await confirmAsync({
+        title: 'Delete File',
+        message: `Are you sure you want to delete ${deleteFilePath}? This cannot be undone.`,
+        confirmLabel: 'Delete',
+        run: async () => {
+          await backend.files.delete(folderPath, deleteFilePath)
+          await deleteTextPath(folderPath, deleteFilePath)
+          await invalidate(dirname(deleteFilePath) || '')
+        }
+      })
     } catch (e) {
-      notify.error('Delete failed', errMessage(e))
-    } finally {
-      deleteConfirmOpen = false
-      deleteFilePath = null
+      notify.error('Delete failed', getErrorMessage(e))
     }
   }
 
@@ -563,7 +520,7 @@
         await invalidate(dirname(name) || '')
       }
     } catch (e) {
-      notify.error(`Failed to create ${kind ?? 'item'}`, errMessage(e))
+      notify.error(`Failed to create ${kind ?? 'item'}`, getErrorMessage(e))
     } finally {
       newItemKind = null
       newItemName = ''
@@ -571,12 +528,13 @@
   }
 
   function handleOpenExternal() {
-    if (remoteFolder || !platform.capabilities.revealInFileManager) return
-    void requireNative().files.reveal(folderPath)
+    const native = platform.native
+    if (remoteFolder || !native) return
+    void native.files.reveal(folderPath)
   }
 
   async function handleCopyFolderPath() {
-    await copyToClipboard(remoteFolder?.path ?? folderPath)
+    await platform.clipboard.writeText(remoteFolder?.path ?? folderPath)
   }
 </script>
 
@@ -597,7 +555,7 @@
   <div class="flex h-full min-h-0 flex-col">
     <TreeFilterInput bind:value={filterQuery} placeholder="Filter files..." ariaLabel="Filter files" />
     {#if filterActive && isProjectFilesTruncated(folderPath, tree.showHidden)}
-      <div class="px-2.5 pb-1 text-xs text-subtle">Showing the first 200,000 files &mdash; narrow the filter.</div>
+      <div class="px-2.5 pb-1 text-xs text-subtle">Showing the first {flatPaths.length.toLocaleString()} files</div>
     {/if}
     <div
       class="min-h-0 flex-1 overflow-y-auto text-base {isFileTreeDropActive(folderPath, '.') ? 'bg-accent/6' : ''}"
@@ -606,8 +564,8 @@
       <FileContextMenu
         filePath={contextFilePath}
         targetType={contextTargetType}
-        canRevealInFileManager={!remoteFolder && platform.capabilities.revealInFileManager}
-        canNativeFileClipboard={platform.capabilities.nativeFileClipboard && !remoteFolder}
+        canRevealInFileManager={!remoteFolder && platform.native !== null}
+        canNativeFileClipboard={platform.native !== null && !remoteFolder}
         onRevealInFolder={handleRevealInFolder}
         onOpenInEditor={handleOpenInEditor}
         onOpenDiff={handleOpenDiff}
@@ -646,7 +604,6 @@
             }}
             onFileDblClick={() => promoteTabWhenReady(pendingFileOpen)}
             onFileContextMenu={handleFileContextMenu}
-            dndEnabled={true}
             {dndSourceAttachment}
             {dndDirectoryAttachment}
             dndIsDropActive={(path) => isFileTreeDropActive(folderPath, path)}
@@ -706,14 +663,3 @@
   onCancel={() => (renameFilePath = null)}
 />
 
-<ConfirmDialog
-  open={deleteConfirmOpen}
-  title="Delete File"
-  message="Are you sure you want to delete {deleteFilePath}? This cannot be undone."
-  confirmLabel="Delete"
-  onCancel={() => {
-    deleteConfirmOpen = false
-    deleteFilePath = null
-  }}
-  onConfirm={confirmDelete}
-/>

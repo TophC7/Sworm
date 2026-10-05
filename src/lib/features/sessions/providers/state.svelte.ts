@@ -11,24 +11,12 @@ import type { ProviderStatus } from '$lib/types/backend'
 let providers = $state<ProviderStatus[]>([])
 let loading = $state(false)
 const folderProviders = createFolderKeyedStore<{ providers: ProviderStatus[] }>()
-const folderGenerations = new Map<string, number>()
 
 export function getProvidersLoading() {
   return loading
 }
 
 export async function loadProviders() {
-  loading = true
-  try {
-    providers = await backend.providers.list()
-  } catch (e) {
-    console.error('Failed to load providers:', e)
-  } finally {
-    loading = false
-  }
-}
-
-export async function refreshProviders() {
   loading = true
   try {
     providers = await backend.providers.list()
@@ -42,11 +30,11 @@ export async function refreshProviders() {
 
 /** Detect providers inside the folder's environment. On failure the entry stays absent and the global list applies. */
 export async function loadProvidersForFolder(folderPath: string, isActive: () => boolean = () => true) {
-  const generation = folderGenerations.get(folderPath) ?? 0
+  const generation = folderProviders.generation(folderPath)
   loading = true
   try {
     const nextProviders = await backend.providers.listForFolder(folderPath)
-    if (!isActive() || (folderGenerations.get(folderPath) ?? 0) !== generation) return
+    if (!isActive() || folderProviders.generation(folderPath) !== generation) return
     folderProviders.set(folderPath, { providers: nextProviders })
   } catch (e) {
     console.warn(`Failed to load providers for ${folderPath}:`, e)
@@ -63,6 +51,5 @@ export function getConnectedProviders(folderPath: string | null): ProviderStatus
 
 /** Forget the folder's detection; called when the workbench releases the folder. */
 export function releaseProviderFolder(folderPath: string) {
-  folderGenerations.set(folderPath, (folderGenerations.get(folderPath) ?? 0) + 1)
   folderProviders.delete(folderPath)
 }

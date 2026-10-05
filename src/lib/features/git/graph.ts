@@ -10,7 +10,6 @@ import type { GraphCommit } from '$lib/types/backend'
 export const SWIMLANE_HEIGHT = 24
 export const SWIMLANE_WIDTH = 11
 const SWIMLANE_CURVE_RADIUS = 5
-export const CIRCLE_RADIUS = 4
 
 // LANE COLORS //
 export const GRAPH_COLORS = [
@@ -44,7 +43,6 @@ export interface RowCircle {
   cy: number
   r: number
   color: string
-  isMerge: boolean
 }
 
 export interface RowRender {
@@ -221,16 +219,14 @@ export function computeRowRender(row: GraphRow): RowRender {
 
   // DIMENSIONS //
   const maxCols = Math.max(inputSwimlanes.length, outputSwimlanes.length, 1) + 1
-  const isMerge = commit.parents.length > 1
 
   return {
     paths,
     circle: {
       cx,
       cy: SWIMLANE_WIDTH,
-      r: isMerge ? CIRCLE_RADIUS + 2 : CIRCLE_RADIUS + 1,
-      color: color(circleColorIdx),
-      isMerge
+      r: commit.parents.length > 1 ? 6 : 5,
+      color: color(circleColorIdx)
     },
     width: SWIMLANE_WIDTH * maxCols
   }

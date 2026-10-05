@@ -1,4 +1,4 @@
-import { platform, requireNative } from '$lib/platform'
+import { platform } from '$lib/platform'
 
 export interface WindowControlsConfig {
   useSystemDecorations: boolean
@@ -33,18 +33,24 @@ function persistWindowControls(config: WindowControlsConfig) {
 }
 
 let windowControls = $state<WindowControlsConfig>(loadWindowControls())
-if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (event) => {
+
+function applyDecorations(enabled: boolean): void {
+  const native = platform.native
+  if (!native) return
+  void native.window.setDecorations(enabled).catch((error) => {
+    console.warn('Failed to set window decorations:', error)
+  })
+}
+
+export function initWindowControls(): () => void {
+  if (windowControls.useSystemDecorations) applyDecorations(true)
+  const onStorage = (event: StorageEvent) => {
     if (event.key !== WC_STORAGE_KEY) return
     windowControls = loadWindowControls()
-    if (platform.capabilities.nativeWindowControls) {
-      void requireNative()
-        .window.setDecorations(windowControls.useSystemDecorations)
-        .catch((error) => {
-          console.warn('Failed to set window decorations from storage event:', error)
-        })
-    }
-  })
+    applyDecorations(windowControls.useSystemDecorations)
+  }
+  window.addEventListener('storage', onStorage)
+  return () => window.removeEventListener('storage', onStorage)
 }
 
 export function getWindowControls(): WindowControlsConfig {
@@ -54,11 +60,5 @@ export function getWindowControls(): WindowControlsConfig {
 export function setWindowControls(patch: Partial<WindowControlsConfig>) {
   windowControls = { ...windowControls, ...patch }
   persistWindowControls(windowControls)
-  if (patch.useSystemDecorations !== undefined && platform.capabilities.nativeWindowControls) {
-    void requireNative()
-      .window.setDecorations(patch.useSystemDecorations)
-      .catch((error) => {
-        console.warn('Failed to set window decorations:', error)
-      })
-  }
+  if (patch.useSystemDecorations !== undefined) applyDecorations(patch.useSystemDecorations)
 }

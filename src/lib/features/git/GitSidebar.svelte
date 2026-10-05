@@ -1,71 +1,26 @@
 <script lang="ts">
-  import type { TabId } from '$lib/features/workbench/model'
   import GitGraph from '$lib/features/git/GitGraph.svelte'
   import GitFileTree from '$lib/features/git/GitFileTree.svelte'
-  import ConfirmDialog from '$lib/components/dialogs/ConfirmDialog.svelte'
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
-  import { Button, IconButton } from '$lib/components/ui/button'
+  import { Button } from '$lib/components/ui/button'
   import { Alert } from '$lib/components/ui/alert'
   import { Input } from '$lib/components/ui/input'
   import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
-  import {
-    discardAll,
-    ensureGitWatch,
-    refreshRepo,
-    runGitAction,
-    stageAll,
-    unstageAll
-  } from '$lib/features/git/state.svelte'
-  import { forcePushWithLease, undoLastCommit } from '$lib/features/git/actions.svelte'
+  import { ensureGitWatch, getGitFreshness, getGitSummary } from '$lib/features/git/state.svelte'
   import { backend } from '$lib/api/backend'
-  import type { GitSummary } from '$lib/types/backend'
   import { AlertTriangle, GitBranchIcon } from '$lib/icons/lucideExports'
-  import {
-    getGitActionNotifications,
-    gitCommitNotifications,
-    type GitActionKind
-  } from '$lib/features/git/actionNotifications'
-  import { getErrorMessage, runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
+  import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
 
-  let {
-    summary,
-    readError,
-    watchError,
-    folderPath,
-    onFileClick,
-    onPersistTab,
-    onCommitFileClick,
-    onStashFileClick,
-    onViewAllChanges
-  }: {
-    summary: GitSummary | null
-    readError: string | null
-    watchError: string | null
-    folderPath: string
-    onFileClick?: (filePath: string, staged: boolean) => TabId | Promise<TabId> | void
-    onPersistTab?: (openedTab: TabId | Promise<TabId> | null | undefined) => void
-    onCommitFileClick?: (
-      hash: string,
-      shortHash: string,
-      message: string,
-      filePath: string
-    ) => TabId | Promise<TabId> | void
-    onStashFileClick?: (stashIndex: number, message: string, filePath: string) => TabId | Promise<TabId> | void
-    onViewAllChanges?: (staged: boolean) => void
-  } = $props()
-
-  let hasCommits = $derived(!!summary?.branch)
+  let { folderPath }: { folderPath: string } = $props()
+  let summary = $derived(getGitSummary(folderPath))
+  let freshness = $derived(getGitFreshness(folderPath))
+  let readError = $derived(freshness.readError)
+  let watchError = $derived(freshness.watchError)
   let isRepo = $derived(summary?.is_repo ?? true)
   let showWatchError = $derived(!!watchError && (summary?.is_repo ?? !!readError))
 
-  // Confirmation dialog state
-  let showDiscardConfirm = $state(false)
-
-  // Commit-message textarea content, owned here so an undo-commit can
-  // push the previous commit message back into the editor without
-  // losing child component state.
-  let commitMessage = $state('')
 
   // Init/clone state
   let cloneUrl = $state('')
@@ -125,56 +80,6 @@
     initBusy = false
   }
 
-  async function handleGitAction<T = void>(kind: GitActionKind, task: () => Promise<T>): Promise<T | undefined> {
-    return runNotifiedTask(task, getGitActionNotifications<T>(kind))
-  }
-
-  async function handleCommit(message: string) {
-    await runNotifiedTask(
-      () => runGitAction(folderPath, (path) => backend.git.commit(path, message)),
-      gitCommitNotifications
-    )
-  }
-
-  async function handleStageAll() {
-    await handleGitAction('stageAll', () => stageAll(folderPath))
-  }
-
-  async function handleUnstageAll() {
-    await handleGitAction('unstageAll', () => unstageAll(folderPath))
-  }
-
-  async function handleDiscardAll() {
-    showDiscardConfirm = false
-    await handleGitAction('discardAll', () => discardAll(folderPath))
-  }
-
-  async function handleStashAll() {
-    await handleGitAction('stashAll', () => runGitAction(folderPath, (path) => backend.git.stashAll(path)))
-  }
-
-  async function handleUndoLastCommit() {
-    const message = await undoLastCommit(folderPath)
-    if (typeof message === 'string' && message.length > 0) {
-      commitMessage = message
-    }
-  }
-
-  async function handlePush() {
-    await handleGitAction('push', () => runGitAction(folderPath, (path) => backend.git.push(path)))
-  }
-
-  async function handlePushForceWithLease() {
-    await forcePushWithLease(folderPath)
-  }
-
-  async function handlePull() {
-    await handleGitAction('pull', () => runGitAction(folderPath, (path) => backend.git.pull(path)))
-  }
-
-  async function handleFetch() {
-    await handleGitAction('fetch', () => runGitAction(folderPath, (path) => backend.git.fetch(path)))
-  }
 </script>
 
 <SidebarPanel title="Git">
@@ -210,7 +115,7 @@
 
   <div class="flex h-full min-h-0 flex-col">
     {#if readError}
-      <Alert variant="error" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+      <Alert variant="danger" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="min-w-0">
           <p class="font-medium">{summary ? 'Git status is stale.' : 'Git status unavailable.'}</p>
@@ -219,7 +124,7 @@
       </Alert>
     {/if}
     {#if showWatchError}
-      <Alert variant="warning" class="rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs">
+      <Alert variant="warning" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="min-w-0">
           <p class="font-medium">Git change watcher is degraded. Changes may be delayed.</p>
@@ -274,31 +179,13 @@
         <ResizablePaneGroup direction="vertical">
           <ResizablePane defaultSize={60} minSize={15}>
             <div class="h-full overflow-y-auto">
-              <GitFileTree
-                {summary}
-                {folderPath}
-                {hasCommits}
-                {onFileClick}
-                {onPersistTab}
-                {onViewAllChanges}
-                bind:commitMessage
-                onCommit={handleCommit}
-                onStageAll={handleStageAll}
-                onUnstageAll={handleUnstageAll}
-                onDiscardAll={() => (showDiscardConfirm = true)}
-                onStashAll={handleStashAll}
-                onUndoLastCommit={handleUndoLastCommit}
-                onPush={handlePush}
-                onPushForceWithLease={handlePushForceWithLease}
-                onPull={handlePull}
-                onFetch={handleFetch}
-              />
+              <GitFileTree {summary} {folderPath} />
             </div>
           </ResizablePane>
           <ResizableHandle />
           <ResizablePane defaultSize={40} minSize={15}>
             <div class="h-full overflow-y-auto">
-              <GitGraph {folderPath} onFileClick={onCommitFileClick} {onStashFileClick} {onPersistTab} />
+              <GitGraph {folderPath} />
             </div>
           </ResizablePane>
         </ResizablePaneGroup>
@@ -307,11 +194,3 @@
   </div>
 </SidebarPanel>
 
-<ConfirmDialog
-  open={showDiscardConfirm}
-  title="Discard All Changes?"
-  message="This will permanently discard all unstaged changes and remove untracked files. This cannot be undone."
-  confirmLabel="Discard All"
-  onConfirm={handleDiscardAll}
-  onCancel={() => (showDiscardConfirm = false)}
-/>

@@ -1,5 +1,7 @@
 // Browser control wire conversion. Nested domain values belong to their own schemas.
 export const MAX_FRAME_BYTES = 64 * 1024 * 1024
+export const DISCONNECTED = 'Disconnected from server'
+export const OUTCOME_UNKNOWN = 'Disconnected from server; operation outcome may be unknown'
 
 export function utf8ByteLength(value: string): number {
   let bytes = value.length
@@ -25,7 +27,6 @@ export function utf8ByteLength(value: string): number {
 
 const globalMethods: Record<string, true> = {
   settings_get: true,
-  settings_patch_global_section: true,
   settings_set_nix: true,
   settings_set_formatting: true,
   settings_set_provider_config: true,

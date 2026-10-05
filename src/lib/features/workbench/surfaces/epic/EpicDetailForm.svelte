@@ -22,7 +22,7 @@
   import MarkdownEditField from '$lib/features/issues/MarkdownEditField.svelte'
   import SectionHeading from '$lib/features/issues/SectionHeading.svelte'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
-  import type { Issue, IssueEpic, IssueEpicStatus, IssueStatus } from '$lib/types/backend'
+  import type { Issue, IssueEpic, IssueEpicStatus } from '$lib/types/backend'
   import type { EpicTab } from '$lib/features/workbench/model'
 
   let {
@@ -44,28 +44,21 @@
     priority: string
   }
 
-  // Snapshot once at mount; parent re-keys on id change.
-  const baseline = untrack<Draft>(() => ({
-    title: detail.title,
-    description: detail.description ?? '',
-    status: detail.status,
-    priority: String(detail.priority)
-  }))
-
-  const form = useDetailDraft<Draft>({
-    initial: baseline,
-    isDirty: (d, base) =>
-      d.title.trim() !== base.title ||
-      (d.description.trim() || null) !== (base.description.trim() || null) ||
-      d.status !== base.status ||
-      Number(d.priority) !== Number(base.priority),
-    save: async (drafts) => {
-      const next = await updateEpic(folderPath, tab.epicId, {
-        title: drafts.title.trim(),
-        description: drafts.description.trim() || null,
-        status: drafts.status,
-        priority: Number(drafts.priority)
-      })
+  const form = useDetailDraft({
+    seed: untrack<Draft>(() => ({
+      title: detail.title,
+      description: detail.description ?? '',
+      status: detail.status,
+      priority: String(detail.priority)
+    })),
+    normalize: (d) => ({
+      title: d.title.trim(),
+      description: d.description.trim(),
+      status: d.status,
+      priority: Number(d.priority)
+    }),
+    save: async (patch) => {
+      const next = await updateEpic(folderPath, tab.epicId, patch)
       if (next.title !== tab.title) {
         updateEpicTabTitle(folderPath, tab.epicId, next.title)
       }
@@ -109,18 +102,18 @@
     <aside class="w-full @3xl:w-72 @3xl:shrink-0">
       <DetailPanel>
         <DetailPanelRow label="Status">
-          <Select bind:value={form.drafts.status} class="w-full">
+          <Select bind:value={form.drafts.status}>
             {#each ALL_EPIC_STATUSES as status (status)}
               <option value={status}>{statusLabel(status)}</option>
             {/each}
           </Select>
-          <span class="text-2xs {statusGlyphTone(detail.status as IssueStatus)}">
+          <span class="text-2xs {statusGlyphTone(detail.status)}">
             now: {statusLabel(detail.status)}
           </span>
         </DetailPanelRow>
 
         <DetailPanelRow label="Priority">
-          <Select bind:value={form.drafts.priority} class="w-full">
+          <Select bind:value={form.drafts.priority}>
             {#each ALL_PRIORITIES as p (p)}
               <option value={String(p)}>P{p}</option>
             {/each}

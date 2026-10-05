@@ -29,7 +29,7 @@
 
 {#if editing}
   <div class="flex flex-col gap-2">
-    <Textarea {rows} bind:value placeholder={editPlaceholder ?? placeholder} class="text-base" />
+    <Textarea {rows} bind:value placeholder={editPlaceholder ?? placeholder} />
     <div class="flex justify-end gap-1.5">
       <Button size="xs" variant="ghost" onclick={() => (editing = false)}>Done</Button>
     </div>

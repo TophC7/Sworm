@@ -4,7 +4,7 @@
   // app.security.assetProtocol enabled in src-tauri/tauri.conf.json.
   // Web streams the whole file into a Blob URL; playback/seek starts after download.
   import type { MediaKind } from '$lib/features/editor/languageMap'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { platform, type AssetHandle } from '$lib/platform'
 
   let {

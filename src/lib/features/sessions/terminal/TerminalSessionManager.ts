@@ -1,9 +1,9 @@
 import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
-import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
+import { TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
 import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
@@ -22,47 +22,12 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { openLink } from '$lib/features/workbench/links/openLink'
 import { TerminalLinkProvider } from '$lib/features/sessions/terminal/TerminalLinkProvider'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
+import { Terminal, type IDisposable } from '@xterm/xterm'
 import { splitRemotePath } from '$lib/utils/paths'
-import { copyToClipboard } from '$lib/utils/clipboard'
-
-const TERMINAL_OPTIONS: ITerminalOptions = {
-  cursorBlink: true,
-  fontSize: 13,
-  fontFamily: MONO_FONT_FAMILY,
-  scrollback: 3000,
-  convertEol: true,
-  vtExtensions: { kittyKeyboard: true },
-  theme: {
-    background: '#131313',
-    foreground: '#e2e2e2',
-    cursor: '#ffb59f',
-    cursorAccent: '#131313',
-    selectionBackground: '#7c2d15',
-    selectionForeground: '#e2e2e2',
-    black: '#131313',
-    red: '#ff7672',
-    green: '#98ff7f',
-    yellow: '#ffe572',
-    blue: '#f29d84',
-    magenta: '#763724',
-    cyan: '#ffb59f',
-    white: '#fff3ef',
-    brightBlack: '#a59c99',
-    brightRed: '#ffa29f',
-    brightGreen: '#b7ffa5',
-    brightYellow: '#ffeea5',
-    brightBlue: '#ffc0ad',
-    brightMagenta: '#ffcbbb',
-    brightCyan: '#ffddd3',
-    brightWhite: '#fffaf8'
-  }
-}
 
 const textEncoder = new TextEncoder()
 
-type EventListener = (event: PtyEvent) => void
-type ErrorListener = (message: string) => void
+type ErrorListener = (message: string | null) => void
 type DeferredOutput = { bytes: Uint8Array; sequence: number }
 
 export class TerminalSessionManager {
@@ -105,7 +70,6 @@ export class TerminalSessionManager {
   private terminalPromise: Promise<void> | null = null
   private textDecoder = new TextDecoder()
   private readonly titleParser = new TerminalTitleParser()
-  private readonly eventListeners = new Set<EventListener>()
   private readonly errorListeners = new Set<ErrorListener>()
   private reconnecting = false
   private readonly reconnectListeners = new Set<(reconnecting: boolean) => void>()
@@ -140,10 +104,6 @@ export class TerminalSessionManager {
     return this.ptyActive
   }
 
-  isAttached(): boolean {
-    return this.container !== null
-  }
-
   getLastError(): string | null {
     return this.lastError
   }
@@ -167,13 +127,6 @@ export class TerminalSessionManager {
   focus(): void {
     if (!this.inputEnabled) return
     this.terminal?.focus()
-  }
-
-  registerEventListener(listener: EventListener): () => void {
-    this.eventListeners.add(listener)
-    return () => {
-      this.eventListeners.delete(listener)
-    }
   }
 
   registerErrorListener(listener: ErrorListener): () => void {
@@ -365,6 +318,7 @@ export class TerminalSessionManager {
       this.ptyActive = true
       this.setReconnecting(false)
       this.lastError = null
+      this.emitError(null)
       setSessionTabStatus(this.tabId, 'running')
       this.barrier.markRendered(sequence)
     } else if (event.type === 'exit') {
@@ -384,8 +338,6 @@ export class TerminalSessionManager {
         setSessionTabResumeToken(this.tabId, event.token)
       }
     }
-
-    this.emitEvent(event)
   }
 
   async exportTransferState(): Promise<TerminalTransferState> {
@@ -397,38 +349,25 @@ export class TerminalSessionManager {
     const terminal = this.terminal
     const serializeAddon = this.serializeAddon
     if (!terminal || !serializeAddon) throw new Error(`Terminal session ${this.tabId} is unavailable`)
-    if (!runId) {
-      this.flushDeferredBytes()
-      await this.writeAndWait('')
-      return {
-        runId: null,
-        providerId: this.providerId ?? undefined,
-        serializedBuffer: serializeAddon.serialize(),
-        cols: terminal.cols,
-        rows: terminal.rows,
-        viewportPosition: terminal.buffer.active.viewportY,
-        lastSequence: 0,
-        status: (getTabs().find((tab) => tab.id === this.tabId) as { status?: string } | undefined)?.status
-      }
-    }
-
-    this.transferBarrierActive = true
+    let lastSequence = 0
+    this.transferBarrierActive = runId !== null
     try {
       this.flushDeferredBytes()
-      const targetSequence = await transfers.pause(runId)
-      await this.barrier.waitFor(targetSequence)
+      if (runId) {
+        lastSequence = await transfers.pause(runId)
+        await this.barrier.waitFor(lastSequence)
+      }
       await this.writeAndWait('')
-
-      const buffer = terminal.buffer.active
+      const tab = getTabs().find((tab) => tab.id === this.tabId)
       return {
         runId,
         providerId: this.providerId ?? undefined,
         serializedBuffer: serializeAddon.serialize(),
         cols: terminal.cols,
         rows: terminal.rows,
-        viewportPosition: buffer.viewportY,
-        lastSequence: targetSequence,
-        status: (getTabs().find((tab) => tab.id === this.tabId) as { status?: string } | undefined)?.status
+        viewportPosition: terminal.buffer.active.viewportY,
+        lastSequence,
+        status: tab?.kind === 'session' ? tab.status : undefined
       }
     } finally {
       this.transferBarrierActive = false
@@ -482,15 +421,11 @@ export class TerminalSessionManager {
     }
   }
 
-  detachForTransfer(): void {
+  release(): void {
     if (this.disposed) return
     this.disposed = true
     this.releaseStream()
     this.disposeSurface()
-  }
-
-  detachForWindowClose(): void {
-    this.detachForTransfer()
   }
 
   markPtyLost(): void {
@@ -553,7 +488,6 @@ export class TerminalSessionManager {
     this.serializeAddon = null
     this.webglAddon = null
     this.hostEl = null
-    this.eventListeners.clear()
     this.errorListeners.clear()
     this.deferredOutput = []
     this.deferredByteCount = 0
@@ -609,11 +543,7 @@ export class TerminalSessionManager {
   }
 
   private writeAndWait(data: string | Uint8Array): Promise<void> {
-    const terminal = this.terminal
-    if (!terminal) return Promise.resolve()
-    const { promise, resolve } = Promise.withResolvers<void>()
-    terminal.write(data, resolve)
-    return promise
+    return this.terminal ? writeAndWait(this.terminal, data) : Promise.resolve()
   }
 
   private enableWebglRenderer(): void {
@@ -674,26 +604,20 @@ export class TerminalSessionManager {
       height: '100%'
     })
 
+    const linkHandlers = {
+      activate: (event: MouseEvent, text: string) => {
+        if (event.ctrlKey || event.metaKey) void openLink(text, this.getFolderPath())
+      },
+      hover: (_event: MouseEvent, text: string) => {
+        if (this.hostEl) this.hostEl.title = `Ctrl+click to follow: ${text}`
+      },
+      leave: () => {
+        if (this.hostEl) this.hostEl.title = ''
+      }
+    }
     this.terminal = new Terminal({
       ...TERMINAL_OPTIONS,
-      linkHandler: {
-        activate: (event: MouseEvent, text: string) => {
-          if (event.ctrlKey || event.metaKey) {
-            void openLink(text, this.getFolderPath())
-          }
-        },
-        hover: (_event: MouseEvent, text: string) => {
-          if (this.hostEl) {
-            this.hostEl.title = `Ctrl+click to follow: ${text}`
-          }
-        },
-        leave: () => {
-          if (this.hostEl) {
-            this.hostEl.title = ''
-          }
-        },
-        allowNonHttpProtocols: true
-      }
+      linkHandler: { ...linkHandlers, allowNonHttpProtocols: true }
     })
     this.fitAddon = new FitAddon()
     // xterm core does not render SIXEL / iTerm / Kitty image payloads; it needs the parser addon.
@@ -703,11 +627,7 @@ export class TerminalSessionManager {
     this.terminal.loadAddon(this.imageAddon)
     this.terminal.loadAddon(this.serializeAddon)
     this.linkProviderDisposable = this.terminal.registerLinkProvider(
-      new TerminalLinkProvider(
-        this.terminal,
-        () => this.getFolderPath(),
-        () => this.hostEl
-      )
+      new TerminalLinkProvider(this.terminal, linkHandlers)
     )
     this.terminal.open(this.hostEl)
     this.enableWebglRenderer()
@@ -741,7 +661,7 @@ export class TerminalSessionManager {
           // xterm send SIGINT like a real terminal.
           if (this.terminal?.hasSelection()) {
             const text = this.terminal.getSelection()
-            copyToClipboard(text).catch((err) => {
+            platform.clipboard.writeText(text).catch((err) => {
               console.warn('Ctrl+C copy failed:', err)
             })
             this.terminal.clearSelection()
@@ -773,7 +693,7 @@ export class TerminalSessionManager {
         const raw = atob(payload)
         const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
         const text = new TextDecoder().decode(bytes)
-        copyToClipboard(text).catch((err) => {
+        platform.clipboard.writeText(text).catch((err) => {
           console.error('OSC 52 clipboard write failed:', err)
         })
       } catch {
@@ -853,13 +773,7 @@ export class TerminalSessionManager {
     this.streamRunId = null
   }
 
-  private emitEvent(event: PtyEvent): void {
-    for (const listener of this.eventListeners) {
-      listener(event)
-    }
-  }
-
-  private emitError(message: string): void {
+  private emitError(message: string | null): void {
     for (const listener of this.errorListeners) {
       listener(message)
     }

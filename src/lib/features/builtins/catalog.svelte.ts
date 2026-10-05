@@ -2,12 +2,11 @@ import { backend } from '$lib/api/backend'
 import { basename } from '$lib/utils/paths'
 import type {
   BuiltinCatalog,
-  BuiltinFormatterGroupId,
   BuiltinLanguageContribution,
   BuiltinSettingsPage
 } from '$lib/types/backend'
 
-let catalog: BuiltinCatalog | null = null
+let catalog = $state.raw<BuiltinCatalog | null>(null)
 let loadPromise: Promise<BuiltinCatalog> | null = null
 
 export async function preloadBuiltinCatalog(): Promise<BuiltinCatalog> {
@@ -27,32 +26,12 @@ export async function preloadBuiltinCatalog(): Promise<BuiltinCatalog> {
   return loadPromise
 }
 
-export function invalidateBuiltinCatalog() {
-  catalog = null
-  loadPromise = null
-}
-
-export function getBuiltinCatalog(): BuiltinCatalog | null {
-  return catalog
-}
-
 export function getBuiltinRuntimeLanguages(): BuiltinLanguageContribution[] {
   return catalog?.runtime.languages ?? []
 }
 
 export function getBuiltinSettingsPages(): BuiltinSettingsPage[] {
   return catalog?.settings.pages ?? []
-}
-
-export function getBuiltinSettingsPageForGroup(group: BuiltinFormatterGroupId): BuiltinSettingsPage | null {
-  return getBuiltinSettingsPages().find((page) => page.formatter?.group === group) ?? null
-}
-
-export function getBuiltinLanguageLabel(languageId: string): string {
-  return (
-    getBuiltinRuntimeLanguages().find((language) => language.id === languageId)?.label ??
-    fallbackLanguageLabel(languageId)
-  )
 }
 
 export function getBuiltinLanguageForFilePath(filePath: string): string | null {
@@ -80,12 +59,4 @@ function getNormalizedExtension(fileName: string): string | null {
 function normalizeExtension(value: string): string {
   const trimmed = value.trim().toLowerCase()
   return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
-}
-
-function fallbackLanguageLabel(languageId: string): string {
-  return languageId
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
 }

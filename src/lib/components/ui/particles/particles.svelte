@@ -3,24 +3,16 @@
 
   let {
     class: className,
-    quantity = 80,
-    staticity = 50,
-    ease = 50,
-    size = 0.4,
-    // Mirrors --color-accent (see src/app.css). Canvas fillStyle needs a
-    // literal hex; keep this default in sync if the accent token moves.
-    color = '#ffb59f',
-    vx = 0,
-    vy = 0
+    quantity = 75,
+    staticity = 40,
+    ease = 60,
+    size = 0.5
   }: {
     class?: string
     quantity?: number
     staticity?: number
     ease?: number
     size?: number
-    color?: string
-    vx?: number
-    vy?: number
   } = $props()
 
   let canvasRef = $state<HTMLCanvasElement | null>(null)
@@ -40,23 +32,12 @@
   }
 
   let context: CanvasRenderingContext2D | null = null
+  let color = ''
   let circles: Circle[] = []
   let mouse = { x: 0, y: 0 }
   let canvasSize = { w: 0, h: 0 }
   let animId: number | null = null
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
-
-  function hexToRgb(hex: string): [number, number, number] {
-    hex = hex.replace('#', '')
-    if (hex.length === 3) {
-      hex = hex
-        .split('')
-        .map((c) => c + c)
-        .join('')
-    }
-    const n = parseInt(hex, 16)
-    return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-  }
 
   function circleParams(): Circle {
     return {
@@ -92,7 +73,8 @@
     context.translate(translateX, translateY)
     context.beginPath()
     context.arc(x, y, s, 0, 2 * Math.PI)
-    context.fillStyle = `rgba(${rgb.join(', ')}, ${alpha})`
+    context.fillStyle = color
+    context.globalAlpha = alpha
     context.fill()
     context.setTransform(dpr, 0, 0, dpr, 0, 0)
     if (!update) circles.push(circle)
@@ -130,8 +112,8 @@
       } else {
         c.alpha = c.targetAlpha * remap
       }
-      c.x += c.dx + vx
-      c.y += c.dy + vy
+      c.x += c.dx
+      c.y += c.dy
       c.translateX += (mouse.x / (staticity / c.magnetism) - c.translateX) / ease
       c.translateY += (mouse.y / (staticity / c.magnetism) - c.translateY) / ease
       drawCircle(c, true)
@@ -155,10 +137,9 @@
     }
   }
 
-  let rgb = $derived(hexToRgb(color))
-
   $effect(() => {
     if (!canvasRef) return
+    color = getComputedStyle(canvasRef).getPropertyValue('--color-accent')
     context = canvasRef.getContext('2d')
     resizeCanvas()
     animate()

@@ -15,7 +15,7 @@ export type EpicGroup = {
   total: number
 }
 
-export function compareIssues(a: Issue, b: Issue, mode: SortMode): number {
+function compareIssues(a: Issue, b: Issue, mode: SortMode): number {
   if (mode === 'priority:asc') {
     return a.priority - b.priority || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
   }

@@ -16,7 +16,3 @@ export function isSettingsOpen(): boolean {
 export function setSettingsOpen(open: boolean) {
   settingsOpen = open
 }
-
-export function toggleSettings() {
-  settingsOpen = !settingsOpen
-}

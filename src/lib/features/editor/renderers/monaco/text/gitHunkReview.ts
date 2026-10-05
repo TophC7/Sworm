@@ -3,14 +3,13 @@ import { backend } from '$lib/api/backend'
 import DirtyDiffPeekHeader from '$lib/features/editor/renderers/monaco/text/DirtyDiffPeekHeader.svelte'
 import { runGitAction } from '$lib/features/git/state.svelte'
 import {
-  applyChangeHunks,
-  compareHunks,
   computeChangeHunks,
   hunkRevealLine,
   hunksIntersectOrTouch,
   lineIntersectsHunk,
   type ChangeHunk
 } from '$lib/features/git/hunks'
+import { applyLineChanges, compareLineChanges } from '$lib/features/git/lineChanges'
 import { basename } from '$lib/utils/paths'
 
 const SWORM_DIRTY_DIFF_GLYPH_CLASS = 'sworm-dirty-diff-glyph'
@@ -54,7 +53,6 @@ interface ActivePeek {
 
 export interface GitHunkReviewHandle {
   refreshBase(): Promise<void>
-  scheduleUpdate(): void
   dispose(): void
 }
 
@@ -222,7 +220,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
       .filter((hunk) => !primaryHunks.some((primaryHunk) => hunksIntersectOrTouch(primaryHunk, hunk)))
       .map((hunk) => providerHunk(hunk, 'secondary'))
 
-    visibleHunks = [...primary, ...secondary].sort((a, b) => compareHunks(a, b) || (a.provider === 'primary' ? -1 : 1))
+    visibleHunks = [...primary, ...secondary].sort((a, b) => compareLineChanges(a, b) || (a.provider === 'primary' ? -1 : 1))
   }
 
   function revealPeekHunk(peek: ActivePeek, hunk: ProviderHunk) {
@@ -367,7 +365,6 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
         stageLabel: hunk.provider === 'primary' ? 'Stage hunk' : 'Unstage hunk',
         stageKind: hunk.provider === 'primary' ? 'stage' : 'unstage',
         revertLabel: hunk.provider === 'primary' ? 'Revert hunk' : '',
-        canStage: true,
         canRevert: hunk.provider === 'primary',
         onStage: () => (hunk.provider === 'primary' ? stageHunk(hunk) : unstageHunk(hunk)),
         onRevert: () => revertHunk(hunk),
@@ -409,7 +406,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     const base = primaryBase(indexContent, headContent)
     if (base == null) return
 
-    const nextIndex = applyChangeHunks(base, model.getValue(), [hunk])
+    const nextIndex = applyLineChanges(base, model.getValue(), [hunk])
     await runGitAction(folderPath, (path) => backend.git.stageFileContent(path, filePath, nextIndex), {
       scope: 'summary'
     })
@@ -436,7 +433,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
     if (base == null) return
 
     const remaining = primaryHunks.filter((candidate) => `primary:${candidate.id}` !== hunk.id)
-    const nextContent = applyChangeHunks(base, model.getValue(), remaining)
+    const nextContent = applyLineChanges(base, model.getValue(), remaining)
     clearPeek(false)
     replaceEditorContent(nextContent)
     scheduleUpdate()
@@ -451,7 +448,7 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
 
     const remaining = stagedIndexHunks.filter((candidate) => candidate.id !== stagedHunk.id)
     const nextIndex =
-      headContent == null && remaining.length === 0 ? null : applyChangeHunks(base, currentIndex, remaining)
+      headContent == null && remaining.length === 0 ? null : applyLineChanges(base, currentIndex, remaining)
 
     await runGitAction(folderPath, (path) => backend.git.stageFileContent(path, filePath, nextIndex), {
       scope: 'summary'
@@ -557,7 +554,6 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
 
   return {
     refreshBase,
-    scheduleUpdate,
     dispose() {
       disposed = true
       if (updateTimer) window.clearTimeout(updateTimer)

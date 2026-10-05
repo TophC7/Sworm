@@ -1,5 +1,7 @@
 import type { Component } from 'svelte'
-import { platform, type PlatformCapabilities } from '$lib/platform'
+import type { Command, CommandGroup } from './types'
+import { getTextEditorActions } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
+import { platform } from '$lib/platform'
 import {
   clearAllNotifications,
   getNotifications,
@@ -10,11 +12,11 @@ import { allProviders } from '$lib/features/sessions/providers/catalog'
 import { getConnectedProviders } from '$lib/features/sessions/providers/state.svelte'
 import { isSidebarCollapsed, toggleSidebar } from '$lib/features/app-shell/sidebar/state.svelte'
 import { zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
-import { browseServer, localHostLabel, openBrowser } from '$lib/features/browser/state.svelte'
+import { localHostLabel, openBrowser } from '$lib/features/browser/state.svelte'
 import { getServers } from '$lib/features/browser/places.svelte'
 import { openRemoteManager } from '$lib/features/remotes/state.svelte'
 import { getGroups, getTabGroup, retryGroup } from '$lib/features/workbench/groups.svelte'
-import { openCommandPaletteWithSearch } from '$lib/features/command-palette/state.svelte'
+import { openCommandPaletteWithSearch, toggleCommandPalette } from '$lib/features/command-palette/state.svelte'
 import {
   isIndentRainbowEnabled,
   toggleIndentRainbow
@@ -53,7 +55,6 @@ import { getGitSummary } from '$lib/features/git/state.svelte'
 import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
 import {
-  addNotificationToolTab,
   getActiveFolderPath,
   getActiveTab,
   hasClosedTabs
@@ -78,13 +79,13 @@ import {
   TerminalIcon,
   ServerIcon,
   Undo2Icon,
-  XIcon,
+  X,
   ZoomInIcon,
   ZoomOutIcon
 } from '$lib/icons/lucideExports'
 
 export type ShortcutCommandSource = 'app' | 'editor'
-export type TerminalPolicy = 'defer' | 'skip-shell' | 'skip-shell-keeps-modals'
+export type TerminalPolicy = 'skip-shell' | 'skip-shell-keeps-modals'
 
 type Dynamic<T> = T | (() => T)
 
@@ -99,7 +100,7 @@ export interface AppCommandDefinition {
   dangerous?: boolean
   terminalPolicy?: TerminalPolicy
   showInPalette?: boolean
-  capability?: keyof PlatformCapabilities
+  native?: true
   visible?: () => boolean
   subtitle?: () => string | undefined
   run: () => void | Promise<unknown>
@@ -114,7 +115,7 @@ export interface ShortcutCommandDefinition {
   dangerous?: boolean
   defaultKeybindings: string[]
   terminalPolicy?: TerminalPolicy
-  run?: () => void | Promise<unknown>
+  run: () => void | Promise<unknown>
 }
 
 function resolve<T>(value: Dynamic<T>): T {
@@ -163,7 +164,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
           group: 'Places',
           icon: ServerIcon,
           keywords: ['browse', 'remote', 'server', name],
-          run: () => browseServer(name)
+          run: () => openBrowser({ server: name })
         })
       )
     : []
@@ -200,7 +201,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       id: `workbench-remove-from-window-${group.server}`,
       label: `Remove ${group.server} Workbench from Window`,
       group: 'Workbenches',
-      icon: XIcon,
+      icon: X,
       keywords: ['remove', 'window', 'workbench', group.server],
       visible: () => group.state !== 'active',
       run: () => removeServerWorkbenchFromWindow(group.server)
@@ -215,7 +216,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       defaultKeybindings: ['Ctrl+Shift+P'],
       terminalPolicy: 'skip-shell-keeps-modals',
       showInPalette: false,
-      run: () => {}
+      run: toggleCommandPalette
     }),
     appCommand({
       id: 'new-file',
@@ -223,7 +224,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: FilePlusCornerIcon,
       keywords: ['new', 'empty', 'untitled', 'file', 'create'],
-      capability: 'saveAsDialog',
+      native: true,
       defaultKeybindings: ['Ctrl+N'],
       visible: activeFolderVisible,
       run: newEmptyFile
@@ -233,7 +234,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       label: 'New Window',
       group: 'File',
       keywords: ['new', 'window', 'workbench'],
-      capability: 'nativeWindowControls',
+      native: true,
       defaultKeybindings: ['Ctrl+Shift+N'],
       terminalPolicy: 'skip-shell',
       run: newWindow
@@ -254,34 +255,29 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: FolderOpenIcon,
       keywords: ['open', 'folder', 'directory', 'native', 'system', 'dialog'],
-      capability: 'nativeDirectoryPicker',
+      native: true,
       run: openFolderPicker
     }),
-    appCommand({
-      id: 'close-workbench',
-      label: 'Close Workbench',
-      group: 'File',
-      icon: XIcon,
-      keywords: ['close', 'workbench', 'stop'],
-      dangerous: true,
-      capability: 'durableWorkbenches',
-      run: closeCurrentWorkbench
-    }),
-    appCommand({
-      id: 'places.show',
-      label: 'Go to Place…',
-      group: 'Places',
-      icon: CompassIcon,
-      keywords: ['places', 'workbench', 'folder', 'remote', 'server', 'recent', 'browse', '@'],
-      run: () => openCommandPaletteWithSearch('@ ')
-    }),
+    ...(platform.workbench.closeCurrent
+      ? [
+          appCommand({
+            id: 'close-workbench',
+            label: 'Close Workbench',
+            group: 'File',
+            icon: X,
+            keywords: ['close', 'workbench', 'stop'],
+            dangerous: true,
+            run: closeCurrentWorkbench
+          })
+        ]
+      : []),
     appCommand({
       id: 'browse-local',
       label: `Browse ${localHostLabel()}`,
       group: 'Places',
       icon: CompassIcon,
       keywords: ['browse', 'local', 'folder', localHostLabel()],
-      run: () => browseServer(null)
+      run: () => openBrowser({ server: null })
     }),
     ...serverCommands,
     ...groupCommands,
@@ -291,7 +287,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'Places',
       icon: ServerIcon,
       keywords: ['manage', 'pair', 'remote', 'server'],
-      visible: () => platform.capabilities.remoteHosts,
+      native: true,
       run: openRemoteManager
     }),
     appCommand({
@@ -310,7 +306,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'General',
       icon: SettingsIcon,
       keywords: ['settings', 'preferences', 'jsonc', 'global', 'user'],
-      capability: 'externalFileOpen',
+      native: true,
       run: openGlobalSettingsFile
     }),
     appCommand({
@@ -328,7 +324,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: SquareArrowOutUpRight,
       keywords: ['open', 'folder', 'explorer', 'finder', 'nautilus', 'files'],
-      capability: 'revealInFileManager',
+      native: true,
       visible: () => activeFolderVisible() && !splitRemotePath(getActiveFolderPath() ?? ''),
       run: revealActiveFolderInFileManager
     }),
@@ -338,7 +334,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'File',
       icon: TerminalIcon,
       keywords: ['terminal', 'shell', 'external', 'launch', 'kitty', 'alacritty', 'wezterm', 'gnome', 'konsole'],
-      capability: 'openInTerminal',
+      native: true,
       visible: activeFolderVisible,
       run: openActiveFolderInExternalTerminal
     }),
@@ -400,7 +396,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       id: 'close-tab',
       label: 'Close Tab',
       group: 'View',
-      icon: XIcon,
+      icon: X,
       keywords: ['close', 'tab', 'dismiss'],
       defaultKeybindings: platform.native ? ['Ctrl+W'] : [],
       visible: activeFolderVisible,
@@ -440,7 +436,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: ZoomInIcon,
       keywords: ['zoom', 'larger', 'bigger', 'magnify'],
-      capability: 'zoom',
+      native: true,
       defaultKeybindings: ['Ctrl+=', 'Ctrl++'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomIn
@@ -451,7 +447,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: ZoomOutIcon,
       keywords: ['zoom', 'smaller', 'shrink'],
-      capability: 'zoom',
+      native: true,
       defaultKeybindings: ['Ctrl+-'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomOut
@@ -462,7 +458,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       group: 'View',
       icon: RotateCcwIcon,
       keywords: ['zoom', 'reset', 'default', '100%'],
-      capability: 'zoom',
+      native: true,
       defaultKeybindings: ['Ctrl+0'],
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomReset
@@ -529,24 +525,12 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       id: 'dismiss-notifications',
       label: 'Dismiss Notifications',
       group: 'Notifications',
-      icon: XIcon,
+      icon: X,
       keywords: ['notification', 'notifications', 'toast', 'alerts', 'dismiss', 'clear', 'remove'],
       visible: () => getNotifications().length > 0,
       run: clearAllNotifications
-    }),
-    appCommand({
-      id: 'open-notification-tester',
-      label: 'Open Notification Tester',
-      group: 'Notifications',
-      icon: BellIcon,
-      keywords: ['notification', 'notifications', 'tester', 'preview', 'debug', 'demo', 'test'],
-      visible: activeFolderVisible,
-      run: () => {
-        const folderPath = getActiveFolderPath()
-        if (folderPath) addNotificationToolTab(folderPath)
-      }
     })
-  ].filter((definition) => !definition.capability || platform.capabilities[definition.capability])
+  ].filter((definition) => !definition.native || platform.native !== null)
 }
 
 export function getAppShortcutCommands(): ShortcutCommandDefinition[] {
@@ -563,17 +547,25 @@ export function getAppShortcutCommands(): ShortcutCommandDefinition[] {
   }))
 }
 
-export function getAppShortcutCommand(id: string): ShortcutCommandDefinition | null {
-  return getAppShortcutCommands().find((command) => command.id === id) ?? null
+export function getEditorShortcutCommands(): ShortcutCommandDefinition[] {
+  return getTextEditorActions().map((action) => ({
+    id: `editor:${action.id}`,
+    label: action.label,
+    group: 'Editor',
+    keywords: action.id.split('.'),
+    source: 'editor',
+    defaultKeybindings: action.defaultKeybindings,
+    run: action.run
+  }))
 }
 
-export function getVisibleAppPaletteCommands(): AppCommandDefinition[] {
+function getVisibleAppPaletteCommands(): AppCommandDefinition[] {
   return getAppCommandDefinitions().filter(
     (definition) => definition.showInPalette !== false && (definition.visible?.() ?? true)
   )
 }
 
-export function toPaletteCommand(definition: AppCommandDefinition) {
+function toPaletteCommand(definition: AppCommandDefinition): Command {
   return {
     id: definition.id,
     label: resolve(definition.label),
@@ -586,9 +578,24 @@ export function toPaletteCommand(definition: AppCommandDefinition) {
   }
 }
 
-export function terminalPolicyOptions(policy: TerminalPolicy | undefined) {
-  return {
-    skipShell: policy === 'skip-shell' || policy === 'skip-shell-keeps-modals',
-    keepsModals: policy === 'skip-shell-keeps-modals'
+export function getAppCommandGroups(): CommandGroup[] {
+  const groups = new Map<string, CommandGroup>()
+  for (const definition of getVisibleAppPaletteCommands()) {
+    const command = toPaletteCommand(definition)
+    const existing = groups.get(definition.group)
+    if (existing) existing.commands.push(command)
+    else groups.set(definition.group, { heading: definition.group, commands: [command] })
   }
+  return [...groups.values()]
+}
+
+export function getEditorCommandGroups(): CommandGroup[] {
+  const commands = getEditorShortcutCommands().map(({ id, label, keywords, defaultKeybindings, run }) => ({
+    id,
+    label,
+    keywords,
+    defaultKeybindings,
+    onSelect: run
+  }))
+  return commands.length ? [{ heading: 'Editor', commands }] : []
 }

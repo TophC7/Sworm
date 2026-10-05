@@ -11,7 +11,7 @@
   import { Checkbox } from '$lib/components/ui/checkbox'
   import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { runGitAction } from '$lib/features/git/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
 

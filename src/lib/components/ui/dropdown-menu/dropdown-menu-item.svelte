@@ -1,6 +1,7 @@
 <script lang="ts">
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
+  import { menuItemClass } from '../menu-recipe'
   import type { Snippet } from 'svelte'
 
   let {
@@ -22,15 +23,7 @@
 <DropdownMenu.Item
   {disabled}
   onSelect={(e) => onclick?.(e)}
-  class={cn(
-    'flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left outline-none focus-visible:shadow-focus-ring',
-    disabled
-      ? 'cursor-not-allowed text-muted/50'
-      : destructive
-        ? 'cursor-pointer text-danger hover:bg-danger-bg focus:bg-danger-bg'
-        : 'cursor-pointer text-fg hover:bg-surface focus:bg-surface',
-    className
-  )}
+  class={cn(menuItemClass(destructive, disabled), className)}
   {...rest}
 >
   {#if children}{@render children()}{/if}

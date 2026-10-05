@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import type { editor } from 'monaco-editor'
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
@@ -20,10 +20,11 @@
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
   import { retainedTextModelBase } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { filePathToLanguage, isBinaryFile, isMarkdownFile, mediaKind } from '$lib/features/editor/languageMap'
-  import { basename, dirname } from '$lib/utils/paths'
+  import { lspSelectorsMatch } from '$lib/features/editor/lsp/registry'
+  import { basename, dirname, toProjectRelativePath } from '$lib/utils/paths'
   import MarkdownRenderer from '$lib/components/markdown/MarkdownRenderer.svelte'
   import MediaViewer from '$lib/features/workbench/surfaces/text/MediaViewer.svelte'
-  import { watchFileDir } from '$lib/features/files/fileTree.svelte'
+  import { watchFileDir } from '$lib/features/files/explorer.svelte'
   import {
     approveLargeTextFile,
     isLargeTextFileApproved,
@@ -37,7 +38,7 @@
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTab, renameTextTab } from '$lib/features/workbench/state.svelte'
   import { closeTabWithChecks } from '$lib/features/workbench/tabActions.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { getGitSummary } from '$lib/features/git/state.svelte'
 
   type Mode = 'edit' | 'preview' | 'split'
@@ -103,7 +104,7 @@
   let mediaKindValue = $derived(filePath != null && !gitRef ? mediaKind(filePath) : null)
   let language = $derived(filePath != null ? filePathToLanguage(filePath) : 'plaintext')
   let isNix = $derived(language === 'nix')
-  let lspUriPath = $derived(filePath != null && !gitRef && !streamed ? `${folderPath}/${filePath}` : null)
+  let modelKey = $derived(filePath != null && !gitRef && !streamed ? `${folderPath}/${filePath}` : null)
   let gitSummary = $derived(getGitSummary(folderPath))
   let gitDiffRevision = $derived(
     filePath == null || gitRef
@@ -304,7 +305,7 @@
         // Untitled buffer or binary file: nothing to read.
         applyRead(token, '', null)
       } else if (gitRef) {
-        applyRead(token, await backend.editor.showFile(folderPath, gitRef, target), null)
+        applyRead(token, await backend.git.showFile(folderPath, gitRef, target), null)
       } else {
         const retainedBaseContent = retainedDirtyPending ? retainedTextModelBase(folderPath, target) : null
         if (retainedBaseContent !== null) {
@@ -338,10 +339,6 @@
     // updates and could flip `dirty` back to true against stale state.
     if (saving) return
     if (!dirty || isReadonly) return
-    if (filePath == null && !platform.capabilities.saveAsDialog) {
-      error = 'Save As is unavailable on this platform.'
-      return
-    }
 
     // Untitled buffers: prompt for a path via the OS save dialog before
     // writing. On success we rebind the tab to the chosen path — the
@@ -350,24 +347,25 @@
     // flipping dirty=false naturally.
     let targetRel: string
     if (filePath == null) {
+      const native = platform.native
+      if (!native) {
+        error = 'Save As is unavailable on this platform.'
+        return
+      }
       saving = true
       try {
-        const chosen = await requireNative().dialogs.saveAs({ title: 'Save file', defaultPath: folderPath })
+        const chosen = await native.dialogs.saveAs({ title: 'Save file', defaultPath: folderPath })
         if (!chosen) {
           saving = false
           return
         }
-        // Guard against sibling directories whose path happens to share
-        // the folder root as a prefix (`/home/a/proj-backup/...` vs
-        // `/home/a/proj`). Require an exact match OR a `/` boundary.
-        const inside = chosen === folderPath || chosen.startsWith(folderPath + '/')
-        if (!inside) {
+        const rel = toProjectRelativePath(folderPath, chosen)
+        if (!rel) {
           error = 'File must be saved inside the folder.'
           saving = false
           return
         }
-        // backend.files.write takes a folder-relative path.
-        targetRel = chosen.slice(folderPath.length).replace(/^\/+/, '')
+        targetRel = rel
       } catch (e) {
         error = getErrorMessage(e)
         saving = false
@@ -393,8 +391,7 @@
         throw new Error('Cannot write read-only files.')
       }
       diskVersion = await backend.files.write(folderPath, targetRel, savedContent, expectedVersion)
-      setTextBaseVersion(folderPath, targetRel, diskVersion)
-      markTextSurfaceSaved(folderPath, targetRel, savedContent)
+      markTextSurfaceSaved(folderPath, targetRel, savedContent, diskVersion)
       content = savedContent
       if (filePath == null) {
         discardTextSurfaceBuffer({ id: tabId, folderPath, filePath: null })
@@ -452,8 +449,7 @@
       // Keep Monaco mounted: load() would reattach its retained dirty buffer.
       retainedDirtyPending = false
       applyRead(token, file.content, file.version)
-      setTextBaseVersion(folderPath, target, file.version)
-      markTextSurfaceSaved(folderPath, target, file.content)
+      markTextSurfaceSaved(folderPath, target, file.content, file.version)
       conflict = null
     } catch (e) {
       if (token !== readToken || conflict !== pending) return
@@ -494,8 +490,7 @@
       // and the stale `diskVersion` they carry is what makes the save prompt.
       if (filePath !== target || saving || dirty || conflict !== null) return
       applyRead(token, file.content, file.version)
-      setTextBaseVersion(folderPath, target, file.version)
-      markTextSurfaceSaved(folderPath, target, file.content)
+      markTextSurfaceSaved(folderPath, target, file.content, file.version)
     } catch (e) {
       // A delete or mid-write replace fails briefly and the next event re-reads;
       // only a failure that blocked the view needs explaining.
@@ -536,19 +531,11 @@
   async function shouldUseLegacyNixLint(target: string): Promise<boolean> {
     try {
       const servers = await backend.lsp.listServers(folderPath)
-      const fileName = basename(target)
-      const extension = normalizeExtension(target.includes('.') ? target.slice(target.lastIndexOf('.')) : '')
-
       const hasConnectedNixLsp = servers.some(
         (entry) =>
           entry.config.enabled &&
           entry.server.status === 'connected' &&
-          entry.server.document_selectors.some(
-            (selector) =>
-              selector.language === 'nix' ||
-              selector.filenames.includes(fileName) ||
-              (extension.length > 0 && selector.extensions.some((value) => normalizeExtension(value) === extension))
-          )
+          lspSelectorsMatch(entry.server.document_selectors, 'nix', basename(target))
       )
 
       return !hasConnectedNixLsp
@@ -569,12 +556,6 @@
       console.warn('nix-lint:', e)
       if (filePath === target) lintDiagnostics = []
     }
-  }
-
-  function normalizeExtension(value: string): string {
-    const trimmed = value.trim().toLowerCase()
-    if (!trimmed) return ''
-    return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -644,6 +625,26 @@
   })
 </script>
 
+{#snippet editor(wordWrap: boolean, onready?: (instance: editor.IStandaloneCodeEditor) => void | (() => void))}
+  {#key `${modelKey ?? `untitled:${tabId}`}:${language}`}
+    <MonacoEditor
+      {tabId}
+      largeFile={streamed}
+      value={editContent}
+      {language}
+      readonly={isReadonly}
+      {locked}
+      {wordWrap}
+      onchange={handleEditorChange}
+      {filePath}
+      {folderPath}
+      lspEnabled={!isReadonly}
+      {gitDiffRevision}
+      {onready}
+    />
+  {/key}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flex h-full flex-col overflow-hidden" onkeydown={handleKeydown}>
   <PanelHeader class="text-sm">
@@ -688,7 +689,7 @@
         >
       {/if}
 
-      {#if dirty && (!isUntitled || platform.capabilities.saveAsDialog)}
+      {#if dirty && (!isUntitled || platform.native)}
         {#if isMarkdown && !isReadonly}
           <Separator orientation="vertical" class="mx-0.5 h-4" />
         {/if}
@@ -760,23 +761,7 @@
     {:else if isMarkdown && mode === 'split'}
       <ResizablePaneGroup direction="horizontal">
         <ResizablePane defaultSize={50} minSize={20}>
-          {#key `${lspUriPath ?? `untitled:${tabId}`}:${language}`}
-            <MonacoEditor
-              {tabId}
-              value={editContent}
-              {language}
-              readonly={isReadonly}
-              {locked}
-              wordWrap={true}
-              onchange={handleEditorChange}
-              uriPath={lspUriPath}
-              {filePath}
-              {folderPath}
-              lspEnabled={!isReadonly}
-              {gitDiffRevision}
-              onready={onSplitEditorReady}
-            />
-          {/key}
+          {@render editor(true, onSplitEditorReady)}
         </ResizablePane>
         <ResizableHandle />
         <ResizablePane defaultSize={50} minSize={20}>
@@ -787,23 +772,7 @@
       </ResizablePaneGroup>
     {:else}
       <!-- Full-bleed editor for code files or markdown in edit-only mode -->
-      {#key `${lspUriPath ?? `untitled:${tabId}`}:${language}`}
-        <MonacoEditor
-          {tabId}
-          largeFile={streamed}
-          value={editContent}
-          {language}
-          readonly={isReadonly}
-          {locked}
-          wordWrap={isMarkdown}
-          onchange={handleEditorChange}
-          uriPath={lspUriPath}
-          {filePath}
-          {folderPath}
-          lspEnabled={!isReadonly}
-          {gitDiffRevision}
-        />
-      {/key}
+      {@render editor(isMarkdown)}
     {/if}
   </div>
 </div>

@@ -3,6 +3,7 @@ import { refreshAllLspFolderEnvironments } from '$lib/features/editor/lsp/regist
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
 import type { SettingsDiagnostic } from '$lib/types/backend'
+import { getErrorMessage } from '$lib/utils/client-error'
 
 let diagnostics = $state<SettingsDiagnostic[]>([])
 let listenerBooted = false
@@ -34,7 +35,7 @@ export function ensureSettingsDiagnosticsListener(): void {
     })
     .catch((error) => {
       listenerBooted = false
-      notify.error('Settings diagnostics stopped updating', error instanceof Error ? error.message : String(error))
+      notify.error('Settings diagnostics stopped updating', getErrorMessage(error))
     })
 }
 

@@ -7,12 +7,14 @@
     class: className,
     children,
     ...rest
-  }: HTMLAttributes<HTMLElement> & {
+  }: HTMLAttributes<HTMLOListElement> & {
     class?: string
     children?: Snippet
   } = $props()
 </script>
 
-<nav aria-label="Breadcrumb" class={cn('min-w-0', className)} {...rest}>
-  {#if children}{@render children()}{/if}
+<nav aria-label="Breadcrumb" class="min-w-0">
+  <ol class={cn('flex min-w-0 items-center gap-1.5 text-sm text-muted', className)} {...rest}>
+    {#if children}{@render children()}{/if}
+  </ol>
 </nav>

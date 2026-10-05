@@ -10,7 +10,7 @@
   import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import type { FileDiff } from '$lib/types/backend'
 
   let {

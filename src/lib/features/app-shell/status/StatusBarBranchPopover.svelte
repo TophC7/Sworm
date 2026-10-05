@@ -12,11 +12,7 @@
   } from '$lib/components/ui/dropdown-menu'
   import { SearchInput } from '$lib/components/ui/input'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
-  import {
-    requestGitBranchesFocus,
-    setSidebarCollapsed,
-    setSidebarView
-  } from '$lib/features/app-shell/sidebar/state.svelte'
+  import { revealGitBranches } from '$lib/features/app-shell/sidebar/state.svelte'
   import { GitBranchIcon } from '$lib/icons/lucideExports'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
@@ -108,7 +104,7 @@
     try {
       await branches.safeCheckout(folderPath, name)
     } catch (e) {
-      if (branches.isDirtyCheckoutError(e)) {
+      if (e instanceof branches.DirtyCheckoutError) {
         checkoutTarget = name
         checkoutSummary = e.summary
         checkoutOpen = true
@@ -119,9 +115,7 @@
   }
 
   function viewAllBranches() {
-    setSidebarCollapsed(false)
-    setSidebarView('git')
-    requestGitBranchesFocus(folderPath)
+    revealGitBranches(folderPath)
     open = false
   }
 </script>
@@ -134,7 +128,7 @@
     >
       <GitBranchIcon size={10} />
       {gitSummary.branch}
-      <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} size="xs" twoColor />
+      <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} twoColor />
     </DropdownMenuTrigger>
 
     <DropdownMenuContent class="w-72 p-0" sideOffset={8} align="start">
@@ -155,7 +149,7 @@
             >
               <GitBranchIcon size={12} class="shrink-0 text-muted" />
               <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
-              <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} size="xs" twoColor />
+              <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} twoColor />
               <span class="shrink-0 text-2xs text-subtle">{timeAgo(branch.tip.date)}</span>
             </DropdownMenuItem>
           {/each}

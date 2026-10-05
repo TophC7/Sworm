@@ -15,7 +15,9 @@
   import { Input, Select, Textarea } from '$lib/components/ui/input'
   import { DetailPanel, DetailPanelRow } from '$lib/components/ui/detail-panel'
   import { CircleDot, GitBranchIcon, Hash, Layers, MessageSquare, SparklesIcon } from '$lib/icons/lucideExports'
-  import { addIssueComment, claimIssue, getIssueEpics, getIssues, updateIssue } from '$lib/features/issues/state.svelte'
+  import { addIssueComment, claimIssue, updateIssue } from '$lib/features/issues/state.svelte'
+  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { updateIssueTabTitle } from '$lib/features/workbench/state.svelte'
   import { openIssueTab } from '$lib/features/workbench/surfaces/issue/service.svelte'
   import {
@@ -30,17 +32,21 @@
   import MarkdownEditField from '$lib/features/issues/MarkdownEditField.svelte'
   import SectionHeading from '$lib/features/issues/SectionHeading.svelte'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
-  import type { Issue, IssueComment, IssueDetail, IssueEvent, IssueStatus } from '$lib/types/backend'
+  import type { Issue, IssueComment, IssueDetail, IssueEpic, IssueEvent, IssueStatus } from '$lib/types/backend'
   import type { IssueTab } from '$lib/features/workbench/model'
 
   let {
     detail,
     folderPath,
-    tab
+    tab,
+    parentIssue,
+    epicRef
   }: {
     detail: IssueDetail
     folderPath: string
     tab: IssueTab
+    parentIssue: Issue | null
+    epicRef: IssueEpic | null
   } = $props()
 
   type Draft = {
@@ -52,32 +58,23 @@
     tags: string
   }
 
-  // Snapshot once at mount; parent re-keys on id change so this stays
-  // synchronized with the active row without subscribing to detail.
-  const baseline = untrack<Draft>(() => ({
-    title: detail.issue.title,
-    description: detail.issue.description ?? '',
-    status: detail.issue.status,
-    priority: String(detail.issue.priority),
-    tags: detail.issue.tags.join(', ')
-  }))
-
-  const form = useDetailDraft<Draft>({
-    initial: baseline,
-    isDirty: (d, base) =>
-      d.title.trim() !== base.title ||
-      (d.description.trim() || null) !== (base.description.trim() || null) ||
-      d.status !== base.status ||
-      Number(d.priority) !== Number(base.priority) ||
-      parseTags(d.tags).join(',') !== detail.issue.tags.join(','),
-    save: async (drafts) => {
-      const next = await updateIssue(folderPath, tab.issueId, {
-        title: drafts.title.trim(),
-        description: drafts.description.trim() || null,
-        status: drafts.status,
-        priority: Number(drafts.priority),
-        tags: parseTags(drafts.tags)
-      })
+  const form = useDetailDraft({
+    seed: untrack<Draft>(() => ({
+      title: detail.issue.title,
+      description: detail.issue.description ?? '',
+      status: detail.issue.status,
+      priority: String(detail.issue.priority),
+      tags: detail.issue.tags.join(', ')
+    })),
+    normalize: (d) => ({
+      title: d.title.trim(),
+      description: d.description.trim(),
+      status: d.status,
+      priority: Number(d.priority),
+      tags: parseTags(d.tags)
+    }),
+    save: async (patch) => {
+      const next = await updateIssue(folderPath, tab.issueId, patch)
       if (next.title !== tab.title) {
         updateIssueTabTitle(folderPath, tab.issueId, next.title)
       }
@@ -85,13 +82,6 @@
   })
 
   let commentDraft = $state('')
-
-  let allIssues = $derived(getIssues(folderPath))
-  let allEpics = $derived(getIssueEpics(folderPath))
-  let parentIssue = $derived(
-    detail.issue.parentIssueId ? (allIssues.find((i) => i.id === detail.issue.parentIssueId) ?? null) : null
-  )
-  let epicRef = $derived(detail.issue.epicId ? (allEpics.find((e) => e.id === detail.issue.epicId) ?? null) : null)
 
   // Merge audit events with comments into a single chronological feed.
   // Backend scopes events by entity_id so comment/dependency events
@@ -127,8 +117,20 @@
 
   async function postComment() {
     if (!commentDraft.trim()) return
-    await addIssueComment(folderPath, tab.issueId, commentDraft)
-    commentDraft = ''
+    try {
+      await addIssueComment(folderPath, tab.issueId, commentDraft)
+      commentDraft = ''
+    } catch (error) {
+      notify.error('Post note failed', getErrorMessage(error))
+    }
+  }
+
+  async function claim() {
+    try {
+      await claimIssue(folderPath, tab.issueId)
+    } catch (error) {
+      notify.error('Claim failed', getErrorMessage(error))
+    }
   }
 </script>
 
@@ -241,7 +243,7 @@
     <aside class="w-full @3xl:w-72 @3xl:shrink-0">
       <DetailPanel>
         <DetailPanelRow label="Status">
-          <Select bind:value={form.drafts.status} class="w-full">
+          <Select bind:value={form.drafts.status}>
             {#each ALL_STATUSES as status (status)}
               <option value={status}>{statusLabel(status)}</option>
             {/each}
@@ -252,7 +254,7 @@
         </DetailPanelRow>
 
         <DetailPanelRow label="Priority">
-          <Select bind:value={form.drafts.priority} class="w-full">
+          <Select bind:value={form.drafts.priority}>
             {#each ALL_PRIORITIES as p (p)}
               <option value={String(p)}>P{p}</option>
             {/each}
@@ -320,7 +322,7 @@
         <Button size="sm" variant="accent" onclick={form.save} disabled={form.saving || !form.dirty}>
           {form.saving ? 'Saving…' : 'Save'}
         </Button>
-        <Button size="sm" onclick={() => claimIssue(folderPath, tab.issueId)}>Claim</Button>
+        <Button size="sm" onclick={claim}>Claim</Button>
       </div>
     </aside>
   </div>

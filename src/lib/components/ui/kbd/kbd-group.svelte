@@ -1,7 +1,7 @@
 <!--
   @component
-  KbdGroup — horizontal container for a sequence of `<Kbd>` chips that
-  represent a single combo. Inserts a faint "+" between each pair.
+  KbdGroup — horizontal container for supplied `<Kbd>` chips.
+  Callers provide the keys and any separators between them.
 -->
 
 <script lang="ts">

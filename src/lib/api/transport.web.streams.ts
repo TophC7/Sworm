@@ -8,12 +8,11 @@ import type {
   TaskStreamRequest
 } from './transport'
 import { FileAssembly, MAX_FILE_BYTES, type FileBytes, type FileReadRequest } from './transport.web.files'
-import { MAX_FRAME_BYTES, normalizeWireError } from './transport.web.protocol'
+import { DISCONNECTED, MAX_FRAME_BYTES, normalizeWireError, OUTCOME_UNKNOWN } from './transport.web.protocol'
 
 const MAX_OPEN_BYTES = 64 * 1024
-const MAX_FILE_CHUNK_BYTES = 1024 * 1024
 const MAX_BUFFERED_BYTES = MAX_FRAME_BYTES
-const disconnected = () => new Error('Disconnected from server; operation outcome may be unknown')
+const disconnected = () => new Error(OUTCOME_UNKNOWN)
 const cancelled = () => new Error('Invalid argument: File read cancelled')
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -410,7 +409,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
 
   function openLsp(request: LspStreamRequest, sinks: { onEvent: (event: LspEvent) => void }): StreamHandle<void> {
     const { sessionId, serverDefinitionId } = request.params
-    if (disposed) throw new Error('Disconnected from server')
+    if (disposed) throw new Error(DISCONNECTED)
     if (lsps.has(sessionId)) throw new Error('LSP session id already in use')
     stoppedLsps.delete(sessionId)
     const frame = Promise.withResolvers<void>()
@@ -541,7 +540,6 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
           if (owner.cancelled || owner.done) return
           if (owner.assembly?.isComplete) throw new Error('Unexpected file frame after completion')
           if (tag === 1) {
-            if (body.length > MAX_FILE_CHUNK_BYTES) throw new Error('File read chunk exceeds protocol limit')
             const assembly = (owner.assembly ??= new FileAssembly(owner.size))
             assembly.append(body)
             options.emitLocal('file-read-progress', {
@@ -605,7 +603,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
       return Promise.reject(new Error('Invalid argument: Invalid file-read request id'))
     }
     if (files.has(requestId)) return Promise.reject(new Error('File-read request id already in use'))
-    if (disposed || currentGeneration === undefined) return Promise.reject(new Error('Disconnected from server'))
+    if (disposed || currentGeneration === undefined) return Promise.reject(new Error(DISCONNECTED))
     if (!Number.isSafeInteger(size) || (size as number) < 0 || (size as number) > MAX_FILE_BYTES) {
       return Promise.reject(new Error('Invalid argument: Invalid approved file size'))
     }
@@ -634,7 +632,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
   }
 
   function call<T>(method: string, params: object): Promise<T> | undefined {
-    if (disposed) return Promise.reject(new Error('Disconnected from server'))
+    if (disposed) return Promise.reject(new Error(DISCONNECTED))
     if (method === 'file_read_stream')
       return readFile(params).then(({ bytes, version }): FileContent => ({
         content: fileTextDecoder.decode(bytes),
@@ -693,7 +691,7 @@ export function createWebStreams(options: WebStreamsOptions): WebStreams {
     request: SessionStreamRequest | TaskStreamRequest | LspStreamRequest,
     sinks: PtySinks | { onEvent: (event: LspEvent) => void }
   ): StreamHandle<SessionStartInfo | void> {
-    if (disposed) throw new Error('Disconnected from server')
+    if (disposed) throw new Error(DISCONNECTED)
     if (request.method === 'lsp_start') return openLsp(request, sinks as { onEvent: (event: LspEvent) => void })
     return openPty(request, sinks as PtySinks)
   }

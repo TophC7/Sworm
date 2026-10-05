@@ -5,18 +5,18 @@
 
 <script lang="ts">
   import type { FileDiff } from '$lib/types/backend'
-  import type { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import type { DiffModelStore } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
   import {
     openCommitSnapshot,
-    openCurrentFileFromDiff,
     openStashSnapshot
   } from '$lib/features/workbench/surfaces/diff/service.svelte'
+  import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
   import MonacoDiffBody from '$lib/features/editor/renderers/monaco/diff/MonacoDiffBody.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { Separator } from '$lib/components/ui/separator'
   import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
-  import { ChevronRight, ChevronsDownUp, ChevronsUpDown, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
-  import { gitStatusColor, gitStatusDisplay, gitStatusLabel } from '$lib/features/git/gitStatus'
+  import { AlertTriangle, ChevronRight, ChevronsDownUp, ChevronsUpDown, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
+  import { gitStatusMeta } from '$lib/features/git/gitStatus'
 
   interface Props {
     file: FileDiff
@@ -46,9 +46,7 @@
     onToggle
   }: Props = $props()
 
-  let statusLetter = $derived(gitStatusDisplay(file.status))
-  let statusColor = $derived(gitStatusColor(file.status))
-  let statusLabel = $derived(gitStatusLabel(file.status))
+  let status = $derived(gitStatusMeta(file.status))
   let binary = $derived.by(() => {
     void store.version
     return store.get(file.path)?.binary ?? false
@@ -56,7 +54,7 @@
 
   function openInEditor(filePath: string) {
     if (!folderPath) return
-    openCurrentFileFromDiff(folderPath, filePath)
+    openTextFile(folderPath, filePath)
   }
 
   function viewAtCommit(filePath: string) {
@@ -124,7 +122,7 @@
       onclick={() => onToggle(file.path)}
     >
       <ChevronRight size={12} class="shrink-0 text-muted transition-transform {expanded ? 'rotate-90' : ''}" />
-      <span class="text-2xs font-bold {statusColor}" title={statusLabel}>{statusLetter}</span>
+      <span class="text-2xs font-bold {status.color}" title={status.label}>{status.letter}</span>
       <FileIcon filename={file.path} size={13} />
       <span class="min-w-0 truncate font-mono text-sm text-fg">
         {#if file.oldPath}<span class="text-muted">{file.oldPath} → </span>{/if}{file.path}
@@ -173,6 +171,11 @@
       <div class="px-4 py-6 text-center text-sm text-subtle">Loading diff...</div>
     {:else if !storeReady}
       <div class="px-4 py-6 text-center text-sm text-subtle">Loading editor...</div>
+    {:else if binary}
+      <div class="flex items-center gap-2 px-4 py-6 text-sm text-subtle">
+        <AlertTriangle size={14} class="shrink-0 text-muted" />
+        <span>Binary file; content not shown</span>
+      </div>
     {:else if store.get(file.path)}
       <MonacoDiffBody
         path={file.path}

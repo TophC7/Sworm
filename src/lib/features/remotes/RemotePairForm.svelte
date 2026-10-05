@@ -7,13 +7,12 @@
 -->
 
 <script lang="ts">
-  import { requireNative } from '$lib/platform'
+  import { platform, requireNative } from '$lib/platform'
   import { Alert } from '$lib/components/ui/alert'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { notify } from '$lib/features/notifications/state.svelte'
   import type { RemoteSettings } from '$lib/types/backend'
-  import { copyToClipboard } from '$lib/utils/clipboard'
   import { pairCommand, pairForm, parsePairLink } from './state.svelte'
 
   let { remotes }: { remotes: Record<string, RemoteSettings> } = $props()
@@ -72,7 +71,7 @@
 
   async function copy(value: string): Promise<void> {
     try {
-      await copyToClipboard(value)
+      await platform.clipboard.writeText(value)
     } catch {
       error = 'Could not copy to the clipboard.'
     }

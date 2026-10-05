@@ -8,18 +8,14 @@
 <script lang="ts">
   import { TREE_INDENT_STEP_PX } from './tree-indent'
 
-  let {
-    depth,
-    leadingPx = 16
-  }: {
-    depth: number
-    leadingPx?: number
-  } = $props()
+  const LEADING_PX = 16
+
+  let { depth }: { depth: number } = $props()
 </script>
 
 {#each Array(depth) as _, i (i)}
   <span
     class="pointer-events-none absolute top-0 bottom-0 w-px bg-subtle/25"
-    style="left: {i * TREE_INDENT_STEP_PX + leadingPx}px"
+    style="left: {i * TREE_INDENT_STEP_PX + LEADING_PX}px"
   ></span>
 {/each}

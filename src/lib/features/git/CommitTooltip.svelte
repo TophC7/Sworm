@@ -12,7 +12,7 @@
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
   import { Check, ClockIcon, CopyIcon, GitCommitIcon } from '$lib/icons/lucideExports'
   import { IconButton } from '$lib/components/ui/button'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { platform } from '$lib/platform'
 
   let {
     commit,
@@ -57,7 +57,7 @@
   let filteredRefs = $derived(visibleRefs(commit.refs))
 
   async function copyHash() {
-    await copyToClipboard(commit.hash)
+    await platform.clipboard.writeText(commit.hash)
     copied = true
     setTimeout(() => (copied = false), 1500)
   }

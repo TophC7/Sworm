@@ -85,7 +85,7 @@ Do not instrument every candidate at once. One hypothesis, one set of probes.
 For any UI / lifecycle / IPC fix, before declaring done, explicitly enumerate adjacent states:
 
 - **Tabs / panes**: fresh workspace, empty state, single tab, multi-tab, split pane, drag-reordered.
-- **Focus / modal**: dialog open, dialog nested, dialog dismissed via Esc vs. backdrop, ConfirmDialog path.
+- **Focus / modal**: dialog open, dialog nested, dialog dismissed via Esc vs. backdrop, queued ConfirmHost requests and busy mutations.
 - **Project-scoped commands**: no project open, project open but no session, multiple projects.
 - **Async / IPC**: success path, backend error, timeout, rapid repeat invocation.
 

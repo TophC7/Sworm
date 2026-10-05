@@ -33,10 +33,22 @@
   @param class Tailwind / utility classes merged onto the wrapper.
 -->
 
+<script lang="ts" module>
+  // Nearest ancestor owning the vertical viewport; avoids passing it through row layers.
+  function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+    let current = el?.parentElement ?? null
+    while (current) {
+      const overflowY = getComputedStyle(current).overflowY
+      if (overflowY === 'auto' || overflowY === 'scroll') return current
+      current = current.parentElement
+    }
+    return null
+  }
+</script>
+
 <script lang="ts" generics="T">
   import type { Snippet } from 'svelte'
   import { cn } from '$lib/utils/cn'
-  import { findScrollParent } from '$lib/utils/dom'
 
   let {
     items,

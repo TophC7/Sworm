@@ -1,20 +1,14 @@
-import { backend } from '$lib/api/backend'
-import { runGitAction } from '$lib/features/git/state.svelte'
-import {
-  lineChangesOutsideRanges,
-  selectedLineChanges,
-  type LineChange,
-  type LineSelectionRange
-} from '$lib/features/git/lineChanges'
+import type { LineChange, LineSelectionRange } from '$lib/features/git/lineChanges'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import {
-  indexContentForStatus,
+  diffLineChangesForAction,
+  stageDiffIndexContent,
   runDiffGitLineAction,
   titleForDiffGitLineAction,
   type DiffGitLineAction
-} from '$lib/features/workbench/surfaces/diff/diffGitLineActions'
-import type { DiffModelEntry, DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+} from '$lib/features/git/diffLineActions'
+import type { DiffModelEntry, DiffModelStore } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
 import type { GitStatusKind } from '$lib/types/backend'
 import { Codicon } from 'monaco-editor/esm/vs/base/common/codicons.js'
 import { MenuId, MenuRegistry } from 'monaco-editor/esm/vs/platform/actions/common/actions.js'
@@ -98,19 +92,6 @@ function selectedRangesFromMapping(
   return range ? [range] : []
 }
 
-async function stageToolbarContent(
-  registration: DiffGutterRegistration,
-  entry: DiffModelEntry,
-  content: string
-): Promise<void> {
-  await runGitAction(
-    registration.folderPath,
-    (path) =>
-      backend.git.stageFileContent(path, registration.filePath, indexContentForStatus(registration.status, content)),
-    { scope: 'summary' }
-  )
-}
-
 async function runToolbarAction(
   action: DiffGitLineAction,
   context: MonacoDiffToolbarContext | undefined,
@@ -124,30 +105,25 @@ async function runToolbarAction(
 
   try {
     if (action === 'stage' && typeof context?.originalWithModifiedChanges === 'string') {
-      await stageToolbarContent(registration, entry, context.originalWithModifiedChanges)
+      await stageDiffIndexContent(registration, context.originalWithModifiedChanges)
       return
     }
 
     const allChanges = registration.getLineChanges()
     const ranges = selectedRangesFromMapping(context, entry)
 
+    if (action === 'revert' && ranges.length === 0) return
+    const selected = diffLineChangesForAction(
+      action,
+      allChanges,
+      ranges,
+      entry.modified?.getLineCount() ?? 1,
+      entry
+    )
     if (action === 'revert') {
-      if (ranges.length === 0) return
-      const remaining = lineChangesOutsideRanges(allChanges, ranges, entry.modified?.getLineCount() ?? 1, {
-        originalContent: entry.originalContent,
-        modifiedContent: entry.modifiedContent
-      })
-      await runDiffGitLineAction(registration, entry, action, remaining)
+      await runDiffGitLineAction(registration, entry, action, selected)
       return
     }
-
-    const selected =
-      ranges.length > 0
-        ? selectedLineChanges(allChanges, ranges, entry.modified?.getLineCount() ?? 1, {
-            originalContent: entry.originalContent,
-            modifiedContent: entry.modifiedContent
-          })
-        : []
     const fallback = scope === 'hunk' ? lineChangeFromMapping(context) : null
     await runDiffGitLineAction(registration, entry, action, selected.length > 0 ? selected : fallback ? [fallback] : [])
   } catch (error) {

@@ -6,24 +6,26 @@
 
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { IconButton } from '$lib/components/ui/button'
+  import { Button, IconButton } from '$lib/components/ui/button'
   import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import { Layers, RefreshCwIcon } from '$lib/icons/lucideExports'
-  import { getEpicDetail, openEpicDetail } from '$lib/features/issues/state.svelte'
+  import { getEpicDetail, reloadEpicDetail, watchEpicDetail } from '$lib/features/issues/state.svelte'
   import EpicDetailForm from './EpicDetailForm.svelte'
   import type { EpicTab } from '$lib/features/workbench/model'
 
   let { tab, folderPath }: { tab: EpicTab; folderPath: string } = $props()
 
-  let detail = $derived(getEpicDetail(folderPath, tab.epicId))
+  let slot = $derived(getEpicDetail(folderPath, tab.epicId))
+  let detail = $derived(slot?.value ?? null)
 
   $effect(() => {
     const id = tab.epicId
-    untrack(() => void openEpicDetail(folderPath, id))
+    const folder = folderPath
+    return untrack(() => watchEpicDetail(folder, id))
   })
 
   async function refresh() {
-    await openEpicDetail(folderPath, tab.epicId)
+    await reloadEpicDetail(folderPath, tab.epicId)
   }
 </script>
 
@@ -41,8 +43,16 @@
     {/snippet}
   </PanelHeader>
 
+  {#if slot?.error}
+    <div role="alert" class="flex items-center justify-between gap-3 border-b border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger">
+      <span>{slot.error}</span>
+      <Button size="sm" onclick={refresh}>Refresh</Button>
+    </div>
+  {/if}
   {#if !detail}
-    <div class="flex flex-1 items-center justify-center text-sm text-subtle">Loading epic…</div>
+    {#if !slot?.error}
+      <div class="flex flex-1 items-center justify-center text-sm text-subtle">Loading epic…</div>
+    {/if}
   {:else}
     {#key detail.id}
       <EpicDetailForm {detail} {folderPath} {tab} />

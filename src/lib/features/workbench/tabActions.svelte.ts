@@ -17,7 +17,7 @@ import {
   isTextSurfaceDirty,
   setTextBaseVersion
 } from '$lib/features/workbench/surfaces/text/service.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 
 /**
  * Close a specific tab with full safety checks:
@@ -58,7 +58,7 @@ export async function closeTabWithChecks(tabId: TabId): Promise<boolean> {
     // Stop even a detached or completed run to release its retained state.
     // A failed stop still reports a toast, but retains the close policy.
     try {
-      await stopTaskProcess(tab.runId)
+      await stopTaskProcess(tab)
     } catch (err) {
       notify.error('Stop task failed', getErrorMessage(err))
     }

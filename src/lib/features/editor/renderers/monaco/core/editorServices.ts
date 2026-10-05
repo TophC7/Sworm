@@ -1,12 +1,7 @@
 import { platform } from '$lib/platform'
 import { StandaloneServices } from 'monaco-editor/esm/vs/editor/standalone/browser/standaloneServices.js'
 
-type EditorOverrides = import('monaco-editor').editor.IEditorOverrideServices
 type Uri = import('monaco-editor').Uri
-
-const editorServices = StandaloneServices as typeof StandaloneServices & {
-  initialize(overrides: EditorOverrides): unknown
-}
 
 const typedText = new Map<string, string>()
 let findText = ''
@@ -55,5 +50,5 @@ const clipboardService = {
 export function initializeMonacoEditorServices(): void {
   // Monaco's default service primes clipboard writes on every click/keydown.
   // Platform clipboard access does not need Monaco's gesture priming.
-  editorServices.initialize({ clipboardService })
+  StandaloneServices.initialize({ clipboardService })
 }

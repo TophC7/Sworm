@@ -1,17 +1,12 @@
 import { resolveProjectFile } from '$lib/utils/paths'
-import type { AttachMode, FilePasteMapping, LspEvent, SessionStartInfo } from '$lib/types/backend'
-import type {
-  HostTransport,
-  LspStreamRequest,
-  PtySinks,
-  SessionStreamRequest,
-  StreamHandle,
-  TaskStreamRequest
-} from './transport'
+import type { AttachMode, FilePasteMapping } from '$lib/types/backend'
+import type { HostTransport } from './transport'
 import {
   decodeControlMessage,
+  DISCONNECTED,
   MAX_FRAME_BYTES,
   normalizeWireError,
+  OUTCOME_UNKNOWN,
   toWireParams,
   utf8ByteLength
 } from './transport.web.protocol'
@@ -26,14 +21,14 @@ export interface WebHandshakeError extends Error {
 }
 
 export interface WebHostTransportOptions {
-  url: URL
+  origin: string | URL
   workbenchId: string
   /** Sent on the first connection attempt only; never replayed by reconnect backoff. */
   takeover?: boolean
   /** Terminal states fire once, after every call/stream/waiter has been rejected; `error` carries its cause. */
   onConnectionState(state: WebConnectionState, error?: WebHandshakeError): void
-  onReconnected?(): void
-  onLspDisconnected?(serverDefinitionId: string): void
+  onReconnected(): void
+  onLspDisconnected(serverDefinitionId: string): void
 }
 
 export interface WebHostTransport extends HostTransport {
@@ -59,8 +54,6 @@ type FolderIntent = {
   queue: Promise<void>
 }
 
-const DISCONNECTED = 'Disconnected from server'
-const OUTCOME_UNKNOWN = 'Disconnected from server; operation outcome may be unknown'
 const MAX_PENDING = 256
 const reconnectDelays = [1000, 2000, 4000, 8000, 16000, 30000]
 const eventNames: Record<string, string> = {
@@ -75,7 +68,7 @@ const eventNames: Record<string, string> = {
 }
 
 export function createWebHostTransport(options: WebHostTransportOptions): WebHostTransport {
-  const controlUrl = new URL('/ws', options.url)
+  const controlUrl = new URL('/ws', options.origin)
   controlUrl.protocol = controlUrl.protocol === 'https:' ? 'wss:' : 'ws:'
   const streamUrl = new URL('/ws/stream', controlUrl)
   const listeners = new Map<string, Set<(payload: unknown) => void>>()
@@ -170,7 +163,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       return { socket: child, generation: connection.generation }
     },
     onLspDisconnected(id: string) {
-      if (!disposed) options.onLspDisconnected?.(id)
+      if (!disposed) options.onLspDisconnected(id)
     },
     emitLocal
   })
@@ -304,7 +297,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
       )
       return
     }
-    if (reconnected) options.onReconnected?.()
+    if (reconnected) options.onReconnected()
   }
 
   function retry(): void {
@@ -553,27 +546,14 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     return result
   }
 
-  function openStream(request: SessionStreamRequest, sinks: PtySinks): StreamHandle<SessionStartInfo>
-  function openStream(request: TaskStreamRequest, sinks: PtySinks): StreamHandle<void>
-  function openStream(request: LspStreamRequest, sinks: { onEvent: (event: LspEvent) => void }): StreamHandle<void>
-  function openStream(
-    request: SessionStreamRequest | TaskStreamRequest | LspStreamRequest,
-    sinks: PtySinks | { onEvent: (event: LspEvent) => void }
-  ): StreamHandle<SessionStartInfo | void> {
-    if (request.method === 'lsp_start')
-      return streams.openStream(request, sinks as { onEvent: (event: LspEvent) => void })
-    if (request.method === 'session_start') return streams.openStream(request, sinks as PtySinks)
-    return streams.openStream(request, sinks as PtySinks)
-  }
-
   options.onConnectionState('connecting')
   connect()
   return {
     ready,
     call,
     subscribe,
-    openStream,
-    readFileBytes: (request) => streams.readFileBytes(request),
+    openStream: streams.openStream,
+    readFileBytes: streams.readFileBytes,
     dispose() {
       shutdown(lostError(OUTCOME_UNKNOWN), new Error(DISCONNECTED))
     }

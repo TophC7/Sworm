@@ -1,1 +1,1 @@
-export { default as ProgressBar, type ProgressBarSize, progressBarVariants } from './progress-bar.svelte'
+export { default as ProgressBar } from './progress-bar.svelte'

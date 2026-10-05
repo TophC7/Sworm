@@ -9,7 +9,6 @@
 
 <script lang="ts">
   import { untrack } from 'svelte'
-  import DiffBinaryPlaceholder from '$lib/features/workbench/surfaces/diff/DiffBinaryPlaceholder.svelte'
   import { getDiffEditorPool, type PoolRef } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { useDiffScroll } from '$lib/features/editor/renderers/monaco/diff/scrollContext.svelte'
   import {
@@ -17,22 +16,21 @@
     SWORM_DIFF_GIT_ACTIONS_CONTEXT,
     SWORM_DIFF_STAGED_CONTEXT
   } from '$lib/features/editor/renderers/monaco/diff/gitGutterMenu'
-  import type { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import type { DiffModelStore } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
   import {
+    diffLineChangesForAction,
     runDiffGitLineAction,
     titleForDiffGitLineAction,
     type DiffGitLineAction
-  } from '$lib/features/workbench/surfaces/diff/diffGitLineActions'
+  } from '$lib/features/git/diffLineActions'
   import {
     lineChangeIntersectsRanges,
-    lineChangesOutsideRanges,
-    selectedLineChanges,
     toLineSelectionRanges,
     type LineChange,
     type LineSelectionRange
   } from '$lib/features/git/lineChanges'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import type { GitStatusKind } from '$lib/types/backend'
 
   type IDiffEditorViewState = import('monaco-editor').editor.IDiffEditorViewState
@@ -220,25 +218,15 @@
     const modifiedLineCount = model?.getLineCount() ?? 1
     const ranges = selectionRanges(modifiedEditor)
     const entry = store.get(path)
-    const content = entry
-      ? {
-          originalContent: entry.originalContent,
-          modifiedContent: entry.modifiedContent
-        }
-      : undefined
-
-    if (action === 'revert') {
-      if (!hasSelectedChanges(ranges, modifiedLineCount)) {
-        notify.info('No changes selected', 'The selected range does not contain a diff hunk.')
-        return
-      }
-      const remaining = lineChangesOutsideRanges(currentLineChanges, ranges, modifiedLineCount, content)
-      await runLineAction(action, remaining)
+    if (action === 'revert' && !hasSelectedChanges(ranges, modifiedLineCount)) {
+      notify.info('No changes selected', 'The selected range does not contain a diff hunk.')
       return
     }
 
-    const selected = selectedLineChanges(currentLineChanges, ranges, modifiedLineCount, content)
-    await runLineAction(action, selected)
+    await runLineAction(
+      action,
+      diffLineChangesForAction(action, currentLineChanges, ranges, modifiedLineCount, entry ?? undefined)
+    )
   }
 
   // Flipping the hideUnchanged prop OR clicking the row action while
@@ -282,12 +270,6 @@
     )
     io.observe(host)
     return () => io.disconnect()
-  })
-
-  // Binary classification arrives asynchronously, after the first body render.
-  let binary = $derived.by(() => {
-    void store.version
-    return store.get(path)?.binary ?? false
   })
 
   // Per-row signature gate over the store's global broadcast counter.
@@ -586,8 +568,4 @@
   })
 </script>
 
-{#if binary}
-  <DiffBinaryPlaceholder reason="Binary file; content not shown" />
-{:else}
-  <div bind:this={host} class="relative w-full" style:height="{height}px"></div>
-{/if}
+<div bind:this={host} class="relative w-full" style:height="{height}px"></div>

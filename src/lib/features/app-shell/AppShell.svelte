@@ -11,23 +11,19 @@
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
   import Browser from '$lib/features/browser/Browser.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
   import { loadSettings } from '$lib/features/settings/state/settings.svelte'
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
   import { TooltipProvider } from '$lib/components/ui/tooltip'
-  import { getWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
+  import { initWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
-  import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/setup.svelte'
+  import { setupGlobalShortcuts } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
   import { initProjectSchemas } from '$lib/features/project-config/bootstrap'
-  import {
-    getDirtyTextSurfaceCount,
-    hasAnyDirtyTextSurfaces
-  } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { flushWorkbench } from '$lib/features/workbench/persistence'
-  import { getActiveSessionTabId, requestFocusTab } from '$lib/features/workbench/state.svelte'
+  import { confirmDiscardDirtyText } from '$lib/features/workbench/surfaces/text/service.svelte'
+  import { flushWorkbench, getActiveSessionTabId, requestFocusTab } from '$lib/features/workbench/state.svelte'
   import { initTransferService } from '$lib/features/workbench/transferService.svelte'
   import type { Snippet } from 'svelte'
   import { initDeepLinks } from '$lib/features/remotes/deepLink.svelte'
@@ -38,7 +34,7 @@
   //
   // Two classes of problem this solves:
   //   1. Tab switches. When the user moves between sessions, a
-  //      different SessionTerminal becomes visible but the previously
+  //      different SessionSurface becomes visible but the previously
   //      clicked terminal keeps real DOM focus. Visible-but-unfocused
   //      xterm means Shift+Tab falls through to the browser's focus-
   //      navigation instead of reaching the PTY — feels like "terminal
@@ -67,20 +63,20 @@
   })
 
   onMount(() => {
-    const cleanupDeepLinks = platform.capabilities.deepLinks ? initDeepLinks() : undefined
     const native = platform.native
-    const workbenchId = platform.workbench.id
+    const cleanupDeepLinks = native ? initDeepLinks() : undefined
+    const cleanupWindowControls = initWindowControls()
     let cleanupTransfer: (() => void) | undefined
     let disposed = false
     const listeners = [
       backend.settings.onChanged((event) => {
         if (event.layer === 'global') void loadSettings()
       }),
-      backend.issues.onChanged(({ folderPath }) => refreshIssuesForFolder(folderPath)),
+      backend.issues.onChanged(({ folderPath }) => void refreshIssuesForFolder(folderPath)),
       backend.nix.onChanged(({ folderPath }) => refreshNixForFolder(folderPath)),
       ...(native ? [native.window.onFocusTab((payload) => requestFocusTab(payload.tabId, payload.reveal))] : [])
     ]
-    if (platform.capabilities.tabTransfer) {
+    if (native) {
       void initTransferService().then((cleanup) => {
         if (disposed) cleanup()
         else cleanupTransfer = cleanup
@@ -91,19 +87,9 @@
     const unlisten = native?.window.onCloseRequested(async (event) => {
       // Guard before any teardown — once we've started flushing the
       // user has effectively committed to closing.
-      if (hasAnyDirtyTextSurfaces()) {
-        const count = getDirtyTextSurfaceCount()
-        const noun = count === 1 ? 'file' : 'files'
-        const proceed = await confirmAsync({
-          title: 'Unsaved changes',
-          message: `You have ${count} unsaved ${noun}. Quit and lose changes?`,
-          confirmLabel: 'Quit',
-          cancelLabel: 'Keep editing'
-        })
-        if (!proceed) {
-          event.preventDefault()
-          return
-        }
+      if (!(await confirmDiscardDirtyText('Quit'))) {
+        event.preventDefault()
+        return
       }
 
       // Persist pending workbench mutations before tearing down — the
@@ -111,7 +97,7 @@
       // failed write would silently lose the layout, so let the user
       // choose between quitting anyway and keeping the app open.
       try {
-        await flushWorkbench(workbenchId)
+        await flushWorkbench()
       } catch (error) {
         const proceed = await confirmAsync({
           title: 'Could not save workbench layout',
@@ -124,17 +110,9 @@
           return
         }
       }
-      sessionRegistry.disposeAll()
-      taskRegistry.disposeAll()
+      sessionRegistry.releaseAll()
+      taskRegistry.releaseAll()
     })
-
-    // Restore system decorations if user previously chose that
-    const wc = getWindowControls()
-    if (native && wc.useSystemDecorations) {
-      void native.window.setDecorations(true).catch((error) => {
-        console.warn('Failed to restore system window decorations:', error)
-      })
-    }
 
     const cleanupShortcuts = setupGlobalShortcuts()
 
@@ -150,6 +128,7 @@
       disposed = true
       cleanupDeepLinks?.()
       cleanupTransfer?.()
+      cleanupWindowControls()
       cleanupShortcuts()
       for (const listener of listeners) listener.then((cleanup) => cleanup()).catch(() => {})
       unlisten?.then((cleanup) => cleanup()).catch(() => {})

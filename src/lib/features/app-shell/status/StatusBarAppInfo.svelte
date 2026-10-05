@@ -13,9 +13,10 @@
   import { getTabs } from '$lib/features/workbench/state.svelte'
   import { isProcessLive } from '$lib/features/workbench/model'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import type { AppRuntimeInfo } from '$lib/types/backend'
   import { platform } from '$lib/platform'
+  import MaskIcon from '$lib/icons/MaskIcon.svelte'
 
   const REPOSITORY_URL = 'https://github.com/tophc7/sworm'
 
@@ -111,14 +112,7 @@
         <div class="text-xs text-muted">Agentic Development Environment</div>
       </div>
       <IconButton ariaLabel="Open Sworm on GitHub" size="md" class="shrink-0" onclick={() => void openRepository()}>
-        <span
-          class="size-5 bg-current"
-          style:mask-image={`url("${githubIconUrl}")`}
-          style:mask-position="center"
-          style:mask-repeat="no-repeat"
-          style:mask-size="contain"
-          aria-hidden="true"
-        ></span>
+        <MaskIcon src={githubIconUrl} width={20} />
       </IconButton>
     </div>
 

@@ -1,38 +1,20 @@
-interface DelayedHoverController {
-  arm: () => void
-  cancel: () => void
-}
-
-export function createDelayedHover(delayMs: number, onTrigger: () => void): DelayedHoverController {
-  let timer: number | null = null
-
-  const cancel = () => {
-    if (timer === null) return
-    window.clearTimeout(timer)
-    timer = null
-  }
-
-  const arm = () => {
-    if (timer !== null) return
-    timer = window.setTimeout(() => {
-      timer = null
-      onTrigger()
-    }, delayMs)
-  }
-
-  return { arm, cancel }
-}
-
 export function delayedDragHover(delayMs: number, onTrigger: () => void) {
   return (element: HTMLElement) => {
-    const controller = createDelayedHover(delayMs, onTrigger)
+    let timer: number | null = null
+
+    const onCancel = () => {
+      if (timer === null) return
+      window.clearTimeout(timer)
+      timer = null
+    }
 
     const onDragOver = (event: DragEvent) => {
       event.preventDefault()
-      controller.arm()
-    }
-    const onCancel = () => {
-      controller.cancel()
+      if (timer !== null) return
+      timer = window.setTimeout(() => {
+        timer = null
+        onTrigger()
+      }, delayMs)
     }
 
     element.addEventListener('dragover', onDragOver)
@@ -41,7 +23,7 @@ export function delayedDragHover(delayMs: number, onTrigger: () => void) {
     element.addEventListener('dragend', onCancel)
 
     return () => {
-      controller.cancel()
+      onCancel()
       element.removeEventListener('dragover', onDragOver)
       element.removeEventListener('dragleave', onCancel)
       element.removeEventListener('drop', onCancel)

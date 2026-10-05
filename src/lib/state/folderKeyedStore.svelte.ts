@@ -12,6 +12,8 @@ interface Poller {
 export function createFolderKeyedStore<T extends object>() {
   let entries = $state<Map<string, T>>(new Map())
   const pollers = new Map<string, Poller>()
+  // Retain generations after deletion so reopening cannot accept stale work.
+  const generations = new Map<string, number>()
 
   function get(folderPath: string): T | undefined {
     return entries.get(folderPath)
@@ -21,10 +23,6 @@ export function createFolderKeyedStore<T extends object>() {
     return entries.has(folderPath)
   }
 
-  function keys(): IterableIterator<string> {
-    return entries.keys()
-  }
-
   function set(folderPath: string, entry: T) {
     if (entries.get(folderPath) === entry) return
     const next = new Map(entries)
@@ -32,22 +30,16 @@ export function createFolderKeyedStore<T extends object>() {
     entries = next
   }
 
-  function update(folderPath: string, updater: (current: T) => T) {
-    const current = entries.get(folderPath)
-    if (!current) return
-    const next = updater(current)
-    if (next === current) return
-    set(folderPath, next)
+  function generation(folderPath: string): number {
+    return generations.get(folderPath) ?? 0
   }
 
   function patch(folderPath: string, patch: Partial<T>) {
-    update(folderPath, (current) => {
-      const keys = Object.keys(patch) as (keyof T)[]
-      if (keys.every((key) => Object.is(current[key], patch[key]))) {
-        return current
-      }
-      return { ...current, ...patch }
-    })
+    const current = entries.get(folderPath)
+    if (!current) return
+    const keys = Object.keys(patch) as (keyof T)[]
+    if (keys.every((key) => Object.is(current[key], patch[key]))) return
+    set(folderPath, { ...current, ...patch })
   }
 
   function startPolling(folderPath: string, options: FolderPollOptions) {
@@ -76,8 +68,9 @@ export function createFolderKeyedStore<T extends object>() {
     pollers.delete(folderPath)
   }
 
-  /** Drop the entry and stop every poller for `folderPath`. No-op when unknown. */
+  /** Fence pending work, drop the entry and stop every poller for `folderPath`. */
   function del(folderPath: string) {
+    generations.set(folderPath, generation(folderPath) + 1)
     stopAllPolling(folderPath)
     if (!entries.has(folderPath)) return
     const next = new Map(entries)
@@ -85,25 +78,15 @@ export function createFolderKeyedStore<T extends object>() {
     entries = next
   }
 
-  /** Drop every entry and stop every poller. */
-  function clear() {
-    for (const poller of pollers.values()) clearInterval(poller.interval)
-    pollers.clear()
-    if (entries.size === 0) return
-    entries = new Map()
-  }
-
   return {
     get,
     has,
-    keys,
     set,
-    update,
+    generation,
     patch,
     startPolling,
     stopPolling,
     stopAllPolling,
-    delete: del,
-    clear
+    delete: del
   }
 }

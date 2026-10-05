@@ -1,4 +1,4 @@
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 
 interface DialogSubmitOptions {
   run: () => Promise<void>

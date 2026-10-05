@@ -44,7 +44,7 @@ function setFolderTasks(folderPath: string, list: TaskDefinition[]): void {
   tasksByFolder = new Map(tasksByFolder).set(folderPath, list)
 }
 
-export async function loadTasks(folderPath: string): Promise<TaskDefinition[]> {
+async function loadTasks(folderPath: string): Promise<TaskDefinition[]> {
   void ensureListener()
   const list = await fetchTasks(folderPath)
   setFolderTasks(folderPath, list)
@@ -56,13 +56,6 @@ export async function refreshTasks(folderPath: string): Promise<TaskDefinition[]
   const list = await fetchTasks(folderPath)
   setFolderTasks(folderPath, list)
   return list
-}
-
-/** Snapshot of the currently cached task list for a folder. Empty
- * when `loadTasks` has never been called (caller is responsible for
- * priming the store). */
-export function getTasks(folderPath: string): TaskDefinition[] {
-  return tasksByFolder.get(folderPath) ?? []
 }
 
 /**

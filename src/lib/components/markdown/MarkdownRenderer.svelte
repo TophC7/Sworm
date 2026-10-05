@@ -1,10 +1,11 @@
 <script lang="ts">
+  import './markdown.css'
   import { onDestroy, tick } from 'svelte'
   import { renderMarkdown } from './renderMarkdown'
-  import { resolveMarkdownLocalPath } from '$lib/utils/mediaAssets'
+  import { resolveMarkdownLocalPath, URL_SCHEME_RE } from '$lib/utils/mediaAssets'
   import { platform, type AssetHandle } from '$lib/platform'
   import { openLink } from '$lib/features/workbench/links/openLink'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
 
   let {
     source,
@@ -147,7 +148,7 @@
     }
 
     let target = href
-    if (filePath && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) && !href.startsWith('//')) {
+    if (filePath && !URL_SCHEME_RE.test(href) && !href.startsWith('//')) {
       const hashIndex = href.indexOf('#')
       const pathPart = hashIndex !== -1 ? href.slice(0, hashIndex) : href
       const hashPart = hashIndex !== -1 ? href.slice(hashIndex) : ''

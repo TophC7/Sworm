@@ -8,7 +8,7 @@ import type { DiscoveredProject } from '$lib/types/backend'
 
 let projects = $state<DiscoveredProject[]>([])
 let loading = $state(false)
-let loaded = $state(false)
+let loaded = false
 
 export function getDiscoveredProjects() {
   return projects
@@ -44,7 +44,3 @@ export async function refreshActivityMap() {
   }
 }
 
-/** Invalidate cache so next loadActivityMap() rescans. */
-export function invalidateActivityMap() {
-  loaded = false
-}

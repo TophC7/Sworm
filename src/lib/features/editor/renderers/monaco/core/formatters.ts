@@ -1,90 +1,77 @@
 import { backend } from '$lib/api/backend'
-import {
-  defaultFormatterForGroup,
-  formatterManagedLanguageIds,
-  formattingGroupForLanguageId,
-  type FormattingGroupId
-} from '$lib/features/editor/formatters/config'
+import { formatterManagedLanguageIds, formatterPolicyForLanguage } from '$lib/features/editor/formatters/config'
 import { formatDocumentWithLsp, getLspDocumentContext } from '$lib/features/editor/lsp/registry'
-import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
+import { modelHostPath } from '$lib/features/editor/renderers/monaco/text/modelCache'
+import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog.svelte'
 import { getSettings, loadSettings } from '$lib/features/settings/state/settings.svelte'
-import type { FormatterSelection, FormattingSettings } from '$lib/types/backend'
+import type { BuiltinFormatterPolicy, FormatterSelection, FormattingSettings } from '$lib/types/backend'
 
 type Monaco = typeof import('monaco-editor')
 type MonacoModel = import('monaco-editor').editor.ITextModel
 type MonacoTextEdit = import('monaco-editor').languages.TextEdit
 
-class FormatterRegistry {
-  private monaco: Monaco | null = null
-  private registeredLanguages = new Set<string>()
+const registeredLanguages = new Set<string>()
 
-  async ensureMonaco(monaco: Monaco): Promise<void> {
-    this.monaco = monaco
-    await preloadBuiltinCatalog()
-    ensureFormatterSettingsCacheInvalidation()
-    if (!getSettings()) {
-      void loadSettings()
-    }
-
-    for (const languageId of formatterManagedLanguageIds()) {
-      if (this.registeredLanguages.has(languageId)) continue
-      this.registeredLanguages.add(languageId)
-      monaco.languages.registerDocumentFormattingEditProvider(languageId, {
-        provideDocumentFormattingEdits: (model) => this.provideDocumentFormattingEdits(model)
-      })
-    }
+export async function ensureMonacoFormatters(monaco: Monaco): Promise<void> {
+  await preloadBuiltinCatalog()
+  ensureFormatterSettingsCacheInvalidation()
+  if (!getSettings()) {
+    void loadSettings()
   }
 
-  private async provideDocumentFormattingEdits(model: MonacoModel): Promise<MonacoTextEdit[]> {
-    const group = formattingGroupForLanguageId(model.getLanguageId())
-    if (!group) return []
-
-    const context = getLspDocumentContext(model)
-    if (!context) return []
-
-    const formatter = await resolveFormatterSelection(group, context.folderPath)
-    if (formatter === 'disabled') return []
-    if (formatter === 'lsp') {
-      return formatDocumentWithLsp(model)
-    }
-
-    try {
-      if (formatter === 'biome') {
-        const filePath = fileUriToPath(model)
-        if (!filePath) return []
-        const formatted = await backend.formatting.biome(context.folderPath, filePath, model.getValue())
-        return toFullDocumentEdit(model, formatted)
-      }
-
-      if (formatter === 'nixfmt') {
-        const formatted = await backend.formatting.nixfmt(context.folderPath, model.getValue())
-        return toFullDocumentEdit(model, formatted)
-      }
-    } catch (error) {
-      console.warn(`Formatter ${formatter} failed`, error)
-    }
-
-    return []
+  for (const languageId of formatterManagedLanguageIds()) {
+    if (registeredLanguages.has(languageId)) continue
+    registeredLanguages.add(languageId)
+    monaco.languages.registerDocumentFormattingEditProvider(languageId, {
+      provideDocumentFormattingEdits
+    })
   }
 }
 
-const registry = new FormatterRegistry()
+async function provideDocumentFormattingEdits(model: MonacoModel): Promise<MonacoTextEdit[]> {
+  const policy = formatterPolicyForLanguage(model.getLanguageId())
+  if (!policy) return []
+
+  const context = getLspDocumentContext(model)
+  if (!context) return []
+
+  const formatter = await resolveFormatterSelection(policy, context.folderPath)
+  if (formatter === 'disabled') return []
+  if (formatter === 'lsp') {
+    return formatDocumentWithLsp(model)
+  }
+
+  try {
+    if (formatter === 'biome') {
+      const filePath = modelHostPath(model.uri)
+      if (!filePath) return []
+      const formatted = await backend.formatting.biome(context.folderPath, filePath, model.getValue())
+      return toFullDocumentEdit(model, formatted)
+    }
+
+    if (formatter === 'nixfmt') {
+      const formatted = await backend.formatting.nixfmt(context.folderPath, model.getValue())
+      return toFullDocumentEdit(model, formatted)
+    }
+  } catch (error) {
+    console.warn(`Formatter ${formatter} failed`, error)
+  }
+
+  return []
+}
+
 const formatterSettingsByFolder = new Map<string, Promise<FormattingSettings>>()
 let formatterSettingsInvalidationStarted = false
 let formatterSettingsCachingEnabled = true
 
-export function ensureMonacoFormatters(monaco: Monaco) {
-  return registry.ensureMonaco(monaco)
-}
-
-async function resolveFormatterSelection(group: FormattingGroupId, folderPath: string): Promise<FormatterSelection> {
+async function resolveFormatterSelection(policy: BuiltinFormatterPolicy, folderPath: string): Promise<FormatterSelection> {
   try {
     const formatting = await resolveProjectFormattingSettings(folderPath)
-    return formatting[group]?.formatter ?? defaultFormatterForGroup(group)
+    return formatting[policy.group]?.formatter ?? policy.default
   } catch (error) {
     console.warn('Failed to load project-effective formatter settings', error)
     const settings = getSettings()?.formatting
-    return settings?.[group]?.formatter ?? defaultFormatterForGroup(group)
+    return settings?.[policy.group]?.formatter ?? policy.default
   }
 }
 
@@ -124,14 +111,4 @@ async function resolveProjectFormattingSettings(folderPath: string): Promise<For
 function toFullDocumentEdit(model: MonacoModel, formatted: string): MonacoTextEdit[] {
   if (formatted === model.getValue()) return []
   return [{ range: model.getFullModelRange(), text: formatted }]
-}
-
-/**
- * Host-absolute path of the model's file. A remote workspace's models carry a
- * `sworm://<server>` authority, and the daemon that formats them only knows
- * the path underneath it.
- */
-function fileUriToPath(model: MonacoModel): string | null {
-  if (model.uri.scheme === 'file') return model.uri.fsPath
-  return model.uri.scheme === 'sworm' ? model.uri.path : null
 }

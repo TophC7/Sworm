@@ -9,12 +9,11 @@
   import {
     FileDiff,
     Eye,
-    FolderOpen,
+    FolderOpenIcon,
     ClipboardIcon,
     PlusCircle,
     MinusCircle,
     Trash2,
-    PackageIcon,
     ArrowUp,
     ArrowDown,
     RotateCw,
@@ -113,17 +112,12 @@
           <span>Stage Changes</span>
         </ContextMenuItem>
       {/if}
-      <ContextMenuItem disabled>
-        <PackageIcon size={14} class="shrink-0" />
-        <span>Stash Changes</span>
-        <span class="ml-auto text-2xs text-subtle">WIP</span>
-      </ContextMenuItem>
 
       {#if canRevealInFileManager}
         <ContextMenuSeparator />
 
         <ContextMenuItem onclick={onRevealInFolder}>
-          <FolderOpen size={14} class="shrink-0 text-muted" />
+          <FolderOpenIcon size={14} class="shrink-0 text-muted" />
           <span>Reveal in File Manager</span>
         </ContextMenuItem>
       {/if}

@@ -69,12 +69,16 @@
     getIssuesError,
     isIssuesLoading,
     loadIssues,
+    refreshIssuesForFolder,
     updateEpic,
     updateIssue
   } from '$lib/features/issues/state.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { platform } from '$lib/platform'
+  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
+  import { cn } from '$lib/utils/cn'
   import { treeIndent, TreeIndentGuides } from '$lib/components/ui/tree-indent'
   import { SidebarRow, sidebarRowVariants } from '$lib/components/ui/sidebar-row'
   import { openIssueTab } from '$lib/features/workbench/surfaces/issue/service.svelte'
@@ -94,7 +98,7 @@
 
   // Row glyphs only; tones come from visual.ts so the sidebar and
   // editor surface can't drift apart.
-  const STATUS_GLYPH: Record<IssueStatus, Component> = {
+  const STATUS_ICON: Record<IssueStatus, Component> = {
     todo: Circle,
     in_progress: CircleDot,
     blocked: CircleSlash,
@@ -139,36 +143,33 @@
   // Epics default expanded; entries here are the user-collapsed ones.
   let collapsedEpics = $state<Set<string>>(new Set())
 
-  // `loadIssues` reads + writes the same `loadingByFolder` / `errorByFolder`
-  // / `issuesByFolder` $state via `setMapValue(map, ...)` (which clones from
-  // the existing map). Without `untrack`, those reads make the effect
-  // self-retrigger.
+  // Load once per folder; store reads must stay outside effect tracking.
   $effect(() => {
     const id = folderPath
     untrack(() => void loadIssues(id))
   })
 
   async function refresh() {
-    await loadIssues(folderPath)
+    await refreshIssuesForFolder(folderPath)
   }
 
   function openCapture(mode: CaptureMode, epicId?: string) {
     captureMode = mode
-    if (mode === 'issue') {
-      captureEpicId = epicId ?? captureEpicId ?? epics[0]?.id ?? ''
-    }
+    if (epicId) captureEpicId = epicId
     captureOpen = true
   }
 
   async function commitCapture(title: string) {
-    if (captureMode === 'epic') {
-      const epic = await createEpic(folderPath, title)
-      if (epic) captureEpicId = epic.id
-    } else {
-      const issue = await createIssue(folderPath, title, captureEpicId)
-      if (issue) await openIssueTab(folderPath, issue.id, issue.title)
-    }
-    captureOpen = false
+    await run('Create failed', async () => {
+      if (captureMode === 'epic') {
+        const epic = await createEpic(folderPath, title)
+        if (epic) captureEpicId = epic.id
+      } else {
+        const issue = await createIssue(folderPath, title, captureEpicId)
+        if (issue) openIssueTab(folderPath, issue.id, issue.title)
+      }
+      captureOpen = false
+    })
   }
 
   function preventClose(e?: Event) {
@@ -190,27 +191,11 @@
   let groups = $derived(groupIssuesByEpic(issues, epics, terms, sortMode))
   let totalIssueCount = $derived(issues.length)
 
-  async function copyId(id: string) {
+  async function run(title: string, task: () => Promise<unknown>) {
     try {
-      await copyToClipboard(id)
-    } catch (e) {
-      console.error('Copy id failed:', e)
-    }
-  }
-
-  async function setStatus(issueId: string, status: IssueStatus) {
-    try {
-      await updateIssue(folderPath, issueId, { status })
-    } catch (e) {
-      console.error('Update status failed:', e)
-    }
-  }
-
-  async function archiveEpic(epic: IssueEpic) {
-    try {
-      await updateEpic(folderPath, epic.id, { status: 'archived' })
-    } catch (e) {
-      console.error('Archive epic failed:', e)
+      await task()
+    } catch (error) {
+      notify.error(title, getErrorMessage(error))
     }
   }
 
@@ -221,11 +206,7 @@
       confirmLabel: 'Delete'
     })
     if (!ok) return
-    try {
-      await deleteEpic(folderPath, epic.id)
-    } catch (e) {
-      console.error('Delete epic failed:', e)
-    }
+    await run('Delete epic failed', () => deleteEpic(folderPath, epic.id))
   }
 
   async function confirmDeleteIssue(issue: Issue) {
@@ -235,11 +216,7 @@
       confirmLabel: 'Delete'
     })
     if (!ok) return
-    try {
-      await deleteIssue(folderPath, issue.id)
-    } catch (e) {
-      console.error('Delete issue failed:', e)
-    }
+    await run('Delete issue failed', () => deleteIssue(folderPath, issue.id))
   }
 </script>
 
@@ -301,7 +278,7 @@
         />
         <DropdownMenuRoot>
           <DropdownMenuTrigger
-            class={iconButtonVariants({ active: false }) + ' absolute top-1/2 right-0.5 size-6 -translate-y-1/2'}
+            class={cn(iconButtonVariants(), 'absolute top-1/2 right-0.5 size-6 -translate-y-1/2')}
             aria-label="Filter options"
           >
             <Filter size={12} />
@@ -383,14 +360,6 @@
   </div>
 </SidebarPanel>
 
-<!--
-  Indent guides; same recipe as the file tree so both sidebar trees
-  read the same way.
--->
-{#snippet indentGuides(depth: number)}
-  <TreeIndentGuides {depth} />
-{/snippet}
-
 {#snippet epicTooltip(epic: IssueEpic, group: EpicGroup)}
   <div class="flex max-w-90 flex-col gap-2 py-0.5">
     <div class="flex items-center gap-1.5">
@@ -404,7 +373,7 @@
     {/if}
     <div class="flex items-center gap-2 text-xs">
       <span class="text-muted">Status</span>
-      <span class="text-fg">{statusRowLabel(epic.status as IssueStatus)}</span>
+      <span class="text-fg">{statusRowLabel(epic.status)}</span>
       <span class="text-subtle">·</span>
       <span class="text-muted">P{epic.priority}</span>
     </div>
@@ -497,12 +466,12 @@
         </ContextMenuItem>
         <ContextMenuSeparator />
         {#if epic.status !== 'archived'}
-          <ContextMenuItem onclick={() => void archiveEpic(epic)}>
+          <ContextMenuItem onclick={() => void run('Archive epic failed', () => updateEpic(folderPath, epic.id, { status: 'archived' }))}>
             <ArchiveIcon size={14} class="shrink-0 text-muted" />
             <span>Archive epic</span>
           </ContextMenuItem>
         {/if}
-        <ContextMenuItem onclick={() => void copyId(epic.id)}>
+        <ContextMenuItem onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(epic.id))}>
           <ClipboardIcon size={14} class="shrink-0 text-muted" />
           <span>Copy id</span>
         </ContextMenuItem>
@@ -540,7 +509,7 @@
 {/snippet}
 
 {#snippet issueRow(issue: Issue, parent: Issue | null, depth: number)}
-  {@const StatusIcon = STATUS_GLYPH[issue.status]}
+  {@const StatusIcon = STATUS_ICON[issue.status]}
   {@const tone = statusGlyphTone(issue.status)}
   <ContextMenuRoot>
     <ContextMenuTrigger class="contents">
@@ -551,7 +520,7 @@
           style="padding-left: {treeIndent(depth)}"
           onclick={() => void openIssueTab(folderPath, issue.id, issue.title)}
         >
-          {@render indentGuides(depth)}
+          <TreeIndentGuides {depth} />
           <StatusIcon size={12} class="shrink-0 {tone}" />
           <span class="shrink-0 font-mono text-2xs text-subtle">{issue.id}</span>
           <span class="min-w-0 flex-1 truncate text-fg group-hover/row:text-bright">{issue.title}</span>
@@ -567,21 +536,21 @@
         <CircleDot size={14} class="shrink-0 text-muted" />
         <span>Open issue</span>
       </ContextMenuItem>
-      <ContextMenuItem onclick={() => void claimIssue(folderPath, issue.id)}>
+      <ContextMenuItem onclick={() => void run('Claim failed', () => claimIssue(folderPath, issue.id))}>
         <Check size={14} class="shrink-0 text-muted" />
         <span>Claim</span>
       </ContextMenuItem>
       <ContextMenuSeparator />
       {#each STATUS_MENU as [status, label] (status)}
         {#if issue.status !== status}
-          <ContextMenuItem onclick={() => void setStatus(issue.id, status)}>
+          <ContextMenuItem onclick={() => void run('Update status failed', () => updateIssue(folderPath, issue.id, { status }))}>
             <span class="shrink-0 {statusGlyphTone(status)}">●</span>
             <span>{label}</span>
           </ContextMenuItem>
         {/if}
       {/each}
       <ContextMenuSeparator />
-      <ContextMenuItem onclick={() => void copyId(issue.id)}>
+      <ContextMenuItem onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(issue.id))}>
         <ClipboardIcon size={14} class="shrink-0 text-muted" />
         <span>Copy id</span>
       </ContextMenuItem>

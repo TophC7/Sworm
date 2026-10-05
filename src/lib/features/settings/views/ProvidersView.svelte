@@ -17,9 +17,10 @@
   import { Input } from '$lib/components/ui/input'
   import { Switch } from '$lib/components/ui/switch'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { refreshProviders } from '$lib/features/sessions/providers/state.svelte'
-  import { getSettings, saveProviderConfig } from '$lib/features/settings/state/settings.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
+  import { getSettings, getSettingsHost, saveProviderConfig } from '$lib/features/settings/state/settings.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
+  import type { ProviderConfig } from '$lib/types/backend'
   import { onDestroy } from 'svelte'
   import { createAutoSaver } from './autoSaver'
 
@@ -27,6 +28,7 @@
   let { onSaving, onSaved }: { onSaving: StatusHook; onSaved: StatusHook } = $props()
 
   let settings = $derived(getSettings())
+  const host = getSettingsHost()
 
   type Draft = { enabled: boolean; binaryPath: string; extraArgs: string }
   let drafts = $state<Record<string, Draft>>({})
@@ -56,32 +58,29 @@
 
   onDestroy(() => saver.dispose())
 
-  async function flush(id: string) {
-    const d = drafts[id]
-    if (!d) return
+  async function flush(next: ProviderConfig) {
     try {
-      await saveProviderConfig({
-        provider_id: id,
-        enabled: d.enabled,
-        binary_path_override: d.binaryPath.trim() || null,
-        extra_args: d.extraArgs
-          .split(/\s+/)
-          .map((v) => v.trim())
-          .filter(Boolean)
-      })
+      await saveProviderConfig(next, host)
       // NOTE: a binary_path_override change can flip resolved detection;
-      // refreshProviders picks up the new status/version. The settings
+      // loadProviders picks up the new status/version. The settings
       // store itself was already patched by saveProviderConfig, so no
       // full settings refetch is needed here.
-      await refreshProviders()
+      await loadProviders()
     } catch (error) {
       notify.error('Save provider failed', getErrorMessage(error))
     }
   }
 
   function update(id: string, key: keyof Draft, value: boolean | string) {
-    drafts = { ...drafts, [id]: { ...drafts[id], [key]: value } }
-    saver.schedule(id, () => flush(id))
+    const draft = { ...drafts[id], [key]: value }
+    drafts = { ...drafts, [id]: draft }
+    const next: ProviderConfig = {
+      provider_id: id,
+      enabled: draft.enabled,
+      binary_path_override: draft.binaryPath.trim() || null,
+      extra_args: draft.extraArgs.split(/\s+/).filter(Boolean)
+    }
+    saver.schedule(id, () => flush(next))
   }
 
   function toggleExpanded(id: string) {

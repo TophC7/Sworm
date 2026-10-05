@@ -15,7 +15,6 @@
   } from '$lib/features/editor/renderers/monaco/text/gitHunkReview'
   import {
     acquireTextModel,
-    textModelUri,
     type TextModelHandle
   } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { attachLspModel, detachLspModel } from '$lib/features/editor/lsp/registry'
@@ -39,7 +38,6 @@
     largeFile = false,
     wordWrap = false,
     onchange,
-    uriPath = null,
     folderPath = null,
     filePath = null,
     lspEnabled = true,
@@ -54,7 +52,6 @@
     largeFile?: boolean
     wordWrap?: boolean
     onchange?: (value: string) => void
-    uriPath?: string | null
     folderPath?: string | null
     filePath?: string | null
     lspEnabled?: boolean
@@ -97,7 +94,6 @@
               folderPath,
               tabId,
               filePath,
-              uriPath,
               value,
               language
             })
@@ -105,11 +101,7 @@
       if (modelHandle) {
         model = modelHandle.model
       } else {
-        const targetUri = uriPath && !largeFile ? textModelUri(m, uriPath) : null
-        // LSP navigation can preload a target model before the editor tab exists.
-        model = targetUri
-          ? (m.editor.getModel(targetUri) ?? m.editor.createModel(value, language, targetUri))
-          : m.editor.createModel(value, largeFile ? 'plaintext' : language)
+        model = m.editor.createModel(value, largeFile ? 'plaintext' : language)
       }
 
       editor = m.editor.create(containerEl, {
@@ -167,34 +159,26 @@
         void attachLspModel(model, { folderPath })
       }
 
-      if (editor) {
-        mountedController = {
-          focus: () => {
-            if (locked) return
-            editor?.focus()
-          },
-          reveal: (target) => {
-            if (!editor) return
-            if (target.kind === 'range') {
-              editor.setSelection(target)
-              editor.revealRangeInCenter(target)
-              return
-            }
-            editor.setPosition(target)
-            editor.revealPositionInCenter(target)
+      mountedController = {
+        focus: () => {
+          if (locked) return
+          editor?.focus()
+        },
+        reveal: (target) => {
+          if (!editor) return
+          if (target.kind === 'range') {
+            editor.setSelection(target)
+            editor.revealRangeInCenter(target)
+            return
           }
-        }
-        registerMountedTextSurface(tabId, mountedController)
-
-        const revealTarget = takePendingTextReveal(tabId)
-        if (revealTarget?.kind === 'range') {
-          editor.setSelection(revealTarget)
-          editor.revealRangeInCenter(revealTarget)
-        } else if (revealTarget?.kind === 'position') {
-          editor.setPosition(revealTarget)
-          editor.revealPositionInCenter(revealTarget)
+          editor.setPosition(target)
+          editor.revealPositionInCenter(target)
         }
       }
+      registerMountedTextSurface(tabId, mountedController)
+
+      const revealTarget = takePendingTextReveal(tabId)
+      if (revealTarget) mountedController.reveal(revealTarget)
 
       lastReportedValue = largeFile ? value : model.getValue()
       if (lastReportedValue !== value && onchange) {

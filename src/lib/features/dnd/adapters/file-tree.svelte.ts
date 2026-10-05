@@ -1,9 +1,9 @@
-import { DND_MIME, type DragPayload, stampDataTransfer } from '$lib/features/dnd/payload'
-import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
+import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
+import { SvelteSet } from 'svelte/reactivity'
 import { delayedDragHover } from '$lib/features/dnd/delayed-hover'
 import { dragObserver } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
-import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
+import { dragSource, LocalTransfer } from '$lib/features/dnd/transfer.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import type { FileTreeNode } from '$lib/utils/fileTree'
 
@@ -20,18 +20,14 @@ interface FileTreeDirectoryTargetArgs {
   acceptOsFiles?: boolean
 }
 
-const directoryStore = createHoverStore<true>()
+const directoryStore = new SvelteSet<string>()
 
 function directoryKey(folderPath: string, path: string): string {
   return `${folderPath}:${path}`
 }
 
-function setDirectoryActive(folderPath: string, path: string): void {
-  directoryStore.set(directoryKey(folderPath, path), true)
-}
-
 function clearDirectoryActive(folderPath: string, path: string): void {
-  directoryStore.clear(directoryKey(folderPath, path))
+  directoryStore.delete(directoryKey(folderPath, path))
 }
 
 function canAcceptDirectoryPayload(payload: DragPayload | null, acceptOsFiles: boolean): boolean {
@@ -44,43 +40,18 @@ function canAcceptDirectoryPayload(payload: DragPayload | null, acceptOsFiles: b
 }
 
 export function fileTreeDragSource(args: FileTreeSourceArgs) {
-  return (element: HTMLElement) => {
-    const onDragStart = (event: DragEvent) => {
-      const transfer = event.dataTransfer
-      if (!transfer) {
-        event.preventDefault()
-        return
-      }
-
-      const payload: DragPayload = {
-        source: 'internal',
-        items: [
-          {
-            kind: 'file',
-            path: args.node.path,
-            isDir: args.node.type === 'directory',
-            folderPath: args.folderPath
-          }
-        ]
-      }
-
-      LocalTransfer.set(payload)
-      transfer.effectAllowed = 'move'
-      stampDataTransfer(transfer, payload)
+  return dragSource(
+    () => [{
+      kind: 'file',
+      path: args.node.path,
+      isDir: args.node.type === 'directory',
+      folderPath: args.folderPath
+    }],
+    () => {
+      const prefix = `${args.folderPath}:`
+      for (const key of directoryStore) if (key.startsWith(prefix)) directoryStore.delete(key)
     }
-
-    const onDragEnd = () => {
-      LocalTransfer.clear()
-      directoryStore.clearByPrefix(`${args.folderPath}:`)
-    }
-
-    element.addEventListener('dragstart', onDragStart)
-    element.addEventListener('dragend', onDragEnd)
-    return () => {
-      element.removeEventListener('dragstart', onDragStart)
-      element.removeEventListener('dragend', onDragEnd)
-    }
-  }
+  )
 }
 
 export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
@@ -100,7 +71,7 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
       return types.includes(DND_MIME.SWORM_FILE) || (acceptOsFiles && types.includes(DND_MIME.FILES))
     },
     onOver: () => {
-      setDirectoryActive(args.folderPath, args.directoryPath)
+      directoryStore.add(directoryKey(args.folderPath, args.directoryPath))
     },
     onLeave: () => {
       clearDirectoryActive(args.folderPath, args.directoryPath)
@@ -121,7 +92,7 @@ export function fileTreeDirectoryDropTarget(args: FileTreeDirectoryTargetArgs) {
       element,
       accept: (payload) => canAcceptDirectoryPayload(payload, acceptOsFiles),
       hover: () => {
-        setDirectoryActive(args.folderPath, args.directoryPath)
+        directoryStore.add(directoryKey(args.folderPath, args.directoryPath))
       },
       leave: () => {
         clearDirectoryActive(args.folderPath, args.directoryPath)

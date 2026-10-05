@@ -12,7 +12,7 @@
 <script lang="ts">
   import type { CommitDetail, GraphCommit } from '$lib/types/backend'
   import type { RowRender } from '$lib/features/git/graph'
-  import { CIRCLE_RADIUS, SWIMLANE_HEIGHT } from '$lib/features/git/graph'
+  import { SWIMLANE_HEIGHT } from '$lib/features/git/graph'
   import CommitTooltip from '$lib/features/git/CommitTooltip.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
   import { TooltipContent, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
@@ -64,30 +64,13 @@
         {#each render.paths as p, pathIndex (pathIndex)}
           <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
         {/each}
-        {#if render.circle.isMerge}
-          <circle
-            cx={render.circle.cx}
-            cy={render.circle.cy}
-            r={CIRCLE_RADIUS + 2}
-            fill={render.circle.color}
-            stroke="none"
-          />
-          <circle
-            cx={render.circle.cx}
-            cy={render.circle.cy}
-            r={CIRCLE_RADIUS - 1}
-            fill={render.circle.color}
-            stroke="none"
-          />
-        {:else}
-          <circle
-            cx={render.circle.cx}
-            cy={render.circle.cy}
-            r={render.circle.r}
-            fill={render.circle.color}
-            stroke="none"
-          />
-        {/if}
+        <circle
+          cx={render.circle.cx}
+          cy={render.circle.cy}
+          r={render.circle.r}
+          fill={render.circle.color}
+          stroke="none"
+        />
       </svg>
     {:else}
       <span class="sr-only">Commit</span>

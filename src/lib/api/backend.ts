@@ -34,17 +34,12 @@ import type {
   Issue,
   IssueComment,
   IssueCommentCreateInput,
-  IssueCommentUpdateInput,
-  IssueConfigEntry,
   IssueCreateInput,
-  IssueDependency,
-  IssueDependencyInput,
   IssueDetail,
   IssueEpic,
   IssueEpicCreateInput,
   IssueEpicUpdateInput,
   IssueListFilters,
-  IssueReadyFilters,
   IssueUpdateInput,
   LspEvent,
   LspServerConfig,
@@ -61,10 +56,8 @@ import type {
   SessionStartInfo,
   SettingsChangedEvent,
   SettingsFileResult,
-  SettingsLayerPayload,
   SettingsPayload,
   ShortcutsFilePayload,
-  ShortcutsFileResult,
   StashEntry,
   TaskDefinition,
   RecentFolder,
@@ -225,6 +218,10 @@ export const backend = {
         path,
         hash
       })
+    },
+    /** Return file content at a git revision (ref and path validated server-side). */
+    showFile(projectPath: string, gitRef: string, filePath: string): Promise<string> {
+      return invoke<string>('git_show_file', { projectPath, gitRef, filePath })
     },
     /**
      * Load one file's contents for a working-tree, commit or stash diff.
@@ -419,13 +416,6 @@ export const backend = {
     }
   },
 
-  editor: {
-    /** Return file content at a git revision (ref and path validated server-side). */
-    showFile(projectPath: string, gitRef: string, filePath: string): Promise<string> {
-      return invoke<string>('git_show_file', { projectPath, gitRef, filePath })
-    }
-  },
-
   files: {
     stat(folderPath: string, filePath: string): Promise<FileStat> {
       return invoke<FileStat>('file_stat', { projectPath: folderPath, filePath })
@@ -552,25 +542,6 @@ export const backend = {
     getEffective(folderPath?: string): Promise<EffectiveSettingsPayload> {
       return invoke<EffectiveSettingsPayload>('settings_get_effective', { folderPath: folderPath ?? null })
     },
-    getGlobalLayer(): Promise<SettingsLayerPayload> {
-      return invoke<SettingsLayerPayload>('settings_get_global_layer')
-    },
-    // Host sections (nix, formatting, providers, lsp) resolve on the machine
-    // that runs the folder: pass the active folder so a remote workspace's
-    // edits land on its daemon instead of this desktop.
-    patchGlobalSection(
-      section: 'nix' | 'formatting' | 'providers' | 'lsp',
-      value: unknown,
-      folderPath?: string
-    ): Promise<SettingsLayerPayload> {
-      return invoke<SettingsLayerPayload>('settings_patch_global_section', {
-        input: { section, value },
-        folderPath: folderPath ?? null
-      })
-    },
-    createGlobalFile(): Promise<SettingsFileResult> {
-      return invoke<SettingsFileResult>('settings_create_global_file')
-    },
     openFolderFile(folderPath: string): Promise<SettingsFileResult> {
       return invoke<SettingsFileResult>('settings_open_folder_file', { folderPath })
     },
@@ -603,9 +574,6 @@ export const backend = {
     },
     setGlobal(value: unknown): Promise<ShortcutsFilePayload> {
       return invoke<ShortcutsFilePayload>('shortcuts_set_global', { value })
-    },
-    createGlobalFile(): Promise<ShortcutsFileResult> {
-      return invoke<ShortcutsFileResult>('shortcuts_create_global_file')
     }
   },
 
@@ -627,16 +595,6 @@ export const backend = {
     },
     list(folderPath: string, filters: IssueListFilters = {}): Promise<Issue[]> {
       return invoke<Issue[]>('issues_list', { folderPath, filters })
-    },
-    ready(folderPath: string, filters: IssueReadyFilters | number = {}): Promise<Issue[]> {
-      const readyFilters = typeof filters === 'number' ? { limit: filters } : filters
-      return invoke<Issue[]>('issues_ready', {
-        folderPath,
-        filters: readyFilters
-      })
-    },
-    search(folderPath: string, query: string, filters: IssueListFilters = {}): Promise<Issue[]> {
-      return invoke<Issue[]>('issues_search', { folderPath, query, filters })
     },
     get(folderPath: string, issueId: string): Promise<IssueDetail> {
       return invoke<IssueDetail>('issues_get', { folderPath, issueId })
@@ -677,44 +635,6 @@ export const backend = {
     comments: {
       add(folderPath: string, input: IssueCommentCreateInput): Promise<IssueComment> {
         return invoke<IssueComment>('issue_comments_add', { folderPath, input })
-      },
-      list(folderPath: string, issueId: string): Promise<IssueComment[]> {
-        return invoke<IssueComment[]>('issue_comments_list', {
-          folderPath,
-          issueId
-        })
-      },
-      update(folderPath: string, commentId: string, input: IssueCommentUpdateInput): Promise<IssueComment> {
-        return invoke<IssueComment>('issue_comments_update', {
-          folderPath,
-          commentId,
-          input
-        })
-      },
-      delete(folderPath: string, commentId: string): Promise<void> {
-        return invoke<void>('issue_comments_delete', { folderPath, commentId })
-      }
-    },
-    dependencies: {
-      add(folderPath: string, input: IssueDependencyInput): Promise<IssueDependency> {
-        return invoke<IssueDependency>('issue_dependencies_add', {
-          folderPath,
-          input
-        })
-      },
-      remove(folderPath: string, input: IssueDependencyInput): Promise<void> {
-        return invoke<void>('issue_dependencies_remove', { folderPath, input })
-      },
-      list(folderPath: string, issueId: string): Promise<IssueDependency[]> {
-        return invoke<IssueDependency[]>('issue_dependencies_list', {
-          folderPath,
-          issueId
-        })
-      }
-    },
-    config: {
-      list(folderPath: string): Promise<IssueConfigEntry[]> {
-        return invoke<IssueConfigEntry[]>('issue_config_list', { folderPath })
       }
     }
   },

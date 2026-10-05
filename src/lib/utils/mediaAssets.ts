@@ -1,7 +1,7 @@
 import { platform } from '$lib/platform'
 import { dirname } from '$lib/utils/paths'
 
-const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
+export const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
 
 // Markdown image URLs are document-relative. Browser-relative URLs point at Vite/Tauri chrome, not the repo.
 // Stream-backed platforms resolve project images only through the view-owned loader, never an HTTP-relative fetch.

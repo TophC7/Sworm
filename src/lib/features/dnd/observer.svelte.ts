@@ -39,7 +39,6 @@ interface DragObserverOptions {
   onOver?: (event: DragEvent, frame: DragFrame) => void
   onLeave?: () => void
   onDrop?: (event: DragEvent, payload: DragPayload, frame: DragFrame | null) => void | Promise<void>
-  dropEffect?: DataTransfer['dropEffect']
 }
 
 export function dragObserver(options: DragObserverOptions) {
@@ -101,7 +100,7 @@ export function dragObserver(options: DragObserverOptions) {
       }
       event.preventDefault()
       if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = options.dropEffect ?? 'move'
+        event.dataTransfer.dropEffect = 'move'
       }
       lastEvent = event
       if (rafPending) return

@@ -15,8 +15,8 @@
   import LanguageSettingsView from './LanguageSettingsView.svelte'
   import type { BuiltinSettingsPage } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getSettings, saveNixSettings } from '$lib/features/settings/state/settings.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getSettings, getSettingsHost, saveNixSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { onDestroy } from 'svelte'
   import { createAutoSaver } from './autoSaver'
 
@@ -32,6 +32,7 @@
   } = $props()
 
   let settings = $derived(getSettings())
+  const host = getSettingsHost()
   let timeout = $state(600)
 
   // Seed local state once when settings first arrive. A later backend
@@ -49,18 +50,17 @@
 
   onDestroy(() => saver.dispose())
 
-  async function flush() {
-    const current = settings?.nix
-    if (!current) return
+  async function flush(next: { eval_timeout_secs: number }) {
     try {
-      await saveNixSettings({ ...current, eval_timeout_secs: Number(timeout) })
+      await saveNixSettings(next, host)
     } catch (error) {
       notify.error('Save nix settings failed', getErrorMessage(error))
     }
   }
 
   function schedule() {
-    saver.schedule('nix-eval-timeout', flush)
+    const next = { eval_timeout_secs: Number(timeout) }
+    saver.schedule('nix-eval-timeout', () => flush(next))
   }
 </script>
 
@@ -70,7 +70,7 @@
 
     <div class="flex items-center">
       <span class="w-36 shrink-0 text-sm text-muted">Eval timeout</span>
-      <Input class="w-24 py-2" type="number" min="30" max="3600" step="30" bind:value={timeout} oninput={schedule} />
+      <Input class="w-24 py-2" type="number" min="30" max="3600" step="30" bind:value={timeout} oninput={schedule} disabled={!settings} />
       <span class="pl-2 text-sm text-subtle">seconds</span>
     </div>
 

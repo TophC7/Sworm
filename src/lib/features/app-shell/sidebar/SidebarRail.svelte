@@ -7,7 +7,7 @@
     type SidebarView
   } from '$lib/features/app-shell/sidebar/state.svelte'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitBranchIcon, FolderOpen, ClipboardListIcon } from '$lib/icons/lucideExports'
+  import { GitBranchIcon, FolderOpenIcon, ClipboardListIcon } from '$lib/icons/lucideExports'
 
   let { gitChangeCount = 0 }: { gitChangeCount?: number } = $props()
 
@@ -30,7 +30,7 @@
   }
 
   const views: { id: SidebarView; icon: typeof GitBranchIcon; label: string }[] = [
-    { id: 'files', icon: FolderOpen, label: 'Files' },
+    { id: 'files', icon: FolderOpenIcon, label: 'Files' },
     { id: 'git', icon: GitBranchIcon, label: 'Git' },
     { id: 'issues', icon: ClipboardListIcon, label: 'Issues' }
   ]

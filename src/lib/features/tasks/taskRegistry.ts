@@ -1,74 +1,26 @@
-import { TaskTerminal, type TaskTerminalInit } from '$lib/features/tasks/terminal'
+import { TaskTerminal } from '$lib/features/tasks/terminal'
+import { createTerminalRegistry } from '$lib/features/sessions/terminal/terminalRegistry'
+import type { TaskTab } from '$lib/features/workbench/model'
 import type { TerminalTransferState } from '$lib/types/backend'
 
-const runs = new Map<string, TaskTerminal>()
+type TaskInit = { tab: TaskTab; clearBeforeStart: boolean }
 
-export function getOrCreate(init: TaskTerminalInit): TaskTerminal {
-  let terminal = runs.get(init.runId)
-  if (!terminal) {
-    terminal = new TaskTerminal(init)
-    runs.set(init.runId, terminal)
-  }
-  return terminal
+const registry = createTerminalRegistry<TaskInit, TaskTerminal>(
+  'task terminal',
+  (init) => init.tab.runId,
+  (init) => new TaskTerminal(init.tab, init.clearBeforeStart)
+)
+
+export const { get, detach, release, dispose, releaseAll, exportTransferState } = registry
+
+export function getOrCreate(tab: TaskTab, clearBeforeStart = false): TaskTerminal {
+  return registry.getOrCreate({ tab, clearBeforeStart })
 }
 
-export function attach(init: TaskTerminalInit, container: HTMLElement): TaskTerminal {
-  const terminal = getOrCreate(init)
-  terminal.attach(container)
-  return terminal
-}
-
-export function detach(runId: string): void {
-  runs.get(runId)?.detach()
-}
-
-export function detachForTransfer(runId: string): void {
-  const terminal = runs.get(runId)
-  if (!terminal) return
-  terminal.detachForTransfer()
-  runs.delete(runId)
-}
-
-export async function exportTransferState(runId: string): Promise<TerminalTransferState> {
-  const terminal = runs.get(runId)
-  if (!terminal) throw new Error(`Unknown task terminal ${runId}`)
-  return terminal.exportTransferState()
-}
-
-export async function importTransferState(
-  init: TaskTerminalInit,
+export function importTransferState(
+  tab: TaskTab,
   state: TerminalTransferState,
   transferId: string
-): Promise<TaskTerminal> {
-  const terminal = getOrCreate(init)
-  try {
-    await terminal.importTransferState(state, transferId)
-    return terminal
-  } catch (error) {
-    terminal.detachForTransfer()
-    runs.delete(init.runId)
-    throw error
-  }
-}
-
-export function dispose(runId: string): void {
-  const terminal = runs.get(runId)
-  if (!terminal) return
-  terminal.dispose()
-  runs.delete(runId)
-}
-
-export function disposeAll(): void {
-  for (const terminal of runs.values()) {
-    terminal.detachForWindowTeardown()
-  }
-  runs.clear()
-}
-
-export function get(runId: string): TaskTerminal | undefined {
-  return runs.get(runId)
-}
-
-export function focus(runId: string): void {
-  runs.get(runId)?.focus()
+): Promise<void> {
+  return registry.importTransferState({ tab, clearBeforeStart: false }, state, transferId)
 }

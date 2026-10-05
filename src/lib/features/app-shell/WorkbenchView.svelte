@@ -7,12 +7,12 @@
 
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { disposeOsDrop, initOsDrop } from '$lib/features/dnd'
+  import { disposeOsDrop, initOsDrop } from '$lib/features/dnd/os-drop'
   import { platform } from '$lib/platform'
   import { dragObserver } from '$lib/features/dnd/observer.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
-  import { activateGitFolder, getGitFreshness, getGitSummary } from '$lib/features/git/state.svelte'
+  import { activateGitFolder, getGitSummary } from '$lib/features/git/state.svelte'
   import SidebarRail from '$lib/features/app-shell/sidebar/SidebarRail.svelte'
   import WorkbenchHome from '$lib/features/home/WorkbenchHome.svelte'
   import GitSidebar from '$lib/features/git/GitSidebar.svelte'
@@ -26,19 +26,13 @@
     getSidebarView
   } from '$lib/features/app-shell/sidebar/state.svelte'
   import SurfaceHost from '$lib/features/workbench/SurfaceHost.svelte'
-  import {
-    openCommitDiff,
-    openStashDiff,
-    openWorkingTreeDiff
-  } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { dropFromOtherWindow } from '$lib/features/workbench/transferService.svelte'
-  import { getActiveTab, getTabs, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
+  import { getActiveTab, getTabs } from '$lib/features/workbench/state.svelte'
 
   let activeTab = $derived(getActiveTab())
   let folderPath = $derived(activeTab?.folderPath ?? null)
 
   let gitSummary = $derived(folderPath ? getGitSummary(folderPath) : null)
-  let gitFreshness = $derived(folderPath ? getGitFreshness(folderPath) : null)
   // Unique changed-path count for the sidebar rail badge. `changes` lists a
   // file twice when it has both staged and unstaged edits, so count by path.
   let gitChangeCount = $derived(gitSummary ? new Set(gitSummary.changes.map((c) => c.path)).size : 0)
@@ -49,7 +43,7 @@
   let tabDropActive = $state(false)
   const foreignTabDropObserver = dragObserver({
     accept: (_payload, types) =>
-      platform.capabilities.tabTransfer &&
+      platform.native !== null &&
       !LocalTransfer.has('tab') &&
       !LocalTransfer.has('workbench') &&
       (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)),
@@ -59,8 +53,7 @@
     onDrop: (event) => {
       tabDropActive = false
       dropFromOtherWindow(event, getTabs().length)
-    },
-    dropEffect: 'move'
+    }
   })
   // Panel left edge cached at drag start; it stays fixed while the
   // width changes, so per-move layout reads are unnecessary.
@@ -73,10 +66,10 @@
   })
 
   onMount(() => {
-    if (platform.capabilities.osDragDrop) void initOsDrop()
-    return () => {
-      if (platform.capabilities.osDragDrop) disposeOsDrop()
-    }
+    const native = platform.native
+    if (!native) return
+    void initOsDrop()
+    return disposeOsDrop
   })
 </script>
 
@@ -89,19 +82,7 @@
     {#key folderPath}
       <div class="shrink-0 overflow-hidden" style="width: {sidebarWidth}px;" bind:this={sidebarPanelEl}>
         {#if sidebarView === 'git'}
-          <GitSidebar
-            summary={gitSummary}
-            readError={gitFreshness?.readError ?? null}
-            watchError={gitFreshness?.watchError ?? null}
-            {folderPath}
-            onFileClick={(filePath, staged) => openWorkingTreeDiff(folderPath, staged, null, filePath)}
-            onPersistTab={promoteTabWhenReady}
-            onCommitFileClick={(hash, shortHash, message, filePath) =>
-              openCommitDiff(folderPath, hash, shortHash, message, filePath)}
-            onStashFileClick={(stashIndex, message, filePath) =>
-              openStashDiff(folderPath, stashIndex, message, filePath)}
-            onViewAllChanges={(staged) => openWorkingTreeDiff(folderPath, staged, null, null, { temporary: false })}
-          />
+          <GitSidebar {folderPath} />
         {:else if sidebarView === 'issues'}
           <IssuesSidebar {folderPath} />
         {:else if sidebarView === 'files'}

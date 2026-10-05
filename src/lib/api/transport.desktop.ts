@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { LspEvent, PtyEvent, SessionStartInfo } from '$lib/types/backend'
+import type { LspEvent, SessionStartInfo } from '$lib/types/backend'
 import type {
   HostTransport,
   LspStreamRequest,
@@ -11,59 +11,47 @@ import type {
 } from './transport'
 
 /** Channels exist before invoke so startup output cannot arrive ahead of its listeners. */
+function openChannels<T>(
+  command: string,
+  params: object,
+  handlers: Record<string, (message: never) => void>
+): StreamHandle<T> {
+  let disposed = false
+  const channels: Record<string, Channel<never>> = {}
+  for (const [name, handler] of Object.entries(handlers)) {
+    const channel = new Channel<never>()
+    channel.onmessage = (message) => {
+      if (!disposed) handler(message)
+    }
+    channels[name] = channel
+  }
+  return {
+    ready: invoke<T>(command, { ...params, ...channels }),
+    dispose() {
+      if (disposed) return
+      disposed = true
+      for (const channel of Object.values(channels)) channel.onmessage = () => {}
+    }
+  }
+}
+
 export function openDesktopPtyStream<T>(command: string, params: object, sinks: PtySinks): StreamHandle<T> {
-  let disposed = false
-  const output = new Channel<number[]>()
-  const events = new Channel<PtyEvent>()
-  output.onmessage = (bytes) => {
-    if (!disposed) sinks.onOutput(new Uint8Array(bytes))
-  }
-  events.onmessage = (event) => {
-    if (!disposed) sinks.onEvent(event)
-  }
-  const ready = invoke<T>(command, { ...params, output, events })
-  return {
-    ready,
-    dispose() {
-      if (disposed) return
-      disposed = true
-      output.onmessage = () => {}
-      events.onmessage = () => {}
-    }
-  }
+  return openChannels<T>(command, params, {
+    output: (bytes: number[]) => sinks.onOutput(new Uint8Array(bytes)),
+    events: sinks.onEvent
+  })
 }
 
-function openDesktopLspStream(
-  request: LspStreamRequest,
-  sinks: { onEvent: (event: LspEvent) => void }
-): StreamHandle<void> {
-  let disposed = false
-  const events = new Channel<LspEvent>()
-  events.onmessage = (event) => {
-    if (!disposed) sinks.onEvent(event)
-  }
-  const ready = invoke<void>(request.method, { ...request.params, events })
-  return {
-    ready,
-    dispose() {
-      if (disposed) return
-      disposed = true
-      events.onmessage = () => {}
-    }
-  }
-}
-
-function openDesktopStream(request: SessionStreamRequest, sinks: PtySinks): StreamHandle<SessionStartInfo>
-function openDesktopStream(request: TaskStreamRequest, sinks: PtySinks): StreamHandle<void>
-function openDesktopStream(request: LspStreamRequest, sinks: { onEvent: (event: LspEvent) => void }): StreamHandle<void>
-function openDesktopStream(
+function openStream(request: SessionStreamRequest, sinks: PtySinks): StreamHandle<SessionStartInfo>
+function openStream(request: TaskStreamRequest, sinks: PtySinks): StreamHandle<void>
+function openStream(request: LspStreamRequest, sinks: { onEvent: (event: LspEvent) => void }): StreamHandle<void>
+function openStream(
   request: SessionStreamRequest | TaskStreamRequest | LspStreamRequest,
   sinks: PtySinks | { onEvent: (event: LspEvent) => void }
 ): StreamHandle<SessionStartInfo | void> {
-  if (request.method === 'lsp_start') {
-    return openDesktopLspStream(request, sinks as { onEvent: (event: LspEvent) => void })
-  }
-  return openDesktopPtyStream<SessionStartInfo | void>(request.method, request.params, sinks as PtySinks)
+  return request.method === 'lsp_start'
+    ? openChannels(request.method, request.params, { events: sinks.onEvent })
+    : openDesktopPtyStream(request.method, request.params, sinks as PtySinks)
 }
 
 export const desktopHostTransport: HostTransport = {
@@ -73,5 +61,5 @@ export const desktopHostTransport: HostTransport = {
   subscribe<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
     return listen<T>(event, ({ payload }) => handler(payload))
   },
-  openStream: openDesktopStream
+  openStream
 }

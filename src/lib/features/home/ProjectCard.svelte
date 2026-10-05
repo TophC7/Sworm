@@ -67,7 +67,7 @@
       {#if git.changed > 0}
         <span class="shrink-0 text-warning">{git.changed} changed</span>
       {/if}
-      <AheadBehindBadge ahead={git.ahead ?? 0} behind={git.behind ?? 0} size="xs" twoColor />
+      <AheadBehindBadge ahead={git.ahead ?? 0} behind={git.behind ?? 0} twoColor />
     {/if}
   </div>
 

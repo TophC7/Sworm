@@ -877,6 +877,42 @@ fn resolve_destination(
             if desired_dest == src_path {
                 return Ok(Some(desired_dest.to_path_buf()));
             }
+            if src_path.starts_with(desired_dest) {
+                return Err(ApiError::InvalidArgument(format!(
+                    "Cannot replace destination containing source: {}",
+                    desired_dest.display()
+                )));
+            }
+            // Resolve parent aliases, but preserve the final entry's symlink identity.
+            let normalize_entry = |path: &Path| -> Result<PathBuf, ApiError> {
+                let name = path.file_name().ok_or_else(|| {
+                    ApiError::InvalidArgument(format!("Invalid entry path: {}", path.display()))
+                })?;
+                let parent = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                std::fs::canonicalize(parent)
+                    .map(|parent| parent.join(name))
+                    .map_err(|error| {
+                        ApiError::Io(format!(
+                            "Cannot resolve parent of {}: {}",
+                            path.display(),
+                            error
+                        ))
+                    })
+            };
+            let normalized_source = normalize_entry(src_path)?;
+            let normalized_destination = normalize_entry(desired_dest)?;
+            if normalized_source == normalized_destination {
+                return Ok(Some(desired_dest.to_path_buf()));
+            }
+            if normalized_source.starts_with(&normalized_destination) {
+                return Err(ApiError::InvalidArgument(format!(
+                    "Cannot replace destination containing source: {}",
+                    desired_dest.display()
+                )));
+            }
             remove_recursive(desired_dest)?;
             Ok(Some(desired_dest.to_path_buf()))
         }
@@ -1033,6 +1069,195 @@ mod tests {
 
     fn names(entries: &[DirEntry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn paste_replace_refuses_destination_containing_source() {
+        let service = FileService::new();
+        let mut failures = Vec::new();
+        for op in ["cut", "copy"] {
+            let mut cases = vec!["nested", "parent-traversal"];
+            #[cfg(unix)]
+            cases.extend(["parent-alias", "destination-symlink"]);
+            for case in cases {
+                let dir = unique_test_dir(&format!("paste-replace-{op}-{case}"));
+                let destination = dir.join("item");
+                let source = match case {
+                    "nested" => {
+                        std::fs::create_dir(&destination).unwrap();
+                        destination.join("item")
+                    }
+                    "parent-traversal" => {
+                        std::fs::create_dir(&destination).unwrap();
+                        std::fs::create_dir(dir.join("other")).unwrap();
+                        dir.join("other/../item/item")
+                    }
+                    #[cfg(unix)]
+                    "parent-alias" => {
+                        std::fs::create_dir(&destination).unwrap();
+                        std::os::unix::fs::symlink(&destination, dir.join("alias")).unwrap();
+                        dir.join("alias/item")
+                    }
+                    #[cfg(unix)]
+                    "destination-symlink" => {
+                        let real = dir.join("real");
+                        std::fs::create_dir(&real).unwrap();
+                        std::os::unix::fs::symlink(&real, &destination).unwrap();
+                        destination.join("item")
+                    }
+                    _ => unreachable!(),
+                };
+                std::fs::write(&source, "source content").unwrap();
+                let source_key = source.to_string_lossy().into_owned();
+                let result = service.paste(
+                    &dir,
+                    "",
+                    op,
+                    &[source_key],
+                    "replace",
+                    &HashMap::new(),
+                );
+                if !matches!(result, Err(ApiError::InvalidArgument(_))) {
+                    failures.push(format!(
+                        "{op}/{case}: expected InvalidArgument, got {result:?}"
+                    ));
+                }
+                let contents = std::fs::read_to_string(&source);
+                if contents.as_deref().ok() != Some("source content") {
+                    failures.push(format!("{op}/{case}: source lost: {contents:?}"));
+                }
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+
+            let dir = unique_test_dir(&format!("paste-replace-{op}-sibling"));
+            std::fs::create_dir(dir.join("from")).unwrap();
+            std::fs::create_dir(dir.join("to")).unwrap();
+            let source = dir.join("from/item");
+            std::fs::write(&source, "source content").unwrap();
+            std::fs::write(dir.join("to/item"), "old content").unwrap();
+            let mappings = service
+                .paste(
+                    &dir,
+                    "to",
+                    op,
+                    &[source.to_string_lossy().into_owned()],
+                    "replace",
+                    &HashMap::new(),
+                )
+                .unwrap();
+            assert_eq!(mappings.len(), 1);
+            assert_eq!(mappings[0].destination, "to/item");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("to/item")).unwrap(),
+                "source content"
+            );
+            assert_eq!(source.exists(), op == "copy");
+            if op == "copy" {
+                assert_eq!(std::fs::read_to_string(&source).unwrap(), "source content");
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+
+            // A missing source parent must not erase an existing destination.
+            let dir = unique_test_dir(&format!("paste-replace-{op}-missing-parent"));
+            let destination = dir.join("item");
+            std::fs::write(&destination, "old content").unwrap();
+            assert!(matches!(
+                service.paste(
+                    &dir,
+                    "",
+                    op,
+                    &[dir.join("missing/item").to_string_lossy().into_owned()],
+                    "replace",
+                    &HashMap::new(),
+                ),
+                Err(ApiError::Io(_))
+            ));
+            assert_eq!(
+                std::fs::read_to_string(&destination).unwrap(),
+                "old content"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+
+            #[cfg(unix)]
+            {
+                // Replacing the final symlink is safe for a source addressed independently.
+                let dir = unique_test_dir(&format!("paste-replace-{op}-safe-symlink"));
+                let real = dir.join("real");
+                std::fs::create_dir(&real).unwrap();
+                let source = real.join("item");
+                std::fs::write(&source, "source content").unwrap();
+                let destination = dir.join("item");
+                std::os::unix::fs::symlink(&real, &destination).unwrap();
+                let mappings = service
+                    .paste(
+                        &dir,
+                        "",
+                        op,
+                        &[source.to_string_lossy().into_owned()],
+                        "replace",
+                        &HashMap::new(),
+                    )
+                    .unwrap();
+                assert_eq!(mappings.len(), 1);
+                assert_eq!(mappings[0].destination, "item");
+                assert!(!std::fs::symlink_metadata(&destination).unwrap().is_symlink());
+                assert_eq!(
+                    std::fs::read_to_string(&destination).unwrap(),
+                    "source content"
+                );
+                assert!(real.is_dir());
+                assert_eq!(source.exists(), op == "copy");
+                if op == "copy" {
+                    assert_eq!(std::fs::read_to_string(&source).unwrap(), "source content");
+                }
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+
+        let dir = unique_test_dir("paste-replace-same-entry");
+        std::fs::create_dir(dir.join("folder")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("folder"), dir.join("alias")).unwrap();
+        let destination = dir.join("folder/item");
+        let mut sources = vec![destination.clone(), dir.join("folder/../folder/item")];
+        #[cfg(unix)]
+        sources.push(dir.join("alias/item"));
+        for source in sources {
+            std::fs::write(&destination, "source content").unwrap();
+            let result = resolve_destination(
+                &source,
+                &source.to_string_lossy(),
+                &destination,
+                CollisionPolicy::Replace,
+                &HashMap::new(),
+            )
+            .unwrap();
+            assert_eq!(result, Some(destination.clone()));
+            let contents = std::fs::read_to_string(&destination);
+            if contents.as_deref().ok() != Some("source content") {
+                failures.push(format!(
+                    "same-entry/{}: source lost: {contents:?}",
+                    source.display()
+                ));
+            }
+        }
+        std::fs::write(&destination, "source content").unwrap();
+        assert!(
+            service
+                .paste(
+                    &dir,
+                    "folder",
+                    "cut",
+                    &[destination.to_string_lossy().into_owned()],
+                    "replace",
+                    &HashMap::new(),
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "source content");
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]

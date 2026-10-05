@@ -7,7 +7,7 @@
     ContextMenuSeparator
   } from '$lib/components/ui/context-menu'
   import {
-    FolderOpen,
+    FolderOpenIcon,
     FileCodeIcon,
     FileDiff,
     ScissorsIcon,
@@ -77,7 +77,7 @@
       <!-- ── File/folder-targeted menu ── -->
       {#if canRevealInFileManager}
         <ContextMenuItem onclick={onRevealInFolder}>
-          <FolderOpen size={14} class="shrink-0 text-muted" />
+          <FolderOpenIcon size={14} class="shrink-0 text-muted" />
           <span>Reveal in File Manager</span>
         </ContextMenuItem>
       {/if}
@@ -147,7 +147,7 @@
         <span>New File</span>
       </ContextMenuItem>
       <ContextMenuItem onclick={onNewFolder}>
-        <FolderOpen size={14} class="shrink-0 text-muted" />
+        <FolderOpenIcon size={14} class="shrink-0 text-muted" />
         <span>New Folder</span>
       </ContextMenuItem>
       <ContextMenuSeparator />

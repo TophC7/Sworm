@@ -1,13 +1,13 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import { copyToClipboard } from '$lib/utils/clipboard'
+  import { platform } from '$lib/platform'
+  import { formatFullDate } from '$lib/utils/date'
   import type { CommitDetail } from '$lib/types/backend'
   import DiffStack from '$lib/features/workbench/surfaces/diff/DiffStack.svelte'
-  import type { DiffContentFetcher } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+  import type { DiffContentFetcher } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { GitCommitIcon, GitBranchIcon, UserIcon, CalendarIcon, CopyIcon, Check } from '$lib/icons/lucideExports'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
-  const CheckIcon = Check
 
   let {
     commitHash,
@@ -39,21 +39,9 @@
   const contentFetcher: DiffContentFetcher = (entry) =>
     backend.git.getDiffFile(folderPath, { kind: 'commit', hash: commitHash }, entry.path, entry.oldPath, entry.status)
 
-  function formatDate(iso: string): string {
-    try {
-      const d = new Date(iso)
-      return (
-        d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) +
-        ' at ' +
-        d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-      )
-    } catch {
-      return iso
-    }
-  }
 
   async function copyHash() {
-    await copyToClipboard(commitHash)
+    await platform.clipboard.writeText(commitHash)
     copied = true
     setTimeout(() => (copied = false), 1500)
   }
@@ -73,19 +61,18 @@
         </span>
         <span class="flex items-center gap-1">
           <CalendarIcon size={12} />
-          {formatDate(detail.date)}
+          {formatFullDate(detail.date)}
         </span>
         <span class="flex items-center gap-1">
           <GitCommitIcon size={12} />
           <code class="font-mono text-accent">{detail.short_hash}</code>
           <IconButton
             tooltip="Copy full hash"
-            tooltipSide="bottom"
             class="rounded p-0.5 text-muted transition-colors hover:text-fg"
             onclick={copyHash}
           >
             {#if copied}
-              <CheckIcon size={11} />
+              <Check size={11} />
             {:else}
               <CopyIcon size={11} />
             {/if}

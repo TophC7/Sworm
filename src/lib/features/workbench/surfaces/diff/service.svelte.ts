@@ -1,10 +1,6 @@
 import type { DiffTab, TabId } from '$lib/features/workbench/model'
 import { addChangesTab, addCommitTab, addStashTab } from '$lib/features/workbench/state.svelte'
-import {
-  openTextFile,
-  openTextSnapshot,
-  type OpenTextOptions
-} from '$lib/features/workbench/surfaces/text/service.svelte'
+import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
 
 export interface OpenDiffOptions {
   temporary?: boolean
@@ -39,14 +35,6 @@ export async function openStashDiff(
   options: OpenDiffOptions = {}
 ): Promise<TabId> {
   return addStashTab(folderPath, stashIndex, message, initialFile, options.temporary ?? true)
-}
-
-export function openCurrentFileFromDiff(
-  folderPath: string,
-  filePath: string,
-  options: OpenTextOptions = {}
-): Promise<TabId> {
-  return openTextFile(folderPath, filePath, options)
 }
 
 export function openCommitSnapshot(folderPath: string, filePath: string, commitHash: string): Promise<TabId> {

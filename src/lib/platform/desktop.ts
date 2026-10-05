@@ -136,21 +136,5 @@ export const desktopPlatform: Platform = {
   links: { openExternal: openUrl },
   focus: { onChanged: (handler) => getCurrentWindow().onFocusChanged(({ payload }) => handler(payload)) },
   assets: { url: (folderPath, filePath) => convertFileSrc(resolveProjectFile(folderPath, filePath)) },
-  capabilities: {
-    revealInFileManager: true,
-    openInTerminal: true,
-    tabTransfer: true,
-    deepLinks: true,
-    osDragDrop: true,
-    nativeWindowControls: true,
-    zoom: true,
-    saveAsDialog: true,
-    nativeFileClipboard: true,
-    nativeDirectoryPicker: true,
-    externalFileOpen: true,
-    fileClaims: true,
-    remoteHosts: true,
-    durableWorkbenches: false
-  },
   native
 }

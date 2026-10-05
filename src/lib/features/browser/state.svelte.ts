@@ -52,11 +52,6 @@ export function localHostLabel(): string {
   return platform.native ? 'This Machine' : 'This Server'
 }
 
-/** Browse a host's working directory; `server` null is this host. */
-export function browseServer(server: string | null): void {
-  openBrowser({ server })
-}
-
 /** Open the chosen folder without retaining the requesting preview. */
 export async function goToFolder(path: string, replaceTabId?: TabId): Promise<void> {
   closeBrowser()

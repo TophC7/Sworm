@@ -10,7 +10,7 @@
     children,
     onModalClose,
     ...rest
-  }: {
+  }: Pick<Dialog.ContentProps, 'escapeKeydownBehavior' | 'interactOutsideBehavior' | 'aria-busy'> & {
     class?: string
     children?: Snippet
     /**

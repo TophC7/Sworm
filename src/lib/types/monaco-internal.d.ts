@@ -23,6 +23,7 @@ declare module 'monaco-editor/esm/vs/platform/contextkey/common/contextkey.js' {
 declare module 'monaco-editor/esm/vs/editor/standalone/browser/standaloneServices.js' {
   export const StandaloneServices: {
     get(service: unknown): unknown
+    initialize(overrides: unknown): unknown
   }
 }
 

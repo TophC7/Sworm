@@ -43,7 +43,9 @@ export function setGitSidebarTab(tab: GitSidebarTab) {
   gitSidebarTab = tab
 }
 
-export function requestGitBranchesFocus(folderPath: string) {
+export function revealGitBranches(folderPath: string) {
+  sidebarCollapsed = false
+  sidebarView = 'git'
   gitSidebarTab = 'branches'
   const next = new Map(gitBranchesFocusRequests)
   next.set(folderPath, (next.get(folderPath) ?? 0) + 1)

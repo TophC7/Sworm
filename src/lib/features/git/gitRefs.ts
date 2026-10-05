@@ -1,4 +1,4 @@
-// Shared ref-formatting helpers for git graph and tooltip components.
+// Shared branch, stash and ref-formatting helpers.
 
 /** Strip git ref decoration prefixes, returning a display label. */
 export function refLabel(ref: string): string {
@@ -23,4 +23,14 @@ export function splitRemoteBranchRef(name: string): { remote: string; branch: st
 
 export function localNameForRemoteRef(name: string): string {
   return splitRemoteBranchRef(name)?.branch ?? name
+}
+
+/** Parse a stash message ("On <branch>: <msg>" or "WIP on <branch>: <msg>")
+ *  into its branch and description parts. */
+export function parseStashMessage(raw: string): { branch: string | null; label: string } {
+  const match = raw.match(/^(?:WIP )?[Oo]n ([^:]+):\s*(.*)$/)
+  if (match) {
+    return { branch: match[1], label: match[2] || 'WIP' }
+  }
+  return { branch: null, label: raw }
 }

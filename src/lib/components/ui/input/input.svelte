@@ -1,3 +1,11 @@
+<script lang="ts" module>
+  import { tv } from 'tailwind-variants'
+
+  export const inputVariants = tv({
+    base: 'w-full rounded border border-edge bg-surface px-2.5 py-1.5 text-base text-fg transition-colors outline-none placeholder:text-subtle focus:border-accent'
+  })
+</script>
+
 <script lang="ts">
   import { cn } from '$lib/utils/cn'
   import type { HTMLInputAttributes } from 'svelte/elements'
@@ -18,9 +26,6 @@
   data-slot="input"
   bind:value
   bind:this={ref}
-  class={cn(
-    'w-full rounded border border-edge bg-surface px-2.5 py-1.5 text-base text-fg transition-colors outline-none placeholder:text-subtle focus:border-accent',
-    className
-  )}
+  class={cn(inputVariants(), className)}
   {...rest}
 />

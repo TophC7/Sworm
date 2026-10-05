@@ -14,12 +14,13 @@
     getSettingsDiagnostics,
     refreshSettingsDiagnostics
   } from '$lib/features/settings/state/diagnostics.svelte'
-  import { AlertTriangle, FolderOpen } from '$lib/icons/lucideExports'
+  import { AlertTriangle, FolderOpenIcon } from '$lib/icons/lucideExports'
   import { folderCrumbs, splitRemotePath } from '$lib/utils/paths'
   import { remoteDotClass } from '$lib/features/remotes/remoteDot'
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import { openRemoteManager } from '$lib/features/remotes/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getRemoteStatus, refreshRemoteStatus, watchRemoteStatuses } from '$lib/features/remotes/status.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import type { RemoteStatus } from '$lib/types/backend'
   import type { Snippet } from 'svelte'
 
@@ -28,48 +29,13 @@
   let folderPath = $derived(getActiveFolderPath())
   let remote = $derived(folderPath ? splitRemotePath(folderPath) : null)
   let remoteServer = $derived(remote?.server ?? null)
-  let remoteStatus = $state<RemoteStatus | null>(null)
+  let remoteStatus = $derived(remoteServer ? getRemoteStatus(remoteServer) : null)
 
   $effect(() => {
     const server = remoteServer
-    remoteStatus = null
-    if (!server || !platform.capabilities.remoteHosts) return
-    let disposed = false
-    let pending = false
-    let revision = 0
-    let unlisten: (() => void) | undefined
-    async function refresh() {
-      if (pending || disposed) return
-      pending = true
-      const requestedRevision = revision
-      try {
-        const status = await requireNative().remotes.status(server!)
-        if (!disposed && revision === requestedRevision) remoteStatus = status
-      } catch (error) {
-        if (!disposed && revision === requestedRevision) {
-          remoteStatus = { connected: false, state: 'error', last_error: getErrorMessage(error) }
-        }
-      } finally {
-        pending = false
-      }
-    }
-    void requireNative()
-      .remotes.onStatus((status) => {
-        if (disposed || status.server !== server) return
-        revision++
-        remoteStatus = status
-      })
-      .then((stop) => {
-        if (disposed) stop()
-        else unlisten = stop
-      })
-      .catch((error) => console.error('Remote status listener failed:', error))
-      // Fetch after subscribing so no transition lands between the two.
-      .finally(() => void refresh())
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
+    const stop = watchRemoteStatuses()
+    if (server) void refreshRemoteStatus(server)
+    return stop
   })
   let sharedAgentCount = $derived(
     getTabs().filter(
@@ -101,7 +67,7 @@
   <div class="flex items-center gap-1">
     <StatusBarAppInfo />
     {#if connectionStatus}{@render connectionStatus()}{/if}
-    {#if remoteServer && platform.capabilities.remoteHosts}
+    {#if remoteServer && platform.native}
       <StatusChip
         onclick={openRemoteManager}
         title={remoteStatus?.last_error ?? `${remoteServer}: ${remoteState}`}
@@ -121,7 +87,7 @@
         onclick={() => toggleBrowser({ path: folderPath })}
         class="max-w-[min(32rem,40vw)]"
       >
-        <FolderOpen size={10} class="shrink-0" />
+        <FolderOpenIcon size={10} class="shrink-0" />
         <span class="truncate">{folderCrumbs(remote?.path ?? folderPath)}</span>
       </StatusChip>
       <StatusBarBranchPopover {folderPath} />

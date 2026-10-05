@@ -75,12 +75,6 @@ let loadPromise: Promise<void> | null = null
 let changedBeforeLoad = false
 const listeners = new Set<() => void>()
 
-function trackOverrides(): void {
-  // Reactive tracking for accessors consumed inside $derived.
-  overrides.bindings
-  overrides.unboundCommands
-}
-
 export function loadShortcutOverrides(): Promise<void> {
   loadPromise ??= backend.shortcuts
     .getGlobal()
@@ -124,27 +118,17 @@ function setState(next: ShortcutOverrideState): void {
 }
 
 export function getCommandsWithKeybindingOverrides(): string[] {
-  trackOverrides()
   return Array.from(new Set([...Object.keys(overrides.bindings), ...Array.from(overrides.unboundCommands)]))
 }
 
 export function getUserKeybindings(command: string): string[] | null {
-  trackOverrides()
   if (overrides.unboundCommands.has(command)) return []
   const bindings = overrides.bindings[command]
   return bindings ? [...bindings] : null
 }
 
-export function getEffectiveBindings(command: string, defaultBindings: string[] | string | undefined): string[] {
-  const userBindings = getUserKeybindings(command)
-  if (userBindings !== null) return userBindings
-  if (Array.isArray(defaultBindings)) return normalizeBindings(defaultBindings)
-  if (defaultBindings) return normalizeBindings([defaultBindings])
-  return []
-}
-
-export function getEffectiveSpec(command: string, defaultSpec: string | undefined): string | undefined {
-  return getEffectiveBindings(command, defaultSpec)[0]
+export function getEffectiveBindings(command: string, defaultBindings: string[]): string[] {
+  return getUserKeybindings(command) ?? normalizeBindings(defaultBindings)
 }
 
 export function setCommandKeybindings(command: string, bindings: string[]): void {

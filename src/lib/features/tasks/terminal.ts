@@ -5,62 +5,20 @@
 
 import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
-import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
+import { setTaskTabStatus } from '$lib/features/workbench/state.svelte'
+import { getErrorMessage } from '$lib/utils/client-error'
 import { requireNative } from '$lib/platform'
 import type { PtyEvent, TerminalTransferState } from '$lib/types/backend'
-import type { TaskRunStatus } from '$lib/features/workbench/model'
+import type { TaskRunStatus, TaskTab } from '$lib/features/workbench/model'
 import { splitRemotePath } from '$lib/utils/paths'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { Terminal, type IDisposable, type ITerminalOptions } from '@xterm/xterm'
-
-const TERMINAL_OPTIONS: ITerminalOptions = {
-  cursorBlink: true,
-  fontSize: 13,
-  fontFamily: MONO_FONT_FAMILY,
-  scrollback: 3000,
-  convertEol: true,
-  vtExtensions: { kittyKeyboard: true },
-  theme: {
-    background: '#131313',
-    foreground: '#e2e2e2',
-    cursor: '#ffb59f',
-    cursorAccent: '#131313',
-    selectionBackground: '#7c2d15',
-    selectionForeground: '#e2e2e2',
-    black: '#131313',
-    red: '#ff7672',
-    green: '#98ff7f',
-    yellow: '#ffe572',
-    blue: '#f29d84',
-    magenta: '#763724',
-    cyan: '#ffb59f',
-    white: '#fff3ef',
-    brightBlack: '#a59c99',
-    brightRed: '#ffa29f',
-    brightGreen: '#b7ffa5',
-    brightYellow: '#ffeea5',
-    brightBlue: '#ffc0ad',
-    brightMagenta: '#ffcbbb',
-    brightCyan: '#ffddd3',
-    brightWhite: '#fffaf8'
-  }
-}
+import { Terminal, type IDisposable } from '@xterm/xterm'
 
 const textEncoder = new TextEncoder()
-
-export interface TaskTerminalInit {
-  runId: string
-  attachOnly: boolean
-  folderPath: string
-  taskId: string
-  activeFilePath: string | null
-  clearBeforeStart?: boolean
-  onStatusChange?: (status: TaskRunStatus, exitCode: number | null) => void
-}
 
 export class TaskTerminal {
   private readonly term: Terminal
@@ -76,7 +34,7 @@ export class TaskTerminal {
   private readonly taskId: string
   private readonly attachOnly: boolean
   private readonly activeFilePath: string | null
-  private readonly onStatusChange?: (status: TaskRunStatus, exitCode: number | null) => void
+  private readonly tabId: string
   private disposed = false
   private startPromise: Promise<void> | null = null
   private stopPromise: Promise<void> | null = null
@@ -86,13 +44,13 @@ export class TaskTerminal {
   private stream: StreamHandle<void | number> | null = null
   private readonly barrier = new RenderBarrier()
 
-  constructor(init: TaskTerminalInit) {
-    this.runId = init.runId
-    this.folderPath = init.folderPath
-    this.attachOnly = init.attachOnly
-    this.taskId = init.taskId
-    this.activeFilePath = init.activeFilePath
-    this.onStatusChange = init.onStatusChange
+  constructor(tab: TaskTab, clearBeforeStart = false) {
+    this.tabId = tab.id
+    this.runId = tab.runId
+    this.folderPath = tab.folderPath
+    this.attachOnly = tab.attachOnly
+    this.taskId = tab.taskId
+    this.activeFilePath = tab.activeFilePath
 
     this.hostEl = document.createElement('div')
     this.hostEl.style.width = '100%'
@@ -106,7 +64,7 @@ export class TaskTerminal {
     this.term.loadAddon(new WebLinksAddon())
     this.term.open(this.hostEl)
 
-    if (init.clearBeforeStart) this.term.clear()
+    if (clearBeforeStart) this.term.clear()
 
     this.disposers.push(
       this.term.onData((data) => {
@@ -220,12 +178,12 @@ export class TaskTerminal {
     const sequence = this.barrier.next()
     if (event.type === 'started') {
       this.status = 'running'
-      this.onStatusChange?.('running', null)
+      setTaskTabStatus(this.tabId, 'running', null)
       this.barrier.markRendered(sequence)
     } else if (event.type === 'exit') {
       const code = event.code ?? null
       this.status = 'exited'
-      this.onStatusChange?.('exited', code)
+      setTaskTabStatus(this.tabId, 'exited', code)
       // Keep both ids through Exit: retained replay can still deliver tail
       // output and Synced after the completion event.
       this.barrier.markRendered(sequence)
@@ -234,7 +192,7 @@ export class TaskTerminal {
         this.barrier.markRendered(sequence)
       )
       this.status = 'failed'
-      this.onStatusChange?.('failed', null)
+      setTaskTabStatus(this.tabId, 'failed', null)
     } else {
       this.barrier.markRendered(sequence)
     }
@@ -246,7 +204,7 @@ export class TaskTerminal {
     const runId = inert && splitRemotePath(this.folderPath) ? null : this.streamRunId
     const targetSequence = runId ? await transfers.pause(runId) : 0
     if (runId) await this.barrier.waitFor(targetSequence)
-    await this.writeAndWait('')
+    await writeAndWait(this.term, '')
     const buffer = this.term.buffer.active
     return {
       runId,
@@ -272,7 +230,7 @@ export class TaskTerminal {
         : 'running'
     this.term.reset()
     this.term.resize(state.cols, state.rows)
-    await this.writeAndWait(state.serializedBuffer)
+    await writeAndWait(this.term, state.serializedBuffer)
     this.term.scrollToLine(state.viewportPosition)
     this.spawned = true
     if (state.runId == null) return
@@ -298,17 +256,9 @@ export class TaskTerminal {
     }
   }
 
-  detachForTransfer(): void {
-    this.disposeDetached()
-  }
-
-  detachForWindowTeardown(): void {
-    this.disposeDetached()
-  }
-
   markPtyLost(): void {
     this.status = 'failed'
-    this.onStatusChange?.('failed', null)
+    setTaskTabStatus(this.tabId, 'failed', null)
   }
 
   focus(): void {
@@ -328,7 +278,7 @@ export class TaskTerminal {
       this.releaseStream()
       if (!this.disposed) {
         this.status = 'exited'
-        this.onStatusChange?.('exited', null)
+        setTaskTabStatus(this.tabId, 'exited', null)
       }
     })().finally(() => {
       this.stopPromise = null
@@ -344,7 +294,7 @@ export class TaskTerminal {
     this.disposeSurface()
   }
 
-  private disposeDetached(): void {
+  release(): void {
     if (this.disposed) return
     this.disposed = true
     this.releaseStream()
@@ -363,12 +313,6 @@ export class TaskTerminal {
     this.disposers.length = 0
     this.barrier.reset()
     this.term.dispose()
-  }
-
-  private writeAndWait(data: string | Uint8Array): Promise<void> {
-    const { promise, resolve } = Promise.withResolvers<void>()
-    this.term.write(data, resolve)
-    return promise
   }
 
   private fitTerminal(): void {

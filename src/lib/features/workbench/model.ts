@@ -53,6 +53,11 @@ export interface StashDiffSource {
 
 export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource
 
+export type PersistedDiffSource =
+  | { kind: 'working'; staged: boolean; scopePath?: string | null }
+  | CommitDiffSource
+  | StashDiffSource
+
 export interface DiffTab extends TabBase {
   kind: 'diff'
   source: DiffSource
@@ -67,13 +72,6 @@ export interface TextTab extends TabBase {
   temporary: boolean
   gitRef?: string
   refLabel?: string
-}
-
-export interface ToolTab extends TabBase {
-  kind: 'tool'
-  tool: 'notification-test'
-  label: string
-  temporary: boolean
 }
 
 export interface NewTab extends TabBase {
@@ -119,7 +117,18 @@ export interface EpicTab extends TabBase {
   temporary: boolean
 }
 
-export type Tab = SessionTab | DiffTab | TextTab | ToolTab | NewTab | TaskTab | IssueTab | EpicTab
+export type Tab = SessionTab | DiffTab | TextTab | NewTab | TaskTab | IssueTab | EpicTab
+
+export function isTab(value: unknown): value is Tab {
+  if (!value || typeof value !== 'object') return false
+  const tab = value as { id?: unknown; kind?: unknown; folderPath?: unknown }
+  return (
+    typeof tab.id === 'string' &&
+    typeof tab.folderPath === 'string' &&
+    typeof tab.kind === 'string' &&
+    ['session', 'diff', 'text', 'new-tab', 'task', 'issue', 'epic'].includes(tab.kind)
+  )
+}
 
 export function tabServer(tab: Tab): string | null {
   return splitRemotePath(tab.folderPath)?.server ?? null
@@ -161,23 +170,7 @@ export type PersistedTab = { folderPath: string } & (
     }
   | {
       kind: 'diff'
-      source:
-        | {
-            kind: 'working'
-            staged: boolean
-            scopePath?: string | null
-          }
-        | {
-            kind: 'commit'
-            commitHash: string
-            shortHash: string
-            message: string
-          }
-        | {
-            kind: 'stash'
-            stashIndex: number
-            message: string
-          }
+      source: PersistedDiffSource
       initialFile: string | null
       temporary: boolean
       locked: boolean

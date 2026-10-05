@@ -1,9 +1,10 @@
 import { backend } from '$lib/api/backend'
+import { getErrorMessage } from '$lib/utils/client-error'
 import { SvelteMap } from 'svelte/reactivity'
 
 // Flat, ignore-aware file path cache for the surfaces that need to reach the
 // whole project at once: the Quick Open palette and the sidebar's filter box.
-// The explorer tree itself is lazy (see fileTree.svelte.ts) and does not use
+// The explorer tree itself is lazy (see explorer.svelte.ts) and does not use
 // this list.
 //
 // Cached per (folder, showHidden) so the sidebar's hidden-files toggle and the
@@ -14,7 +15,7 @@ type Entry = {
   truncated: boolean
   loading: boolean
   error: string | null
-  loadedAt: number | null
+  loaded: boolean
 }
 
 const entries = new SvelteMap<string, Entry>()
@@ -27,7 +28,7 @@ function cacheKey(folderPath: string, showHidden: boolean): string {
 function getOrInit(key: string): Entry {
   let entry = entries.get(key)
   if (!entry) {
-    entry = { paths: [], truncated: false, loading: false, error: null, loadedAt: null }
+    entry = { paths: [], truncated: false, loading: false, error: null, loaded: false }
     entries.set(key, entry)
   }
   return entry
@@ -53,20 +54,20 @@ export function isProjectFilesTruncated(folderPath: string, showHidden = false):
  */
 export function isProjectFilesStale(folderPath: string, showHidden = false): boolean {
   const entry = entries.get(cacheKey(folderPath, showHidden))
-  return entry !== undefined && entry.loadedAt === null && !entry.loading && entry.error === null
+  return entry !== undefined && !entry.loaded && !entry.loading && entry.error === null
 }
 
 /**
  * Note that this folder's listing no longer matches disk without paying for a
  * new walk: one added file does not justify re-walking the project, and
  * nothing may be reading the list at all. The next reader refetches, because
- * `ensureProjectFiles` only trusts an entry with a `loadedAt`.
+ * `ensureProjectFiles` only trusts a loaded entry.
  */
 export function markProjectFilesStale(folderPath: string): void {
   for (const showHidden of [false, true]) {
     const key = cacheKey(folderPath, showHidden)
     const entry = entries.get(key)
-    if (entry) entries.set(key, { ...entry, loadedAt: null })
+    if (entry) entries.set(key, { ...entry, loaded: false })
   }
 }
 
@@ -83,7 +84,7 @@ export async function ensureProjectFiles(folderPath: string, showHidden = false,
   const existing = inflight.get(key)
 
   if (existing && !force) return existing
-  if (!existing && !force && entry.loadedAt !== null) return
+  if (!existing && !force && entry.loaded) return
 
   entries.set(key, { ...entry, loading: true, error: null })
 
@@ -95,7 +96,7 @@ export async function ensureProjectFiles(folderPath: string, showHidden = false,
         truncated: listed.truncated,
         loading: false,
         error: null,
-        loadedAt: Date.now()
+        loaded: true
       })
     } catch (e) {
       const prev = entries.get(key) ?? entry
@@ -103,8 +104,8 @@ export async function ensureProjectFiles(folderPath: string, showHidden = false,
         paths: prev.paths,
         truncated: prev.truncated,
         loading: false,
-        error: e instanceof Error ? e.message : String(e),
-        loadedAt: prev.loadedAt
+        error: getErrorMessage(e),
+        loaded: prev.loaded
       })
     }
   }
@@ -115,15 +116,6 @@ export async function ensureProjectFiles(folderPath: string, showHidden = false,
   })
   inflight.set(key, task)
   return task
-}
-
-/** Force a reload of every cached view of this folder. */
-export async function refreshProjectFiles(folderPath: string): Promise<void> {
-  await Promise.all(
-    [false, true]
-      .filter((showHidden) => entries.has(cacheKey(folderPath, showHidden)))
-      .map((showHidden) => ensureProjectFiles(folderPath, showHidden, true))
-  )
 }
 
 export function releaseProjectFiles(folderPath: string): void {

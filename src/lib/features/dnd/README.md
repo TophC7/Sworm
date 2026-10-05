@@ -6,7 +6,8 @@ Unified drag-and-drop runtime for Sworm.
 
 - Internal drags stamp the serialized payload as `application/vnd.sworm.item+json`.
 - They also stamp an empty kind marker: `application/vnd.sworm.kind.tab`,
-  `application/vnd.sworm.kind.file`, or `application/vnd.sworm.kind.git-change`.
+  `application/vnd.sworm.kind.workbench`, `application/vnd.sworm.kind.file`, or
+  `application/vnd.sworm.kind.git-change`.
 - Same-window drags additionally write to `LocalTransfer` for synchronous payload access.
 - External Tauri OS drops are converted into the same payload shape.
 
@@ -15,6 +16,7 @@ type DragPayload = {
   source: 'internal' | 'external'
   items: Array<
     | { kind: 'tab'; tabId: string; sourceWindowLabel?: string }
+    | { kind: 'workbench'; server: string; workbenchId: string; sourceWindowLabel: string }
     | { kind: 'file'; path: string; isDir: boolean; folderPath: string }
     | { kind: 'git-change'; path: string; staged: boolean; folderPath: string }
     | { kind: 'os-files'; paths: string[] }
@@ -36,15 +38,16 @@ by remote webviews as `text/plain`.
 
 ## Add A New Adapter
 
-1. Create `src/lib/features/dnd/adapters/<feature>.ts`.
+1. Create `src/lib/features/dnd/adapters/<feature>.ts` (`.svelte.ts` for reactive state).
 2. Use `dragObserver(...)` for HTML5 drop targets.
 3. Use `DropRegistry.register(...)` so Tauri OS drops can route to it.
-4. For drag sources, set `LocalTransfer` + `stampDataTransfer(...)` on `dragstart`.
-5. Clear `LocalTransfer` on `dragend`.
+4. Use `dragSource(() => items, onEnd?)` from `transfer.svelte.ts` for drag sources.
+   It stamps the payload and manages `LocalTransfer` through `dragstart` and `dragend`;
+   return null or an empty array to refuse the drag, and use `onEnd` to clear adapter hover state.
 
 ## Active Adapters
 
-- `adapters/tab-strip.ts`: tab drag source wiring (title-bar tab reorder).
-- `adapters/file-tree.ts`: file explorer source + folder/root targets with delayed expand.
-- `adapters/git.ts`: git change drag sources + staged/unstaged drop zones.
-- `adapters/terminal.ts`: terminal drops (file paths + image temp-save path insert).
+- `adapters/tab-strip.ts`: tab and whole-workbench group drag sources.
+- `adapters/file-tree.svelte.ts`: file explorer source + folder/root targets with delayed expand.
+- `adapters/git.svelte.ts`: git change drag sources + staged/unstaged drop zones.
+- `adapters/terminal.svelte.ts`: terminal drops (file paths + image temp-save path insert).

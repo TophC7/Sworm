@@ -4,16 +4,15 @@ import { loadRecentFolders } from '$lib/features/folders/state.svelte'
 import { ensureGitWatch } from '$lib/features/git/state.svelte'
 import { refreshIssuesForFolder } from '$lib/features/issues/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import { loadProviders, loadProvidersForFolder } from '$lib/features/sessions/providers/state.svelte'
 import { detectNix, getNixDetection } from '$lib/features/settings/state/nix.svelte'
 import { loadSettings } from '$lib/features/settings/state/settings.svelte'
 import { refreshTasks } from '$lib/features/tasks/state.svelte'
-import { flushWorkbench } from '$lib/features/workbench/persistence'
-import { getTabs } from '$lib/features/workbench/state.svelte'
+import { flushWorkbench, getTabs } from '$lib/features/workbench/state.svelte'
 import { logClientError } from '$lib/utils/client-error'
 
-export function createWebRecovery(workbenchId: string) {
+export function createWebRecovery() {
   const lostLspDefinitions = new Map<string, number>()
   let generation = 0
   let lossRevision = 0
@@ -79,11 +78,11 @@ export function createWebRecovery(workbenchId: string) {
     const jobs: { label: string; run: () => Promise<unknown> | void }[] = [
       { label: 'settings', run: () => loadSettings() },
       { label: 'recent folders', run: () => loadRecentFolders() },
-      { label: 'workbench layout', run: () => flushWorkbench(workbenchId) }
+      { label: 'workbench layout', run: () => flushWorkbench() }
     ]
 
     // Provider discovery is opportunistic and logs failures; the cache reset is synchronous.
-    void loadProviders()
+    void loadProviders().catch(() => {})
     invalidateLspServerEntries()
 
     for (const folder of folders) {
@@ -107,9 +106,7 @@ export function createWebRecovery(workbenchId: string) {
         },
         {
           label: `issues for ${folder}`,
-          run: () => {
-            if (open()) refreshIssuesForFolder(folder)
-          }
+          run: () => (open() ? refreshIssuesForFolder(folder) : undefined)
         }
       )
     }

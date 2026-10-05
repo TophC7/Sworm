@@ -5,21 +5,17 @@
 
 <script lang="ts" module>
   import type { WindowSettings } from '$lib/types/backend'
-  let pendingPatch: Partial<WindowSettings> = {}
   let saveChain = Promise.resolve()
 </script>
 
 <script lang="ts">
-  import { onMount } from 'svelte'
-
   import { Select } from '$lib/components/ui/input'
   import { Switch } from '$lib/components/ui/switch'
   import { getWindowControls, setWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import {
     getSettings,
-    loadSettings,
     saveWindowSettings as saveWindowSettingsApi
   } from '$lib/features/settings/state/settings.svelte'
   import type { ExternalFileOpenMode, ExternalFolderOpenMode, TabBeamPosition } from '$lib/types/backend'
@@ -36,23 +32,17 @@
   }
 
   function saveWindowSettings(patch: Partial<WindowSettings>): void {
-    pendingPatch = { ...pendingPatch, ...patch }
     saveChain = saveChain
       .then(async () => {
-        const current = settings?.window
-        if (!current) return
-        const next = { ...current, ...pendingPatch }
-        pendingPatch = {}
-        await saveWindowSettingsApi(next)
+        const current = getSettings()?.window
+        if (!current) throw new Error('Window settings have not loaded')
+        await saveWindowSettingsApi({ ...current, ...patch })
       })
       .catch((e) => {
         notify.error('Failed to save window settings', getErrorMessage(e))
       })
   }
 
-  onMount(() => {
-    if (!settings) void loadSettings()
-  })
 </script>
 
 <section class="flex flex-col gap-3 border-b border-edge px-5 py-4">
@@ -66,6 +56,7 @@
     <Select
       class="w-44 shrink-0 text-sm"
       value={settings?.window.external_folder_open_mode ?? 'new_window'}
+      disabled={!settings}
       onchange={(event) =>
         void saveWindowSettings({
           external_folder_open_mode: event.currentTarget.value as ExternalFolderOpenMode
@@ -86,6 +77,7 @@
     <Select
       class="w-56 shrink-0 text-sm"
       value={settings?.window.external_file_open_mode ?? 'prefer_folder'}
+      disabled={!settings}
       onchange={(event) =>
         void saveWindowSettings({
           external_file_open_mode: event.currentTarget.value as ExternalFileOpenMode
@@ -106,7 +98,7 @@
       <span class="text-sm text-fg">Use system window decorations</span>
       <p class="text-xs text-subtle">Revert to the OS-provided title bar and controls.</p>
     </div>
-    <Switch checked={wc.useSystemDecorations} onCheckedChange={toggleSystemDecorations} />
+    <Switch checked={wc.useSystemDecorations} disabled={!settings} onCheckedChange={toggleSystemDecorations} />
   </label>
 
   <label class="flex items-center gap-4 py-1">
@@ -117,6 +109,7 @@
     <Select
       class="w-48 shrink-0 text-sm"
       value={settings?.window.tab_beam_position ?? 'top'}
+      disabled={!settings}
       onchange={(event) =>
         void saveWindowSettings({
           tab_beam_position: event.currentTarget.value as TabBeamPosition
@@ -135,15 +128,15 @@
 
     <label class="flex items-center justify-between border-b border-edge py-2.5">
       <span class="text-sm text-fg">Minimize</span>
-      <Switch checked={wc.showMinimize} onCheckedChange={(v) => toggleButton('showMinimize', v)} />
+      <Switch checked={wc.showMinimize} disabled={!settings} onCheckedChange={(v) => toggleButton('showMinimize', v)} />
     </label>
     <label class="flex items-center justify-between border-b border-edge py-2.5">
       <span class="text-sm text-fg">Maximize</span>
-      <Switch checked={wc.showMaximize} onCheckedChange={(v) => toggleButton('showMaximize', v)} />
+      <Switch checked={wc.showMaximize} disabled={!settings} onCheckedChange={(v) => toggleButton('showMaximize', v)} />
     </label>
     <label class="flex items-center justify-between py-2.5">
       <span class="text-sm text-fg">Close</span>
-      <Switch checked={wc.showClose} onCheckedChange={(v) => toggleButton('showClose', v)} />
+      <Switch checked={wc.showClose} disabled={!settings} onCheckedChange={(v) => toggleButton('showClose', v)} />
     </label>
   </section>
 {/if}

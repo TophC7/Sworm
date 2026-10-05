@@ -75,7 +75,3 @@ export function registerSchema(entry: SchemaEntry): void {
   entries.set(entry.id, entry)
   syncNow()
 }
-
-export function unregisterSchema(id: string): void {
-  if (entries.delete(id)) syncNow()
-}

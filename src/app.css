@@ -1,5 +1,4 @@
 @import 'tailwindcss';
-@import 'github-markdown-css/github-markdown.css';
 @source '../src';
 
 /*
@@ -161,14 +160,6 @@
   src: url('./lib/assets/fonts/plantin-mt-pro/PlantinMTProSmBd.TTF') format('truetype');
 }
 
-/* ── Component classes ────────────────────────── */
-
-@layer components {
-  .section-label {
-    @apply flex items-center justify-between px-3.5 pt-2.5 pb-1 text-xs font-semibold tracking-wide text-muted uppercase;
-  }
-}
-
 /* ── Base resets ──────────────────────────────── */
 
 @layer base {
@@ -192,21 +183,6 @@
     }
   }
 
-  /* Accent pulse — see SKILL.md §7. Used only on actively-working indicators. */
-  @keyframes pulse-accent {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-
-  .pulse-accent {
-    animation: pulse-accent 1400ms var(--ease-out-quart) infinite;
-  }
-
   /* Scrollbar — no Tailwind equivalent */
   ::-webkit-scrollbar {
     width: 6px;
@@ -223,14 +199,6 @@
   }
 }
 
-/*
- * Shiki syntax highlighting tokens.
- *
- * The multi-file diff viewer is now Monaco-based (see
- * `$lib/renderers/monaco/diff/MonacoDiffBody.svelte`); it owns its own
- * add/delete/hunk rendering. The old `@git-diff-view/core` template
- * CSS variables have been removed as part of that migration.
- */
 :root {
   /*
    * Shiki syntax highlighting tokens.
@@ -413,61 +381,4 @@
   .monaco-action-bar
   .action-label.codicon-discard:hover {
   color: var(--color-danger-bright);
-}
-
-/* GitHub markdown layout, using Sworm's palette and type scale. */
-.markdown-body {
-  color-scheme: dark;
-  font-family: var(--font-sans);
-  font-size: var(--text-md);
-  --fontStack-monospace: var(--font-mono);
-  --bgColor-default: transparent;
-  --bgColor-muted: var(--color-surface);
-  --bgColor-neutral-muted: var(--color-raised);
-  --bgColor-attention-muted: var(--color-warning-bg);
-  --fgColor-default: var(--color-fg);
-  --fgColor-muted: var(--color-muted);
-  --fgColor-accent: var(--color-accent);
-  --fgColor-attention: var(--color-warning);
-  --fgColor-danger: var(--color-danger);
-  --fgColor-success: var(--color-success);
-  --fgColor-done: var(--color-pink);
-  --borderColor-default: var(--color-edge);
-  --borderColor-muted: var(--color-edge);
-  --borderColor-neutral-muted: var(--color-edge);
-  --borderColor-accent-emphasis: var(--color-accent);
-  --borderColor-attention-emphasis: var(--color-warning);
-  --borderColor-danger-emphasis: var(--color-danger);
-  --borderColor-success-emphasis: var(--color-success);
-  --borderColor-done-emphasis: var(--color-pink);
-  --focus-outlineColor: var(--color-accent);
-}
-
-/* The alert plugin emits an icon without GitHub's spacing class. */
-.markdown-body .markdown-alert-title {
-  @apply gap-2;
-}
-
-/* Restore browser markers removed by Tailwind's preflight. */
-.markdown-body ul {
-  @apply list-disc;
-}
-
-.markdown-body ol {
-  @apply list-decimal;
-}
-
-/* Shiki's inline background must not override the muted code surface. */
-.markdown-body pre.shiki {
-  background-color: var(--color-surface) !important;
-}
-
-.markdown-body pre.shiki .line:empty::after {
-  content: ' ';
-}
-
-/* remark-gfm checkboxes lack GitHub's task-list-item-checkbox class. */
-.markdown-body .task-list-item input[type='checkbox'] {
-  margin: 0 0.2em 0.25em -1.4em;
-  vertical-align: middle;
 }

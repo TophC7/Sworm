@@ -8,15 +8,18 @@
   import {
     getLspServers,
     getLspServersLoading,
-    loadLspServers,
-    refreshLspServers,
-    saveLspServerConfig
+    loadLspServers
   } from '$lib/features/settings/state/lspSettings.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getSettings, saveFormattingSettings } from '$lib/features/settings/state/settings.svelte'
+  import {
+    getSettings,
+    getSettingsHost,
+    saveFormattingSettings,
+    saveLspServerConfig
+  } from '$lib/features/settings/state/settings.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
-  import type { BuiltinSettingsPage, FormatterSelection, LspServerSettingsEntry } from '$lib/types/backend'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import type { BuiltinSettingsPage, FormatterSelection, LspServerConfig, LspServerSettingsEntry } from '$lib/types/backend'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { onDestroy, untrack } from 'svelte'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
   import { createAutoSaver } from './autoSaver'
@@ -34,6 +37,7 @@
   } = $props()
 
   let settings = $derived(getSettings())
+  const host = getSettingsHost()
   let activeFolderPath = $derived(getActiveFolderPath() ?? undefined)
   let lspLoading = $derived(getLspServersLoading())
   let allServers = $derived(getLspServers())
@@ -55,21 +59,23 @@
   let drafts = $state<Record<string, Draft>>({})
   let expanded = $state<Record<string, boolean>>({})
 
-  // Seed a draft for every server that has none yet. Only `servers` is
-  // tracked: editing a draft or resetting `drafts` on a folder switch must
-  // not re-run the pass with the previous folder's servers.
+  // Editable drafts belong to the loaded host's global settings, never the
+  // active folder's effective runtime configuration.
   $effect(() => {
-    const entries = servers
+    const globalSettings = settings
+    const ids = definition.server_definition_ids
+    if (!globalSettings) return
     untrack(() => {
-      for (const entry of entries) {
-        const id = entry.server.server_definition_id
+      for (const id of ids) {
         if (id in drafts) continue
+        const config = globalSettings.lsp.servers[id]
+        if (!config) throw new Error(`Missing global settings for builtin language server: ${id}`)
         drafts[id] = {
-          enabled: entry.config.enabled,
-          binaryPath: entry.config.binary_path_override ?? '',
-          extraArgs: entry.config.extra_args.join(' '),
-          trace: entry.config.trace,
-          settings: entry.config.settings ?? null
+          enabled: config.enabled,
+          binaryPath: config.binary_path_override ?? '',
+          extraArgs: config.extra_args.join(' '),
+          trace: config.trace,
+          settings: config.settings ?? null
         }
       }
     })
@@ -79,16 +85,11 @@
     onBusyChange: (busy) => (busy ? onSaving() : onSaved())
   })
 
-  // Drafts belong to the folder they were seeded from; a folder switch
-  // discards them and the seeding effect refills from the new servers.
+  // Folder switches refresh runtime status; host-keyed remounts own drafts.
   const lspLoader = createTrackedAsyncLoad<string | undefined>()
   $effect(() => {
     const folderPath = activeFolderPath
-    lspLoader.run(folderPath, async () => {
-      drafts = {}
-      expanded = {}
-      await loadLspServers(folderPath)
-    })
+    lspLoader.run(folderPath, () => loadLspServers(folderPath))
   })
 
   onDestroy(() => saver.dispose())
@@ -97,13 +98,16 @@
     if (!definition.formatter || !settings || selectedFormatter === formatter) return
     onSaving()
     try {
-      await saveFormattingSettings({
-        ...settings.formatting,
-        [definition.formatter.group]: {
-          ...settings.formatting[definition.formatter.group],
-          formatter
-        }
-      })
+      await saveFormattingSettings(
+        {
+          ...settings.formatting,
+          [definition.formatter.group]: {
+            ...settings.formatting[definition.formatter.group],
+            formatter
+          }
+        },
+        host
+      )
     } catch (error) {
       notify.error('Save formatting settings failed', getErrorMessage(error))
     } finally {
@@ -111,30 +115,9 @@
     }
   }
 
-  async function flushServer(id: string) {
-    const draft = drafts[id]
-    if (!draft) return
-
-    await persistServer(id, draft)
-  }
-
-  async function persistServer(id: string, draft: Draft) {
-    await saveLspServerConfig(
-      {
-        server_definition_id: id,
-        enabled: draft.enabled,
-        binary_path_override: draft.binaryPath.trim() || null,
-        extra_args: splitArgs(draft.extraArgs),
-        trace: draft.trace,
-        settings: draft.settings
-      },
-      activeFolderPath
-    )
-  }
-
-  async function flushServerQuietly(id: string) {
+  async function saveServer(snapshot: LspServerConfig, host: string | null) {
     try {
-      await flushServer(id)
+      await saveLspServerConfig(snapshot, host)
     } catch (error) {
       notify.error('Save language server failed', getErrorMessage(error))
     }
@@ -143,8 +126,17 @@
   function updateServer(id: string, key: keyof Draft, value: boolean | string) {
     const draft = drafts[id]
     if (!draft) return
-    drafts = { ...drafts, [id]: { ...draft, [key]: value } }
-    saver.schedule(id, () => flushServerQuietly(id))
+    const next = { ...draft, [key]: value }
+    drafts = { ...drafts, [id]: next }
+    const snapshot: LspServerConfig = {
+      server_definition_id: id,
+      enabled: next.enabled,
+      binary_path_override: next.binaryPath.trim() || null,
+      extra_args: splitArgs(next.extraArgs),
+      trace: next.trace,
+      settings: next.settings
+    }
+    saver.schedule(id, () => saveServer(snapshot, host))
   }
 
   function toggleExpanded(id: string) {
@@ -153,7 +145,7 @@
 
   async function refresh() {
     try {
-      await refreshLspServers(activeFolderPath)
+      await loadLspServers(activeFolderPath)
     } catch (error) {
       notify.error('Refresh language servers failed', getErrorMessage(error))
     }
@@ -221,7 +213,7 @@
     {:else}
       <p class="text-xs text-subtle">Formatting currently follows the language server path.</p>
       <div>
-        <Badge variant="muted">LSP</Badge>
+        <Badge>LSP</Badge>
       </div>
     {/if}
   </div>
@@ -268,7 +260,7 @@
             onclick={(event) => event.stopPropagation()}
             onkeydown={(event) => event.stopPropagation()}
           >
-            <Switch checked={draft?.enabled ?? true} onCheckedChange={(value) => updateServer(id, 'enabled', value)} />
+            <Switch checked={draft?.enabled ?? true} disabled={!settings || !draft} onCheckedChange={(value) => updateServer(id, 'enabled', value)} />
           </div>
 
           <div class="flex min-w-0 flex-1 flex-col gap-0.5">

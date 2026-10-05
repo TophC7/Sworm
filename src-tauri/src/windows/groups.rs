@@ -595,7 +595,7 @@ fn validate_metadata(
         }
         if !matches!(
             tab.get("kind").and_then(serde_json::Value::as_str),
-            Some("session" | "task" | "text" | "diff" | "tool" | "new-tab" | "issue" | "epic")
+            Some("session" | "task" | "text" | "diff" | "new-tab" | "issue" | "epic")
         ) || !tab.get("locked").is_some_and(serde_json::Value::is_boolean)
         {
             return Err("invalid exported tab schema".into());

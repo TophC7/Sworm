@@ -16,7 +16,6 @@
     stageLabel,
     stageKind = 'stage',
     revertLabel = '',
-    canStage = true,
     canRevert = true,
     onStage,
     onRevert,
@@ -29,7 +28,6 @@
     stageLabel: string
     stageKind?: StageKind
     revertLabel?: string
-    canStage?: boolean
     canRevert?: boolean
     onStage?: () => void | Promise<void>
     onRevert?: () => void | Promise<void>
@@ -55,7 +53,7 @@
       <span class="ml-2 text-muted">{detail}</span>
     </div>
     <div class="flex shrink-0 items-center gap-0.5">
-      <IconButton tooltip={stageLabel} ariaLabel={stageLabel} onclick={run(onStage)} disabled={!canStage}>
+      <IconButton tooltip={stageLabel} ariaLabel={stageLabel} onclick={run(onStage)}>
         {#if stageKind === 'unstage'}
           <Minus size={13} />
         {:else}

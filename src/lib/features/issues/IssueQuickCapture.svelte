@@ -50,7 +50,6 @@
     if (!trimmed) return
     if (mode === 'issue' && !epicId) return
     await onSubmit(trimmed)
-    value = ''
   }
 
   function onkeydown(event: KeyboardEvent) {

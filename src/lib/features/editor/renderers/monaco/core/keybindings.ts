@@ -9,7 +9,6 @@ import {
 import { parseShortcut, type ShortcutStroke } from '$lib/features/command-palette/shortcuts/spec'
 
 type KeybindingService = {
-  lookupKeybinding?: (commandId: string) => { getLabel?: () => string | null } | undefined
   getKeybindings?: () => Array<{
     command: string | null
     isDefault?: boolean
@@ -44,11 +43,6 @@ export function getMonacoDefaultKeybindings(commandId: string): string[] {
     if (label) labels.add(label)
   }
   return Array.from(labels)
-}
-
-export function getMonacoPrimaryKeybinding(commandId: string): string | null {
-  const label = service()?.lookupKeybinding?.(commandId)?.getLabel?.()
-  return normalizeMonacoLabel(label)
 }
 
 function keyCodeFor(monaco: typeof Monaco, key: string): number | null {

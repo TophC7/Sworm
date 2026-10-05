@@ -1,11 +1,11 @@
 import { backend } from '$lib/api/backend'
 import type { AttachMode, WorkbenchAttached } from '$lib/types/backend'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { cleanupRegistries, isTab, setGroupTransferring } from './transferService.svelte'
+import { cleanupRegistries, freezeTabs } from './transferService.svelte'
 import * as modelCache from '$lib/features/editor/renderers/monaco/text/modelCache'
 import { platform, requireNative, type GroupHandoff, type GroupImport, type GroupFinalized } from '$lib/platform'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-import { tabServer, type PersistedGroupRef, type PersistedTab, type PersistedWorkbenchV4, type Tab } from './model'
+import { getErrorMessage } from '$lib/utils/client-error'
+import { isTab, tabServer, type PersistedGroupRef, type PersistedTab, type PersistedWorkbenchV4, type Tab } from './model'
 import {
   createWorkbenchWriter,
   parsePersistedWorkbench,
@@ -18,7 +18,6 @@ import {
   getActiveTabId,
   finalizeTransferredTab,
   getTabs,
-  getWorkbenchId,
   persistWorkbench,
   removeTransferredTab,
   stageTransferredTab,
@@ -236,8 +235,9 @@ async function attach(
 
 /** Await listeners before advertising window readiness to the handoff coordinator. */
 export function initGroupService(): Promise<void> {
-  if (!platform.capabilities.remoteHosts) return Promise.resolve()
-  listening ??= listen().catch((error) => {
+  const native = platform.native
+  if (!native) return Promise.resolve()
+  listening ??= listen(native).catch((error) => {
     listening = null
     throw error
   })
@@ -262,8 +262,7 @@ async function refreshControl(server: string): Promise<void> {
   }
 }
 
-async function listen(): Promise<void> {
-  const native = requireNative()
+async function listen(native: NonNullable<typeof platform.native>): Promise<void> {
   const registrations = await Promise.allSettled([
     backend.workbenches.onChanged(({ server }) => {
       if (server) void refreshControl(server)
@@ -298,7 +297,8 @@ async function listen(): Promise<void> {
 
 /** Called by the state commit choke point, after the new tab list is installed. */
 export function syncGroups(): void {
-  if (!platform.capabilities.remoteHosts || restoring) return
+  const native = platform.native
+  if (!native || restoring) return
   void initGroupService().catch((error) => console.warn('Workbench listeners failed:', error))
   const servers = new Set(
     getTabs()
@@ -356,7 +356,8 @@ export async function flushActiveGroups(): Promise<void> {
 }
 
 export async function restoreGroups(refs: PersistedGroupRef[]): Promise<void> {
-  if (!platform.capabilities.remoteHosts) return
+  const native = platform.native
+  if (!native) return
   await initGroupService()
   restoring = true
   try {
@@ -385,7 +386,8 @@ export async function restoreGroups(refs: PersistedGroupRef[]): Promise<void> {
 }
 
 export async function openWorkbench(server: string, id: string, takeover: boolean): Promise<void> {
-  if (!platform.capabilities.remoteHosts) return
+  const native = platform.native
+  if (!native) return
   await initGroupService()
   const existing = findGroup(server)
   if (existing) {
@@ -449,7 +451,7 @@ export async function moveGroupToNewWindow(server: string): Promise<void> {
   if (!group || group.state !== 'active') return
   if (group.detaching) throw new Error('Workbench is already changing windows')
   await initGroupService()
-  await requireNative().window.groupHandoff(getWorkbenchId(), server, group.id, 0)
+  await requireNative().window.groupHandoff(platform.workbench.id, server, group.id, 0)
 }
 
 export async function requestGroup(
@@ -462,7 +464,7 @@ export async function requestGroup(
   if (existing && (existing.detaching || existing.state === 'active' || currentTabs(server).length))
     throw new Error(`This window already has a ${server} workbench`)
   await initGroupService()
-  await requireNative().window.groupHandoff(sourceWindow, server, workbenchId, index, getWorkbenchId())
+  await requireNative().window.groupHandoff(sourceWindow, server, workbenchId, index, platform.workbench.id)
 }
 
 async function exportGroup(handoff: GroupHandoff): Promise<void> {
@@ -481,7 +483,7 @@ async function exportGroup(handoff: GroupHandoff): Promise<void> {
     const attachmentId = group.attachmentId
     group.detaching = true
     groupTransfers.set(handoff.transferId, { group, source: true, tabs, previousActive: getActiveTabId() })
-    setGroupTransferring(
+    freezeTabs(
       handoff.transferId,
       tabs.map((tab) => tab.id)
     )
@@ -491,8 +493,8 @@ async function exportGroup(handoff: GroupHandoff): Promise<void> {
     tabs = currentTabs(group.server)
     groupTransfers.get(handoff.transferId)!.tabs = tabs
     const modelStates = tabs.flatMap((tab) => {
-      if (tab.kind !== 'text' || tab.gitRef) return []
-      const state = modelCache.exportModelTransfer(tab.id)
+      if (tab.kind !== 'text') return []
+      const state = modelCache.exportModelTransfer(tab)
       return state ? [state] : []
     })
     const activeTabId = tabs.some((tab) => tab.id === getActiveTabId()) ? getActiveTabId() : group.lastActiveTabId
@@ -527,7 +529,7 @@ async function stageGroup(handoff: GroupImport): Promise<void> {
       tabs: handoff.tabs,
       previousActive: getActiveTabId()
     })
-    setGroupTransferring(
+    freezeTabs(
       handoff.transferId,
       handoff.tabs.map((tab) => tab.id)
     )
@@ -564,7 +566,7 @@ function commitGroup({ transferId }: GroupHandoff): void {
   }
   abandon(transfer.group)
   groupTransfers.delete(transferId)
-  setGroupTransferring(transferId, null)
+  freezeTabs(transferId, null)
   persistWorkbench()
 }
 
@@ -576,7 +578,7 @@ function finalizeGroup({ transferId, attached }: GroupFinalized): void {
   transfer.group.detaching = false
   for (const tab of transfer.tabs) finalizeTransferredTab(tab.id)
   groupTransfers.delete(transferId)
-  setGroupTransferring(transferId, null)
+  freezeTabs(transferId, null)
   focusGroup(transfer.group.server)
   syncGroups()
   persistWorkbench()
@@ -587,7 +589,7 @@ function abortGroup({ transferId }: GroupHandoff): void {
   const transfer = groupTransfers.get(transferId)
   if (!transfer) return
   groupTransfers.delete(transferId)
-  setGroupTransferring(transferId, null)
+  freezeTabs(transferId, null)
   if (transfer.source) {
     transfer.group.detaching = false
     if (transfer.group.state === 'active') {

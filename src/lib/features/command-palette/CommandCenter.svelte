@@ -18,14 +18,12 @@
   import { cn } from '$lib/utils/cn'
   import {
     getAppCommandGroups,
-    getEditorCommandGroups,
-    getTaskCommandGroups,
-    type Command as CommandType
-  } from '$lib/features/command-palette/commands/index.svelte'
+    getEditorCommandGroups
+  } from '$lib/features/command-palette/commands/registry.svelte'
+  import { getTaskPaletteGroups } from '$lib/features/command-palette/commands/tasks.svelte'
+  import type { Command as CommandType, CommandGroup as CommandGroupType } from '$lib/features/command-palette/commands/types'
   import { getFilePaletteGroups } from '$lib/features/command-palette/commands/files.svelte'
-  import { getPlaceCommandGroups } from '$lib/features/command-palette/commands/places.svelte'
-  import { refreshPlaces, watchPlaces } from '$lib/features/browser/places.svelte'
-  import { remoteDotClass } from '$lib/features/remotes/remoteDot'
+  import { refreshPlaces } from '$lib/features/browser/places.svelte'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/features/command-palette/commands/recents.svelte'
   import {
     consumePendingInitialSearch,
@@ -36,7 +34,6 @@
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
   import { isTextEditorFocused } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
   import { getEffectiveBindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
-  import { getShortcutCommand } from '$lib/features/command-palette/shortcuts/registry.svelte'
   import ShortcutPreview from '$lib/features/command-palette/shortcuts/ShortcutPreview.svelte'
 
   // Rebind flow. When the user clicks the pencil icon next to a row's
@@ -52,7 +49,7 @@
     rebindTarget = {
       id: commandBindingId(cmd),
       label: cmd.label,
-      defaultKeybindings: commandDefaultKeybindings(cmd)
+      defaultKeybindings: cmd.defaultKeybindings ?? []
     }
   }
 
@@ -71,8 +68,7 @@
   const PREFIX_MODES = {
     '>': 'editor',
     '!': 'task',
-    '/': 'files',
-    '@': 'places'
+    '/': 'files'
   } as const
   type PrefixChar = keyof typeof PREFIX_MODES
   type PaletteMode = (typeof PREFIX_MODES)[PrefixChar] | 'default'
@@ -80,7 +76,6 @@
     editor: 'Editor command...',
     task: 'Run task...',
     files: 'Search files... (path:line)',
-    places: 'Go to workbench, folder, or server…',
     default: 'Type a command...'
   }
 
@@ -90,14 +85,12 @@
 
   let appGroups = $derived(getAppCommandGroups())
   let editorGroups = $derived(getEditorCommandGroups())
-  let taskGroups = $derived(getTaskCommandGroups())
+  let taskGroups = $derived(getTaskPaletteGroups())
   let activeFolderPath = $derived(getActiveFolderPath())
   let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeFolderPath, filterQuery) : [])
-  let placeGroups = $derived(paletteMode === 'places' ? getPlaceCommandGroups() : [])
 
   $effect(() => {
     if (!open) return
-    if (paletteMode === 'places') return watchPlaces()
     if (paletteMode === 'default') void refreshPlaces()
   })
 
@@ -124,7 +117,7 @@
   // Only surfaced in app mode, and only when search is empty. Filtering
   // should hit the real groups so every match is discoverable without
   // duplicates across Recent + its source section.
-  let recentGroup = $derived.by<import('$lib/features/command-palette/commands/index.svelte').CommandGroup | null>(
+  let recentGroup = $derived.by<CommandGroupType | null>(
     () => {
       if (isPrefixedMode) return null
       const ids = getRecentCommandIds()
@@ -155,9 +148,7 @@
         ? editorGroups
         : paletteMode === 'task'
           ? taskGroups
-          : paletteMode === 'places'
-            ? placeGroups
-            : appGroups
+          : appGroups
     const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
     if (!filterQuery) return withRecents
 
@@ -187,15 +178,12 @@
   })
 
   function run(cmd: CommandType) {
-    // Strip the `recent:` prefix we add when cloning into the Recent group
-    // so both entry points record under the original command id.
-    const baseId = cmd.id.startsWith('recent:') ? cmd.id.slice('recent:'.length) : cmd.id
     // Task entries and editor-mode entries are excluded from Recent:
     // task lists already live behind `!`, and editor commands are
     // context-specific so a stale recent could fire in the wrong tab.
     // Files mode hits aren't recorded — the recent list is for app
     // commands, not arbitrary file paths.
-    if (!isPrefixedMode) recordRecentCommand(baseId)
+    if (!isPrefixedMode) recordRecentCommand(commandBindingId(cmd))
     setCommandPaletteOpen(false)
     search = ''
     const runId = ++scheduledRun
@@ -205,18 +193,6 @@
       if (runId !== scheduledRun || isCommandPaletteOpen()) return
       cmd.onSelect()
     })
-  }
-
-  function commandDefaultKeybindings(cmd: CommandType): string[] {
-    if (cmd.defaultKeybindings) return cmd.defaultKeybindings
-    const registered = getShortcutCommand(commandBindingId(cmd))
-    if (registered) return registered.defaultKeybindings
-    return cmd.shortcut ? [cmd.shortcut] : []
-  }
-
-  function commandCanEditShortcut(cmd: CommandType): boolean {
-    if (cmd.defaultKeybindings !== undefined || cmd.shortcut !== undefined) return true
-    return getShortcutCommand(commandBindingId(cmd)) !== null
   }
 
   function commandBindingId(cmd: CommandType): string {
@@ -333,9 +309,9 @@
         <CommandGroup heading={group.heading}>
           {#each group.commands as cmd (cmd.id)}
             {@const Icon = cmd.icon}
-            {@const defaultKeybindings = commandDefaultKeybindings(cmd)}
+            {@const defaultKeybindings = cmd.defaultKeybindings ?? []}
             {@const effectiveShortcuts = getEffectiveBindings(commandBindingId(cmd), defaultKeybindings)}
-            {@const canEditShortcut = commandCanEditShortcut(cmd)}
+            {@const canEditShortcut = cmd.defaultKeybindings !== undefined}
             <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
               {#if Icon}
                 <Icon />
@@ -347,12 +323,6 @@
                            build time so invalid names degrade to no icon rather
                            than layout shift. -->
                 <LucideIcon name={cmd.lucideIcon} size={16} class="shrink-0 opacity-60" />
-              {/if}
-              {#if cmd.serverState}
-                <span
-                  class="size-2 shrink-0 rounded-full {remoteDotClass(cmd.serverState)}"
-                  aria-label={cmd.serverState}
-                ></span>
               {/if}
               {#if cmd.subtitle}
                 <span class="truncate">{cmd.label}</span>
@@ -422,10 +392,6 @@
           <Kbd>/</Kbd>
           files
         </span>
-        <span class="flex items-center gap-1.5">
-          <Kbd>@</Kbd>
-          places
-        </span>
       {/if}
     </div>
     <span class="flex items-center gap-1.5">
@@ -437,7 +403,6 @@
 
 {#if rebindTarget}
   <RebindDialog
-    open={true}
     commandId={rebindTarget.id}
     commandLabel={rebindTarget.label}
     defaultKeybindings={rebindTarget.defaultKeybindings}

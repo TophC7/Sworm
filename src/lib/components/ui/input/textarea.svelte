@@ -1,22 +1,21 @@
 <script lang="ts">
   import { cn } from '$lib/utils/cn'
+  import { inputVariants } from './input.svelte'
+  import type { HTMLTextareaAttributes } from 'svelte/elements'
 
   let {
     class: className,
     value = $bindable(''),
     ...rest
-  }: {
+  }: Omit<HTMLTextareaAttributes, 'value'> & {
     class?: string
     value?: string
-    [key: string]: unknown
   } = $props()
 </script>
 
 <textarea
+  data-slot="textarea"
   bind:value
-  class={cn(
-    'w-full resize-none rounded border border-edge bg-surface px-2.5 py-1.5 text-base text-fg transition-colors outline-none placeholder:text-subtle focus:border-accent',
-    className
-  )}
+  class={cn(inputVariants(), 'resize-none', className)}
   {...rest}
 ></textarea>

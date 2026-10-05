@@ -20,27 +20,15 @@
 
 import {
   createDiffOptions,
+  getDiffEditorPool,
   type DiffEditorSettings
 } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
 import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
-import type { DiffModelStore } from '$lib/features/workbench/surfaces/diff/diffModels.svelte'
+import type { DiffModelStore } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
 
-type Monaco = typeof import('monaco-editor')
 type DiffEditor = import('monaco-editor').editor.IStandaloneDiffEditor
 type DiffOptions = import('monaco-editor').editor.IDiffEditorOptions & import('monaco-editor').editor.IEditorOptions
 
-export interface PreloadParams {
-  monaco: Monaco
-  store: DiffModelStore
-  path: string
-  settings: DiffEditorSettings
-}
-
-interface QueueItem extends PreloadParams {}
-
-// Fallback seed if the measure pipeline fails. Matches VSCode's default
-// placeholder so first-paint sizes are in the same ballpark.
-const DEFAULT_HEIGHT = 500
 // Number of frames to wait after `onDidUpdateDiff` before measuring.
 // Ensures `hideUnchangedRegions` widgets have been applied by the layout
 // pipeline — without this, `getContentHeight()` still returns the
@@ -57,47 +45,32 @@ const HIDDEN_HEIGHT = 600
 
 export class DiffHeightPreloader {
   private editor: DiffEditor | null = null
-  private container: HTMLDivElement | null = null
-  private queue: QueueItem[] = []
+  private queue: { store: DiffModelStore; path: string }[] = []
   private queued = new Set<string>()
   private processing = false
-  private disposed = false
   private currentSettings: DiffEditorSettings | null = null
 
   /**
    * Queue a path for height pre-computation. De-duped by path — a
    * second enqueue while an earlier one is still pending is a no-op.
-   * Resolved height is written back to `params.store` via `setHeight`;
+   * Resolved height is written back to `store` via `setHeight`;
    * fire-and-forget from the caller's perspective.
    */
-  preload(params: PreloadParams): void {
-    if (this.disposed) return
-    if (this.queued.has(params.path)) return
-    this.queued.add(params.path)
-    this.ensure(params.monaco, params.settings)
-    this.queue.push(params)
+  preload(store: DiffModelStore, path: string): void {
+    if (this.queued.has(path)) return
+    this.queued.add(path)
+    this.queue.push({ store, path })
     this.pump()
-  }
-
-  /** Tear down the hidden editor. Call on viewer teardown. */
-  dispose(): void {
-    if (this.disposed) return
-    this.disposed = true
-    this.queue = []
-    this.queued.clear()
-    this.editor?.setModel(null)
-    this.editor?.dispose()
-    this.container?.remove()
-    this.editor = null
-    this.container = null
   }
 
   /**
    * Lazy-init the hidden editor + apply the latest settings. Safe to
    * call repeatedly; only the first call constructs the DOM + editor.
    */
-  private ensure(monaco: Monaco, settings: DiffEditorSettings): void {
-    if (this.disposed) return
+  private async ensure(): Promise<void> {
+    const pool = getDiffEditorPool()
+    const monaco = await pool.ready()
+    const settings = pool.getSettings()
     if (!this.editor) {
       const container = document.createElement('div')
       container.setAttribute('aria-hidden', 'true')
@@ -114,7 +87,6 @@ export class DiffHeightPreloader {
         'visibility:hidden'
       ].join(';')
       document.body.appendChild(container)
-      this.container = container
 
       this.editor = monaco.editor.createDiffEditor(container, this.buildOptions(settings))
       this.currentSettings = settings
@@ -122,21 +94,10 @@ export class DiffHeightPreloader {
       this.editor.layout({ width: HIDDEN_WIDTH, height: HIDDEN_HEIGHT })
       return
     }
-    this.applySettings(settings)
-  }
-
-  private applySettings(settings: DiffEditorSettings): void {
-    if (!this.editor) return
-    if (
-      this.currentSettings &&
-      this.currentSettings.renderSideBySide === settings.renderSideBySide &&
-      this.currentSettings.wordWrap === settings.wordWrap &&
-      this.currentSettings.fontSize === settings.fontSize
-    ) {
-      return
+    if (settings !== this.currentSettings) {
+      this.currentSettings = settings
+      this.editor.updateOptions(this.buildOptions(settings))
     }
-    this.currentSettings = settings
-    this.editor.updateOptions(this.buildOptions(settings))
   }
 
   /**
@@ -160,22 +121,20 @@ export class DiffHeightPreloader {
   }
 
   private pump(): void {
-    if (this.processing || this.disposed) return
+    if (this.processing) return
     const next = this.queue.shift()
     if (!next) return
     this.processing = true
     this.measure(next).finally(() => {
       this.processing = false
       this.queued.delete(next.path)
-      if (!this.disposed) this.pump()
+      this.pump()
     })
   }
 
-  private async measure(item: QueueItem): Promise<void> {
-    const editor = this.editor
-    if (!editor || this.disposed) return
-
-    this.applySettings(item.settings)
+  private async measure(item: { store: DiffModelStore; path: string }): Promise<void> {
+    await this.ensure()
+    const editor = this.editor!
 
     // Retain models lazily — only for the measurement window. Retaining
     // every queued file up-front would hold N text-model pairs in memory
@@ -188,7 +147,6 @@ export class DiffHeightPreloader {
       editor.setModel(null)
 
       const h = await this.runMeasure(editor, retained.original, retained.modified)
-      if (this.disposed) return
       if (h != null) item.store.setHeight(item.path, h)
     } finally {
       // Unbind BEFORE releasing the store retain. If this measure was the
@@ -246,10 +204,3 @@ export function getDiffHeightPreloader(): DiffHeightPreloader {
   if (!instance) instance = new DiffHeightPreloader()
   return instance
 }
-
-export function disposeDiffHeightPreloader(): void {
-  instance?.dispose()
-  instance = null
-}
-
-export { DEFAULT_HEIGHT as DEFAULT_DIFF_ROW_HEIGHT }

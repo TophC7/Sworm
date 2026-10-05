@@ -1,4 +1,3 @@
-import { openLink } from '$lib/features/workbench/links/openLink'
 import { mapBufferStringIndex } from './mapBufferStringIndex'
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from '@xterm/xterm'
 
@@ -23,8 +22,7 @@ const FILE_PATH_REGEX =
 export class TerminalLinkProvider implements ILinkProvider {
   constructor(
     private readonly terminal: Terminal,
-    private readonly getFolderPath: () => string | null,
-    private readonly getHostEl: () => HTMLElement | null
+    private readonly handlers: Pick<ILink, 'activate' | 'hover' | 'leave'>
   ) {}
 
   provideLinks(y: number, callback: (links: ILink[] | undefined) => void): void {
@@ -99,24 +97,7 @@ export class TerminalLinkProvider implements ILinkProvider {
       links.push({
         range,
         text: matchText,
-        activate: (event: MouseEvent, targetText: string) => {
-          if (event.ctrlKey || event.metaKey) {
-            const folderPath = this.getFolderPath()
-            void openLink(targetText, folderPath)
-          }
-        },
-        hover: (_event: MouseEvent, targetText: string) => {
-          const hostEl = this.getHostEl()
-          if (hostEl) {
-            hostEl.title = `Ctrl+click to follow: ${targetText}`
-          }
-        },
-        leave: () => {
-          const hostEl = this.getHostEl()
-          if (hostEl) {
-            hostEl.title = ''
-          }
-        }
+        ...this.handlers
       })
     }
   }

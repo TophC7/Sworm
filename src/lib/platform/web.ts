@@ -59,22 +59,6 @@ export function createWebPlatform(
         return { url, dispose: () => URL.revokeObjectURL(url) }
       }
     },
-    capabilities: {
-      revealInFileManager: false,
-      openInTerminal: false,
-      tabTransfer: false,
-      deepLinks: false,
-      osDragDrop: false,
-      nativeWindowControls: false,
-      zoom: false,
-      saveAsDialog: false,
-      nativeFileClipboard: false,
-      nativeDirectoryPicker: false,
-      externalFileOpen: false,
-      fileClaims: false,
-      remoteHosts: false,
-      durableWorkbenches: true
-    },
     native: null
   }
 }

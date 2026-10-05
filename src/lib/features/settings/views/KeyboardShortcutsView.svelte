@@ -4,12 +4,13 @@
 -->
 
 <script lang="ts">
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
   import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
   import ShortcutPreview from '$lib/features/command-palette/shortcuts/ShortcutPreview.svelte'
   import { clearShortcutOverride, getUserKeybindings } from '$lib/features/command-palette/shortcuts/overrides.svelte'
@@ -32,13 +33,16 @@
   let filter = $state<Filter>('all')
   let rebindTarget = $state<ShortcutCommandInfo | null>(null)
   let shortcutsPath = $state<string | null>(null)
+  let infos = $derived(getShortcutInfos())
 
   async function openShortcutsFile(): Promise<void> {
+    const native = platform.native
+    if (!native) return
     try {
-      const result = await requireNative().shortcuts.openGlobalFile()
+      const result = await native.shortcuts.openGlobalFile()
       shortcutsPath = result.path
     } catch (error) {
-      notify.error('Failed to open shortcuts file', error instanceof Error ? error.message : String(error))
+      notify.error('Failed to open shortcuts file', getErrorMessage(error))
     }
   }
 
@@ -58,7 +62,7 @@
   }
 
   function hasConflict(command: ShortcutCommandInfo): boolean {
-    return command.effectiveKeybindings.some((binding) => findShortcutConflict(command.id, binding) !== null)
+    return command.effectiveKeybindings.some((binding) => findShortcutConflict(command.id, binding, infos) !== null)
   }
 
   function matchesFilter(command: ShortcutCommandInfo): boolean {
@@ -73,7 +77,7 @@
   }
 
   let commands = $derived(
-    getShortcutInfos()
+    infos
       .filter(matchesSearch)
       .filter(matchesFilter)
       .sort(
@@ -102,7 +106,7 @@
           at <span class="font-mono">{shortcutsPath}</span>{/if}.
       </p>
     </div>
-    {#if platform.capabilities.externalFileOpen}
+    {#if platform.native}
       <Button size="xs" variant="outline" onclick={openShortcutsFile}>Open File</Button>
     {/if}
   </div>
@@ -146,7 +150,7 @@
               <div class="flex min-w-52 flex-wrap justify-end gap-1.5">
                 {#if command.effectiveKeybindings.length > 0}
                   {#each command.effectiveKeybindings as binding (binding)}
-                    {#if findShortcutConflict(command.id, binding)}
+                    {#if findShortcutConflict(command.id, binding, infos)}
                       <span class="rounded-md border border-warning/40 bg-warning-bg px-1.5 py-1">
                         <ShortcutPreview spec={binding} />
                       </span>
@@ -182,7 +186,6 @@
 
 {#if rebindTarget}
   <RebindDialog
-    open={true}
     commandId={rebindTarget.id}
     commandLabel={rebindTarget.label}
     defaultKeybindings={rebindTarget.defaultKeybindings}

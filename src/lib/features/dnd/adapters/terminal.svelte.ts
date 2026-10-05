@@ -1,11 +1,11 @@
 import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
-import { platform, requireNative } from '$lib/platform'
+import { platform } from '$lib/platform'
 import { DND_MIME, type DragPayload } from '$lib/features/dnd/payload'
-import { createHoverStore } from '$lib/features/dnd/hover-state.svelte'
+import { SvelteSet } from 'svelte/reactivity'
 import { dragObserver, frameAt } from '$lib/features/dnd/observer.svelte'
 import { DropRegistry } from '$lib/features/dnd/registry.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import type { TabId } from '$lib/features/workbench/model'
 
 interface TerminalDropObserverArgs {
@@ -15,14 +15,10 @@ interface TerminalDropObserverArgs {
   onInsertText: (text: string) => void
 }
 
-const hoverStore = createHoverStore<true>()
-
-function setHover(tabId: TabId): void {
-  hoverStore.set(tabId, true)
-}
+const hoverStore = new SvelteSet<string>()
 
 function clearHover(tabId: TabId): void {
-  hoverStore.clear(tabId)
+  hoverStore.delete(tabId)
 }
 
 /** A remote workspace's shell runs on the daemon; this desktop's files are unreachable from it. */
@@ -66,7 +62,8 @@ function dropEnabled(args: TerminalDropObserverArgs): boolean {
 }
 
 async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
-  if (!platform.capabilities.osDragDrop) return []
+  const native = platform.native
+  if (!native) return []
   const files = Array.from(event.dataTransfer?.files ?? [])
   const images = files.filter((file) => file.type.startsWith('image/'))
   if (images.length === 0) return []
@@ -74,7 +71,7 @@ async function collectImagePathsFromEvent(event: DragEvent): Promise<string[]> {
   const tempPaths: string[] = []
   for (const image of images) {
     const bytes = new Uint8Array(await image.arrayBuffer())
-    const path = await requireNative().osDrop.saveDroppedBytes(bytes, image.name || 'dropped-image.png')
+    const path = await native.osDrop.saveDroppedBytes(bytes, image.name || 'dropped-image.png')
     tempPaths.push(path)
   }
   return tempPaths
@@ -132,7 +129,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
         clearHover(args.tabId)
         return
       }
-      setHover(args.tabId)
+      hoverStore.add(args.tabId)
     },
     onLeave: () => {
       clearHover(args.tabId)
@@ -170,7 +167,7 @@ export function terminalDropObserver(args: TerminalDropObserverArgs) {
       accept: (payload) => dropEnabled(args) && canAccept(payload, args.folderPath),
       hitTest: (_payload, clientX, clientY) => isCenterDropPoint(element, clientX, clientY),
       hover: () => {
-        setHover(args.tabId)
+        hoverStore.add(args.tabId)
       },
       leave: () => {
         clearHover(args.tabId)
@@ -195,9 +192,6 @@ export function isTerminalDropActive(tabId: TabId): boolean {
   return hoverStore.has(tabId)
 }
 
-export function preparePathForShell(path: string, shell: 'posix' | 'powershell' = 'posix'): string {
-  if (shell === 'powershell') {
-    return `'${path.replaceAll("'", "''")}'`
-  }
+function preparePathForShell(path: string): string {
   return `'${path.replaceAll("'", "'\\''")}'`
 }

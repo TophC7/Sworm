@@ -7,39 +7,37 @@
 import { backend } from '$lib/api/backend'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+import { getErrorMessage } from '$lib/utils/client-error'
 import type { TaskDefinition } from '$lib/types/backend'
-import type { TabId } from '$lib/features/workbench/model'
+import type { TabId, TaskTab } from '$lib/features/workbench/model'
 import {
   addTaskTab,
   findTaskTabByTaskId,
   getActiveTab,
-  resetTaskTabForRestart
+  resetTaskTabForRestart,
+  setTaskTabStatus
 } from '$lib/features/workbench/state.svelte'
 import { findTask } from '$lib/features/tasks/state.svelte'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 
 /** Stop an attached task after startup settles, or stop a restored inactive run directly. */
-export async function stopTaskProcess(runId: string): Promise<void> {
-  const terminal = taskRegistry.get(runId)
+export async function stopTaskProcess(tab: TaskTab): Promise<void> {
+  const terminal = taskRegistry.get(tab.runId)
   if (terminal) return terminal.stopProcess()
-  await backend.tasks.stop(runId)
+  await backend.tasks.stop(tab.runId)
+  setTaskTabStatus(tab.id, 'exited', null)
 }
 
 // Tracks the most recently launched task per folder so "Re-run Last
 // Task" in the palette can fire without re-prompting the user to pick.
 const lastTaskByFolder = new Map<string, string>()
 
-export function rememberLastTask(folderPath: string, taskId: string): void {
+function rememberLastTask(folderPath: string, taskId: string): void {
   lastTaskByFolder.set(folderPath, taskId)
 }
 
 export function getLastTaskId(folderPath: string): string | null {
   return lastTaskByFolder.get(folderPath) ?? null
-}
-
-function newRunId(): string {
-  return crypto.randomUUID()
 }
 
 /** Path of the active text tab, only when it belongs to `folderPath`
@@ -50,13 +48,7 @@ function activeFilePathFor(folderPath: string): string | null {
   return active.filePath
 }
 
-function normalizeIcon(task: TaskDefinition): string | null {
-  return task.icon?.trim() ? task.icon.trim() : null
-}
-
-function normalizeGroup(task: TaskDefinition): string | null {
-  return task.group?.trim() ? task.group.trim() : null
-}
+const trimmedOrNull = (s?: string | null) => s?.trim() || null
 
 async function confirmIfRequired(task: TaskDefinition): Promise<boolean> {
   if (!task.confirm) return true
@@ -84,21 +76,21 @@ export async function openTaskTab(
 ): Promise<TabId | null> {
   if (!(await confirmIfRequired(task))) return null
 
-  const icon = normalizeIcon(task)
-  const group = normalizeGroup(task)
+  const icon = trimmedOrNull(task.icon)
+  const group = trimmedOrNull(task.group)
 
   if (task.singleton) {
     const existing = findTaskTabByTaskId(folderPath, task.id)
     if (existing) {
       const activeFilePath = activeFilePathFor(folderPath) ?? options.activeFilePath ?? existing.activeFilePath
       try {
-        await stopTaskProcess(existing.runId)
+        await stopTaskProcess(existing)
       } catch (error) {
         notify.error('Stop task failed', getErrorMessage(error))
         throw error
       }
       taskRegistry.dispose(existing.runId)
-      const nextRunId = newRunId()
+      const nextRunId = crypto.randomUUID()
       resetTaskTabForRestart(existing.id, nextRunId, {
         activeFilePath,
         label: task.label,
@@ -111,7 +103,7 @@ export async function openTaskTab(
   }
 
   const activeFilePath = activeFilePathFor(folderPath) ?? options.activeFilePath ?? null
-  const runId = newRunId()
+  const runId = crypto.randomUUID()
   const tabId = addTaskTab(folderPath, {
     runId,
     taskId: task.id,
@@ -132,16 +124,6 @@ export async function openTaskTab(
 export async function rerunLastTask(folderPath: string): Promise<TabId | null> {
   const taskId = getLastTaskId(folderPath)
   if (!taskId) return null
-  return openTaskTabById(folderPath, taskId)
-}
-
-/**
- * Look up a task by id in the cache and open it. Returns null when
- * the task is no longer defined — callers should refresh the task
- * list first if they want a stable read.
- */
-export async function openTaskTabById(folderPath: string, taskId: string): Promise<TabId | null> {
   const task = findTask(folderPath, taskId)
-  if (!task) return null
-  return openTaskTab(folderPath, task)
+  return task ? openTaskTab(folderPath, task) : null
 }

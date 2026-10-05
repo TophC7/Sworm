@@ -1,11 +1,5 @@
 <script lang="ts">
-  let {
-    counts,
-    color = 'var(--color-accent)'
-  }: {
-    counts: number[]
-    color?: string
-  } = $props()
+  let { counts }: { counts: number[] } = $props()
 
   const dayLetters = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
   const today = new Date().getDay() // 0=Sun
@@ -20,7 +14,7 @@
     <div class="flex flex-col items-center gap-0.5">
       <div
         class="h-2.5 w-full rounded-[3px]"
-        style="background: {count > 0 ? color : 'var(--color-edge)'}; opacity: {count > 0 ? intensity : 0.15};"
+        style="background: {count > 0 ? 'var(--color-accent)' : 'var(--color-edge)'}; opacity: {count > 0 ? intensity : 0.15};"
       ></div>
       <span class="text-3xs text-subtle">{days[i]}</span>
     </div>

@@ -1,6 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity'
 import { backend } from '$lib/api/backend'
-import { platform, requireNative } from '$lib/platform'
+import { platform } from '$lib/platform'
+import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import {
   discardTextModelBuffer,
   discardUntitledTextModelBuffer,
@@ -96,7 +97,7 @@ export function ensureTextFileSyncListeners(): Promise<void> {
           nextFolder = normalizeAbsolutePath(folderPath)
           nextRelative = toProjectRelativePath(nextFolder, nextPath)!
         }
-        renameTextModelBuffer(tab.folderPath, tab.filePath, nextRelative, nextPath, nextFolder)
+        renameTextModelBuffer(tab.folderPath, tab.filePath, nextRelative, nextFolder)
         moveTextBaseVersion(tab.folderPath, tab.filePath, nextRelative, nextFolder ?? tab.folderPath)
         renameTextTab(tab.id, nextRelative, nextFolder ?? tab.folderPath)
       }
@@ -168,9 +169,10 @@ export async function openTextFile(
   const temporary = options.temporary ?? true
   const replaced = temporary ? getTabs().find((tab): tab is TextTab => tab.kind === 'text' && tab.temporary) : undefined
   const tabId = replaced?.id ?? generateTabId()
-  if (platform.capabilities.fileClaims) {
+  const native = platform.native
+  if (native) {
     const absolutePath = resolveProjectFile(folderPath, filePath)
-    const result = await requireNative().files.claimFile(absolutePath, tabId, options.reveal ?? null)
+    const result = await native.files.claimFile(absolutePath, tabId, options.reveal ?? null)
     if (result.status === 'redirect') return result.tab_id as TabId
   }
 
@@ -212,19 +214,27 @@ export function clearTextSurfaceDirtyIfClosed(tabId: TabId): void {
   clearTextSurfaceDirty(tabId)
 }
 
-export function hasAnyDirtyTextSurfaces(): boolean {
-  return dirtyTabs.size > 0
-}
-
 export function getDirtyTextSurfaceCount(): number {
   return dirtyTabs.size
+}
+
+export async function confirmDiscardDirtyText(action: string, confirmLabel = action): Promise<boolean> {
+  const count = dirtyTabs.size
+  if (count === 0) return true
+  return confirmAsync({
+    title: 'Unsaved changes',
+    message: `You have ${count} unsaved ${count === 1 ? 'file' : 'files'}. ${action} and lose changes?`,
+    confirmLabel,
+    cancelLabel: 'Keep editing'
+  })
 }
 
 export function isTextSurfaceDirty(tabId: TabId): boolean {
   return dirtyTabs.has(tabId)
 }
 
-export function markTextSurfaceSaved(folderPath: string, filePath: string, value: string): void {
+export function markTextSurfaceSaved(folderPath: string, filePath: string, value: string, version: string): void {
+  setTextBaseVersion(folderPath, filePath, version)
   markTextModelBufferSaved(folderPath, filePath, value)
 }
 
@@ -275,7 +285,7 @@ export function renameTextPath(folderPath: string, oldPath: string, newPath: str
     if (tab.kind !== 'text' || tab.folderPath !== folderPath || tab.filePath == null) continue
 
     if (tab.filePath === oldPath) {
-      renameTextModelBuffer(folderPath, oldPath, newPath, resolveProjectFile(folderPath, newPath))
+      renameTextModelBuffer(folderPath, oldPath, newPath)
       moveTextBaseVersion(folderPath, oldPath, newPath, folderPath)
       renameTextTab(tab.id, newPath)
       continue
@@ -283,7 +293,7 @@ export function renameTextPath(folderPath: string, oldPath: string, newPath: str
 
     if (tab.filePath.startsWith(prefix)) {
       const renamedPath = `${newPath}/${tab.filePath.slice(prefix.length)}`
-      renameTextModelBuffer(folderPath, tab.filePath, renamedPath, resolveProjectFile(folderPath, renamedPath))
+      renameTextModelBuffer(folderPath, tab.filePath, renamedPath)
       moveTextBaseVersion(folderPath, tab.filePath, renamedPath, folderPath)
       renameTextTab(tab.id, renamedPath)
     }
@@ -306,8 +316,4 @@ export function deleteTextPath(folderPath: string, path: string): void {
 
 export function getTextTabTitle(tab: TextTab): string {
   return tab.refLabel ? `${tab.fileName} (${tab.refLabel})` : tab.fileName
-}
-
-export function getTextTabFileName(tab: TextTab): string {
-  return tab.fileName
 }

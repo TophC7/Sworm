@@ -90,17 +90,13 @@
   } = $props()
 
   const classes = $derived(cn(iconButtonVariants({ size, tone, active }), className))
-  // Only emit aria-label / aria-pressed when we actually have data for them.
-  // Passing empty or undefined strings tells assistive tech "no accessible
-  // name" / "this is a toggle in the off state" — both are misleading for
-  // the non-toggle case where no tooltip or active flag was supplied.
+  // Omit missing labels and toggle state; explicit active=false remains announced.
   const label = $derived(ariaLabel ?? tooltip)
-  const pressed = $derived(active === undefined ? undefined : active)
 </script>
 
 {#if tooltip}
   <Tooltip.Root>
-    <Tooltip.Trigger class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled} {...rest}>
+    <Tooltip.Trigger class={classes} aria-label={label} aria-pressed={active} {onclick} {disabled} {...rest}>
       {#if children}{@render children()}{/if}
     </Tooltip.Trigger>
     <TooltipContent side={tooltipSide}>
@@ -111,7 +107,7 @@
     </TooltipContent>
   </Tooltip.Root>
 {:else}
-  <button type="button" class={classes} aria-label={label} aria-pressed={pressed} {onclick} {disabled} {...rest}>
+  <button type="button" class={classes} aria-label={label} aria-pressed={active} {onclick} {disabled} {...rest}>
     {#if children}{@render children()}{/if}
   </button>
 {/if}

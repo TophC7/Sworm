@@ -165,7 +165,7 @@ export function toLineSelectionRanges(
   return result
 }
 
-export function modifiedRangeForLineChange(change: LineChange, modifiedLineCount: number): LineSelectionRange {
+function modifiedRangeForLineChange(change: LineChange, modifiedLineCount: number): LineSelectionRange {
   if (change.modifiedEndLineNumber === 0) {
     const anchor = Math.min(Math.max(1, change.modifiedStartLineNumber || 1), Math.max(1, modifiedLineCount))
     return { startLineNumber: anchor, endLineNumber: anchor }
@@ -364,7 +364,7 @@ export function lineChangeIntersectsRanges(
   return ranges.some((range) => rangesIntersect(modifiedRange, range))
 }
 
-export function intersectLineChangeWithRange(
+function intersectLineChangeWithRange(
   change: LineChange,
   range: LineSelectionRange,
   modifiedLineCount: number

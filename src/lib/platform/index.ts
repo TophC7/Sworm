@@ -18,26 +18,6 @@ import type {
   WorkbenchAttached
 } from '$lib/types/backend'
 
-export type { Unsubscribe } from '$lib/api/transport'
-
-export interface PlatformCapabilities {
-  revealInFileManager: boolean
-  openInTerminal: boolean
-  tabTransfer: boolean
-  deepLinks: boolean
-  osDragDrop: boolean
-  nativeWindowControls: boolean
-  zoom: boolean
-  saveAsDialog: boolean
-  nativeFileClipboard: boolean
-  nativeDirectoryPicker: boolean
-  externalFileOpen: boolean
-  fileClaims: boolean
-  remoteHosts: boolean
-  /** Server-owned workbenches the user can switch between and close (web). */
-  durableWorkbenches: boolean
-}
-
 export interface TransferRequestEvent {
   transferId: string
   tabId: string
@@ -197,7 +177,6 @@ export interface Platform {
   assets:
     | { url(folderPath: string, filePath: string): string }
     | { load(folderPath: string, filePath: string, signal: AbortSignal): Promise<AssetHandle> }
-  capabilities: PlatformCapabilities
   native: NativePlatform | null
 }
 

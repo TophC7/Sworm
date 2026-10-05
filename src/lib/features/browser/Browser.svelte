@@ -11,9 +11,9 @@
     commandGroupHeadingVariants
   } from '$lib/components/ui/command'
   import { Kbd } from '$lib/components/ui/kbd'
+  import { openFolderPicker } from '$lib/features/app-actions/actions.svelte'
   import { getRecentFolders } from '$lib/features/folders/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
-  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { remoteDotClass } from '$lib/features/remotes/remoteDot'
   import { openRemoteManager } from '$lib/features/remotes/state.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
@@ -26,13 +26,13 @@
     ChevronRight,
     Eye,
     EyeOff,
-    FolderOpen,
+    FolderOpenIcon,
     Layers,
     MonitorIcon,
     ServerIcon,
     SettingsIcon
   } from '$lib/icons/lucideExports'
-  import { platform, requireNative } from '$lib/platform'
+  import { platform } from '$lib/platform'
   import type { FolderEntry, WorkbenchInfo } from '$lib/types/backend'
   import { cn } from '$lib/utils/cn'
   import { logicalKey } from '$lib/utils/keyboardEvent'
@@ -140,7 +140,7 @@
       server: name,
       state
     })),
-    ...(platform.capabilities.remoteHosts
+    ...(platform.native
       ? [{ key: 'manage', kind: 'manage', section: 'Servers', label: 'Pair or Manage Servers…', detail: '' } as const]
       : [])
   ])
@@ -410,16 +410,6 @@
     if (moved) selectedKey = row.key
   }
 
-  async function openWithSystemDialog(): Promise<void> {
-    const tabId = request?.replaceTabId
-    closeBrowser()
-    try {
-      const folderPath = await requireNative().dialogs.selectDirectory()
-      if (folderPath) await goToFolder(folderPath, tabId)
-    } catch (error) {
-      notify.error('Open folder failed', getErrorMessage(error))
-    }
-  }
 
   $effect(() => {
     const opening = request
@@ -546,7 +536,7 @@
         <ArrowUp size={14} />
       </IconButton>
       <IconButton size="md" tooltip="Edit Location" shortcut="Ctrl+L" onclick={() => void editLocation()}>
-        <FolderOpen size={14} />
+        <FolderOpenIcon size={14} />
       </IconButton>
       <IconButton
         size="md"
@@ -565,10 +555,18 @@
         title="Open this folder (Ctrl+Enter)">Open Folder</Button
       >
     {/if}
-    {#if platform.capabilities.nativeDirectoryPicker}
-      <IconButton size="md" tooltip="Open with System Dialog" onclick={() => void openWithSystemDialog()}
-        ><FolderOpen size={14} /></IconButton
+    {#if platform.native}
+      <IconButton
+        size="md"
+        tooltip="Open with System Dialog"
+        onclick={() => {
+          const tabId = request?.replaceTabId
+          closeBrowser()
+          void openFolderPicker(tabId)
+        }}
       >
+        <FolderOpenIcon size={14} />
+      </IconButton>
     {/if}
   </div>
 

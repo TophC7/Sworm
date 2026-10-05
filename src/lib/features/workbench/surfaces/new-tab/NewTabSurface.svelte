@@ -5,12 +5,11 @@
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import { MagicCard } from '$lib/components/ui/magic-card'
   import { Separator } from '$lib/components/ui/separator'
-  import { createSession } from '$lib/features/app-actions/actions.svelte'
   import { localHostLabel, openBrowser } from '$lib/features/browser/state.svelte'
-  import { splitShortcut } from '$lib/features/command-palette/shortcuts/keybindings.svelte'
-  import { getEffectiveSpec } from '$lib/features/command-palette/shortcuts/overrides.svelte'
+  import { splitShortcut } from '$lib/features/command-palette/shortcuts/spec'
+  import { getCommandShortcut } from '$lib/features/command-palette/shortcuts/registry.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
-  import { getErrorMessage } from '$lib/features/notifications/runNotifiedTask'
+  import { getErrorMessage } from '$lib/utils/client-error'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getNixStatus } from '$lib/features/settings/state/nix.svelte'
   import { allProviders, directOptions, type ProviderMeta } from '$lib/features/sessions/providers/catalog'
@@ -63,14 +62,10 @@
     gradientFrom: 'var(--color-muted)',
     gradientTo: 'var(--color-edge-strong)'
   }
-  let openShortcut = $derived(splitShortcut(getEffectiveSpec('open-folder', 'Ctrl+O')))
+  let openShortcut = $derived(splitShortcut(getCommandShortcut('open-folder')))
 
   function handleSelect(provider: ProviderMeta) {
-    if (provider.id === 'terminal') {
-      startSession(folderPath, 'terminal', 'Terminal')
-      return
-    }
-    createSession(provider.id, provider.label)
+    startSession(folderPath, provider.id, provider.id === 'terminal' ? 'Terminal' : `${provider.label} session`)
   }
 
   function runTask(task: TaskDefinition) {
@@ -80,7 +75,7 @@
 
 {#snippet card(option: ProviderMeta, delay: number, onselect: (() => void) | null, version: string | null)}
   {@const enabled = onselect !== null}
-  <BlurFade {delay} duration={0.4} direction="up" offset={8}>
+  <BlurFade {delay}>
     <MagicCard
       class="w-full"
       gradientFrom={option.gradientFrom}
@@ -122,7 +117,7 @@
 {/snippet}
 
 {#snippet divider(label: string, delay: number)}
-  <BlurFade {delay} duration={0.4} direction="up" offset={8}>
+  <BlurFade {delay}>
     <div class="my-4 flex items-center gap-4">
       <Separator class="flex-1" />
       <span class="text-sm text-muted">{label}</span>
@@ -142,7 +137,7 @@
     </Button>
   {/snippet}
 
-  <BlurFade delay={0.05} duration={0.5} direction="up" offset={10}>
+  <BlurFade delay={0.05} duration={0.5} offset={10}>
     <header class="mb-8 flex flex-col items-center gap-1 text-center">
       <!-- The chevron hangs left of the name so the name alone is centered. -->
       <h2 class="relative max-w-full text-3xl text-bright">
@@ -203,7 +198,7 @@
     {#each directOptions as provider, i (provider.id)}
       {@render providerCard(provider, 0.1 + (allProviders.length + 1 + i) * 0.08)}
     {/each}
-    {#if platform.capabilities.saveAsDialog}
+    {#if platform.native}
       {@render card(
         newFile,
         0.1 + (allProviders.length + directOptions.length + 1) * 0.08,
@@ -215,7 +210,7 @@
 
   {#if tasks.length > 0}
     {@render divider('tasks', tasksDelay)}
-    <BlurFade delay={tasksDelay + 0.08} duration={0.4} offset={8}>
+    <BlurFade delay={tasksDelay + 0.08}>
       <div class="flex flex-wrap justify-center gap-2">
         {#each tasks as task (task.id)}
           <Button size="sm" title={task.command} onclick={() => runTask(task)}>

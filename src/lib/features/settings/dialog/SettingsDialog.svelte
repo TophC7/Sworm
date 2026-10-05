@@ -9,10 +9,8 @@
 -->
 
 <script lang="ts">
-  import { getBuiltinSettingsPages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
+  import { getBuiltinSettingsPages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
-  import nixosUrl from '$lib/assets/nixos.svg?url'
-  import MaskIcon from '$lib/icons/MaskIcon.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import { DialogContent, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
   import { ScrollArea } from '$lib/components/ui/scroll-area'
@@ -31,8 +29,6 @@
   } from '$lib/icons/lucideExports'
   import { getSettingsHost, getSettingsServer, loadSettings } from '$lib/features/settings/state/settings.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
-  import type { BuiltinSettingsPage } from '$lib/types/backend'
-  import type { PlatformCapabilities } from '$lib/platform'
   import { platform } from '$lib/platform'
   import { onMount, type Component } from 'svelte'
 
@@ -49,23 +45,22 @@
 
   // NAV //
 
-  type View = 'appearance' | 'keyboard-shortcuts' | 'providers' | 'window' | string
-  type NavIcon = { kind: 'lucide'; icon: Component } | { kind: 'file'; filename: string } | { kind: 'mask' }
-  type NavItem = { id: View; label: string; icon: NavIcon; capability?: keyof PlatformCapabilities }
+  type NavIcon = { kind: 'lucide'; icon: Component } | { kind: 'file'; filename: string }
+  type NavItem = { id: string; label: string; icon: NavIcon; native?: true }
 
   const GENERAL_ITEMS: NavItem[] = [
     { id: 'appearance', label: 'Appearance', icon: { kind: 'lucide', icon: PaintbrushIcon } },
     { id: 'keyboard-shortcuts', label: 'Keyboard Shortcuts', icon: { kind: 'lucide', icon: KeyboardIcon } },
     { id: 'providers', label: 'Providers', icon: { kind: 'lucide', icon: PackageIcon } },
-    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow }, capability: 'nativeWindowControls' },
+    { id: 'window', label: 'Window', icon: { kind: 'lucide', icon: AppWindow }, native: true },
     {
       id: 'remote-servers',
       label: 'Remote Servers',
       icon: { kind: 'lucide', icon: ServerIcon },
-      capability: 'remoteHosts'
+      native: true
     }
   ]
-  let languagePages = $state<BuiltinSettingsPage[]>(getBuiltinSettingsPages())
+  let languagePages = $derived(getBuiltinSettingsPages())
 
   let LANGUAGE_ITEMS = $derived(
     languagePages.map((definition): NavItem => ({
@@ -77,7 +72,7 @@
   let NAV_SECTIONS = $derived([
     {
       title: 'General',
-      items: GENERAL_ITEMS.filter((item) => !item.capability || platform.capabilities[item.capability])
+      items: GENERAL_ITEMS.filter((item) => !item.native || platform.native !== null)
     },
     { title: 'Languages', items: LANGUAGE_ITEMS }
   ])
@@ -88,9 +83,8 @@
   let activeLabel = $derived(activeItem.label)
   let activeLanguagePage = $derived(languagePages.find((definition) => definition.id === active) ?? null)
 
-  // Providers, nix, formatting and LSP resolve on whichever host runs the
-  // active folder, so a remote workspace reads and writes its daemon's
-  // settings file. Pages that only touch desktop sections stay uncaptioned.
+  // Host sections show the loaded owner's values and save to the host captured
+  // by each editor, even if the active folder moves before a write flushes.
   let hostSectionServer = $derived(active === 'providers' || activeLanguagePage ? getSettingsServer() : null)
 
   // Host-section editors seed drafts from the loaded owner's values, so they
@@ -139,11 +133,7 @@
       .version()
       .then((v) => (version = v.split('+')[1] ?? (v === '0.0.0' ? 'dev' : v)))
       .catch(() => {})
-    void preloadBuiltinCatalog()
-      .then((catalog) => {
-        languagePages = catalog.settings.pages
-      })
-      .catch(() => {})
+    void preloadBuiltinCatalog().catch(() => {})
   })
 
   let saveTooltip = $derived(
@@ -188,8 +178,6 @@
                   <IconComp size={14} class="shrink-0" />
                 {:else if item.icon.kind === 'file'}
                   <FileIcon filename={item.icon.filename} size={14} />
-                {:else}
-                  <MaskIcon src={nixosUrl} width={14} label="Nix" />
                 {/if}
                 <span class="flex-1">{item.label}</span>
                 {#if active === item.id}

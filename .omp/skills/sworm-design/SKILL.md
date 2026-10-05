@@ -170,7 +170,7 @@ All sizes ship as Tailwind utilities (`text-2xs` … `text-5xl`). Use the named 
   - **18px** — titlebar logo.
   - **28–30px** — empty-state hero icons.
 - Color inherited from `color:`. Match the surrounding text role (`text-muted` secondary, `text-bright` hover, `text-accent` active, `text-danger`/`text-success`/`text-warning` for semantics).
-- When adding a new icon, re-export it from `lucideExports.ts` with the `*Icon` suffix convention (`MenuIcon`, `SearchIcon`, `SettingsIcon`). Exceptions kept for short iconic names (`X`, `Plus`, `Check`, `Worm`).
+- When adding a new icon, re-export it from `lucideExports.ts` with the `*Icon` suffix convention (`MenuIcon`, `SearchIcon`, `SettingsIcon`). Exceptions kept for short iconic names (`X`, `Plus`, `Check`).
 
 ### 4.2 Brand SVGs
 
@@ -178,14 +178,14 @@ Raw assets live under `src/lib/assets/` and are imported (`?url`), never served 
 
 - `sworm.svg` — app logo. `github.svg`, `nixos.svg`.
 - Provider marks and wordmarks: `providers/*.svg`, wired in `src/lib/features/sessions/providers/catalog.ts`.
-- Monochrome marks (wordmarks, Nix) paint through `MaskIcon` so they take the text color.
+- Monochrome marks (wordmarks, Nix) paint through `MaskIcon` so they take the text color. Supply `label` for meaningful standalone images; omit it for decorative marks inside labelled controls.
 - Generic options are not brands: Terminal and New File use Lucide (`TerminalIcon`, `FilePlusCornerIcon`) via `ProviderIcon`, colored by tokens like any other UI icon.
 
 **Provider presence rule.** Provider logos render full-color when the provider is detected, `grayscale + 50% opacity` when not. This is how Sworm communicates "connected vs not available" — no extra dot, no extra label.
 
 ### 4.3 File-type icons
 
-`src/lib/assets/bearded/*.svg` (Bearded Icons, ~400 files). `src/lib/icons/fileIconMap.ts` resolves a filename to an icon name; `FileIcon` maps the name to its bundled URL. Used exclusively by the file tree.
+`src/lib/assets/bearded/*.svg` (Bearded Icons, ~400 files, plus Sworm's logo). `src/lib/icons/fileIconMap.ts` resolves a filename or path to an icon name, using upstream Bearded's file-name and extension mappings plus Sworm overrides; `FileIcon` maps the name to its bundled URL.
 
 ### 4.4 Emoji ban
 
@@ -201,13 +201,13 @@ Sworm is flat by default. Rounding exists only where a surface visibly _floats_ 
 | -------------- | ------ | --------------------------------------------------------------------------------------------------------------- |
 | `rounded-none` | 0      | Title bar chrome, tabs, status bar, activity bar icons, window controls, panel headers. The default for chrome. |
 | `rounded-sm`   | 2px    | Tiny chips, kbd shadows at low resolution.                                                                      |
-| `rounded`      | 4px    | Inputs, small buttons, the command pill. The lightest rounding that reads as "this element is a control."       |
-| `rounded-md`   | 6px    | Kbd chips, code blocks, secondary buttons.                                                                      |
+| `rounded`      | 4px    | Inputs, small buttons. The lightest rounding that reads as "this element is a control."                       |
+| `rounded-md`   | 6px    | Kbd chips, code blocks, secondary buttons, the titlebar palette trigger.                                       |
 | `rounded-lg`   | 8px    | Default buttons, primary CTAs, dialog content, dropdown content, context menu content. Floating surfaces.       |
 | `rounded-xl`   | 12px   | Command palette, markdown-rendered `kbd`. The largest used anywhere in chrome.                                  |
 | `rounded-full` | 9999px | Status dots, avatars, and status-bar chips (§11.15). Never on other buttons or pills.                          |
 
-**Rule.** Chrome (title bar, sidebars, tabs, status bar) is square. Only things that _detach from_ the chrome — buttons, dialogs, menus, tooltips, the command palette, the command pill — carry rounding. Status dots are circles because they are dots.
+**Rule.** Chrome (title bar, sidebars, tabs, status bar) is square. Only things that _detach from_ the chrome — buttons, dialogs, menus, tooltips, the command palette, the titlebar palette trigger — carry rounding. The palette trigger is inline markup owned by `TitleBar.svelte`, not a shared UI primitive. Status dots are circles because they are dots.
 
 ---
 
@@ -248,10 +248,9 @@ Elevation shadow is reserved for **floating surfaces only**. Cards, buttons, inp
 
 | Class          | What it does                             | Where                                                    |
 | -------------- | ---------------------------------------- | -------------------------------------------------------- |
-| `pulse-accent` | 1400ms opacity pulse on the accent color | The active-session working indicator (status dot + tab). |
 | `beam-sweep`   | 3s horizontal gradient sweep             | Active project tab underline.                            |
 
-Neither is generic. If you want to animate something else, use color/opacity transitions with the duration + easing tokens above.
+The beam is not generic. If you want to animate something else, use color/opacity transitions with the duration + easing tokens above.
 
 ### 7.4 Interaction rules
 
@@ -259,7 +258,7 @@ Neither is generic. If you want to animate something else, use color/opacity tra
 - **Color shifts toward `bright`**, never brightness filters.
 - **Swept lists are instant, pointed controls fade.** Any list the cursor sweeps across — file tree, sidebar lists, diff stacks, menu items, settings nav and list rows — takes no color transition at all: the highlight applies and clears on the first frame, VS Code-style. A fade never becomes visible during a fast sweep, so don't put `transition-colors` on row hovers. Single click targets (buttons, inputs, chips, tabs) keep the `transition-colors` fade.
 - **Resize handles are instant.** No animation on drag.
-- **Entrance fade** via `BlurFade` (motion-sv) stays limited to stage-level entrances: empty state, new-session picker. Don't blanket every render.
+- **Entrance fade** via CSS `BlurFade` stays limited to stage-level entrances: empty state, new-session picker. Fixed 6px blur and upward Y entrance; defaults are `duration={0.4}` and `yOffset={8}`, with `delay` for sequencing. Headers may use `duration={0.5}` and `yOffset={10}`. Don't blanket every render.
 
 ---
 
@@ -308,7 +307,7 @@ Fixed chrome dimensions (these are load-bearing):
 - Status bar: **24px** tall.
 - Kbd chip: **24px** tall (`h-6`).
 - Status dot: **8px** circle.
-- Command pill: **26px** tall.
+- Titlebar palette trigger: **26px** tall.
 
 If you catch yourself writing `p-[11px]` or `h-[33px]`, step back to one of the above.
 
@@ -321,7 +320,7 @@ Terse, terminal-native, developer-to-developer. No marketing copy. The reader ha
 ### Casing
 
 - **Title Case** — menu labels, buttons, tab titles (`Open Repository`, `New Session`, `Discard All`).
-- **UPPERCASE + letter-spacing** — sidebar section dividers (`START`, `RECENT`), via the `.section-label` utility.
+- **UPPERCASE + letter-spacing** — sidebar section dividers (`START`, `RECENT`), via `text-xs font-semibold tracking-wide uppercase text-muted`.
 - **lowercase.with-dots** / **kebab-case** — filenames, branches, commands (`main`, `src-tauri`, `app:dev`).
 - **Sentence case** — longer prose inside dialogs and empty-state bodies.
 
@@ -434,11 +433,15 @@ Base: `inline-flex items-center justify-center gap-1.5 rounded-lg font-medium tr
 
 Wraps `Button` with tooltip + `aria-label`. Always accepts `tooltip: string` and an optional `shortcut: string`. For titlebar/chrome flat icon buttons, use a `shape: 'flat'` variant (see roadmap — not yet landed).
 
-### 11.4 Input
+`active` also supplies `aria-pressed`: omitted for non-toggles, explicitly `false` for inactive toggles. Tooltip placement defaults to `bottom`; callers specify only other sides.
 
-`bg-surface border border-edge rounded px-2.5 py-1.5 text-base text-fg outline-none placeholder:text-subtle focus:border-accent transition-colors`.
+### 11.4 Input / Select / Textarea
 
-Textarea identical except `resize-none`.
+`inputVariants` in `ui/input/input.svelte` owns the shared field recipe, re-exported from `ui/input`:
+
+`w-full bg-surface border border-edge rounded px-2.5 py-1.5 text-base text-fg outline-none placeholder:text-subtle focus:border-accent transition-colors`.
+
+Select uses the same recipe; Textarea adds only `resize-none`. Native attributes pass through; Textarea exposes typed `HTMLTextareaAttributes` and `data-slot="textarea"`.
 
 Focus uses border-swap (see §8.1). No outline.
 
@@ -467,7 +470,7 @@ Badges carry **information**, not state. Session state lives on status dots.
 | Status    | Fill         | Animation      |
 | --------- | ------------ | -------------- |
 | `idle`    | `bg-muted`   | —              |
-| `working` | `bg-accent`  | `pulse-accent` |
+| `working` | `bg-accent`  | —              |
 | `waiting` | `bg-warning` | —              |
 | `success` | `bg-success` | —              |
 | `danger`  | `bg-danger`  | —              |
@@ -492,9 +495,11 @@ Overlay: `fixed inset-0 bg-ground/70 backdrop-blur-sm`. The one place blur is us
 
 ### 11.10 Dropdown / context menu
 
-`DropdownMenuContent` = `bg-raised border border-edge rounded-lg py-1 text-base shadow-popover min-w-[180px]`.
+`src/lib/components/ui/menu-recipe.ts` owns the shared content, item and separator classes for dropdown and context menus. Keep all six wrappers on this recipe.
 
-Items = `px-3 py-1.5 text-fg hover:bg-surface focus:bg-surface rounded-sm`. Disabled items → `text-subtle cursor-default`.
+Content = `z-50 min-w-[180px] rounded-lg border border-edge bg-raised py-1 text-base shadow-popover`.
+
+Items = `flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left outline-none focus-visible:shadow-focus-ring`. Enabled items use `cursor-pointer text-fg hover:bg-surface focus:bg-surface`; destructive items use `text-danger hover:bg-danger-bg focus:bg-danger-bg`. Disabled items use only `cursor-not-allowed text-muted/50`, with no hover/focus fill.
 
 Separator = `mx-2 my-1 h-px bg-edge`.
 
@@ -502,11 +507,13 @@ Separator = `mx-2 my-1 h-px bg-edge`.
 
 `src/lib/components/ui/magic-card/magic-card.svelte` is the **one** decorative surface in the system. At rest it is the Home project card: `bg-surface`, 1px `edge` border, `rounded-lg`, no scale. On hover its border lights with a cursor-following radial gradient in the option's own colors (`gradientFrom` → `gradientTo`), and the fill lifts toward `raised` around the cursor.
 
+The two cursor gradients have a fixed 200px radius; the spotlight uses `var(--color-raised)` at 0.8 opacity. Only `gradientFrom` / `gradientTo`, `disabled`, `onclick`, children and class are public knobs.
+
 **Scope is tight:** currently used only on the new tab page's start options (providers, Terminal, New File). Do not extend to other surfaces without updating this doc first. If a new use case appears, propose it.
 
 ### 11.12 Command palette
 
-`bg-raised border border-edge rounded-xl shadow-popover` with `Dialog.Overlay` backdrop. `PaletteDialog` in `ui/command` owns the shared shell for `CommandCenter.svelte` and the location browser: `max-w-3xl` (48rem), 12px viewport gutters, top at 15vh, height capped at 80dvh. The dialog boundary is the visible palette so backdrop clicks dismiss it. Reuse `PaletteSearch`, `PaletteFooter`, and `commandItemVariants` for both surfaces; folder previews step down to `bg-surface`.
+`bg-raised border border-edge rounded-xl shadow-popover` with `Dialog.Overlay` backdrop. `PaletteDialog` in `ui/command` imports Bits UI directly and owns the shared shell for `CommandCenter.svelte` and the location browser: `max-w-3xl` (48rem), 12px viewport gutters, top at 15vh, height capped at 80dvh. The dialog boundary is the visible palette so backdrop clicks dismiss it. Reuse `PaletteSearch`, `PaletteFooter`, and `commandItemVariants` for both surfaces; folder previews step down to `bg-surface`. Features use this wrapper, not raw dialog parts.
 
 ### 11.13 Toast / notification
 
@@ -519,6 +526,8 @@ Use `shadow-popover` + surface `bg-overlay`. Enter with `toastIn` (fade + slight
 ```
 
 Variants: `info` (use `accent`), `success`, `warning`, `danger`. Leading icon uses the strong color (`[&>svg]:text-{semantic}`). Alerts are inline — no shadow.
+
+`layout`: `card` (default, `rounded-lg px-3 py-2.5 text-sm`) | `banner` (`rounded-none border-x-0 border-t-0 px-2.5 py-1.5 text-xs`). Use `banner` for edge-to-edge Git notices instead of overriding card classes.
 
 ### 11.15 StatusChip
 

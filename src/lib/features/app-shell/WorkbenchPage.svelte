@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { platform } from '$lib/platform'
-  import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog'
+  import { preloadBuiltinCatalog } from '$lib/features/builtins/catalog.svelte'
   import WorkbenchView from '$lib/features/app-shell/WorkbenchView.svelte'
   import { loadRecentFolders } from '$lib/features/folders/state.svelte'
   import { loadProviders } from '$lib/features/sessions/providers/state.svelte'
@@ -22,31 +22,31 @@
   }
 
   onMount(() => {
-    const workbenchId = platform.workbench.id
+    const native = platform.native
     let disposed = false
     let unlisten: (() => void) | undefined
 
-    void loadProviders()
+    void loadProviders().catch(() => {})
     void preloadBuiltinCatalog().catch((error) => {
       logClientError('builtin catalog preload failed', { error })
     })
 
     void (async () => {
       try {
-        if (platform.native) {
-          const cleanup = await platform.native.window.onOpenTarget((payload) => {
+        if (native) {
+          const cleanup = await native.window.onOpenTarget((payload) => {
             void openTarget(payload).catch((error) => logClientError('open target failed', { error, payload }))
           })
           if (disposed) cleanup()
           else unlisten = cleanup
         }
 
-        await Promise.all([loadRecentFolders(), restoreWorkbench(workbenchId)])
-        if (platform.native) {
+        await Promise.all([loadRecentFolders(), restoreWorkbench()])
+        if (native) {
           await initGroupService()
-          await platform.native.window.ready(getTabs().flatMap((tab) => (tab.kind === 'task' ? [tab.runId] : [])))
+          await native.window.ready(getTabs().flatMap((tab) => (tab.kind === 'task' ? [tab.runId] : [])))
         }
-        if (!disposed && platform.capabilities.deepLinks) markDeepLinksReady()
+        if (!disposed && native) markDeepLinksReady()
         if (disposed) return
         bootstrapping = false
       } catch (error) {

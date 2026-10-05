@@ -43,8 +43,3 @@ export function recordRecentCommand(id: string): void {
   recents = next
   persist(next)
 }
-
-export function clearRecentCommands(): void {
-  recents = []
-  persist([])
-}
