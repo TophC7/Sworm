@@ -91,6 +91,7 @@ impl Host {
         sources: Vec<String>,
         collision_policy: String,
         rename_map: Option<HashMap<String, String>>,
+        permanent: bool,
     ) -> Result<Vec<FilePasteMapping>, ApiError> {
         let project = resolve_folder(&project_path)?;
         let source_paths = if op == "cut" {
@@ -114,6 +115,7 @@ impl Host {
             &sources,
             &collision_policy,
             &rename_map,
+            permanent,
         )?;
         if op == "cut" {
             for mapping in &mappings {
@@ -143,10 +145,15 @@ impl Host {
     }
 
     /// Delete a file or directory inside a project.
-    pub fn file_delete(&self, project_path: String, file_path: String) -> Result<(), ApiError> {
+    pub fn file_delete(
+        &self,
+        project_path: String,
+        file_path: String,
+        permanent: bool,
+    ) -> Result<(), ApiError> {
         let project = resolve_folder(&project_path)?;
         let abs = normalize_absolute_path(&project.join(&file_path));
-        self.files.delete(&project, &file_path)?;
+        self.files.delete(&project, &file_path, permanent)?;
         self.emit(HostEvent::FileDeleted(abs));
         Ok(())
     }

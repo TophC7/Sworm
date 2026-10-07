@@ -266,6 +266,7 @@ macro_rules! sworm_rpc_ops {
                 sources: Vec<String>,
                 collision_policy: String,
                 rename_map: Option<std::collections::HashMap<String, String>>,
+                permanent: bool,
             ) -> Vec<$crate::files::FilePasteMapping>;
             #[route(project_path)]
             FilePasteCollisions => file_paste_collisions(
@@ -277,6 +278,7 @@ macro_rules! sworm_rpc_ops {
             FileDelete => file_delete(
                 project_path: String,
                 file_path: String,
+                permanent: bool,
             ) -> ();
             #[route(project_path)]
             FilesListPaths => files_list_paths(
@@ -359,11 +361,13 @@ macro_rules! sworm_rpc_ops {
             #[route(path)]
             GitDiscardAll => git_discard_all(
                 path: String,
+                permanent: bool,
             ) -> ();
             #[route(path)]
             GitDiscardFiles => git_discard_files(
                 path: String,
                 files: Vec<String>,
+                permanent: bool,
             ) -> ();
             #[route(path)]
             GitGetFullPatch => git_get_full_patch(
@@ -522,6 +526,10 @@ macro_rules! sworm_rpc_ops {
             ) -> ();
             #[route(path)]
             GitRebaseContinue => git_rebase_continue(
+                path: String,
+            ) -> ();
+            #[route(path)]
+            GitMergeContinue => git_merge_continue(
                 path: String,
             ) -> ();
             #[route(path)]
@@ -995,6 +1003,10 @@ pub enum WireError {
         message: String,
     },
     DirtyWorktree {
+        message: String,
+    },
+    /// The OS trash refused the item; the caller may retry as a permanent delete.
+    TrashUnavailable {
         message: String,
     },
     Unauthorized {

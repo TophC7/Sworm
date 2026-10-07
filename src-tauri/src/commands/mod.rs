@@ -256,6 +256,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         git_merge_into_current,
         git_rebase_current_onto,
         git_rebase_continue,
+        git_merge_continue,
         git_rebase_skip,
         git_rebase_abort,
         git_merge_abort,

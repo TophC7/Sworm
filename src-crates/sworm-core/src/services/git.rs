@@ -1,3 +1,4 @@
+use crate::errors::ApiError;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -43,9 +44,8 @@ struct CachedAheadBehind {
 }
 
 fn resolve_ahead_behind_refs(path: &Path) -> Option<(String, String)> {
-    let output = std::process::Command::new("git")
+    let output = git_command(path)
         .args(["--no-optional-locks", "rev-parse", "HEAD", "@{upstream}"])
-        .current_dir(path)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -202,10 +202,8 @@ impl GitService {
     /// Distinguish an ordinary non-repository folder from operational Git
     /// failures such as a missing cwd, unsafe ownership, or broken metadata.
     fn repository_state(&self, path: &Path) -> Result<bool, String> {
-        let output = std::process::Command::new("git")
+        let output = git_command(path)
             .args(["--no-optional-locks", "rev-parse", "--is-inside-work-tree"])
-            .env("LC_ALL", "C")
-            .current_dir(path)
             .output()
             .map_err(|error| format!("Failed to inspect repository: {error}"))?;
         if output.status.success() {
@@ -388,7 +386,7 @@ impl GitService {
         }
 
         let range = format!("{}...{}", head, upstream);
-        let value = std::process::Command::new("git")
+        let value = git_command(path)
             .args([
                 "--no-optional-locks",
                 "rev-list",
@@ -396,7 +394,6 @@ impl GitService {
                 "--count",
                 &range,
             ])
-            .current_dir(path)
             .output()
             .ok()
             .filter(|output| output.status.success())
@@ -467,7 +464,7 @@ impl GitService {
 
     /// Get commit graph data for all branches (for graph visualization).
     pub fn get_graph(&self, path: &Path, limit: usize) -> Vec<GraphCommit> {
-        let output = std::process::Command::new("git")
+        let output = git_command(path)
             .args([
                 "--no-optional-locks",
                 "log",
@@ -476,7 +473,6 @@ impl GitService {
                 &format!("--max-count={}", limit),
                 "--format=%H%n%h%n%P%n%an%n%aI%n%s%n%D",
             ])
-            .current_dir(path)
             .output();
 
         let Ok(output) = output else {
@@ -492,7 +488,7 @@ impl GitService {
 
     /// Get linear commit history reachable from one branch ref.
     pub fn get_branch_commits(&self, path: &Path, branch: &str, limit: usize) -> Vec<GraphCommit> {
-        let output = std::process::Command::new("git")
+        let output = git_command(path)
             .args([
                 "--no-optional-locks",
                 "log",
@@ -502,7 +498,6 @@ impl GitService {
                 branch,
                 "--",
             ])
-            .current_dir(path)
             .output();
 
         let Ok(output) = output else {
@@ -593,33 +588,62 @@ impl GitService {
         self.run_mutate(path, &args)
     }
 
-    /// Discard all unstaged changes and remove untracked files.
-    pub fn discard_all(&self, path: &Path) -> Result<(), String> {
-        // Restore tracked files to HEAD state
-        self.run_mutate(path, &["checkout", "--", "."])?;
-        // Remove untracked files and directories (but not ignored ones)
-        self.run_mutate(path, &["clean", "-fd"])
+    /// Discard all unstaged changes, removing untracked files before reverting
+    /// tracked edits. Untracked files move to the trash unless `permanent`.
+    pub fn discard_all(&self, path: &Path, permanent: bool) -> Result<(), ApiError> {
+        ensure_no_conflicts(path, &[])?;
+        self.remove_untracked(path, &[], permanent)?;
+        self.run_mutate(path, &["checkout", "--", "."])
+            .map_err(ApiError::Internal)
     }
 
-    /// Discard changes for specific files or directories.
-    /// Handles both tracked (checkout) and untracked (clean) files in one
-    /// invocation each. Errors are ignored because a mixed set of paths
-    /// will always fail one of the two commands; e.g. checkout rejects
-    /// untracked paths, clean is a no-op for tracked ones.
-    pub fn discard_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
+    /// Discard changes for specific files or directories, removing untracked
+    /// files before reverting tracked edits. All failures propagate.
+    pub fn discard_files(
+        &self,
+        path: &Path,
+        files: &[String],
+        permanent: bool,
+    ) -> Result<(), ApiError> {
         if files.is_empty() {
             return Ok(());
         }
         let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        ensure_no_conflicts(path, &refs)?;
+        self.remove_untracked(path, &refs, permanent)?;
 
+        let mut tracked_args = vec!["ls-files", "-z", "--"];
+        tracked_args.extend(refs.iter().copied());
+        let output =
+            git_output(path, &tracked_args, "list tracked files").map_err(ApiError::Internal)?;
+        let tracked = String::from_utf8_lossy(&output);
         let mut checkout_args = vec!["checkout", "--"];
-        checkout_args.extend(refs.iter().copied());
-        let _ = self.run_mutate(path, &checkout_args);
+        checkout_args.extend(refs.iter().copied().filter(|file| {
+            let file = file.trim_end_matches('/');
+            tracked.split('\0').any(|entry| {
+                entry == file
+                    || entry
+                        .strip_prefix(file)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+        }));
+        if checkout_args.len() > 2 {
+            self.run_mutate(path, &checkout_args)
+                .map_err(ApiError::Internal)?;
+        }
+        Ok(())
+    }
 
-        let mut clean_args = vec!["clean", "-fd", "--"];
-        clean_args.extend(refs.iter().copied());
-        let _ = self.run_mutate(path, &clean_args);
-
+    fn remove_untracked(
+        &self,
+        path: &Path,
+        pathspecs: &[&str],
+        permanent: bool,
+    ) -> Result<(), ApiError> {
+        let files = untracked_files(path, pathspecs).map_err(ApiError::Internal)?;
+        crate::services::removal::remove_paths(&files, permanent)?;
+        prune_empty_dirs(path, &files);
+        self.invalidate(path);
         Ok(())
     }
 
@@ -688,9 +712,8 @@ impl GitService {
 
     /// Count stash entries without fetching per-entry file stats.
     pub fn stash_count(&self, path: &Path) -> Result<usize, String> {
-        let output = std::process::Command::new("git")
+        let output = git_command(path)
             .args(["--no-optional-locks", "stash", "list"])
-            .current_dir(path)
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -790,7 +813,7 @@ impl GitService {
         use sworm_protocol::branch::{BranchKind, BranchSummary};
 
         let format = "%(refname)\t%(HEAD)\t%(objectname)\t%(objectname:short)\t%(upstream:short)\t%(upstream:track,nobracket)\t%(authorname)\t%(authordate:iso8601-strict)\t%(contents:subject)";
-        let output = std::process::Command::new("git")
+        let output = git_command(path)
             .args([
                 "--no-optional-locks",
                 "for-each-ref",
@@ -799,7 +822,6 @@ impl GitService {
                 "refs/heads",
                 "refs/remotes",
             ])
-            .current_dir(path)
             .output()
             .map_err(|e| e.to_string())?;
 
@@ -975,6 +997,11 @@ impl GitService {
     /// Continue a paused rebase after the user resolved conflicts.
     pub fn rebase_continue(&self, path: &Path) -> Result<(), String> {
         self.run_mutate(path, &["rebase", "--continue"])
+    }
+
+    /// Conclude a paused merge with git's prepared MERGE_MSG.
+    pub fn merge_continue(&self, path: &Path) -> Result<(), String> {
+        self.run_mutate(path, &["merge", "--continue"])
     }
 
     /// Skip the current commit during a paused rebase.
@@ -1241,7 +1268,7 @@ enum StatusRecord {
 }
 
 fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, String> {
-    let output = Command::new("git")
+    let output = git_command(path)
         .args([
             "--no-optional-locks",
             "status",
@@ -1254,8 +1281,6 @@ fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, St
         } else {
             "--no-ahead-behind"
         })
-        .env("LC_ALL", "C")
-        .current_dir(path)
         .output()
         .map_err(|error| format!("Failed to read Git status: {error}"))?;
     if !output.status.success() {
@@ -1370,10 +1395,9 @@ enum ShowOutput {
 }
 
 fn git_show_bounded(repo: &Path, args: &[&str]) -> ShowOutput {
-    let mut child = match Command::new("git")
+    let mut child = match git_command(repo)
         .arg("--no-optional-locks")
         .args(args)
-        .current_dir(repo)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1629,10 +1653,9 @@ fn git_hash_object(repo: &Path, file: &str, content: &str) -> Result<String, Str
 
 pub(crate) fn git_with_stdin(path: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>, String> {
     let action = format!("run git {}", args.first().copied().unwrap_or_default());
-    let mut child = Command::new("git")
+    let mut child = git_command(path)
         .arg("--no-optional-locks")
         .args(args)
-        .current_dir(path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1662,11 +1685,66 @@ pub(crate) fn git_line(path: &Path, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Every Sworm git spawn: cwd = repo, never prompts on a terminal or opens an
+/// editor, and speaks untranslated English so stderr matching stays stable.
+fn git_command(path: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .current_dir(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        .env("LANGUAGE", "C")
+        .env("LC_ALL", "C.UTF-8");
+    command
+}
+
+/// `checkout` cannot revert unmerged paths, so a discard spanning one would
+/// remove untracked files and then fail. Refuse before touching anything.
+fn ensure_no_conflicts(path: &Path, pathspecs: &[&str]) -> Result<(), ApiError> {
+    let mut args = vec!["diff", "--name-only", "--diff-filter=U", "-z", "--"];
+    args.extend_from_slice(pathspecs);
+    let output = git_output(path, &args, "list conflicted files").map_err(ApiError::Internal)?;
+    match output
+        .split(|&byte| byte == 0)
+        .find(|name| !name.is_empty())
+    {
+        Some(name) => Err(ApiError::InvalidArgument(format!(
+            "Resolve conflicts before discarding: {}",
+            String::from_utf8_lossy(name)
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn untracked_files(path: &Path, pathspecs: &[&str]) -> Result<Vec<PathBuf>, String> {
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+    args.extend_from_slice(pathspecs);
+    let output = git_output(path, &args, "list untracked files")?;
+    Ok(String::from_utf8_lossy(&output)
+        .split('\0')
+        .filter(|entry| !entry.is_empty() && !entry.ends_with('/'))
+        .map(|entry| path.join(entry))
+        .collect())
+}
+
+fn prune_empty_dirs(root: &Path, files: &[PathBuf]) {
+    for file in files {
+        for dir in file
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(root) && *dir != root)
+        {
+            if std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+        }
+    }
+}
+
 pub(crate) fn git_output(folder: &Path, args: &[&str], action: &str) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let output = git_command(folder)
         .arg("--no-optional-locks")
         .args(args)
-        .current_dir(folder)
         .output()
         .map_err(|error| format!("Failed to {action}: {error}"))?;
     if output.status.success() {
@@ -1877,11 +1955,20 @@ fn resolve_git_dir(path: &Path) -> PathBuf {
 /// calls use it to avoid optional index locks during polling; writes
 /// need Git's normal locking so index and ref updates serialize safely.
 fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut command = git_command(path);
+    command.args(args);
+    // Mutations reach ssh, credential helpers, and pinentry. With no controlling
+    // terminal those fail fast or use a GUI prompt instead of blocking on the
+    // tty Sworm was launched from.
+    #[cfg(unix)]
+    // SAFETY: setsid is async-signal-safe and touches no parent state.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let output = command.output().map_err(|e| e.to_string())?;
 
     if output.status.success() {
         Ok(())
@@ -2138,6 +2225,189 @@ mod tests {
         git(&dir, &["add", "a.txt"]);
         git(&dir, &["commit", "-q", "-m", "init"]);
         dir
+    }
+
+    #[test]
+    fn merge_continue_keeps_prepared_message() {
+        let repo = temp_repo("merge-continue");
+        git(&repo, &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.join("a.txt"), "feature\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        git(&repo, &["commit", "-q", "-m", "feature"]);
+        git(&repo, &["switch", "-q", "main"]);
+        std::fs::write(repo.join("a.txt"), "main\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        git(&repo, &["commit", "-q", "-m", "main"]);
+        let merge = Command::new("git")
+            .args(["merge", "feature"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge must pause on a conflict");
+        git(&repo, &["config", "core.editor", "false"]);
+        std::fs::write(repo.join("a.txt"), "resolved\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+
+        GitService::new().merge_continue(&repo).unwrap();
+        let message =
+            git_output(&repo, &["log", "-1", "--format=%B"], "read merge message").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&message).trim(),
+            "Merge branch 'feature'"
+        );
+        git(&repo, &["rev-parse", "HEAD^2"]);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn discard_files_reverts_tracked_and_removes_untracked() {
+        let repo = temp_repo("discard-mixed");
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        std::fs::create_dir_all(repo.join("new/deep")).unwrap();
+        std::fs::write(repo.join("new/deep/x.txt"), "new\n").unwrap();
+
+        GitService::new()
+            .discard_files(&repo, &["a.txt".into(), "new".into()], true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert!(!repo.join("new").exists());
+        assert!(git_output(&repo, &["status", "--porcelain"], "read status")
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn discard_files_reports_checkout_failure() {
+        let repo = temp_repo("discard-checkout-failure");
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(repo.join(".git/index.lock"), "").unwrap();
+
+        let error = GitService::new()
+            .discard_files(&repo, &["a.txt".into()], true)
+            .unwrap_err();
+        assert!(error.to_string().contains("index.lock"), "{error}");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn discard_refuses_conflicted_paths_before_removing_untracked() {
+        let repo = temp_repo("discard-conflict");
+        git(&repo, &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.join("a.txt"), "feature\n").unwrap();
+        git(&repo, &["commit", "-q", "-am", "feature"]);
+        git(&repo, &["switch", "-q", "main"]);
+        std::fs::write(repo.join("a.txt"), "main\n").unwrap();
+        git(&repo, &["commit", "-q", "-am", "main"]);
+        let merge = Command::new("git")
+            .args(["merge", "feature"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge must pause on a conflict");
+        std::fs::write(repo.join("u.txt"), "untracked\n").unwrap();
+
+        let svc = GitService::new();
+        assert!(matches!(
+            svc.discard_all(&repo, true),
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            svc.discard_files(&repo, &["a.txt".into(), "u.txt".into()], true),
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert!(repo.join("u.txt").exists());
+
+        svc.discard_files(&repo, &["u.txt".into()], true).unwrap();
+        assert!(!repo.join("u.txt").exists());
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn push_without_credentials_fails_fast() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+
+        let repo = temp_repo("push-no-credentials");
+        git(&repo, &["config", "credential.helper", ""]);
+        git(&repo, &["config", "core.askPass", ""]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = format!("http://{}/r.git", listener.local_addr().unwrap());
+        git(&repo, &["remote", "add", "origin", &remote]);
+        git(&repo, &["config", "branch.main.remote", "origin"]);
+        git(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop);
+        let server = std::thread::spawn(move || {
+            while !server_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        assert!(stream.read(&mut request).unwrap() > 0);
+                        stream
+                            .write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept credential request: {error}"),
+                }
+            }
+        });
+        let (sender, receiver) = mpsc::channel();
+        let push_repo = repo.clone();
+        let push = std::thread::spawn(move || {
+            sender.send(GitService::new().push(&push_repo)).ok();
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(20));
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        std::fs::remove_dir_all(repo).unwrap();
+        let error = result
+            .expect("push must finish without credential prompts")
+            .unwrap_err();
+        push.join().unwrap();
+        assert!(error.contains("terminal prompts disabled"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutations_run_without_controlling_terminal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = temp_repo("mutation-no-tty");
+        let hooks = repo.join(".git/test-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nif (exec </dev/tty) 2>/dev/null; then echo \"has tty\" >&2; exit 1; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            &repo,
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+
+        GitService::new().commit(&repo, "x").unwrap();
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]

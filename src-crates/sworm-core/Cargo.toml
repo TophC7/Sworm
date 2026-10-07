@@ -23,6 +23,7 @@ notify = "6"
 ignore = "0.4"
 globset = "0.4"
 thiserror = "2"
+trash = "5"
 portable-pty = "0.9"
 refinery = { version = "0.8", features = ["rusqlite"] }
 which = "8"

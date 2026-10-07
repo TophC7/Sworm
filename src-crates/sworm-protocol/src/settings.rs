@@ -179,14 +179,17 @@ impl Default for NixSettings {
     }
 }
 
-/// VS Code's `files.exclude` defaults (files.contribution.ts). `.git` is never
-/// a useful explorer row; the rest are VCS/OS droppings.
+/// VS Code's `files.exclude` defaults (files.contribution.ts) plus the
+/// freedesktop per-mount trash dirs, which appear when a project sits at a
+/// mount root. `.git` is never a useful explorer row; the rest are droppings.
 pub const DEFAULT_EXPLORER_EXCLUDES: &[&str] = &[
     "**/.git",
     "**/.svn",
     "**/.hg",
     "**/.DS_Store",
     "**/Thumbs.db",
+    "**/.Trash",
+    "**/.Trash-*",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

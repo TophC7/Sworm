@@ -53,7 +53,7 @@ const GIT_ACTION_NOTIFICATIONS: Record<GitActionKind, RunNotifiedTaskOptions<unk
   },
   discardAll: {
     loading: { title: 'Discarding all changes' },
-    success: { title: 'All changes discarded' },
+    success: { title: (ran) => (ran ? 'All changes discarded' : 'Discard cancelled') },
     error: { title: 'Discard all failed' }
   },
   stashAll: {

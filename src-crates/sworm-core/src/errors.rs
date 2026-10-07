@@ -33,6 +33,11 @@ pub enum ApiError {
     #[error("Working tree has uncommitted changes")]
     DirtyWorktree { message: String },
 
+    /// The OS trash refused the item. Typed so the frontend can offer a
+    /// permanent delete instead of failing.
+    #[error("{message}")]
+    TrashUnavailable { message: String },
+
     /// A write lost a race: the file changed since the version the caller read.
     #[error("File changed on disk")]
     Conflict { current_version: String },
@@ -73,6 +78,13 @@ impl Serialize for ApiError {
         if let ApiError::DirtyWorktree { message } = self {
             let mut state = serializer.serialize_struct("ApiError", 2)?;
             state.serialize_field("kind", "dirtyWorktree")?;
+            state.serialize_field("message", message)?;
+            return state.end();
+        }
+
+        if let ApiError::TrashUnavailable { message } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "trashUnavailable")?;
             state.serialize_field("message", message)?;
             return state.end();
         }
@@ -127,6 +139,7 @@ impl From<ApiError> for WireError {
                 WireError::BranchUnmerged { branch, message }
             }
             ApiError::DirtyWorktree { message } => WireError::DirtyWorktree { message },
+            ApiError::TrashUnavailable { message } => WireError::TrashUnavailable { message },
             ApiError::Conflict { current_version } => WireError::Conflict { current_version },
             ApiError::Deleted { path } => WireError::Deleted { path },
             ApiError::LspAlreadyActive { session_id } => WireError::LspAlreadyActive { session_id },
@@ -148,6 +161,7 @@ impl From<WireError> for ApiError {
                 ApiError::BranchUnmerged { branch, message }
             }
             WireError::DirtyWorktree { message } => ApiError::DirtyWorktree { message },
+            WireError::TrashUnavailable { message } => ApiError::TrashUnavailable { message },
             WireError::Conflict { current_version } => ApiError::Conflict { current_version },
             WireError::Deleted { path } => ApiError::Deleted { path },
             WireError::LspAlreadyActive { session_id } => ApiError::LspAlreadyActive { session_id },
@@ -258,6 +272,16 @@ mod tests {
             json!({
                 "kind": "dirtyWorktree",
                 "message": "commit first",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::TrashUnavailable {
+                message: "no trash".into(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "trashUnavailable",
+                "message": "no trash",
             })
         );
         assert_eq!(

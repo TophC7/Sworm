@@ -15,6 +15,7 @@
 // one and the working tree visibly bounces.
 
 import { backend } from '$lib/api/backend'
+import { withTrashFallback } from '$lib/features/files/trash'
 import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/summaryPatches'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
@@ -368,18 +369,18 @@ export function unstageAll(folderPath: string): Promise<void> {
   })
 }
 
-export function discardFiles(folderPath: string, files: string[]): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.discardFiles(path, files), {
+export function discardFiles(folderPath: string, files: string[]): Promise<boolean> {
+  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.discardFiles(path, files, permanent), {
     scope: 'summary',
     optimistic: (summary) => discardChanges(summary, files)
-  })
+  }))
 }
 
-export function discardAll(folderPath: string): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.discardAll(path), {
+export function discardAll(folderPath: string): Promise<boolean> {
+  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.discardAll(path, permanent), {
     scope: 'summary',
     optimistic: (summary) => discardChanges(summary, null)
-  })
+  }))
 }
 
 // LIFECYCLE //

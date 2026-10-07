@@ -165,7 +165,7 @@
     if (getActionFiles(target, 'discard').length === 0) return
     const proceed = await confirmAsync({
       title: 'Revert Changes?',
-      message: `This will permanently revert unstaged changes for ${describeActionTarget(target, 'discard')}. This cannot be undone.`,
+      message: `Revert unstaged changes for ${describeActionTarget(target, 'discard')}? Tracked edits cannot be recovered; untracked files move to the trash.`,
       confirmLabel: 'Revert'
     })
     if (!proceed) return
@@ -175,7 +175,7 @@
   async function confirmDiscardAll(): Promise<void> {
     const proceed = await confirmAsync({
       title: 'Discard All Changes?',
-      message: 'This will permanently discard all unstaged changes and remove untracked files. This cannot be undone.',
+      message: 'Discard all unstaged changes? Tracked edits cannot be recovered; untracked files move to the trash.',
       confirmLabel: 'Discard All'
     })
     if (!proceed) return
@@ -243,7 +243,7 @@
           await unstageFiles(folderPath, files)
           break
         case 'discard':
-          await discardFiles(folderPath, files)
+          if (!(await discardFiles(folderPath, files))) return
           break
       }
       notify.success(

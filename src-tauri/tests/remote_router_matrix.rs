@@ -749,7 +749,7 @@ async fn remote_file_rename_emits_desktop_file_moved(fixture: &Fixture) -> anyho
         "file_delete",
         workspace
             .router
-            .file_delete(workspace.remote.clone(), "renamed.txt".to_owned()),
+            .file_delete(workspace.remote.clone(), "renamed.txt".to_owned(), true),
     )
     .await?;
     let deleted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -791,6 +791,7 @@ async fn remote_paste_stays_on_source_host(fixture: &Fixture) -> anyhow::Result<
             vec![remote_source.clone()],
             "auto_rename".to_owned(),
             None,
+            true,
         ),
     )
     .await?;
@@ -810,6 +811,7 @@ async fn remote_paste_stays_on_source_host(fixture: &Fixture) -> anyhow::Result<
             vec![remote_source],
             "auto_rename".to_owned(),
             None,
+            true,
         ),
     )
     .await?;
@@ -829,6 +831,7 @@ async fn remote_paste_stays_on_source_host(fixture: &Fixture) -> anyhow::Result<
             vec![local_source],
             "overwrite".to_owned(),
             None,
+            true,
         ),
     )
     .await

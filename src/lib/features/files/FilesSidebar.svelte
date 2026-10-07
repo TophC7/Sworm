@@ -8,6 +8,7 @@
   import ImportCollisionDialog from '$lib/features/files/ImportCollisionDialog.svelte'
   import FileContextMenu from '$lib/features/files/FileContextMenu.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
+  import { withTrashFallback } from '$lib/features/files/trash'
   import PromptDialog from '$lib/components/dialogs/PromptDialog.svelte'
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
   import { IconButton } from '$lib/components/ui/button'
@@ -258,16 +259,21 @@
     renameTo?: string
   ): Promise<void> {
     if (!pendingTransfer) return
+    const transfer = pendingTransfer
     const renameMap = policy === 'rename' && renameTo ? { [source]: renameTo } : undefined
-    const created = await backend.files.paste(
-      folderPath,
-      pendingTransfer.targetDir,
-      pendingTransfer.op,
-      [source],
-      policy,
-      renameMap
-    )
-    pendingTransfer.created.push(...created)
+    let created: FilePasteMapping[] = []
+    await withTrashFallback(async (permanent) => {
+      created = await backend.files.paste(
+        folderPath,
+        transfer.targetDir,
+        transfer.op,
+        [source],
+        policy,
+        renameMap,
+        permanent
+      )
+    })
+    transfer.created.push(...created)
   }
 
   async function resolveCollision(action: 'replace' | 'skip' | 'rename'): Promise<void> {
@@ -477,17 +483,16 @@
   async function handleDelete() {
     if (!contextFilePath) return
     const deleteFilePath = contextFilePath
+    const proceed = await confirmAsync({
+      title: 'Delete File',
+      message: `Move ${deleteFilePath} to the trash?`,
+      confirmLabel: 'Move to Trash'
+    })
+    if (!proceed) return
     try {
-      await confirmAsync({
-        title: 'Delete File',
-        message: `Are you sure you want to delete ${deleteFilePath}? This cannot be undone.`,
-        confirmLabel: 'Delete',
-        run: async () => {
-          await backend.files.delete(folderPath, deleteFilePath)
-          await deleteTextPath(folderPath, deleteFilePath)
-          await invalidate(dirname(deleteFilePath) || '')
-        }
-      })
+      if (!(await withTrashFallback((permanent) => backend.files.delete(folderPath, deleteFilePath, permanent)))) return
+      await deleteTextPath(folderPath, deleteFilePath)
+      await invalidate(dirname(deleteFilePath) || '')
     } catch (e) {
       notify.error('Delete failed', getErrorMessage(e))
     }

@@ -62,6 +62,8 @@ export function normalizeWireError(value: unknown): Error | Record<string, unkno
       return { kind: 'branchUnmerged', branch: field(value, 'branch'), message: field(value, 'message') }
     case 'dirty_worktree':
       return { kind: 'dirtyWorktree', message: field(value, 'message') }
+    case 'trash_unavailable':
+      return { kind: 'trashUnavailable', message: field(value, 'message') }
     case 'conflict':
       return { kind: 'conflict', currentVersion: field(value, 'current_version') }
     case 'deleted':

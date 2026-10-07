@@ -390,7 +390,7 @@
     try {
       await runGitAction(folderPath, async (path) => {
         if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(path)
-        else if (entry?.opState === 'merging') await backend.git.commit(path, 'Merge')
+        else if (entry?.opState === 'merging') await backend.git.branch.mergeContinue(path)
       })
     } catch (e) {
       console.error('Continue failed:', e)

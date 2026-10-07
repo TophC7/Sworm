@@ -1,9 +1,10 @@
+use super::removal::{remove_paths, remove_recursive};
 use crate::errors::ApiError;
 use crate::services::explorer_filter::{ExplorerFilter, IgnoreChain};
 use crate::services::settings_resolution::resolve_effective_settings_for_folder_path;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -359,6 +360,7 @@ impl FileService {
         sources: &[String],
         collision_policy: &str,
         rename_map: &HashMap<String, String>,
+        permanent: bool,
     ) -> Result<Vec<FilePasteMapping>, ApiError> {
         let op = match op {
             "copy" => PasteOp::Copy,
@@ -380,13 +382,19 @@ impl FileService {
         };
         let abs_target_dir = target_dir(project_path, target)?;
 
-        let mut mappings = Vec::new();
+        let mut transfers: Vec<(&Path, &String, PathBuf)> = Vec::new();
+        let mut replaced = Vec::new();
+        // Sources count as claimed so Replace never removes another item of this batch.
+        let mut claimed: HashSet<PathBuf> = sources.iter().map(PathBuf::from).collect();
 
         for source in sources {
             let src_path = Path::new(source);
             let name = src_path.file_name().ok_or_else(|| {
                 ApiError::InvalidArgument(format!("Invalid source path: {}", source))
             })?;
+            // Every source must exist before Replace removes anything.
+            std::fs::symlink_metadata(src_path)
+                .map_err(|error| ApiError::Io(format!("Cannot read {source}: {error}")))?;
 
             // For explicit rename resolution, allow the caller to choose
             // a different basename for this source.
@@ -404,12 +412,38 @@ impl FileService {
                 &desired_dest,
                 collision_policy,
                 rename_map,
+                &claimed,
             )?;
-            let Some(dest_path) = dest_path else {
+            let Some(Destination {
+                path: dest_path,
+                replace,
+            }) = dest_path
+            else {
                 continue;
             };
+            if replace {
+                replaced.push(dest_path.clone());
+            }
+            claimed.insert(dest_path.clone());
+            transfers.push((src_path, source, dest_path));
+        }
 
-            if op == PasteOp::Cut && src_path == dest_path {
+        if let Some(path) = replaced.iter().find(|path| {
+            sources
+                .iter()
+                .any(|source| Path::new(source).starts_with(path))
+        }) {
+            return Err(ApiError::InvalidArgument(format!(
+                "Cannot replace destination containing a pasted item: {}",
+                path.display()
+            )));
+        }
+
+        remove_paths(&replaced, permanent)?;
+
+        let mut mappings = Vec::new();
+        for (src_path, source, dest_path) in transfers {
+            if src_path == dest_path {
                 continue;
             }
 
@@ -471,19 +505,18 @@ impl FileService {
     }
 
     /// Delete a file within a project.
-    pub fn delete(&self, project_path: &Path, file_path: &str) -> Result<(), ApiError> {
+    pub fn delete(
+        &self,
+        project_path: &Path,
+        file_path: &str,
+        permanent: bool,
+    ) -> Result<(), ApiError> {
         validate_path(file_path)?;
         let abs = project_path.join(file_path);
         if !abs.exists() {
             return Err(ApiError::NotFound(format!("File not found: {}", file_path)));
         }
-        if abs.is_dir() {
-            std::fs::remove_dir_all(&abs)
-                .map_err(|e| ApiError::Io(format!("Failed to delete {}: {}", file_path, e)))
-        } else {
-            std::fs::remove_file(&abs)
-                .map_err(|e| ApiError::Io(format!("Failed to delete {}: {}", file_path, e)))
-        }
+        remove_paths(&[abs], permanent)
     }
 
     /// List one directory, the way the explorer renders it.
@@ -860,22 +893,45 @@ enum CollisionPolicy {
     Error,
 }
 
+struct Destination {
+    path: PathBuf,
+    replace: bool,
+}
+
 fn resolve_destination(
     src_path: &Path,
     source_key: &str,
     desired_dest: &Path,
     collision_policy: CollisionPolicy,
     rename_map: &HashMap<String, String>,
-) -> Result<Option<PathBuf>, ApiError> {
-    if !desired_dest.exists() {
-        return Ok(Some(desired_dest.to_path_buf()));
+    claimed: &HashSet<PathBuf>,
+) -> Result<Option<Destination>, ApiError> {
+    let exists = desired_dest.exists();
+    if !exists && !claimed.contains(desired_dest) {
+        return Ok(Some(Destination {
+            path: desired_dest.to_path_buf(),
+            replace: false,
+        }));
     }
 
     match collision_policy {
-        CollisionPolicy::AutoRename => Ok(Some(unique_path(desired_dest))),
+        CollisionPolicy::AutoRename => Ok(Some(Destination {
+            path: unique_path(desired_dest, claimed),
+            replace: false,
+        })),
         CollisionPolicy::Replace => {
             if desired_dest == src_path {
-                return Ok(Some(desired_dest.to_path_buf()));
+                return Ok(Some(Destination {
+                    path: desired_dest.to_path_buf(),
+                    replace: false,
+                }));
+            }
+            if claimed.contains(desired_dest) {
+                // Replace overwrites what was on disk, never another item of this batch.
+                return Ok(Some(Destination {
+                    path: unique_path(desired_dest, claimed),
+                    replace: false,
+                }));
             }
             if src_path.starts_with(desired_dest) {
                 return Err(ApiError::InvalidArgument(format!(
@@ -905,7 +961,10 @@ fn resolve_destination(
             let normalized_source = normalize_entry(src_path)?;
             let normalized_destination = normalize_entry(desired_dest)?;
             if normalized_source == normalized_destination {
-                return Ok(Some(desired_dest.to_path_buf()));
+                return Ok(Some(Destination {
+                    path: desired_dest.to_path_buf(),
+                    replace: false,
+                }));
             }
             if normalized_source.starts_with(&normalized_destination) {
                 return Err(ApiError::InvalidArgument(format!(
@@ -913,8 +972,10 @@ fn resolve_destination(
                     desired_dest.display()
                 )));
             }
-            remove_recursive(desired_dest)?;
-            Ok(Some(desired_dest.to_path_buf()))
+            Ok(Some(Destination {
+                path: desired_dest.to_path_buf(),
+                replace: exists,
+            }))
         }
         CollisionPolicy::Skip => Ok(None),
         CollisionPolicy::Rename => {
@@ -952,7 +1013,7 @@ fn validate_basename(value: &str) -> Result<(), ApiError> {
 }
 
 /// Return a non-colliding path by appending " (copy)", " (copy 2)", etc.
-fn unique_path(desired: &Path) -> std::path::PathBuf {
+fn unique_path(desired: &Path, claimed: &HashSet<PathBuf>) -> std::path::PathBuf {
     let parent = desired.parent().unwrap_or_else(|| Path::new(""));
     let stem = desired
         .file_stem()
@@ -975,7 +1036,7 @@ fn unique_path(desired: &Path) -> std::path::PathBuf {
             }
         };
         let candidate = parent.join(name);
-        if !candidate.exists() {
+        if !candidate.exists() && !claimed.contains(&candidate) {
             return candidate;
         }
     }
@@ -1017,19 +1078,6 @@ fn copy_recursive_bounded(src: &Path, dest: &Path, depth: usize) -> Result<(), A
         })?;
     }
     Ok(())
-}
-
-/// Recursively remove a file or directory.
-fn remove_recursive(path: &Path) -> Result<(), ApiError> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|e| ApiError::Io(format!("Cannot stat {}: {}", path.display(), e)))?;
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(path)
-            .map_err(|e| ApiError::Io(format!("Cannot remove {}: {}", path.display(), e)))
-    } else {
-        std::fs::remove_file(path)
-            .map_err(|e| ApiError::Io(format!("Cannot remove {}: {}", path.display(), e)))
-    }
 }
 
 #[cfg(test)]
@@ -1116,6 +1164,7 @@ mod tests {
                     &[source_key],
                     "replace",
                     &HashMap::new(),
+                    true,
                 );
                 if !matches!(result, Err(ApiError::InvalidArgument(_))) {
                     failures.push(format!(
@@ -1143,6 +1192,7 @@ mod tests {
                     &[source.to_string_lossy().into_owned()],
                     "replace",
                     &HashMap::new(),
+                    true,
                 )
                 .unwrap();
             assert_eq!(mappings.len(), 1);
@@ -1169,6 +1219,7 @@ mod tests {
                     &[dir.join("missing/item").to_string_lossy().into_owned()],
                     "replace",
                     &HashMap::new(),
+                    true,
                 ),
                 Err(ApiError::Io(_))
             ));
@@ -1196,11 +1247,14 @@ mod tests {
                         &[source.to_string_lossy().into_owned()],
                         "replace",
                         &HashMap::new(),
+                        true,
                     )
                     .unwrap();
                 assert_eq!(mappings.len(), 1);
                 assert_eq!(mappings[0].destination, "item");
-                assert!(!std::fs::symlink_metadata(&destination).unwrap().is_symlink());
+                assert!(!std::fs::symlink_metadata(&destination)
+                    .unwrap()
+                    .is_symlink());
                 assert_eq!(
                     std::fs::read_to_string(&destination).unwrap(),
                     "source content"
@@ -1230,9 +1284,12 @@ mod tests {
                 &destination,
                 CollisionPolicy::Replace,
                 &HashMap::new(),
+                &HashSet::new(),
             )
+            .unwrap()
             .unwrap();
-            assert_eq!(result, Some(destination.clone()));
+            assert_eq!(result.path, destination);
+            assert!(!result.replace);
             let contents = std::fs::read_to_string(&destination);
             if contents.as_deref().ok() != Some("source content") {
                 failures.push(format!(
@@ -1242,20 +1299,22 @@ mod tests {
             }
         }
         std::fs::write(&destination, "source content").unwrap();
-        assert!(
-            service
-                .paste(
-                    &dir,
-                    "folder",
-                    "cut",
-                    &[destination.to_string_lossy().into_owned()],
-                    "replace",
-                    &HashMap::new(),
-                )
-                .unwrap()
-                .is_empty()
+        assert!(service
+            .paste(
+                &dir,
+                "folder",
+                "cut",
+                &[destination.to_string_lossy().into_owned()],
+                "replace",
+                &HashMap::new(),
+                true,
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "source content"
         );
-        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "source content");
         std::fs::remove_dir_all(dir).unwrap();
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
@@ -1276,7 +1335,8 @@ mod tests {
                     "copy",
                     std::slice::from_ref(&source),
                     "rename",
-                    &rename_map
+                    &rename_map,
+                    true,
                 ),
                 Err(ApiError::InvalidArgument(_))
             ));
@@ -1287,6 +1347,110 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paste_auto_rename_keeps_batch_destinations_distinct() {
+        let dir = unique_test_dir("paste-batch-auto-rename");
+        let to = dir.join("to");
+        std::fs::create_dir(&to).unwrap();
+        let sources: Vec<String> = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                let from = dir.join(name);
+                std::fs::create_dir(&from).unwrap();
+                let source = from.join("item.txt");
+                std::fs::write(&source, name).unwrap();
+                source.to_string_lossy().into_owned()
+            })
+            .collect();
+
+        let mappings = FileService::new()
+            .paste(
+                &dir,
+                "to",
+                "copy",
+                &sources,
+                "auto_rename",
+                &HashMap::new(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings[0].destination, "to/item.txt");
+        assert_eq!(mappings[1].destination, "to/item (copy).txt");
+        assert_eq!(
+            std::fs::read_to_string(to.join("item.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.join("item (copy).txt")).unwrap(),
+            "second"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paste_validates_all_destinations_before_removal_or_transfer() {
+        let service = FileService::new();
+        for op in ["copy", "cut"] {
+            let dir = unique_test_dir(&format!("paste-batch-validation-{op}"));
+            let from = dir.join("from");
+            let to = dir.join("to");
+            std::fs::create_dir(&from).unwrap();
+            std::fs::create_dir(&to).unwrap();
+            let source = from.join("item");
+            let destination = to.join("item");
+            std::fs::write(&source, "source content").unwrap();
+            std::fs::write(&destination, "old content").unwrap();
+            let sources = vec![
+                source.to_string_lossy().into_owned(),
+                dir.join("missing/item").to_string_lossy().into_owned(),
+            ];
+
+            assert!(matches!(
+                service.paste(&dir, "to", op, &sources, "replace", &HashMap::new(), true),
+                Err(ApiError::Io(_))
+            ));
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "source content");
+            assert_eq!(
+                std::fs::read_to_string(&destination).unwrap(),
+                "old content"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn paste_replace_renames_batch_collisions_instead_of_dropping_items() {
+        let service = FileService::new();
+        for op in ["copy", "cut"] {
+            let dir = unique_test_dir(&format!("paste-batch-replace-{op}"));
+            for sub in ["first", "second", "to"] {
+                std::fs::create_dir(dir.join(sub)).unwrap();
+            }
+            let write = |rel: &str, content: &str| {
+                std::fs::write(dir.join(rel), content).unwrap();
+                dir.join(rel).to_string_lossy().into_owned()
+            };
+            std::fs::write(dir.join("to/item"), "old").unwrap();
+            let sources = vec![
+                write("first/item", "first"),
+                write("second/item", "second"),
+                write("first/x", "incoming"),
+                write("to/x", "in place"),
+            ];
+
+            service
+                .paste(&dir, "to", op, &sources, "replace", &HashMap::new(), true)
+                .unwrap();
+            let read = |rel: &str| std::fs::read_to_string(dir.join(rel)).unwrap();
+            assert_eq!(read("to/item"), "first");
+            assert_eq!(read("to/item (copy)"), "second");
+            assert_eq!(read("to/x"), "in place");
+            assert_eq!(read("to/x (copy)"), "incoming");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

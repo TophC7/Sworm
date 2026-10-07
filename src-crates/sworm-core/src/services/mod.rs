@@ -20,6 +20,7 @@ pub mod nix;
 pub mod omp;
 pub mod providers;
 pub mod pty;
+pub(crate) mod removal;
 pub mod resume_discovery;
 pub(crate) mod runs;
 pub mod runtime_info;

@@ -258,11 +258,11 @@ export const backend = {
     unstageFiles(path: string, files: string[]): Promise<void> {
       return invoke<void>('git_unstage_files', { path, files })
     },
-    discardAll(path: string): Promise<void> {
-      return invoke<void>('git_discard_all', { path })
+    discardAll(path: string, permanent = false): Promise<void> {
+      return invoke<void>('git_discard_all', { path, permanent })
     },
-    discardFiles(path: string, files: string[]): Promise<void> {
-      return invoke<void>('git_discard_files', { path, files })
+    discardFiles(path: string, files: string[], permanent = false): Promise<void> {
+      return invoke<void>('git_discard_files', { path, files, permanent })
     },
     getFullPatch(path: string): Promise<string | null> {
       return invoke<string | null>('git_get_full_patch', { path })
@@ -404,6 +404,9 @@ export const backend = {
       rebaseContinue(path: string): Promise<void> {
         return invoke<void>('git_rebase_continue', { path })
       },
+      mergeContinue(path: string): Promise<void> {
+        return invoke<void>('git_merge_continue', { path })
+      },
       rebaseSkip(path: string): Promise<void> {
         return invoke<void>('git_rebase_skip', { path })
       },
@@ -483,8 +486,8 @@ export const backend = {
     rename(projectPath: string, oldPath: string, newPath: string): Promise<void> {
       return invoke<void>('file_rename', { projectPath, oldPath, newPath })
     },
-    delete(projectPath: string, filePath: string): Promise<void> {
-      return invoke<void>('file_delete', { projectPath, filePath })
+    delete(projectPath: string, filePath: string, permanent = false): Promise<void> {
+      return invoke<void>('file_delete', { projectPath, filePath, permanent })
     },
     paste(
       projectPath: string,
@@ -492,7 +495,8 @@ export const backend = {
       op: 'copy' | 'cut',
       sources: string[],
       collisionPolicy: 'auto_rename' | 'replace' | 'skip' | 'rename' | 'error' = 'auto_rename',
-      renameMap?: Record<string, string>
+      renameMap?: Record<string, string>,
+      permanent = false
     ): Promise<FilePasteMapping[]> {
       return invoke<FilePasteMapping[]>('file_paste', {
         projectPath,
@@ -500,7 +504,8 @@ export const backend = {
         op,
         sources,
         collisionPolicy,
-        renameMap: renameMap ?? null
+        renameMap: renameMap ?? null,
+        permanent
       })
     },
     pasteCollisions(projectPath: string, targetDir: string, sources: string[]): Promise<FilePasteCollision[]> {

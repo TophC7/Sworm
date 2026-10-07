@@ -266,17 +266,18 @@ impl Host {
     }
 
     /// Discard all unstaged changes and untracked files.
-    pub fn git_discard_all(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .discard_all(Path::new(&path))
-            .map_err(ApiError::Internal)
+    pub fn git_discard_all(&self, path: String, permanent: bool) -> Result<(), ApiError> {
+        self.git.discard_all(Path::new(&path), permanent)
     }
 
     /// Discard changes for specific files or directories.
-    pub fn git_discard_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
-        self.git
-            .discard_files(Path::new(&path), &files)
-            .map_err(ApiError::Internal)
+    pub fn git_discard_files(
+        &self,
+        path: String,
+        files: Vec<String>,
+        permanent: bool,
+    ) -> Result<(), ApiError> {
+        self.git.discard_files(Path::new(&path), &files, permanent)
     }
 
     /// Get the combined patch for all working-tree changes.
@@ -602,6 +603,13 @@ impl Host {
     pub fn git_rebase_continue(&self, path: String) -> Result<(), ApiError> {
         self.git
             .rebase_continue(Path::new(&path))
+            .map_err(ApiError::Internal)
+    }
+
+    /// Conclude a paused merge with git's prepared message.
+    pub fn git_merge_continue(&self, path: String) -> Result<(), ApiError> {
+        self.git
+            .merge_continue(Path::new(&path))
             .map_err(ApiError::Internal)
     }
 

@@ -1,4 +1,5 @@
 import { backend } from '$lib/api/backend'
+import { withTrashFallback } from '$lib/features/files/trash'
 import { runGitAction } from '$lib/features/git/state.svelte'
 import {
   applyLineChanges,
@@ -72,15 +73,17 @@ export async function runDiffGitLineAction(
     await stageDiffIndexContent(context, applyLineChanges(modifiedContent, originalContent, inverted))
   } else {
     const nextWorkingTree = applyLineChanges(originalContent, modifiedContent, changes)
+    if (context.status === 'untracked' && nextWorkingTree.length === 0) {
+      await withTrashFallback((permanent) => runGitAction(
+        context.folderPath,
+        (path) => backend.files.delete(path, context.filePath, permanent),
+        { scope: 'summary' }
+      ))
+      return
+    }
     await runGitAction(
       context.folderPath,
-      async (path) => {
-        if (context.status === 'untracked' && nextWorkingTree.length === 0) {
-          await backend.files.delete(path, context.filePath)
-        } else {
-          await backend.files.write(path, context.filePath, nextWorkingTree)
-        }
-      },
+      (path) => backend.files.write(path, context.filePath, nextWorkingTree),
       { scope: 'summary' }
     )
   }

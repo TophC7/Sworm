@@ -397,13 +397,15 @@ macro_rules! define_router_operation {
         #[route(project_path)]
         FileDelete => $method:ident(
             $project_path:ident: $project_path_type:ty,
-            $file_path:ident: $file_path_type:ty $(,)?
+            $file_path:ident: $file_path_type:ty,
+            $permanent:ident: $permanent_type:ty $(,)?
         ) -> $return_type:ty;
     ) => {
         pub async fn $method(
             &self,
             $project_path: $project_path_type,
             $file_path: $file_path_type,
+            $permanent: $permanent_type,
         ) -> Result<$return_type, ApiError> {
             if let Target::Remote { server, path } = Target::parse(&$project_path)? {
                 self.inner.remember_claim(server, path, None, false);
@@ -412,6 +414,7 @@ macro_rules! define_router_operation {
                     Request::FileDelete {
                         project_path: path.to_owned(),
                         file_path: $file_path.clone(),
+                        permanent: $permanent,
                     },
                 )
                 .await?
@@ -423,7 +426,7 @@ macro_rules! define_router_operation {
                     &$file_path,
                 )));
             }
-            self.local(move |host| host.$method($project_path, $file_path)).await
+            self.local(move |host| host.$method($project_path, $file_path, $permanent)).await
         }
     };
     (
@@ -434,7 +437,8 @@ macro_rules! define_router_operation {
             $op:ident: $op_type:ty,
             $sources:ident: $sources_type:ty,
             $collision_policy:ident: $collision_policy_type:ty,
-            $rename_map:ident: $rename_map_type:ty $(,)?
+            $rename_map:ident: $rename_map_type:ty,
+            $permanent:ident: $permanent_type:ty $(,)?
         ) -> $return_type:ty;
     ) => {
         #[allow(clippy::too_many_arguments)]
@@ -446,6 +450,7 @@ macro_rules! define_router_operation {
             $sources: $sources_type,
             $collision_policy: $collision_policy_type,
             $rename_map: $rename_map_type,
+            $permanent: $permanent_type,
         ) -> Result<$return_type, ApiError> {
             if let Target::Remote { server, path } = Target::parse(&$project_path)? {
                 self.inner.remember_claim(server, path, None, false);
@@ -471,6 +476,7 @@ macro_rules! define_router_operation {
                             sources,
                             collision_policy: $collision_policy,
                             rename_map,
+                            permanent: $permanent,
                         },
                     )
                     .await?
@@ -498,6 +504,7 @@ macro_rules! define_router_operation {
                     $sources,
                     $collision_policy,
                     $rename_map,
+                    $permanent,
                 ))
                 .await
         }
