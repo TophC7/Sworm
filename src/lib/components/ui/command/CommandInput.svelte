@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Command } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
-  import PaletteSearch from './palette-search.svelte'
+  import PaletteSearch from './PaletteSearch.svelte'
 
   let { class: className, value = $bindable(''), ...rest }: Omit<Command.InputProps, 'child' | 'children'> = $props()
 </script>

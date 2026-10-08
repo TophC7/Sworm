@@ -7,7 +7,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Input, Select } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
   import { runGitAction } from '$lib/features/git/state.svelte'
@@ -48,12 +48,12 @@
   let canSubmit = $derived(upstream.length > 0 && !submitState.busy)
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Set Upstream</DialogTitle>
-      </DialogHeader>
+    <Dialog.Content>
+      <Dialog.Header>
+        <Dialog.Title>Set Upstream</Dialog.Title>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-2 text-sm">
         <p class="text-muted">
@@ -73,12 +73,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="accent" disabled={!canSubmit} onclick={submitState.submit}>
           {submitState.busy ? 'Saving…' : 'Set upstream'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

@@ -13,22 +13,10 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button, IconButton, iconButtonVariants } from '$lib/components/ui/button'
-  import { Alert } from '$lib/components/ui/alert'
-  import {
-    ContextMenuContent,
-    ContextMenuItem,
-    ContextMenuRoot,
-    ContextMenuSeparator,
-    ContextMenuTrigger
-  } from '$lib/components/ui/context-menu'
-  import {
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuRoot,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger
-  } from '$lib/components/ui/dropdown-menu'
-  import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import * as Alert from '$lib/components/ui/alert'
+  import * as ContextMenu from '$lib/components/ui/context-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { SearchInput } from '$lib/components/ui/input'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
@@ -471,27 +459,27 @@
       />
     </div>
 
-    <DropdownMenuRoot>
-      <DropdownMenuTrigger class={iconButtonVariants()} aria-label="Branch actions">
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger class={iconButtonVariants()} aria-label="Branch actions">
         <MoreHorizontalIcon size={13} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent class="min-w-[210px] text-sm" align="end">
-        <DropdownMenuItem class="flex items-center gap-2" onclick={() => openCreateDialog()}>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content class="min-w-[210px] text-sm" align="end">
+        <DropdownMenu.Item class="flex items-center gap-2" onclick={() => openCreateDialog()}>
           <Plus size={14} class="shrink-0 text-muted" />
           <span>New branch…</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
+        </DropdownMenu.Item>
+        <DropdownMenu.Item
           class="flex items-center gap-2"
           disabled={entry?.fetching === true}
           onclick={() => void runFetch()}
         >
           <RefreshCwIcon size={14} class="shrink-0 text-muted" />
           <span>Fetch from remotes</span>
-        </DropdownMenuItem>
+        </DropdownMenu.Item>
 
-        <DropdownMenuSeparator />
+        <DropdownMenu.Separator />
 
-        <DropdownMenuItem class="flex items-center gap-2" onclick={toggleLayout}>
+        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleLayout}>
           {#if prefs?.layout === 'tree'}
             <ListIcon size={14} class="shrink-0 text-muted" />
             <span>Switch to flat list</span>
@@ -499,8 +487,8 @@
             <ListTreeIcon size={14} class="shrink-0 text-muted" />
             <span>Switch to tree</span>
           {/if}
-        </DropdownMenuItem>
-        <DropdownMenuItem class="flex items-center gap-2" onclick={toggleSort}>
+        </DropdownMenu.Item>
+        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleSort}>
           {#if prefs?.sort === 'alpha'}
             <ArrowDown01Icon size={14} class="shrink-0 text-muted" />
             <span>Sort by date</span>
@@ -508,8 +496,8 @@
             <ArrowDownAZIcon size={14} class="shrink-0 text-muted" />
             <span>Sort alphabetically</span>
           {/if}
-        </DropdownMenuItem>
-        <DropdownMenuItem class="flex items-center gap-2" onclick={toggleShowRemote}>
+        </DropdownMenu.Item>
+        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleShowRemote}>
           {#if prefs?.showRemote}
             <CloudOffIcon size={14} class="shrink-0 text-muted" />
             <span>Hide remote branches</span>
@@ -517,14 +505,14 @@
             <CloudIcon size={14} class="shrink-0 text-muted" />
             <span>Show remote branches</span>
           {/if}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenuRoot>
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto">
     {#if entry && entry.opState !== 'idle'}
-      <Alert variant="warning" layout="banner">
+      <Alert.Root variant="warning" layout="banner">
         <AlertTriangle size={13} class="shrink-0" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -538,11 +526,11 @@
             <Button size="xs" variant="destructive" onclick={() => void abortOp()}>Abort</Button>
           </div>
         </div>
-      </Alert>
+      </Alert.Root>
     {/if}
 
     {#if conflictNotice}
-      <Alert variant="danger" layout="banner">
+      <Alert.Root variant="danger" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="flex-1">
           <p>Merge produced conflicts. Resolve them in the file tree above.</p>
@@ -555,7 +543,7 @@
         >
           Dismiss
         </button>
-      </Alert>
+      </Alert.Root>
     {/if}
 
     {#if !entry}
@@ -563,7 +551,7 @@
     {:else if entry.list.length === 0}
       <div class="px-2.5 py-2 text-sm text-subtle">No branches yet.</div>
     {:else}
-      <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+      <Tooltip.Provider delayDuration={400} skipDelayDuration={100}>
         {#if filtered.current}
           <div class="relative py-1">
             {@render branchSectionHeader('Current')}
@@ -598,7 +586,7 @@
             {/if}
           </div>
         {/if}
-      </TooltipProvider>
+      </Tooltip.Provider>
     {/if}
   </div>
 </div>
@@ -713,8 +701,8 @@
   {@const branchAge = timeAgo(branch.tip.date)}
   {@const color = branchColor(branch)}
   {@const isExpanded = expandedBranch === branch.name}
-  <ContextMenuRoot>
-    <ContextMenuTrigger class="contents">
+  <ContextMenu.Root>
+    <ContextMenu.Trigger class="contents">
       <div
         class="{sidebarRowVariants({
           variant: 'leaf',
@@ -722,8 +710,8 @@
         })} group"
         style:padding-left={treeIndent(depth)}
       >
-        <TooltipRoot>
-          <TooltipTrigger
+        <Tooltip.Root>
+          <Tooltip.Trigger
             type="button"
             class="flex h-full min-w-0 flex-1 items-center gap-1.5 border-none bg-transparent p-0 text-left focus-visible:shadow-focus-ring focus-visible:outline-none"
             aria-label={`${branch.name} branch`}
@@ -736,11 +724,11 @@
             </span>
 
             <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} />
-          </TooltipTrigger>
-          <TooltipContent class="max-w-90" sideOffset={6} side="right" align="center">
+          </Tooltip.Trigger>
+          <Tooltip.Content class="max-w-90" sideOffset={6} side="right" align="center">
             {@render branchTooltip(branch, color)}
-          </TooltipContent>
-        </TooltipRoot>
+          </Tooltip.Content>
+        </Tooltip.Root>
 
         <div class="relative h-full w-[68px] shrink-0">
           <span
@@ -792,71 +780,71 @@
           </div>
         </div>
       </div>
-    </ContextMenuTrigger>
+    </ContextMenu.Trigger>
 
-    <ContextMenuContent>
+    <ContextMenu.Content>
       {#if !branch.isCurrent}
-        <ContextMenuItem onclick={() => switchToBranch(branch)}>
+        <ContextMenu.Item onclick={() => switchToBranch(branch)}>
           <Check size={14} class="shrink-0 text-muted" />
           <span>Switch to branch</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
-      <ContextMenuItem onclick={() => openCompareModal(branch)}>
+      <ContextMenu.Item onclick={() => openCompareModal(branch)}>
         <GitCompareIcon size={14} class="shrink-0 text-muted" />
         <span>Compare with HEAD</span>
-      </ContextMenuItem>
+      </ContextMenu.Item>
 
-      <ContextMenuSeparator />
+      <ContextMenu.Separator />
 
-      <ContextMenuItem onclick={() => openCreateDialog(branch.name)}>
+      <ContextMenu.Item onclick={() => openCreateDialog(branch.name)}>
         <Plus size={14} class="shrink-0 text-muted" />
         <span>Create branch from here…</span>
-      </ContextMenuItem>
+      </ContextMenu.Item>
       {#if branch.kind === 'local' && !branch.isCurrent}
-        <ContextMenuItem onclick={() => openRenameDialog(branch)}>
+        <ContextMenu.Item onclick={() => openRenameDialog(branch)}>
           <PencilIcon size={14} class="shrink-0 text-muted" />
           <span>Rename…</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent}
-        <ContextMenuItem destructive onclick={() => openDeleteDialog(branch)}>
+        <ContextMenu.Item destructive onclick={() => openDeleteDialog(branch)}>
           <Trash2 size={14} class="shrink-0" />
           <span>Delete…</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
 
       {#if !branch.isCurrent}
-        <ContextMenuSeparator />
-        <ContextMenuItem onclick={() => openMergeDialog(branch)}>
+        <ContextMenu.Separator />
+        <ContextMenu.Item onclick={() => openMergeDialog(branch)}>
           <GitMergeIcon size={14} class="shrink-0 text-muted" />
           <span>Merge into current</span>
-        </ContextMenuItem>
-        <ContextMenuItem onclick={() => void openRebaseDialog(branch)}>
+        </ContextMenu.Item>
+        <ContextMenu.Item onclick={() => void openRebaseDialog(branch)}>
           <GitPullRequestIcon size={14} class="shrink-0 text-muted" />
           <span>Rebase current onto this</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
 
-      <ContextMenuSeparator />
+      <ContextMenu.Separator />
 
       {#if branch.kind === 'local'}
-        <ContextMenuItem onclick={() => openUpstreamDialog(branch)}>
+        <ContextMenu.Item onclick={() => openUpstreamDialog(branch)}>
           <CloudIcon size={14} class="shrink-0 text-muted" />
           <span>Set upstream…</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
-        <ContextMenuItem onclick={() => void fastForwardFromMenu(branch.name)}>
+        <ContextMenu.Item onclick={() => void fastForwardFromMenu(branch.name)}>
           <ArrowDownToLineIcon size={14} class="shrink-0 text-muted" />
           <span>Fast-forward</span>
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
-      <ContextMenuItem onclick={() => void copyName(branch.name)}>
+      <ContextMenu.Item onclick={() => void copyName(branch.name)}>
         <ClipboardIcon size={14} class="shrink-0 text-muted" />
         <span>Copy name</span>
-      </ContextMenuItem>
-    </ContextMenuContent>
-  </ContextMenuRoot>
+      </ContextMenu.Item>
+    </ContextMenu.Content>
+  </ContextMenu.Root>
 
   {#if isExpanded}
     {@render branchHistory(branch, depth)}

@@ -1,6 +1,6 @@
-import { Popover as PopoverPrimitive } from 'bits-ui'
+import { Popover as Primitive } from 'bits-ui'
 
-export { default as PopoverContent } from './popover-content.svelte'
+export { default as Content } from './PopoverContent.svelte'
 
-export const PopoverRoot = PopoverPrimitive.Root
-export const PopoverTrigger = PopoverPrimitive.Trigger
+export const Root = Primitive.Root
+export const Trigger = Primitive.Trigger

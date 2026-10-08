@@ -4,12 +4,7 @@
 -->
 
 <script lang="ts">
-  import {
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuRoot,
-    DropdownMenuTrigger
-  } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { SearchInput } from '$lib/components/ui/input'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { revealGitBranches } from '$lib/features/app-shell/sidebar/state.svelte'
@@ -121,17 +116,17 @@
 </script>
 
 {#if gitSummary?.branch}
-  <DropdownMenuRoot bind:open>
-    <DropdownMenuTrigger
+  <DropdownMenu.Root bind:open>
+    <DropdownMenu.Trigger
       class={statusChipVariants({ tone: branchDirty ? 'warning' : 'success', class: 'font-mono' })}
       title={branchStatus}
     >
       <GitBranchIcon size={10} />
       {gitSummary.branch}
       <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} twoColor />
-    </DropdownMenuTrigger>
+    </DropdownMenu.Trigger>
 
-    <DropdownMenuContent class="w-72 p-0" sideOffset={8} align="start">
+    <DropdownMenu.Content class="w-72 p-0" sideOffset={8} align="start">
       <div class="border-b border-edge p-2">
         <SearchInput bind:value={search} placeholder="Switch to branch…" class="text-sm" spellcheck={false} autofocus />
       </div>
@@ -143,7 +138,7 @@
           <div class="px-3 py-2 text-sm text-subtle">No matches.</div>
         {:else}
           {#each visible as branch (branch.name)}
-            <DropdownMenuItem
+            <DropdownMenu.Item
               class="flex items-center gap-2 py-1 text-sm"
               onclick={() => void selectBranch(branch.name)}
             >
@@ -151,18 +146,18 @@
               <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
               <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} twoColor />
               <span class="shrink-0 text-2xs text-subtle">{timeAgo(branch.tip.date)}</span>
-            </DropdownMenuItem>
+            </DropdownMenu.Item>
           {/each}
         {/if}
       </div>
 
       <div class="border-t border-edge p-1">
-        <DropdownMenuItem class="px-2 py-1 text-sm text-muted" onclick={viewAllBranches}>
+        <DropdownMenu.Item class="px-2 py-1 text-sm text-muted" onclick={viewAllBranches}>
           View all branches…
-        </DropdownMenuItem>
+        </DropdownMenu.Item>
       </div>
-    </DropdownMenuContent>
-  </DropdownMenuRoot>
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
 {/if}
 
 {#if checkoutOpen}

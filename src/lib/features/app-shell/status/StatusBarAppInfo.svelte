@@ -4,7 +4,7 @@
 -->
 
 <script lang="ts">
-  import { PopoverContent, PopoverRoot, PopoverTrigger } from '$lib/components/ui/popover'
+  import * as Popover from '$lib/components/ui/popover'
   import { IconButton } from '$lib/components/ui/button'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { backend } from '$lib/api/backend'
@@ -94,12 +94,12 @@
   })
 </script>
 
-<PopoverRoot bind:open>
-  <PopoverTrigger aria-label="App information" class={statusChipVariants({ shape: 'circle', active: open })}>
+<Popover.Root bind:open>
+  <Popover.Trigger aria-label="App information" class={statusChipVariants({ shape: 'circle', active: open })}>
     <img src={appIconUrl} alt="" class="size-4" />
-  </PopoverTrigger>
+  </Popover.Trigger>
 
-  <PopoverContent class="w-80 overflow-hidden p-0" align="start" sideOffset={8}>
+  <Popover.Content class="w-80 overflow-hidden p-0" align="start" sideOffset={8}>
     <div class="flex items-center gap-3 border-b border-edge bg-surface/60 p-3">
       <div class="flex size-10 shrink-0 items-center justify-center rounded-xl border border-edge bg-ground">
         <img src={appIconUrl} alt="" class="size-8" />
@@ -156,5 +156,5 @@
         <span class="flex-1 bg-peach"></span>
       </div>
     </div>
-  </PopoverContent>
-</PopoverRoot>
+  </Popover.Content>
+</Popover.Root>

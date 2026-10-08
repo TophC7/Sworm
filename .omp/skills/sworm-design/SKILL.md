@@ -403,8 +403,10 @@ Rules:
 - `cn(fooVariants({…}), className)` — user `className` always last so callers can override.
 - `{...rest}` spread last.
 - `{#if children}{@render children()}{/if}` — never unconditional.
-- Filename is kebab-case (`session-row.svelte`).
+- Filename is PascalCase, prefixed with the component so editor tabs stay unambiguous (`DropdownMenuItem.svelte`, `SidebarRow.svelte`); the folder is kebab-case (`dropdown-menu/`, `sidebar-row/`).
 - Folder has `index.ts` re-exporting default + variant types.
+- Compound components (`dropdown-menu`, `context-menu`, `dialog`, `popover`, `tabs`, `tooltip`, `command`, `alert`, `breadcrumb`, `resizable`) export short part names (`Root`, `Trigger`, `Content`, `Item`, …) and are consumed as a namespace: `import * as DropdownMenu from '$lib/components/ui/dropdown-menu'` → `<DropdownMenu.Item>`, `<Dialog.Content>`, `<Alert.Root>`. Never long names like `DropdownMenuItem`. The namespace name wins collisions: rename the local identifier, and inside `ui/*` alias raw bits imports (`Dialog as DialogPrimitive`).
+- Standalone components, variant functions and types stay named exports, imported alongside the namespace: `import { InfoTooltip } from '$lib/components/ui/tooltip'`, `import { PaletteDialog, commandItemVariants } from '$lib/components/ui/command'`.
 
 ### 11.2 Button
 
@@ -437,7 +439,7 @@ Wraps `Button` with tooltip + `aria-label`. Always accepts `tooltip: string` and
 
 ### 11.4 Input / Select / Textarea
 
-`inputVariants` in `ui/input/input.svelte` owns the shared field recipe, re-exported from `ui/input`:
+`inputVariants` in `ui/input/Input.svelte` owns the shared field recipe, re-exported from `ui/input`:
 
 `w-full bg-surface border border-edge rounded px-2.5 py-1.5 text-base text-fg outline-none placeholder:text-subtle focus:border-accent transition-colors`.
 
@@ -489,7 +491,7 @@ Close affordance: hidden until hover, `text-muted hover:bg-edge hover:text-brigh
 
 ### 11.9 Dialog
 
-`DialogContent` = `bg-raised border border-edge rounded-2xl shadow-popover p-5`. Inside it, cards step to `bg-overlay`; inputs step to `bg-surface`. Dialog title uses `text-xl font-semibold text-bright`.
+`Dialog.Content` = `bg-raised border border-edge rounded-2xl shadow-popover p-5`. Inside it, cards step to `bg-overlay`; inputs step to `bg-surface`. Dialog title uses `text-xl font-semibold text-bright`.
 
 Overlay: `fixed inset-0 bg-ground/70 backdrop-blur-sm`. The one place blur is used.
 
@@ -505,7 +507,7 @@ Separator = `mx-2 my-1 h-px bg-edge`.
 
 ### 11.11 MagicCard (exception)
 
-`src/lib/components/ui/magic-card/magic-card.svelte` is the **one** decorative surface in the system. At rest it is the Home project card: `bg-surface`, 1px `edge` border, `rounded-lg`, no scale. On hover its border lights with a cursor-following radial gradient in the option's own colors (`gradientFrom` → `gradientTo`), and the fill lifts toward `raised` around the cursor.
+`src/lib/components/ui/magic-card/MagicCard.svelte` is the **one** decorative surface in the system. At rest it is the Home project card: `bg-surface`, 1px `edge` border, `rounded-lg`, no scale. On hover its border lights with a cursor-following radial gradient in the option's own colors (`gradientFrom` → `gradientTo`), and the fill lifts toward `raised` around the cursor.
 
 The two cursor gradients have a fixed 200px radius; the spotlight uses `var(--color-raised)` at 0.8 opacity. Only `gradientFrom` / `gradientTo`, `disabled`, `onclick`, children and class are public knobs.
 

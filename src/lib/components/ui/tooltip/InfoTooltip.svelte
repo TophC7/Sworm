@@ -13,7 +13,7 @@
 <script lang="ts">
   import { Tooltip } from 'bits-ui'
   import { iconButtonVariants } from '../button'
-  import TooltipContent from './tooltip-content.svelte'
+  import Content from './TooltipContent.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
 
@@ -40,7 +40,7 @@
   >
     ?
   </Tooltip.Trigger>
-  <TooltipContent class={contentClass}>
+  <Content class={contentClass}>
     {#if children}{@render children()}{/if}
-  </TooltipContent>
+  </Content>
 </Tooltip.Root>

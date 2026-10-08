@@ -1,6 +1,6 @@
 <!-- Global title-bar tab button with active styling, beam, and close affordance. -->
 <script lang="ts">
-  import TabBeam, { POSITION_CLASS, type BeamPosition } from '$lib/components/ui/tab-beam.svelte'
+  import TabBeam, { POSITION_CLASS, type BeamPosition } from '$lib/components/ui/TabBeam.svelte'
   import { cn } from '$lib/utils/cn'
   import { X } from '$lib/icons/lucideExports'
   import type { Snippet } from 'svelte'

@@ -10,14 +10,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import {
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import * as branches from '$lib/features/git/branches.svelte'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
@@ -66,16 +59,16 @@
   }
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent onModalClose={cancel}>
-      <DialogHeader>
-        <DialogTitle>Switch to {branchName}?</DialogTitle>
-        <DialogDescription>
+    <Dialog.Content onModalClose={cancel}>
+      <Dialog.Header>
+        <Dialog.Title>Switch to {branchName}?</Dialog.Title>
+        <Dialog.Description>
           This working tree has uncommitted changes. Stashing them before switching keeps them recoverable from the
           Stashes tab.
-        </DialogDescription>
-      </DialogHeader>
+        </Dialog.Description>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-2 text-sm text-muted">
         <div class="flex flex-wrap gap-x-3 gap-y-1">
@@ -95,12 +88,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={cancel}>Cancel</Button>
         <Button variant="accent" disabled={submitState.busy} onclick={submitState.submit}>
           {submitState.busy ? 'Stashing…' : 'Stash & switch'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

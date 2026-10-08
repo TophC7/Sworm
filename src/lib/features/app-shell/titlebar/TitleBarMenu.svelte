@@ -5,36 +5,30 @@
 
 <script lang="ts">
   import { iconButtonVariants } from '$lib/components/ui/button'
-  import {
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuRoot,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger
-  } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { MenuIcon } from '$lib/icons/lucideExports'
   import { buildAppMenu } from './menuModel'
 
   let entries = $derived(buildAppMenu())
 </script>
 
-<DropdownMenuRoot>
-  <DropdownMenuTrigger aria-label="Menu" class={iconButtonVariants({ size: 'md' })}>
+<DropdownMenu.Root>
+  <DropdownMenu.Trigger aria-label="Menu" class={iconButtonVariants({ size: 'md' })}>
     <MenuIcon size={14} />
-  </DropdownMenuTrigger>
+  </DropdownMenu.Trigger>
 
-  <DropdownMenuContent align="start" sideOffset={6}>
+  <DropdownMenu.Content align="start" sideOffset={6}>
     {#each entries as entry, i (i)}
       {#if entry.kind === 'separator'}
-        <DropdownMenuSeparator />
+        <DropdownMenu.Separator />
       {:else}
-        <DropdownMenuItem onclick={entry.onSelect} disabled={entry.disabled}>
+        <DropdownMenu.Item onclick={entry.onSelect} disabled={entry.disabled}>
           <span>{entry.label}</span>
           {#if entry.shortcut}
             <span class="ml-6 text-xs text-subtle">{entry.shortcut}</span>
           {/if}
-        </DropdownMenuItem>
+        </DropdownMenu.Item>
       {/if}
     {/each}
-  </DropdownMenuContent>
-</DropdownMenuRoot>
+  </DropdownMenu.Content>
+</DropdownMenu.Root>

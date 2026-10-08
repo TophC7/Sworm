@@ -14,7 +14,7 @@
   import MonacoDiffBody from '$lib/features/editor/renderers/monaco/diff/MonacoDiffBody.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { Separator } from '$lib/components/ui/separator'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { AlertTriangle, ChevronRight, ChevronsDownUp, ChevronsUpDown, SquareArrowOutUpRight, Eye } from '$lib/icons/lucideExports'
   import { gitStatusMeta } from '$lib/features/git/gitStatus'
 
@@ -104,15 +104,15 @@
 </script>
 
 {#snippet headerAction(Icon: typeof Eye, label: string, onclick: () => void)}
-  <TooltipRoot delayDuration={300}>
-    <TooltipTrigger
+  <Tooltip.Root delayDuration={300}>
+    <Tooltip.Trigger
       class="rounded p-1 text-muted transition-colors hover:bg-accent/15 hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
       {onclick}
     >
       <Icon size={12} />
-    </TooltipTrigger>
-    <TooltipContent sideOffset={4}>{label}</TooltipContent>
-  </TooltipRoot>
+    </Tooltip.Trigger>
+    <Tooltip.Content sideOffset={4}>{label}</Tooltip.Content>
+  </Tooltip.Root>
 {/snippet}
 
 <div id="{idPrefix}-{file.path}" class="border-b border-edge">

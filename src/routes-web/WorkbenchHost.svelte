@@ -4,7 +4,7 @@
   import WorkbenchPage from '$lib/features/app-shell/WorkbenchPage.svelte'
   import { Button } from '$lib/components/ui/button'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { cn } from '$lib/utils/cn'
   import { backend } from '$lib/api/backend'
   import { flushWorkbench } from '$lib/features/workbench/state.svelte'
@@ -270,20 +270,20 @@
     {#snippet connectionStatus()}
       {@const connected = connectionState === 'connected'}
       <span role="status" aria-live="polite" class="inline-flex">
-        <TooltipRoot>
-          <TooltipTrigger
+        <Tooltip.Root>
+          <Tooltip.Trigger
             class={statusChipVariants({ tone: connected ? 'default' : 'warning', class: 'cursor-default' })}
           >
             <span class={cn('size-1.5 shrink-0 rounded-full', connected ? 'bg-success' : 'bg-warning')}></span>
             {connected ? 'Connected' : 'Reconnecting…'}
-          </TooltipTrigger>
-          <TooltipContent class="max-w-md">
+          </Tooltip.Trigger>
+          <Tooltip.Content class="max-w-md">
             {connected
               ? 'Control connection to server is connected.'
               : 'Disconnected from server. Reconnecting automatically.'}
             Terminal, LSP, and file streams have independent state.
-          </TooltipContent>
-        </TooltipRoot>
+          </Tooltip.Content>
+        </Tooltip.Root>
       </span>
     {/snippet}
     <WorkbenchPage />

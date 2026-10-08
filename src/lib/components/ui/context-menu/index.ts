@@ -1,8 +1,8 @@
-import { ContextMenu as ContextMenuPrimitive } from 'bits-ui'
+import { ContextMenu as Primitive } from 'bits-ui'
 
-export { default as ContextMenuContent } from './context-menu-content.svelte'
-export { default as ContextMenuItem } from './context-menu-item.svelte'
-export { default as ContextMenuSeparator } from './context-menu-separator.svelte'
+export { default as Content } from './ContextMenuContent.svelte'
+export { default as Item } from './ContextMenuItem.svelte'
+export { default as Separator } from './ContextMenuSeparator.svelte'
 
-export const ContextMenuRoot = ContextMenuPrimitive.Root
-export const ContextMenuTrigger = ContextMenuPrimitive.Trigger
+export const Root = Primitive.Root
+export const Trigger = Primitive.Trigger

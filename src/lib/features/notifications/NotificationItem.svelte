@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert'
+  import * as Alert from '$lib/components/ui/alert'
   import { IconButton } from '$lib/components/ui/button'
-  import TabBeam from '$lib/components/ui/tab-beam.svelte'
+  import TabBeam from '$lib/components/ui/TabBeam.svelte'
   import { X } from '$lib/icons/lucideExports'
   import type { Notification, NotificationTone } from '$lib/features/notifications/state.svelte'
   import { cn } from '$lib/utils/cn'
@@ -29,11 +29,11 @@
   }
 </script>
 
-<Alert variant={getNotificationAlertVariant(notification.tone)} class="group min-h-[4.25rem] pr-10">
+<Alert.Root variant={getNotificationAlertVariant(notification.tone)} class="group min-h-[4.25rem] pr-10">
   <div class="min-w-0 flex-1 space-y-1">
-    <AlertTitle class="pr-1">{notification.title}</AlertTitle>
+    <Alert.Title class="pr-1">{notification.title}</Alert.Title>
     {#if notification.description}
-      <AlertDescription class="pr-1">{notification.description}</AlertDescription>
+      <Alert.Description class="pr-1">{notification.description}</Alert.Description>
     {/if}
 
     {#if notification.loading}
@@ -50,4 +50,4 @@
   <IconButton tooltip="Dismiss" class="absolute top-2 right-2" onclick={() => onDismiss(notification.id)}>
     <X size={10} />
   </IconButton>
-</Alert>
+</Alert.Root>

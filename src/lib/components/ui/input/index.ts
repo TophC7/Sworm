@@ -1,4 +1,4 @@
-export { default as Input, inputVariants } from './input.svelte'
-export { default as SearchInput } from './search-input.svelte'
-export { default as Select } from './select.svelte'
-export { default as Textarea } from './textarea.svelte'
+export { default as Input, inputVariants } from './Input.svelte'
+export { default as SearchInput } from './SearchInput.svelte'
+export { default as Select } from './Select.svelte'
+export { default as Textarea } from './Textarea.svelte'

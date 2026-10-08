@@ -2,7 +2,7 @@
   import { getActiveFolderPath, getTabs } from '$lib/features/workbench/state.svelte'
   import { isProcessLive } from '$lib/features/workbench/model'
   import { StatusChip, statusChipVariants } from '$lib/components/ui/status-chip'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import NixEnvIndicator from '$lib/features/app-shell/status/NixEnvIndicator.svelte'
   import NotificationsButton from '$lib/features/notifications/NotificationsButton.svelte'
   import StatusBarBranchPopover from '$lib/features/app-shell/status/StatusBarBranchPopover.svelte'
@@ -97,12 +97,12 @@
 
   <div class="flex items-center gap-1">
     {#if settingsDiagnostics.length > 0}
-      <TooltipRoot>
-        <TooltipTrigger class={statusChipVariants({ tone: 'warning' })}>
+      <Tooltip.Root>
+        <Tooltip.Trigger class={statusChipVariants({ tone: 'warning' })}>
           <AlertTriangle size={10} />
           {settingsDiagnostics.length} settings
-        </TooltipTrigger>
-        <TooltipContent class="max-w-md">
+        </Tooltip.Trigger>
+        <Tooltip.Content class="max-w-md">
           <div class="space-y-1 text-left">
             <div class="text-xs font-medium text-warning-bright">Settings diagnostics</div>
             {#each settingsDiagnostics.slice(0, 5) as diagnostic}
@@ -117,17 +117,17 @@
               <div class="text-2xs text-subtle">+{settingsDiagnostics.length - 5} more</div>
             {/if}
           </div>
-        </TooltipContent>
-      </TooltipRoot>
+        </Tooltip.Content>
+      </Tooltip.Root>
     {/if}
 
     {#if sharedAgentCount > 1}
-      <TooltipRoot>
-        <TooltipTrigger class={statusChipVariants({ tone: 'warning' })}>
+      <Tooltip.Root>
+        <Tooltip.Trigger class={statusChipVariants({ tone: 'warning' })}>
           <AlertTriangle size={10} /> shared
-        </TooltipTrigger>
-        <TooltipContent>Multiple agents share this folder's working tree</TooltipContent>
-      </TooltipRoot>
+        </Tooltip.Trigger>
+        <Tooltip.Content>Multiple agents share this folder's working tree</Tooltip.Content>
+      </Tooltip.Root>
     {/if}
     <NotificationsButton />
   </div>

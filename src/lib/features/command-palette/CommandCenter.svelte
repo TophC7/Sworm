@@ -1,16 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import {
-    Command,
-    CommandEmpty,
-    CommandGroup,
-    CommandInput,
-    CommandItem,
-    CommandList,
-    CommandSeparator,
-    PaletteDialog,
-    PaletteFooter
-  } from '$lib/components/ui/command'
+  import * as Command from '$lib/components/ui/command'
+  import { PaletteDialog, PaletteFooter } from '$lib/components/ui/command'
   import { Kbd } from '$lib/components/ui/kbd'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
   import { HistoryIcon, PencilIcon } from '$lib/icons/lucideExports'
@@ -288,7 +279,7 @@
 </script>
 
 <PaletteDialog {open} onOpenChange={(v) => setCommandPaletteOpen(v)} label="Command center">
-  <Command
+  <Command.Root
     bind:value={commandValue}
     vimBindings={false}
     shouldFilter={false}
@@ -298,21 +289,21 @@
     onpointerleavecapture={handleCommandPointerLeave}
     class="min-h-0 overflow-visible rounded-none"
   >
-    <CommandInput aria-label="Search commands" placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
-    <CommandList bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
-      <CommandEmpty />
+    <Command.Input aria-label="Search commands" placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
+    <Command.List bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
+      <Command.Empty />
 
       {#each activeGroups as group, i (group.heading)}
         {#if i > 0}
-          <CommandSeparator />
+          <Command.Separator />
         {/if}
-        <CommandGroup heading={group.heading}>
+        <Command.Group heading={group.heading}>
           {#each group.commands as cmd (cmd.id)}
             {@const Icon = cmd.icon}
             {@const defaultKeybindings = cmd.defaultKeybindings ?? []}
             {@const effectiveShortcuts = getEffectiveBindings(commandBindingId(cmd), defaultKeybindings)}
             {@const canEditShortcut = cmd.defaultKeybindings !== undefined}
-            <CommandItem value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
+            <Command.Item value={cmd.id} keywords={cmd.keywords} onSelect={() => run(cmd)} class="group">
               {#if Icon}
                 <Icon />
               {:else if cmd.iconSrc}
@@ -360,12 +351,12 @@
                   {/if}
                 </span>
               {/if}
-            </CommandItem>
+            </Command.Item>
           {/each}
-        </CommandGroup>
+        </Command.Group>
       {/each}
-    </CommandList>
-  </Command>
+    </Command.List>
+  </Command.Root>
   <!-- Footer hints surface core palette shortcuts so users learn -->
   <!-- navigation/editor-mode affordances without a separate help pane. -->
   <PaletteFooter>

@@ -9,12 +9,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { Button, IconButton } from '$lib/components/ui/button'
-  import {
-    Breadcrumb,
-    BreadcrumbItem,
-    BreadcrumbPage,
-    BreadcrumbSeparator
-  } from '$lib/components/ui/breadcrumb'
+  import * as Breadcrumb from '$lib/components/ui/breadcrumb'
   import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import { Layers, RefreshCwIcon } from '$lib/icons/lucideExports'
   import { getIssueDetail, getIssueEpics, getIssues, reloadIssueDetail, watchIssueDetail } from '$lib/features/issues/state.svelte'
@@ -47,17 +42,17 @@
 <section class="flex h-full flex-col bg-ground">
   <PanelHeader>
     {#snippet left()}
-      <Breadcrumb class="text-2xs">
+      <Breadcrumb.Root class="text-2xs">
           {#if epicRef}
-            <BreadcrumbItem class="font-mono text-warning" title={epicRef.title}>
+            <Breadcrumb.Item class="font-mono text-warning" title={epicRef.title}>
               <Layers size={11} class="shrink-0" />
               <span>{epicRef.id}</span>
               <span class="max-w-[20ch] truncate font-sans text-subtle">{epicRef.title}</span>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
+            </Breadcrumb.Item>
+            <Breadcrumb.Separator />
           {/if}
           {#if parentIssue}
-            <BreadcrumbItem class="font-mono">
+            <Breadcrumb.Item class="font-mono">
               <button
                 type="button"
                 class="flex items-center gap-1 text-accent hover:underline focus-visible:shadow-focus-ring focus-visible:outline-none"
@@ -67,18 +62,18 @@
                 <span>{parentIssue.id}</span>
                 <span class="max-w-[20ch] truncate font-sans text-subtle">{parentIssue.title}</span>
               </button>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
+            </Breadcrumb.Item>
+            <Breadcrumb.Separator />
           {/if}
-          <BreadcrumbItem>
-            <BreadcrumbPage class="flex items-center gap-1.5 font-mono">
+          <Breadcrumb.Item>
+            <Breadcrumb.Page class="flex items-center gap-1.5 font-mono">
               <span class="text-muted">{tab.issueId}</span>
               <span class="max-w-[36ch] truncate font-sans text-fg">
                 {detail?.issue.title ?? tab.title}
               </span>
-            </BreadcrumbPage>
-          </BreadcrumbItem>
-      </Breadcrumb>
+            </Breadcrumb.Page>
+          </Breadcrumb.Item>
+      </Breadcrumb.Root>
     {/snippet}
     {#snippet right()}
       <IconButton tooltip="Refresh" onclick={refresh}>

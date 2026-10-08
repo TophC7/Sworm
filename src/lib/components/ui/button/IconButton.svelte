@@ -25,7 +25,7 @@
 
   // Shared chrome for any square icon button — whether rendered as a
   // `<button>` via this primitive or composed into a bits-ui trigger
-  // slot (DropdownMenuTrigger, Popover.Trigger, Tooltip.Trigger) that
+  // slot (DropdownMenu.Trigger, Popover.Trigger, Tooltip.Trigger) that
   // needs the class string rather than a nested element.
   export const iconButtonVariants = tv({
     base: 'inline-flex items-center justify-center rounded-lg bg-transparent border-none text-muted cursor-pointer transition-colors hover:bg-surface hover:text-bright focus-visible:shadow-focus-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
@@ -55,8 +55,9 @@
 </script>
 
 <script lang="ts">
+  // Direct imports, not the tooltip barrel: it re-exports InfoTooltip, which imports this file.
   import { Tooltip } from 'bits-ui'
-  import TooltipContent from '../tooltip/tooltip-content.svelte'
+  import TooltipContent from '../tooltip/TooltipContent.svelte'
   import { cn } from '$lib/utils/cn'
   import type { Snippet } from 'svelte'
   import type { HTMLButtonAttributes } from 'svelte/elements'

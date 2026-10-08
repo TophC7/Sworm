@@ -7,7 +7,7 @@
   import type { Snippet } from 'svelte'
   import type { HTMLSelectAttributes } from 'svelte/elements'
   import { cn } from '$lib/utils/cn'
-  import { inputVariants } from './input.svelte'
+  import { inputVariants } from './Input.svelte'
 
   let {
     class: className,

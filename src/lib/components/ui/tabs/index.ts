@@ -1,6 +1,6 @@
-import { Tabs as TabsPrimitive } from 'bits-ui'
+import { Tabs as Primitive } from 'bits-ui'
 
-export { default as TabsList } from './tabs-list.svelte'
-export { default as TabsTrigger } from './tabs-trigger.svelte'
+export { default as List } from './TabsList.svelte'
+export { default as Trigger } from './TabsTrigger.svelte'
 
-export const TabsRoot = TabsPrimitive.Root
+export const Root = Primitive.Root

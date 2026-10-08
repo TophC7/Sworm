@@ -10,13 +10,7 @@
   import { gitChangeDragSource, gitDropZone, isGitDropZoneActive } from '$lib/features/dnd/adapters/git.svelte'
   import { Button, IconButton } from '$lib/components/ui/button'
   import { ButtonGroup } from '$lib/components/ui/button-group'
-  import {
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuRoot,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger
-  } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { Textarea } from '$lib/components/ui/input'
   import TreeFilterInput from '$lib/components/file-tree/TreeFilterInput.svelte'
   import {
@@ -362,25 +356,25 @@
         <Button variant="default" size="sm" class="flex-1 rounded" disabled={!canCommit} onclick={handleCommit}>
           Commit{stagedFiles.length > 0 ? ` (${stagedFiles.length})` : ''}
         </Button>
-        <DropdownMenuRoot>
-          <DropdownMenuTrigger
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
             data-slot="button"
             class="flex items-center rounded border border-edge bg-raised px-1 py-1 text-muted transition-colors hover:border-accent hover:text-bright"
           >
             <ChevronDown size={11} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent class="min-w-[180px] text-sm">
-            <DropdownMenuItem onclick={() => pullFolder(folderPath)}>Pull</DropdownMenuItem>
-            <DropdownMenuItem onclick={() => pushFolder(folderPath)}>Push</DropdownMenuItem>
-            <DropdownMenuItem onclick={() => fetchFolder(folderPath)}>Fetch</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onclick={() => forcePushWithLease(folderPath)}>Force Push (with lease)</DropdownMenuItem>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content class="min-w-[180px] text-sm">
+            <DropdownMenu.Item onclick={() => pullFolder(folderPath)}>Pull</DropdownMenu.Item>
+            <DropdownMenu.Item onclick={() => pushFolder(folderPath)}>Push</DropdownMenu.Item>
+            <DropdownMenu.Item onclick={() => fetchFolder(folderPath)}>Fetch</DropdownMenu.Item>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item onclick={() => forcePushWithLease(folderPath)}>Force Push (with lease)</DropdownMenu.Item>
             {#if hasCommits}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem destructive onclick={handleUndoLastCommit}>Undo Last Commit</DropdownMenuItem>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item destructive onclick={handleUndoLastCommit}>Undo Last Commit</DropdownMenu.Item>
             {/if}
-          </DropdownMenuContent>
-        </DropdownMenuRoot>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
       </ButtonGroup>
     </div>
   </div>

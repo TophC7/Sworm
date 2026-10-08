@@ -6,7 +6,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
@@ -64,12 +64,12 @@
   }
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent class="max-w-[640px]">
-      <DialogHeader>
-        <DialogTitle>Compare {branchName} with HEAD</DialogTitle>
-      </DialogHeader>
+    <Dialog.Content class="max-w-[640px]">
+      <Dialog.Header>
+        <Dialog.Title>Compare {branchName} with HEAD</Dialog.Title>
+      </Dialog.Header>
 
       <div class="mt-2 max-h-[420px] overflow-y-auto rounded border border-edge bg-overlay">
         {#if loading}
@@ -96,9 +96,9 @@
         {/if}
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" onclick={() => (open = false)}>Close</Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

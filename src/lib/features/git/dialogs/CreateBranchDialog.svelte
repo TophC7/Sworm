@@ -13,14 +13,7 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
-  import {
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogRoot,
-    DialogTitle
-  } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Input, Select } from '$lib/components/ui/input'
   import * as branches from '$lib/features/git/branches.svelte'
   import { runGitAction } from '$lib/features/git/state.svelte'
@@ -66,13 +59,13 @@
   let canSubmit = $derived(name.length > 0 && !nameError && base.length > 0 && !submitState.busy)
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Create Branch</DialogTitle>
-        <DialogDescription>Branch off an existing ref.</DialogDescription>
-      </DialogHeader>
+    <Dialog.Content>
+      <Dialog.Header>
+        <Dialog.Title>Create Branch</Dialog.Title>
+        <Dialog.Description>Branch off an existing ref.</Dialog.Description>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-3">
         <label class="block space-y-1">
@@ -98,12 +91,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="accent" disabled={!canSubmit} onclick={submitState.submit}>
           {submitState.busy ? 'Creating…' : 'Create'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

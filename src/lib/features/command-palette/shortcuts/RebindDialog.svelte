@@ -9,7 +9,7 @@
 -->
 
 <script lang="ts">
-  import { DialogRoot, DialogContent, DialogTitle, DialogFooter } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Button } from '$lib/components/ui/button'
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import {
@@ -164,14 +164,14 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<DialogRoot
+<Dialog.Root
   open
   onOpenChange={(v) => {
     if (!v) close()
   }}
 >
-  <DialogContent class="max-w-lg">
-    <DialogTitle>{commandLabel}</DialogTitle>
+  <Dialog.Content class="max-w-lg">
+    <Dialog.Title>{commandLabel}</Dialog.Title>
 
     <div class="space-y-3 pt-4">
       <div class="space-y-2">
@@ -233,7 +233,7 @@
       {/if}
     </div>
 
-    <DialogFooter>
+    <Dialog.Footer>
       <Button variant="ghost" onclick={resetToDefault}>Reset to Default</Button>
       <Button variant="outline" onclick={close}>Cancel</Button>
       {#if conflict}
@@ -241,6 +241,6 @@
       {:else}
         <Button variant="accent" onclick={() => save(false)} disabled={!captured}>Save</Button>
       {/if}
-    </DialogFooter>
-  </DialogContent>
-</DialogRoot>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

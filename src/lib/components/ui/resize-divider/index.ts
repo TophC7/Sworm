@@ -1,1 +1,1 @@
-export { default as ResizeDivider, type ResizeDividerDirection, resizeDividerVariants } from './resize-divider.svelte'
+export { default as ResizeDivider, type ResizeDividerDirection, resizeDividerVariants } from './ResizeDivider.svelte'

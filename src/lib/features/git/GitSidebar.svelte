@@ -3,9 +3,9 @@
   import GitFileTree from '$lib/features/git/GitFileTree.svelte'
   import SidebarPanel from '$lib/features/app-shell/sidebar/SidebarPanel.svelte'
   import { Button } from '$lib/components/ui/button'
-  import { Alert } from '$lib/components/ui/alert'
+  import * as Alert from '$lib/components/ui/alert'
   import { Input } from '$lib/components/ui/input'
-  import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
+  import * as Resizable from '$lib/components/ui/resizable'
   import { InfoTooltip } from '$lib/components/ui/tooltip'
   import { ensureGitWatch, getGitFreshness, getGitSummary } from '$lib/features/git/state.svelte'
   import { backend } from '$lib/api/backend'
@@ -115,22 +115,22 @@
 
   <div class="flex h-full min-h-0 flex-col">
     {#if readError}
-      <Alert variant="danger" layout="banner">
+      <Alert.Root variant="danger" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="min-w-0">
           <p class="font-medium">{summary ? 'Git status is stale.' : 'Git status unavailable.'}</p>
           <p class="mt-0.5 text-2xs break-words text-muted">{readError}</p>
         </div>
-      </Alert>
+      </Alert.Root>
     {/if}
     {#if showWatchError}
-      <Alert variant="warning" layout="banner">
+      <Alert.Root variant="warning" layout="banner">
         <AlertTriangle size={13} class="mt-0.5 shrink-0" />
         <div class="min-w-0">
           <p class="font-medium">Git change watcher is degraded. Changes may be delayed.</p>
           <p class="mt-0.5 text-2xs break-words text-muted">{watchError}</p>
         </div>
-      </Alert>
+      </Alert.Root>
     {/if}
     <div class="min-h-0 flex-1">
       {#if !summary}
@@ -176,19 +176,19 @@
           {/if}
         </div>
       {:else}
-        <ResizablePaneGroup direction="vertical">
-          <ResizablePane defaultSize={60} minSize={15}>
+        <Resizable.PaneGroup direction="vertical">
+          <Resizable.Pane defaultSize={60} minSize={15}>
             <div class="h-full overflow-y-auto">
               <GitFileTree {summary} {folderPath} />
             </div>
-          </ResizablePane>
-          <ResizableHandle />
-          <ResizablePane defaultSize={40} minSize={15}>
+          </Resizable.Pane>
+          <Resizable.Handle />
+          <Resizable.Pane defaultSize={40} minSize={15}>
             <div class="h-full overflow-y-auto">
               <GitGraph {folderPath} />
             </div>
-          </ResizablePane>
-        </ResizablePaneGroup>
+          </Resizable.Pane>
+        </Resizable.PaneGroup>
       {/if}
     </div>
   </div>

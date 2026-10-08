@@ -26,29 +26,29 @@ Primitives that exist today under `src/lib/components/ui/`:
 
 | Folder | Files | State |
 |---|---|---|
-| `alert/` | `alert.svelte`, `alert-description.svelte`, `alert-title.svelte` | Uses `text-[0.75rem]`, `text-[0.7rem]`, `text-[0.72rem]`. **Migrate to named scale.** |
-| `badge/` | `badge.svelte` | `text-xs`; variants `default`, `success`, `warning`, `danger`, `accent`. Neutral badges use the default, not a `muted` alias. |
-| `blur-fade/` | `blur-fade.svelte` | CSS stage entrance: fixed 6px blur and upward Y motion; `duration=0.4`, `offset=8`, `delay=0`. Headers retain `duration=0.5`, `offset=10`; no direction/blur props. |
-| `breadcrumb/` | `breadcrumb.svelte`, `breadcrumb-item.svelte`, `breadcrumb-page.svelte`, `breadcrumb-separator.svelte` | `Breadcrumb` owns `nav` + `ol`; native ordered-list attrs and class forward to `ol`. Items and decorative separators render `li`; separator has `role="presentation"` + `aria-hidden="true"`. |
-| `button/` | `button.svelte`, `icon-button.svelte` | Size variants use `text-[0.82rem]`, `text-[0.72rem]`, `text-[0.68rem]`. **Migrate.** Missing focus-ring. IconButton needs `shape` variant for flat chrome. |
-| `button-group/` | `button-group.svelte` | Horizontal-only `ButtonGroup`; forwards native attributes and preserves `role="group"`. |
-| `chrome-tabs/` | `tab-strip.svelte`, `tab-button.svelte` | `pane` variant still uses `text-[0.75rem]` → `text-sm`. `TabBeam` variant prop drops `warning/success/danger` (dots carry state). |
+| `alert/` | `Alert.svelte`, `AlertDescription.svelte`, `AlertTitle.svelte` | Uses `text-[0.75rem]`, `text-[0.7rem]`, `text-[0.72rem]`. **Migrate to named scale.** |
+| `badge/` | `Badge.svelte` | `text-xs`; variants `default`, `success`, `warning`, `danger`, `accent`. Neutral badges use the default, not a `muted` alias. |
+| `blur-fade/` | `BlurFade.svelte` | CSS stage entrance: fixed 6px blur and upward Y motion; `duration=0.4`, `offset=8`, `delay=0`. Headers retain `duration=0.5`, `offset=10`; no direction/blur props. |
+| `breadcrumb/` | `Breadcrumb.svelte`, `BreadcrumbItem.svelte`, `BreadcrumbPage.svelte`, `BreadcrumbSeparator.svelte` | `Breadcrumb` owns `nav` + `ol`; native ordered-list attrs and class forward to `ol`. Items and decorative separators render `li`; separator has `role="presentation"` + `aria-hidden="true"`. |
+| `button/` | `Button.svelte`, `IconButton.svelte` | Size variants use `text-[0.82rem]`, `text-[0.72rem]`, `text-[0.68rem]`. **Migrate.** Missing focus-ring. IconButton needs `shape` variant for flat chrome. |
+| `button-group/` | `ButtonGroup.svelte` | Horizontal-only `ButtonGroup`; forwards native attributes and preserves `role="group"`. |
+| `chrome-tabs/` | `TabStrip.svelte`, `TabButton.svelte` | `pane` variant still uses `text-[0.75rem]` → `text-sm`. `TabBeam` variant prop drops `warning/success/danger` (dots carry state). |
 | `command/` | command components, palette dialog/search/footer | Named scale. `PaletteDialog` imports Bits UI directly inside `ui/`; features use the palette wrapper. |
 | `context-menu/` | content, item, separator | Shared `menu-recipe.ts` owns content, item tone/disabled states and separator classes. |
 | `dialog/` | content, description, footer, header, overlay, title | Public root and styled parts only; content forwards dismissal policies and `aria-busy`. |
 | `dropdown-menu/` | content, item, separator | Shares `menu-recipe.ts` with context menus; no unused submenu/group exports. |
-| `input/` | `input.svelte`, `textarea.svelte` | Textarea uses `text-[0.75rem]`. Migrate. |
-| `kbd/` | `kbd.svelte`, `kbd-group.svelte` | Named scale and `shadow-kbd-inset`. `KbdGroup` groups caller-supplied chips and separators; it does not parse shortcuts. |
-| `magic-card/` | `magic-card.svelte` | Keep — new-tab start options only. Cursor gradients fixed at 200px, spotlight uses `raised` at 0.8 opacity; only gradient endpoints, disabled and click action remain tunable. |
+| `input/` | `Input.svelte`, `Textarea.svelte` | Textarea uses `text-[0.75rem]`. Migrate. |
+| `kbd/` | `Kbd.svelte`, `KbdGroup.svelte` | Named scale and `shadow-kbd-inset`. `KbdGroup` groups caller-supplied chips and separators; it does not parse shortcuts. |
+| `magic-card/` | `MagicCard.svelte` | Keep — new-tab start options only. Cursor gradients fixed at 200px, spotlight uses `raised` at 0.8 opacity; only gradient endpoints, disabled and click action remain tunable. |
 | `menubar/` | 5 files | **Unused after AppMenuBar deletion.** Candidate for removal. |
-| `particles/` | `particles.svelte` | Stage atmosphere only. Canvas reads `--color-accent` once on effect start; per-particle alpha uses `globalAlpha`. Defaults: quantity 75, size 0.5, staticity 40, ease 60; no color/velocity props or StageView pass-through tuning. |
-| `resizable/` | `handle.svelte`, `pane-group.svelte` | Inventory check. |
-| `progress/` | `progress-bar.svelte` | `ProgressBar`: fixed `h-1 w-12`, done/active/total segments, computed title and progressbar ARIA values; caller class may override styling. |
-| `scroll-area/` | `scroll-area.svelte` | Vertical scrollbar only; keeps native prop forwarding. |
-| `separator/` | `separator.svelte` | Inventory check. |
-| `tab-beam.svelte` | single file | Horizontal top/bottom sweep only; local `BeamPosition` union, accent default with optional custom project color. No semantic color variants or vertical mode. |
-| `tabs/` | `tabs-list.svelte`, `tabs-trigger.svelte` | `text-[0.72rem]`. Migrate. |
-| `tooltip/` | `tooltip-content.svelte`, `InfoTooltip.svelte` | `text-[0.72rem]`, `text-[0.68rem]`, hand-rolled shadow → `shadow-popover`. |
+| `particles/` | `Particles.svelte` | Stage atmosphere only. Canvas reads `--color-accent` once on effect start; per-particle alpha uses `globalAlpha`. Defaults: quantity 75, size 0.5, staticity 40, ease 60; no color/velocity props or StageView pass-through tuning. |
+| `resizable/` | `ResizableHandle.svelte`, `ResizablePaneGroup.svelte` | Inventory check. |
+| `progress/` | `ProgressBar.svelte` | `ProgressBar`: fixed `h-1 w-12`, done/active/total segments, computed title and progressbar ARIA values; caller class may override styling. |
+| `scroll-area/` | `ScrollArea.svelte` | Vertical scrollbar only; keeps native prop forwarding. |
+| `separator/` | `Separator.svelte` | Inventory check. |
+| `TabBeam.svelte` | single file | Horizontal top/bottom sweep only; local `BeamPosition` union, accent default with optional custom project color. No semantic color variants or vertical mode. |
+| `tabs/` | `TabsList.svelte`, `TabsTrigger.svelte` | `text-[0.72rem]`. Migrate. |
+| `tooltip/` | `TooltipContent.svelte`, `InfoTooltip.svelte` | `text-[0.72rem]`, `text-[0.68rem]`, hand-rolled shadow → `shadow-popover`. |
 
 ### Missing primitives (needed)
 
@@ -68,23 +68,23 @@ No behavioral change. Just swap every `text-[…]` literal in `ui/*` for the mat
 
 | File | Change |
 |---|---|
-| `alert/alert.svelte` | `text-[0.75rem]` → `text-sm` |
-| `alert/alert-description.svelte` | `text-[0.7rem]` → `text-xs` |
-| `alert/alert-title.svelte` | `text-[0.72rem]` → `text-sm` |
-| `badge/badge.svelte` | `text-[0.68rem]` → `text-xs` |
-| `button/button.svelte` | `default: text-[0.82rem] → text-base`, `sm: text-[0.72rem] → text-sm`, `xs: text-[0.68rem] → text-xs` |
-| `button/icon-button.svelte` | tooltip shortcut kbd `text-[0.68rem]` → `text-xs` |
-| `chrome-tabs/tab-button.svelte` | pane variant `text-[0.75rem]` → `text-sm` |
+| `alert/Alert.svelte` | `text-[0.75rem]` → `text-sm` |
+| `alert/AlertDescription.svelte` | `text-[0.7rem]` → `text-xs` |
+| `alert/AlertTitle.svelte` | `text-[0.72rem]` → `text-sm` |
+| `badge/Badge.svelte` | `text-[0.68rem]` → `text-xs` |
+| `button/Button.svelte` | `default: text-[0.82rem] → text-base`, `sm: text-[0.72rem] → text-sm`, `xs: text-[0.68rem] → text-xs` |
+| `button/IconButton.svelte` | tooltip shortcut kbd `text-[0.68rem]` → `text-xs` |
+| `chrome-tabs/TabButton.svelte` | pane variant `text-[0.75rem]` → `text-sm` |
 | `command/` (all) | `text-[0.8rem]` → `text-base` (13.1px is closer to the intended ~13px reading size than `text-md`'s 13.6px) |
-| `context-menu/context-menu-content.svelte` | `text-[0.8rem]` → `text-base` |
-| `dropdown-menu/dropdown-menu-content.svelte` | `text-[0.8rem]` → `text-base` |
-| `input/textarea.svelte` | `text-[0.75rem]` → `text-sm` |
-| `kbd/kbd.svelte` | `text-[0.72rem]` → `text-sm` |
+| `context-menu/ContextMenuContent.svelte` | `text-[0.8rem]` → `text-base` |
+| `dropdown-menu/DropdownMenuContent.svelte` | `text-[0.8rem]` → `text-base` |
+| `input/Textarea.svelte` | `text-[0.75rem]` → `text-sm` |
+| `kbd/Kbd.svelte` | `text-[0.72rem]` → `text-sm` |
 | `menubar/menubar-content.svelte` | `text-[0.8rem]` → `text-base` (if keeping menubar) |
 | `menubar/menubar-sub-content.svelte` | `text-[0.8rem]` → `text-base` |
 | `menubar/menubar-trigger.svelte` | `text-[0.75rem]` → `text-sm` |
-| `tabs/tabs-trigger.svelte` | `text-[0.72rem]` → `text-sm` |
-| `tooltip/tooltip-content.svelte` | `text-[0.72rem]` → `text-sm` |
+| `tabs/TabsTrigger.svelte` | `text-[0.72rem]` → `text-sm` |
+| `tooltip/TooltipContent.svelte` | `text-[0.72rem]` → `text-sm` |
 | `tooltip/InfoTooltip.svelte` | `text-[0.68rem]` → `text-xs` |
 
 After this phase: `grep text-\[ src/lib/components/ui/` returns zero results.
@@ -99,13 +99,13 @@ Replace hand-rolled `shadow-[…]` with named tokens.
 
 | File | From | To |
 |---|---|---|
-| `dropdown-menu/dropdown-menu-content.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
-| `context-menu/context-menu-content.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
+| `dropdown-menu/DropdownMenuContent.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
+| `context-menu/ContextMenuContent.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
 | `menubar/menubar-content.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
 | `menubar/menubar-sub-content.svelte` | `shadow-[0_8px_24px_rgba(0,0,0,0.4)]` | `shadow-popover` |
-| `tooltip/tooltip-content.svelte` | `shadow-[0_10px_30px_rgba(0,0,0,0.45)]` | `shadow-popover` |
-| `kbd/kbd.svelte` | `shadow-[inset_0_-1px_0_var(--color-edge)]` | `shadow-kbd-inset` |
-| `dialog/dialog-content.svelte` | `shadow-[0_10px_30px_rgba(0,0,0,0.45)]` | `shadow-popover` |
+| `tooltip/TooltipContent.svelte` | `shadow-[0_10px_30px_rgba(0,0,0,0.45)]` | `shadow-popover` |
+| `kbd/Kbd.svelte` | `shadow-[inset_0_-1px_0_var(--color-edge)]` | `shadow-kbd-inset` |
+| `dialog/DialogContent.svelte` | `shadow-[0_10px_30px_rgba(0,0,0,0.45)]` | `shadow-popover` |
 | `CommandCenter.svelte` (feature) | `shadow-[0_16px_48px_rgba(0,0,0,0.5)]` | `shadow-popover` |
 
 After: `grep 'shadow-\[' src/` returns only intentional one-offs (if any remain, justify them in a comment).
@@ -118,12 +118,12 @@ Currently, most buttons have no visible focus state. The Input primitive does bo
 
 | File | Notes |
 |---|---|
-| `button/button.svelte` | Add to base: `focus-visible:shadow-focus-ring focus-visible:outline-none`. |
-| `tabs/tabs-trigger.svelte` | Same. |
-| `dropdown-menu/dropdown-menu-item.svelte` | Replace `focus:bg-surface` alone with `focus:bg-surface focus-visible:shadow-focus-ring`. |
-| `context-menu/context-menu-item.svelte` | Same. |
+| `button/Button.svelte` | Add to base: `focus-visible:shadow-focus-ring focus-visible:outline-none`. |
+| `tabs/TabsTrigger.svelte` | Same. |
+| `dropdown-menu/DropdownMenuItem.svelte` | Replace `focus:bg-surface` alone with `focus:bg-surface focus-visible:shadow-focus-ring`. |
+| `context-menu/ContextMenuItem.svelte` | Same. |
 | `menubar/menubar-trigger.svelte` | Same. |
-| `chrome-tabs/tab-button.svelte` | Already has `focus-visible:outline-*`. Swap to `focus-visible:shadow-focus-ring`. |
+| `chrome-tabs/TabButton.svelte` | Already has `focus-visible:outline-*`. Swap to `focus-visible:shadow-focus-ring`. |
 
 Input / Textarea stay on border-swap — that's the spec (§8.1).
 
@@ -135,7 +135,7 @@ Input / Textarea stay on border-swap — that's the spec (§8.1).
 
 Three-way duplication in `TitleBar.svelte`, `TitleBarMenu.svelte`, `WindowControls.svelte`. Options:
 
-**Option A — New primitive** at `src/lib/components/ui/button/titlebar-icon-button.svelte`:
+**Option A — New primitive** at `src/lib/components/ui/button/TitlebarIconButton.svelte`:
 
 ```svelte
 <script lang="ts">
@@ -187,7 +187,7 @@ Recommend **Option B**. After it lands, refactor `TitleBar.svelte`, `TitleBarMen
 
 ### 4c · `Checkbox`
 
-Add `src/lib/components/ui/checkbox/checkbox.svelte` using `bits-ui` `Checkbox.Root`. Wrap with the spec-correct focus ring, accent-color swatch, and label snippet. Target consumer: `SettingsDialog.svelte` — 6 raw native checkboxes there.
+Add `src/lib/components/ui/checkbox/Checkbox.svelte` using `bits-ui` `Checkbox.Root`. Wrap with the spec-correct focus ring, accent-color swatch, and label snippet. Target consumer: `SettingsDialog.svelte` — 6 raw native checkboxes there.
 
 ### 4d · `Radio`, `Switch`, `Select`
 

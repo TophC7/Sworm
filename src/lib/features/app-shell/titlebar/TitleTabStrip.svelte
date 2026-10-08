@@ -14,20 +14,8 @@
     removeServerWorkbenchFromWindow
   } from '$lib/features/app-actions/actions.svelte'
   import { TabButton, TabStrip } from '$lib/components/ui/chrome-tabs'
-  import {
-    ContextMenuRoot,
-    ContextMenuTrigger,
-    ContextMenuContent,
-    ContextMenuItem,
-    ContextMenuSeparator
-  } from '$lib/components/ui/context-menu'
-  import {
-    DropdownMenuRoot,
-    DropdownMenuTrigger,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuSeparator
-  } from '$lib/components/ui/dropdown-menu'
+  import * as ContextMenu from '$lib/components/ui/context-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import {
     canLockTab,
     isProcessLive,
@@ -295,8 +283,8 @@
   {@const transferring = isTabTransferring(tab.id)}
   {@const tabColor = getPathColor(tab.folderPath)}
   {@const inert = isTabInert(tab)}
-  <ContextMenuRoot>
-    <ContextMenuTrigger
+  <ContextMenu.Root>
+    <ContextMenu.Trigger
       class="contents"
       disabled={inert}
       draggable={!tab.locked && !transferring && !inert}
@@ -355,38 +343,38 @@
           {presentation.title}
         </span>
       </TabButton>
-    </ContextMenuTrigger>
+    </ContextMenu.Trigger>
 
-    <ContextMenuContent>
+    <ContextMenu.Content>
       {#if tab.kind === 'session'}
-        <ContextMenuItem onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
+        <ContextMenu.Item onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
           {sessionLive ? 'Stop' : 'Restart'}
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
       {#if tab.kind === 'task'}
         {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
-        <ContextMenuItem onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
+        <ContextMenu.Item onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
           {taskRunning ? 'Stop' : 'Restart'}
-        </ContextMenuItem>
+        </ContextMenu.Item>
       {/if}
       {#if canLockTab(tab)}
         <!-- Lock only makes sense on content tabs where accidental input
                  can cause damage (session terminals, Monaco text tabs). New tab pages
                  and diff tabs skip this affordance entirely. -->
-        <ContextMenuItem onclick={() => toggleTabLocked(tab.id)}>
+        <ContextMenu.Item onclick={() => toggleTabLocked(tab.id)}>
           {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
+        </ContextMenu.Item>
+        <ContextMenu.Separator />
       {/if}
-      <ContextMenuItem
+      <ContextMenu.Item
         destructive
         disabled={tab.locked || transferring}
         onclick={() => void closeTabWithChecks(tab.id)}
       >
         Close
-      </ContextMenuItem>
-    </ContextMenuContent>
-  </ContextMenuRoot>
+      </ContextMenu.Item>
+    </ContextMenu.Content>
+  </ContextMenu.Root>
 {/snippet}
 
 {#snippet groupLabel(group: WorkbenchGroup)}
@@ -397,7 +385,7 @@
   {/if}
 {/snippet}
 
-{#snippet groupActions(group: WorkbenchGroup, Item: typeof ContextMenuItem, Separator: typeof ContextMenuSeparator)}
+{#snippet groupActions(group: WorkbenchGroup, Item: typeof ContextMenu.Item, Separator: typeof ContextMenu.Separator)}
   {#if group.state === 'busy' || group.state === 'revoked'}
     <Item onclick={() => void takeOverServerWorkbench(group.server)}>Take Back</Item>
   {:else if group.state === 'offline'}
@@ -443,8 +431,8 @@
           >
             {#if block.entries.length}
               <!-- Acts like a tab: click shows the group, right-click for actions, drag moves the whole group. -->
-              <ContextMenuRoot>
-                <ContextMenuTrigger
+              <ContextMenu.Root>
+                <ContextMenu.Trigger
                   class="contents"
                   {@attach controlled ? groupDragSource({ server: group.server, workbenchId: group.id }) : undefined}
                 >
@@ -458,25 +446,25 @@
                   >
                     {@render groupLabel(group)}
                   </button>
-                </ContextMenuTrigger>
-                <ContextMenuContent>
-                  {@render groupActions(group, ContextMenuItem, ContextMenuSeparator)}
-                </ContextMenuContent>
-              </ContextMenuRoot>
+                </ContextMenu.Trigger>
+                <ContextMenu.Content>
+                  {@render groupActions(group, ContextMenu.Item, ContextMenu.Separator)}
+                </ContextMenu.Content>
+              </ContextMenu.Root>
             {:else}
               <!-- Controlled elsewhere: nothing to show or move, so a click opens the actions. -->
-              <DropdownMenuRoot>
-                <DropdownMenuTrigger
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger
                   aria-label="Workbench {group.server} actions"
                   title="{group.server}: {group.state}"
                   class={serverTabClass}
                 >
                   {@render groupLabel(group)}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" sideOffset={4}>
-                  {@render groupActions(group, DropdownMenuItem, DropdownMenuSeparator)}
-                </DropdownMenuContent>
-              </DropdownMenuRoot>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content align="start" sideOffset={4}>
+                  {@render groupActions(group, DropdownMenu.Item, DropdownMenu.Separator)}
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
             {/if}
             {#each block.entries as { tab, index } (tab.id)}
               {@render tabItem(tab, index)}

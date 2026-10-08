@@ -1,6 +1,6 @@
 <!--
   @component
-  TooltipContent -- styled tooltip content wrapper for Sworm
+  Tooltip.Content -- styled tooltip content wrapper for Sworm
 
   @param class - optional extra classes for the floating content
   @param sideOffset - gap between trigger and tooltip content

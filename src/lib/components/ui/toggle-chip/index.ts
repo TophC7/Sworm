@@ -1,1 +1,1 @@
-export { default as ToggleChip, type ToggleChipPressed, toggleChipVariants } from './toggle-chip.svelte'
+export { default as ToggleChip, type ToggleChipPressed, toggleChipVariants } from './ToggleChip.svelte'

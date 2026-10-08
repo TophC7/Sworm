@@ -1,6 +1,6 @@
 <script lang="ts">
   import { cn } from '$lib/utils/cn'
-  import { inputVariants } from './input.svelte'
+  import { inputVariants } from './Input.svelte'
   import type { HTMLTextareaAttributes } from 'svelte/elements'
 
   let {

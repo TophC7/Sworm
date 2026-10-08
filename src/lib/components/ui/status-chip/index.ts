@@ -3,4 +3,4 @@ export {
   statusChipVariants,
   type StatusChipShape,
   type StatusChipTone
-} from './status-chip.svelte'
+} from './StatusChip.svelte'

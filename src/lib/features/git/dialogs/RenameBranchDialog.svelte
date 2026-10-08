@@ -7,7 +7,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Input } from '$lib/components/ui/input'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import { validateBranchName } from '$lib/utils/git/branchValidation'
@@ -41,12 +41,12 @@
   let canSubmit = $derived(name.length > 0 && !nameError && name !== oldName && !submitState.busy)
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Rename Branch</DialogTitle>
-      </DialogHeader>
+    <Dialog.Content>
+      <Dialog.Header>
+        <Dialog.Title>Rename Branch</Dialog.Title>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-2">
         <p class="text-xs text-muted">From <span class="font-mono text-fg">{oldName}</span></p>
@@ -55,12 +55,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="accent" disabled={!canSubmit} onclick={submitState.submit}>
           {submitState.busy ? 'Renaming…' : 'Rename'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

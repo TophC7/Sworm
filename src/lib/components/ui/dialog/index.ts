@@ -1,10 +1,10 @@
-import { Dialog as DialogPrimitive } from 'bits-ui'
+import { Dialog as Primitive } from 'bits-ui'
 
-export { default as DialogContent } from './dialog-content.svelte'
-export { default as DialogOverlay } from './dialog-overlay.svelte'
-export { default as DialogHeader } from './dialog-header.svelte'
-export { default as DialogTitle } from './dialog-title.svelte'
-export { default as DialogDescription } from './dialog-description.svelte'
-export { default as DialogFooter } from './dialog-footer.svelte'
+export { default as Content } from './DialogContent.svelte'
+export { default as Overlay } from './DialogOverlay.svelte'
+export { default as Header } from './DialogHeader.svelte'
+export { default as Title } from './DialogTitle.svelte'
+export { default as Description } from './DialogDescription.svelte'
+export { default as Footer } from './DialogFooter.svelte'
 
-export const DialogRoot = DialogPrimitive.Root
+export const Root = Primitive.Root

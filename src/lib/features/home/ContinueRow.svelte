@@ -1,11 +1,6 @@
 <script lang="ts">
   import { Button, iconButtonVariants } from '$lib/components/ui/button'
-  import {
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuRoot,
-    DropdownMenuTrigger
-  } from '$lib/components/ui/dropdown-menu'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { providerById, type ProviderIconSource } from '$lib/features/sessions/providers/catalog'
   import ProviderIcon from '$lib/features/sessions/providers/ProviderIcon.svelte'
   import { MoreHorizontalIcon, Play } from '$lib/icons/lucideExports'
@@ -143,19 +138,19 @@
         {@render rowContent()}
       </a>
     {/if}
-    <DropdownMenuRoot>
-      <DropdownMenuTrigger
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger
         aria-label="Workbench actions"
         title="Workbench actions"
         disabled={closing}
         class={iconButtonVariants({ size: 'md' })}
       >
         <MoreHorizontalIcon size={14} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={4}>
-        <DropdownMenuItem destructive onclick={onClose}>Close Workbench…</DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenuRoot>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content align="end" sideOffset={4}>
+        <DropdownMenu.Item destructive onclick={onClose}>Close Workbench…</DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   </div>
   {#if error}
     <p role="alert" class="px-3 pb-1.5 text-sm break-words text-danger-bright">{error}</p>

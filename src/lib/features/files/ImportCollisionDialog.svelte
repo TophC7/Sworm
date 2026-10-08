@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button'
-  import { DialogContent, DialogDescription, DialogFooter, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Input } from '$lib/components/ui/input'
 
   let {
@@ -28,18 +28,18 @@
   const renameInputId = 'import-collision-rename'
 </script>
 
-<DialogRoot
+<Dialog.Root
   {open}
   onOpenChange={(value) => {
     if (!value) onCancel?.()
   }}
 >
-  <DialogContent class="max-w-md">
-    <DialogTitle>Item Already Exists</DialogTitle>
-    <DialogDescription>
+  <Dialog.Content class="max-w-md">
+    <Dialog.Title>Item Already Exists</Dialog.Title>
+    <Dialog.Description>
       <span class="font-medium text-fg">{sourceName}</span> conflicts with
       <span class="font-medium text-fg">{destinationPath}</span>.
-    </DialogDescription>
+    </Dialog.Description>
 
     <div class="mt-3 space-y-1.5">
       <label for={renameInputId} class="text-sm font-medium text-muted uppercase">Rename To</label>
@@ -54,10 +54,10 @@
       />
     </div>
 
-    <DialogFooter class="mt-4 flex-wrap gap-2">
+    <Dialog.Footer class="mt-4 flex-wrap gap-2">
       <Button size="sm" variant="ghost" onclick={onSkip}>Skip</Button>
       <Button size="sm" variant="destructive" onclick={onReplace}>Replace</Button>
       <Button size="sm" variant="accent" onclick={() => onRename?.(renameValue)}>Rename</Button>
-    </DialogFooter>
-  </DialogContent>
-</DialogRoot>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

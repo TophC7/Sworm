@@ -8,7 +8,7 @@
   import GitBranches from '$lib/features/git/GitBranches.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
   import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
-  import { TooltipProvider } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
   import { GitBranchPlusIcon, GitGraphIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap } from 'svelte/reactivity'
@@ -142,7 +142,7 @@
     {:else if rows.length === 0}
       <div class="px-2.5 py-2 text-sm text-subtle">No commits found.</div>
     {:else}
-      <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+      <Tooltip.Provider delayDuration={400} skipDelayDuration={100}>
         <div class="flex-1 overflow-y-auto">
           {#each rows as row, i (row.commit.hash)}
             {@const r = renders[i]}
@@ -173,7 +173,7 @@
             {/if}
           {/each}
         </div>
-      </TooltipProvider>
+      </Tooltip.Provider>
     {/if}
   {:else if activeTab === 'stashes'}
     <GitStashList {folderPath} {branchColorMap} />

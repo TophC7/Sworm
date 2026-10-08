@@ -3,4 +3,4 @@ export {
   type SidebarRowVariant,
   type SidebarRowOn,
   sidebarRowVariants
-} from './sidebar-row.svelte'
+} from './SidebarRow.svelte'

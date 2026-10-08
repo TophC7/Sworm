@@ -3,7 +3,7 @@
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { Switch } from '$lib/components/ui/switch'
-  import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
+  import * as Tabs from '$lib/components/ui/tabs'
   import { CircleAlert, ChevronDown, RefreshCwIcon } from '$lib/icons/lucideExports'
   import {
     getLspServers,
@@ -197,16 +197,16 @@
 
     {#if definition.formatter}
       {#if settings}
-        <TabsRoot
+        <Tabs.Root
           value={selectedFormatter ?? definition.formatter.default}
           onValueChange={(value) => saveFormatter(value as FormatterSelection)}
         >
-          <TabsList>
+          <Tabs.List>
             {#each definition.formatter.options as option (option)}
-              <TabsTrigger value={option}>{formatterLabel(option)}</TabsTrigger>
+              <Tabs.Trigger value={option}>{formatterLabel(option)}</Tabs.Trigger>
             {/each}
-          </TabsList>
-        </TabsRoot>
+          </Tabs.List>
+        </Tabs.Root>
       {:else}
         <p class="text-xs text-subtle">Loading formatting settings&hellip;</p>
       {/if}

@@ -68,7 +68,8 @@ Do not claim lint/format/test commands exist if they are not defined in the curr
 ## Component Reuse
 
 - Import UI primitives from the project wrappers in `src/lib/components/ui/*`, never from `bits-ui` directly. The wrappers apply project styling tokens and establish consistent surface behavior.
-- Before writing a styled `<button>`, `<input>`, `<textarea>`, or modal scaffolding (`<div class="fixed inset-0 ...">`), check `src/lib/components/ui/` for an existing primitive. Common ones: `Button`, `IconButton`, `Input`, `Textarea`, `DialogRoot` + `DialogContent`, `DropdownMenu*`, `ContextMenu*`, `Tooltip`.
+- Before writing a styled `<button>`, `<input>`, `<textarea>`, or modal scaffolding (`<div class="fixed inset-0 ...">`), check `src/lib/components/ui/` for an existing primitive. Common ones: `Button`, `IconButton`, `Input`, `Textarea`, `Dialog`, `DropdownMenu`, `ContextMenu`, `Tooltip`.
+- Compound wrappers export short part names and are consumed as a namespace: `import * as Dialog from '$lib/components/ui/dialog'` → `<Dialog.Root>`, `<Dialog.Content>`. Standalone components (`Button`, `InfoTooltip`, `PaletteDialog`) stay named imports.
 - If a Bits UI primitive is needed and no wrapper exists for it yet, add the wrapper under `src/lib/components/ui/*` first (mirroring the sibling wrappers' pattern), then consume it from feature code.
 - If the same markup/class string appears twice across components, extract a primitive before it appears a third time.
 

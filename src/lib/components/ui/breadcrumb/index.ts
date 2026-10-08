@@ -1,4 +1,4 @@
-export { default as Breadcrumb } from './breadcrumb.svelte'
-export { default as BreadcrumbItem } from './breadcrumb-item.svelte'
-export { default as BreadcrumbSeparator } from './breadcrumb-separator.svelte'
-export { default as BreadcrumbPage } from './breadcrumb-page.svelte'
+export { default as Root } from './Breadcrumb.svelte'
+export { default as Item } from './BreadcrumbItem.svelte'
+export { default as Separator } from './BreadcrumbSeparator.svelte'
+export { default as Page } from './BreadcrumbPage.svelte'

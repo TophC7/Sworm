@@ -9,7 +9,7 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
-  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
@@ -51,12 +51,12 @@
   })
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Merge {source} into {current}?</DialogTitle>
-      </DialogHeader>
+    <Dialog.Content>
+      <Dialog.Header>
+        <Dialog.Title>Merge {source} into {current}?</Dialog.Title>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-2 text-sm">
         <p class="text-muted">
@@ -70,12 +70,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="accent" disabled={submitState.busy} onclick={submitState.submit}>
           {submitState.busy ? 'Merging…' : 'Merge'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>

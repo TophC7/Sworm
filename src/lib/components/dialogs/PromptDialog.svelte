@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { DialogRoot, DialogContent, DialogTitle, DialogFooter } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
 
@@ -31,19 +31,19 @@
   }
 </script>
 
-<DialogRoot
+<Dialog.Root
   bind:open
   onOpenChange={(v) => {
     if (!v) onCancel?.()
   }}
 >
-  <DialogContent>
-    <DialogTitle>{title}</DialogTitle>
+  <Dialog.Content>
+    <Dialog.Title>{title}</Dialog.Title>
     <!-- svelte-ignore a11y_autofocus — focusing the sole input on mount is expected UX for a modal prompt -->
     <Input class="mt-2" bind:value {placeholder} onkeydown={handleKeydown} autofocus />
-    <DialogFooter>
+    <Dialog.Footer>
       <Button variant="outline" onclick={onCancel}>{cancelLabel}</Button>
       <Button variant="accent" onclick={onConfirm}>{confirmLabel}</Button>
-    </DialogFooter>
-  </DialogContent>
-</DialogRoot>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

@@ -8,7 +8,7 @@
   import { Badge } from '$lib/components/ui/badge'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
-  import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
+  import * as Tabs from '$lib/components/ui/tabs'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import RebindDialog from '$lib/features/command-palette/shortcuts/RebindDialog.svelte'
@@ -112,18 +112,18 @@
   </div>
   <div class="flex items-center gap-2">
     <Input bind:value={search} placeholder="Search commands..." class="max-w-md" />
-    <TabsRoot
+    <Tabs.Root
       value={filter}
       onValueChange={(value) => {
         if (isFilter(value)) filter = value
       }}
     >
-      <TabsList>
+      <Tabs.List>
         {#each FILTERS as option (option)}
-          <TabsTrigger value={option}>{FILTER_LABELS[option]}</TabsTrigger>
+          <Tabs.Trigger value={option}>{FILTER_LABELS[option]}</Tabs.Trigger>
         {/each}
-      </TabsList>
-    </TabsRoot>
+      </Tabs.List>
+    </Tabs.Root>
   </div>
 </section>
 

@@ -15,7 +15,7 @@
   import { SWIMLANE_HEIGHT } from '$lib/features/git/graph'
   import CommitTooltip from '$lib/features/git/CommitTooltip.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
-  import { TooltipContent, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
 
   let {
     commit,
@@ -42,8 +42,8 @@
   let refs = $derived(visibleRefs(commit.refs))
 </script>
 
-<TooltipRoot>
-  <TooltipTrigger
+<Tooltip.Root>
+  <Tooltip.Trigger
     type="button"
     class="group flex w-full items-center border-0 border-t border-edge/30 bg-transparent p-0 text-left hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none {active
       ? 'bg-raised'
@@ -93,8 +93,8 @@
         {/each}
       {/if}
     </div>
-  </TooltipTrigger>
-  <TooltipContent class="max-w-135" sideOffset={6} side="right" align="center">
+  </Tooltip.Trigger>
+  <Tooltip.Content class="max-w-135" sideOffset={6} side="right" align="center">
     <CommitTooltip {commit} {detail} {graphColor} />
-  </TooltipContent>
-</TooltipRoot>
+  </Tooltip.Content>
+</Tooltip.Root>

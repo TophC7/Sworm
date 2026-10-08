@@ -5,7 +5,7 @@
 
 <script lang="ts">
   import { IconButton } from '$lib/components/ui/button'
-  import { TooltipProvider } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { ArrowDown, ArrowUp, Minus, Plus, Undo2Icon, X } from '$lib/icons/lucideExports'
 
   type StageKind = 'stage' | 'unstage'
@@ -46,7 +46,7 @@
   }
 </script>
 
-<TooltipProvider>
+<Tooltip.Provider>
   <div class="flex h-8 items-center border-b border-edge bg-surface pr-1 pl-3 text-sm">
     <div class="min-w-0 flex-1 truncate">
       <span class="font-mono text-fg">{title}</span>
@@ -76,4 +76,4 @@
       </IconButton>
     </div>
   </div>
-</TooltipProvider>
+</Tooltip.Provider>

@@ -12,9 +12,9 @@
   import { getBuiltinSettingsPages, preloadBuiltinCatalog } from '$lib/features/builtins/catalog.svelte'
   import FileIcon from '$lib/icons/FileIcon.svelte'
   import { IconButton } from '$lib/components/ui/button'
-  import { DialogContent, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { ScrollArea } from '$lib/components/ui/scroll-area'
-  import { TooltipContent, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import {
     AppWindow,
     PaintbrushIcon,
@@ -141,21 +141,21 @@
   )
 </script>
 
-<DialogRoot
+<Dialog.Root
   bind:open
   onOpenChange={(v) => {
     if (!v) onClose()
   }}
 >
-  <DialogContent class="h-full max-h-224 max-w-5xl overflow-hidden bg-ground p-0" onModalClose={onClose}>
+  <Dialog.Content class="h-full max-h-224 max-w-5xl overflow-hidden bg-ground p-0" onModalClose={onClose}>
     <div class="flex h-full min-h-0">
       <!-- SIDEBAR //-->
       <aside class="flex w-[200px] shrink-0 flex-col border-r border-edge">
         <header class="flex h-12 shrink-0 items-center border-b border-edge bg-surface px-4">
-          <DialogTitle class="flex items-center gap-2 text-md font-semibold text-bright">
+          <Dialog.Title class="flex items-center gap-2 text-md font-semibold text-bright">
             <SettingsIcon size={14} class="text-accent" />
             <span>Settings</span>
-          </DialogTitle>
+          </Dialog.Title>
         </header>
 
         <nav class="flex flex-1 flex-col overflow-y-auto px-2 py-2 text-sm">
@@ -192,7 +192,7 @@
       <!-- MAIN //-->
       <main class="flex min-w-0 flex-1 flex-col">
         <header class="flex h-12 shrink-0 items-center justify-between border-b border-edge bg-surface px-5">
-          <DialogTitle class="truncate text-md font-semibold text-bright">{activeLabel}</DialogTitle>
+          <Dialog.Title class="truncate text-md font-semibold text-bright">{activeLabel}</Dialog.Title>
           <IconButton tooltip="Close" onclick={onClose}>
             <X size={14} />
           </IconButton>
@@ -232,8 +232,8 @@
             {#if version}Sworm {version}{/if}
           </span>
 
-          <TooltipRoot>
-            <TooltipTrigger
+          <Tooltip.Root>
+            <Tooltip.Trigger
               class="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-all"
               aria-label={saveTooltip}
             >
@@ -244,11 +244,11 @@
               {:else}
                 <SaveIcon size={12} class="text-subtle" />
               {/if}
-            </TooltipTrigger>
-            <TooltipContent side="top">{saveTooltip}</TooltipContent>
-          </TooltipRoot>
+            </Tooltip.Trigger>
+            <Tooltip.Content side="top">{saveTooltip}</Tooltip.Content>
+          </Tooltip.Root>
         </footer>
       </main>
     </div>
-  </DialogContent>
-</DialogRoot>
+  </Dialog.Content>
+</Dialog.Root>

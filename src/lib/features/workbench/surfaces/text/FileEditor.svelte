@@ -5,17 +5,10 @@
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
-  import {
-    DialogRoot,
-    DialogContent,
-    DialogHeader,
-    DialogTitle,
-    DialogDescription,
-    DialogFooter
-  } from '$lib/components/ui/dialog'
-  import { TabsRoot, TabsList, TabsTrigger } from '$lib/components/ui/tabs'
-  import { ResizableHandle, ResizablePane, ResizablePaneGroup } from '$lib/components/ui/resizable'
-  import { TooltipRoot, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip'
+  import * as Dialog from '$lib/components/ui/dialog'
+  import * as Tabs from '$lib/components/ui/tabs'
+  import * as Resizable from '$lib/components/ui/resizable'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import PanelHeader from '$lib/components/layout/PanelHeader.svelte'
   import MonacoEditor from '$lib/features/editor/renderers/monaco/text/MonacoEditor.svelte'
   import { retainedTextModelBase } from '$lib/features/editor/renderers/monaco/text/modelCache'
@@ -664,7 +657,7 @@
     {/snippet}
     {#snippet right()}
       {#if isMarkdown && !isReadonly}
-        <TabsRoot
+        <Tabs.Root
           value={mode}
           onValueChange={(v) => {
             mode = v as Mode
@@ -673,12 +666,12 @@
             }
           }}
         >
-          <TabsList>
-            <TabsTrigger value="edit">Edit</TabsTrigger>
-            <TabsTrigger value="split">Split</TabsTrigger>
-            <TabsTrigger value="preview">Preview</TabsTrigger>
-          </TabsList>
-        </TabsRoot>
+          <Tabs.List>
+            <Tabs.Trigger value="edit">Edit</Tabs.Trigger>
+            <Tabs.Trigger value="split">Split</Tabs.Trigger>
+            <Tabs.Trigger value="preview">Preview</Tabs.Trigger>
+          </Tabs.List>
+        </Tabs.Root>
         <Button
           variant={syncScroll ? 'accent' : 'ghost'}
           size="xs"
@@ -693,18 +686,18 @@
         {#if isMarkdown && !isReadonly}
           <Separator orientation="vertical" class="mx-0.5 h-4" />
         {/if}
-        <TooltipRoot>
-          <TooltipTrigger onclick={save} disabled={saving}>
+        <Tooltip.Root>
+          <Tooltip.Trigger onclick={save} disabled={saving}>
             {#snippet child({ props })}
               <Button variant="ghost" size="xs" {...props} disabled={saving}>
                 {saving ? 'Saving...' : 'Save'}
               </Button>
             {/snippet}
-          </TooltipTrigger>
-          <TooltipContent>
+          </Tooltip.Trigger>
+          <Tooltip.Content>
             Save <kbd class="ml-2 font-mono text-xs text-subtle">Ctrl+S</kbd>
-          </TooltipContent>
-        </TooltipRoot>
+          </Tooltip.Content>
+        </Tooltip.Root>
       {/if}
     {/snippet}
   </PanelHeader>
@@ -759,17 +752,17 @@
         <MarkdownRenderer source={previewSource} {folderPath} {filePath} />
       </div>
     {:else if isMarkdown && mode === 'split'}
-      <ResizablePaneGroup direction="horizontal">
-        <ResizablePane defaultSize={50} minSize={20}>
+      <Resizable.PaneGroup direction="horizontal">
+        <Resizable.Pane defaultSize={50} minSize={20}>
           {@render editor(true, onSplitEditorReady)}
-        </ResizablePane>
-        <ResizableHandle />
-        <ResizablePane defaultSize={50} minSize={20}>
+        </Resizable.Pane>
+        <Resizable.Handle />
+        <Resizable.Pane defaultSize={50} minSize={20}>
           <div bind:this={splitPreview} class="h-full overflow-y-auto border-l border-edge">
             <MarkdownRenderer source={previewSource} {folderPath} {filePath} />
           </div>
-        </ResizablePane>
-      </ResizablePaneGroup>
+        </Resizable.Pane>
+      </Resizable.PaneGroup>
     {:else}
       <!-- Full-bleed editor for code files or markdown in edit-only mode -->
       {@render editor(isMarkdown)}
@@ -777,18 +770,18 @@
   </div>
 </div>
 
-<DialogRoot
+<Dialog.Root
   open={conflict !== null}
   onOpenChange={(open) => {
     // Dismissing keeps the buffer dirty; nothing is written either way.
     if (!open) conflict = null
   }}
 >
-  <DialogContent>
+  <Dialog.Content>
     {#if conflict}
-      <DialogHeader>
-        <DialogTitle>{conflict.kind === 'deleted' ? 'File Deleted on Disk' : 'File Changed on Disk'}</DialogTitle>
-        <DialogDescription>
+      <Dialog.Header>
+        <Dialog.Title>{conflict.kind === 'deleted' ? 'File Deleted on Disk' : 'File Changed on Disk'}</Dialog.Title>
+        <Dialog.Description>
           <span class="font-mono text-fg">{basename(conflict.targetRel)}</span>
           {#if conflict.kind === 'deleted'}
             was deleted on disk after it was opened. Recreate writes the unsaved edits in this editor back to that path.
@@ -796,9 +789,9 @@
             changed on disk after it was opened. Reload discards the unsaved edits in this editor. Overwrite replaces
             the file on disk with them.
           {/if}
-        </DialogDescription>
-      </DialogHeader>
-      <DialogFooter>
+        </Dialog.Description>
+      </Dialog.Header>
+      <Dialog.Footer>
         <Button variant="outline" onclick={() => (conflict = null)}>Cancel</Button>
         {#if conflict.kind === 'deleted'}
           <Button onclick={() => void overwriteOnDisk()}>Recreate</Button>
@@ -806,7 +799,7 @@
           <Button onclick={() => void reloadFromDisk()}>Reload</Button>
           <Button variant="destructive" onclick={() => void overwriteOnDisk()}>Overwrite</Button>
         {/if}
-      </DialogFooter>
+      </Dialog.Footer>
     {/if}
-  </DialogContent>
-</DialogRoot>
+  </Dialog.Content>
+</Dialog.Root>

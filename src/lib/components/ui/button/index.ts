@@ -1,4 +1,4 @@
-export { default as Button } from './button.svelte'
-export { buttonVariants, type ButtonVariant, type ButtonSize } from './button.svelte'
-export { default as IconButton } from './icon-button.svelte'
-export { iconButtonVariants, type IconButtonSize, type IconButtonTone } from './icon-button.svelte'
+export { default as Button } from './Button.svelte'
+export { buttonVariants, type ButtonVariant, type ButtonSize } from './Button.svelte'
+export { default as IconButton } from './IconButton.svelte'
+export { iconButtonVariants, type IconButtonSize, type IconButtonTone } from './IconButton.svelte'

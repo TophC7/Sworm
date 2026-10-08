@@ -5,7 +5,7 @@
   import { openStashDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
-  import { TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
   import { sidebarRowVariants } from '$lib/components/ui/sidebar-row'
   import { ClockIcon, Play, Trash2 } from '$lib/icons/lucideExports'
@@ -84,7 +84,7 @@
   {#if stashes.length === 0}
     <div class="px-2.5 py-2 text-sm text-subtle">No stashes.</div>
   {:else}
-    <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+    <Tooltip.Provider delayDuration={400} skipDelayDuration={100}>
       <div class="flex-1 overflow-y-auto">
         {#each stashes as stash (stash.index)}
           {@const isExpanded = expandedIndex === stash.index}
@@ -98,8 +98,8 @@
                to the tooltip-triggering row button. Nesting <button>s inside
                <button>s breaks keyboard/pointer semantics. -->
           <div class="{sidebarRowVariants({ variant: 'leaf', pressed: isExpanded })} group">
-            <TooltipRoot>
-              <TooltipTrigger
+            <Tooltip.Root>
+              <Tooltip.Trigger
                 class="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 border-none bg-transparent px-0 text-left focus-visible:shadow-focus-ring focus-visible:outline-none"
                 onclick={() => toggleStash(stash.index)}
               >
@@ -117,8 +117,8 @@
                 <span class="min-w-0 flex-1 truncate text-sm text-fg">
                   {parsed.label}
                 </span>
-              </TooltipTrigger>
-              <TooltipContent class="max-w-80" sideOffset={6} side="right" align="center">
+              </Tooltip.Trigger>
+              <Tooltip.Content class="max-w-80" sideOffset={6} side="right" align="center">
                 <div class="flex flex-col gap-2 py-0.5">
                   <div class="flex items-center gap-1 text-sm">
                     <ClockIcon size={10} class="text-subtle" />
@@ -147,8 +147,8 @@
                     </div>
                   {/if}
                 </div>
-              </TooltipContent>
-            </TooltipRoot>
+              </Tooltip.Content>
+            </Tooltip.Root>
 
             <span class="shrink-0 text-2xs text-subtle group-hover:hidden">
               {timeAgo(stash.date)}
@@ -178,7 +178,7 @@
           {/if}
         {/each}
       </div>
-    </TooltipProvider>
+    </Tooltip.Provider>
   {/if}
 </div>
 

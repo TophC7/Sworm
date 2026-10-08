@@ -13,7 +13,7 @@
    */
   import { Button, IconButton } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
-  import { TabsList, TabsRoot, TabsTrigger } from '$lib/components/ui/tabs'
+  import * as Tabs from '$lib/components/ui/tabs'
   import { ChevronsDownUp, ChevronsUpDown } from '$lib/icons/lucideExports'
 
   let {
@@ -38,17 +38,17 @@
 <div class="flex shrink-0 items-center gap-1.5">
   <!-- Unified (stacked) vs Split (side-by-side) — maps 1:1 onto Monaco's
        `renderSideBySide` option. -->
-  <TabsRoot
+  <Tabs.Root
     value={sideBySide ? 'split' : 'unified'}
     onValueChange={(v) => {
       sideBySide = v === 'split'
     }}
   >
-    <TabsList>
-      <TabsTrigger value="unified">Unified</TabsTrigger>
-      <TabsTrigger value="split">Split</TabsTrigger>
-    </TabsList>
-  </TabsRoot>
+    <Tabs.List>
+      <Tabs.Trigger value="unified">Unified</Tabs.Trigger>
+      <Tabs.Trigger value="split">Split</Tabs.Trigger>
+    </Tabs.List>
+  </Tabs.Root>
 
   <!-- Expand / collapse every file's row body. -->
   {#if onToggleAll}

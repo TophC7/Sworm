@@ -8,7 +8,7 @@
 
 <script lang="ts">
   import { platform, requireNative } from '$lib/platform'
-  import { Alert } from '$lib/components/ui/alert'
+  import * as Alert from '$lib/components/ui/alert'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'
   import { notify } from '$lib/features/notifications/state.svelte'
@@ -165,10 +165,10 @@
           <p class="text-xs text-subtle">Replaces the saved pairing for {name}.</p>
         {/if}
         {#if identityChanged}
-          <Alert variant="warning">
+          <Alert.Root variant="warning">
             This fingerprint differs from the one saved for {name}. Continue only if the server was reinstalled or its
             identity was reset.
-          </Alert>
+          </Alert.Root>
         {/if}
         {#if addressChanged}
           <p class="text-xs text-subtle">

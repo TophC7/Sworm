@@ -6,7 +6,7 @@
 <script lang="ts">
   import { SearchIcon } from '$lib/icons/lucideExports'
   import { cn } from '$lib/utils/cn'
-  import Input from './input.svelte'
+  import Input from './Input.svelte'
   import type { HTMLInputAttributes } from 'svelte/elements'
 
   let {

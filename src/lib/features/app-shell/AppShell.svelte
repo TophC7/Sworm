@@ -16,7 +16,7 @@
   import { loadSettings } from '$lib/features/settings/state/settings.svelte'
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
-  import { TooltipProvider } from '$lib/components/ui/tooltip'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { initWindowControls } from '$lib/features/app-shell/window-controls/state.svelte'
   import { isSettingsOpen, setSettingsOpen } from '$lib/features/settings/dialog/state.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
@@ -136,7 +136,7 @@
   })
 </script>
 
-<TooltipProvider delayDuration={300}>
+<Tooltip.Provider delayDuration={300}>
   <div class="flex h-screen flex-col overflow-hidden">
     <TitleBar />
 
@@ -156,4 +156,4 @@
   <NotificationsSurface />
   <Browser />
   <ConfirmHost />
-</TooltipProvider>
+</Tooltip.Provider>

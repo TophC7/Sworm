@@ -9,7 +9,7 @@
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
-  import { DialogContent, DialogFooter, DialogHeader, DialogRoot, DialogTitle } from '$lib/components/ui/dialog'
+  import * as Dialog from '$lib/components/ui/dialog'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import type { BranchSummary } from '$lib/types/backend'
   import { splitRemoteBranchRef } from '$lib/features/git/gitRefs'
@@ -67,14 +67,14 @@
   })
 </script>
 
-<DialogRoot bind:open>
+<Dialog.Root bind:open>
   {#if open}
-    <DialogContent class={unmergedWarning ? 'border-danger' : ''}>
-      <DialogHeader>
-        <DialogTitle>
+    <Dialog.Content class={unmergedWarning ? 'border-danger' : ''}>
+      <Dialog.Header>
+        <Dialog.Title>
           {unmergedWarning ? 'Force delete?' : 'Delete branch?'}
-        </DialogTitle>
-      </DialogHeader>
+        </Dialog.Title>
+      </Dialog.Header>
 
       <div class="mt-2 space-y-2 text-sm">
         <p>
@@ -96,12 +96,12 @@
         <DialogError message={submitState.error} />
       </div>
 
-      <DialogFooter>
+      <Dialog.Footer>
         <Button variant="ghost" disabled={submitState.busy} onclick={() => (open = false)}>Cancel</Button>
         <Button variant="destructive" disabled={submitState.busy} onclick={submitState.submit}>
           {submitState.busy ? 'Deleting…' : unmergedWarning ? 'Force delete' : 'Delete'}
         </Button>
-      </DialogFooter>
-    </DialogContent>
+      </Dialog.Footer>
+    </Dialog.Content>
   {/if}
-</DialogRoot>
+</Dialog.Root>
