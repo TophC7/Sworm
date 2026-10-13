@@ -1,13 +1,16 @@
 use crate::errors::ApiError;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use sworm_protocol::branch::BranchCommitRef;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, GitBrief, GitChange, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, GitBrief, GitChange, GitCommitOptions, GitConflict, GitConflictKind,
+    GitConflictSide, GitOperation, GitOperationKind, GitQuickDiffData, GitSequencerAction,
+    GitStashScope, GitSummary, GraphCommit, StashEntry,
 };
 use tracing::warn;
 
@@ -103,30 +106,10 @@ fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
         .collect()
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum DeleteBranchError {
-    #[error("Branch not fully merged: {branch}")]
-    BranchUnmerged { branch: String, message: String },
-
-    #[error("{0}")]
-    Git(String),
-}
-
-fn delete_branch_error(branch: &str, stderr: String) -> DeleteBranchError {
-    if stderr.to_lowercase().contains("not fully merged") {
-        DeleteBranchError::BranchUnmerged {
-            branch: branch.to_string(),
-            message: stderr,
-        }
-    } else {
-        DeleteBranchError::Git(stderr)
-    }
-}
-
 /// Git service using the system git CLI.
 ///
 /// Holds an in-memory TTL cache of [`GitSummary`] values keyed by
-/// project path. Mutating methods (`stage_*`, `commit`, `pull`, …) call
+/// project path. Mutating methods (`stage`, `commit`, `pull`, …) call
 /// [`Self::invalidate`] so the next read picks up fresh state.
 pub struct GitService {
     summary_cache: Mutex<HashMap<PathBuf, SummarySlot>>,
@@ -191,7 +174,7 @@ impl GitService {
     /// Wrapper around [`run_git_mutate`] that invalidates the summary
     /// cache on success. Use this from any method that changes index or
     /// working-tree state.
-    fn run_mutate(&self, path: &Path, args: &[&str]) -> Result<(), String> {
+    fn run_mutate(&self, path: &Path, args: &[&str]) -> Result<(), ApiError> {
         let result = run_git_mutate(path, args);
         if result.is_ok() {
             self.invalidate(path);
@@ -250,37 +233,40 @@ impl GitService {
         };
 
         if !self.repository_state(path)? {
-            let summary = GitSummary {
-                is_repo: false,
-                branch: None,
-                base_ref: None,
-                ahead: None,
-                behind: None,
-                changes: vec![],
-                staged_count: 0,
-                unstaged_count: 0,
-                untracked_count: 0,
-            };
+            let summary = GitSummary::default();
             self.store_summary(path, generation, &summary);
             return Ok(summary);
         }
 
-        let (branch, base_ref, ahead_behind, changes) = std::thread::scope(|scope| {
-            let branch = scope.spawn(|| self.current_branch(path));
+        let (base_ref, ahead_behind, status, repo_state) = std::thread::scope(|scope| {
             let base_ref = scope.spawn(|| self.default_base_ref(path));
             let ahead_behind = scope.spawn(|| self.ahead_behind(path));
-            let changes = scope.spawn(|| self.get_changes(path));
+            let status = scope.spawn(|| self.working_status(path));
+            let repo_state = scope.spawn(|| {
+                let git_dir = resolve_git_dir(path);
+                (
+                    read_operation(path, &git_dir),
+                    read_message_template(&git_dir),
+                )
+            });
             (
-                branch.join().unwrap_or(None),
                 base_ref.join().unwrap_or(None),
                 ahead_behind.join().unwrap_or((None, None)),
-                changes
+                status
                     .join()
                     .map_err(|_| "Git status worker panicked".to_string())
                     .and_then(|result| result),
+                repo_state.join().unwrap_or_default(),
             )
         });
-        let changes = changes?;
+        let WorkingStatus {
+            branch,
+            detached,
+            upstream,
+            changes,
+            conflicts,
+        } = status?;
+        let (operation, message_template) = repo_state;
         let (ahead, behind) = ahead_behind;
         let staged_count = changes.iter().filter(|change| change.staged).count() as i32;
         let unstaged_count = changes
@@ -299,6 +285,11 @@ impl GitService {
             staged_count,
             unstaged_count,
             untracked_count,
+            upstream,
+            detached,
+            operation,
+            conflicts,
+            message_template,
         };
         self.store_summary(path, generation, &summary);
         Ok(summary)
@@ -328,15 +319,32 @@ impl GitService {
         })
     }
 
-    /// Get changed files using porcelain v2 + numstat.
-    fn get_changes(&self, path: &Path) -> Result<Vec<GitChange>, String> {
+    /// Get branch state, changed files and conflicts using porcelain v2 + numstat.
+    fn working_status(&self, path: &Path) -> Result<WorkingStatus, String> {
         let status = status_records(path, false)?.ok_or_else(|| {
             "Failed to read Git status: not a git repository or work tree".to_string()
         })?;
         let mut changes = Vec::new();
+        let mut conflicts = Vec::new();
         for record in status.records {
             match record {
                 StatusRecord::Tracked { path, xy } => push_status_entries(&mut changes, &path, &xy),
+                StatusRecord::Unmerged { path, xy } => {
+                    push_status_entries(&mut changes, &path, &xy);
+                    let kind = match xy.as_str() {
+                        "DD" => Some(GitConflictKind::BothDeleted),
+                        "AU" => Some(GitConflictKind::AddedByUs),
+                        "UD" => Some(GitConflictKind::DeletedByThem),
+                        "UA" => Some(GitConflictKind::AddedByThem),
+                        "DU" => Some(GitConflictKind::DeletedByUs),
+                        "AA" => Some(GitConflictKind::BothAdded),
+                        "UU" => Some(GitConflictKind::BothModified),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        conflicts.push(GitConflict { path, kind });
+                    }
+                }
                 StatusRecord::Untracked(path) => changes.push(GitChange {
                     path,
                     status: "?".to_string(),
@@ -365,7 +373,13 @@ impl GitService {
             );
         }
 
-        Ok(changes)
+        Ok(WorkingStatus {
+            branch: status.branch,
+            detached: status.detached,
+            upstream: status.upstream,
+            changes,
+            conflicts,
+        })
     }
 
     /// Get ahead/behind counts relative to the tracking branch.
@@ -556,59 +570,71 @@ impl GitService {
 
     // WRITE OPERATIONS //
 
-    /// Stage all changes (tracked + untracked).
-    pub fn stage_all(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["add", "-A"])
-    }
-
-    /// Stage specific files or directories.
-    pub fn stage_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
-        if files.is_empty() {
-            return Ok(());
-        }
-        let mut args = vec!["add", "--"];
-        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
-        args.extend(refs);
-        self.run_mutate(path, &args)
-    }
-
-    /// Unstage all staged changes back to the working tree.
-    pub fn unstage_all(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["reset", "HEAD"])
-    }
-
-    /// Unstage specific files or directories.
-    pub fn unstage_files(&self, path: &Path, files: &[String]) -> Result<(), String> {
-        if files.is_empty() {
-            return Ok(());
-        }
-        let mut args = vec!["reset", "HEAD", "--"];
-        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
-        args.extend(refs);
-        self.run_mutate(path, &args)
-    }
-
-    /// Discard all unstaged changes, removing untracked files before reverting
-    /// tracked edits. Untracked files move to the trash unless `permanent`.
-    pub fn discard_all(&self, path: &Path, permanent: bool) -> Result<(), ApiError> {
-        ensure_no_conflicts(path, &[])?;
-        self.remove_untracked(path, &[], permanent)?;
-        self.run_mutate(path, &["checkout", "--", "."])
-            .map_err(ApiError::Internal)
-    }
-
-    /// Discard changes for specific files or directories, removing untracked
-    /// files before reverting tracked edits. All failures propagate.
-    pub fn discard_files(
+    /// Stage all changes or selected paths, guarding unresolved conflict markers.
+    pub fn stage(
         &self,
         path: &Path,
-        files: &[String],
+        files: Option<&[String]>,
+        allow_conflict_markers: bool,
+    ) -> Result<(), ApiError> {
+        if files.is_some_and(|files| files.is_empty()) {
+            return Ok(());
+        }
+        let refs: Vec<&str> = files
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        if !allow_conflict_markers {
+            let paths: Vec<String> = unmerged_paths(path, &refs)?
+                .into_iter()
+                .filter(|file| {
+                    std::fs::read_to_string(path.join(file))
+                        .is_ok_and(|text| has_conflict_markers(&text))
+                })
+                .collect();
+            if !paths.is_empty() {
+                return Err(ApiError::ConflictMarkers { paths });
+            }
+        }
+        let mut args = if files.is_none() {
+            vec!["add", "-A"]
+        } else {
+            vec!["add", "--"]
+        };
+        args.extend(refs);
+        self.run_mutate(path, &args)
+    }
+
+    /// Unstage all changes or selected paths, preserving the worktree.
+    pub fn unstage(&self, path: &Path, files: Option<&[String]>) -> Result<(), ApiError> {
+        if files.is_some_and(|files| files.is_empty()) {
+            return Ok(());
+        }
+        let mut args = vec!["reset", "HEAD"];
+        if let Some(files) = files {
+            args.push("--");
+            args.extend(files.iter().map(String::as_str));
+        }
+        self.run_mutate(path, &args)
+    }
+
+    /// Discard unstaged changes, trashing untracked files unless `permanent`.
+    pub fn discard(
+        &self,
+        path: &Path,
+        files: Option<&[String]>,
         permanent: bool,
     ) -> Result<(), ApiError> {
+        let Some(files) = files else {
+            ensure_no_conflicts(path, &[])?;
+            self.remove_untracked(path, &[], permanent)?;
+            return self.run_mutate(path, &["checkout", "--", "."]);
+        };
         if files.is_empty() {
             return Ok(());
         }
-        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
         ensure_no_conflicts(path, &refs)?;
         self.remove_untracked(path, &refs, permanent)?;
 
@@ -628,9 +654,42 @@ impl GitService {
             })
         }));
         if checkout_args.len() > 2 {
-            self.run_mutate(path, &checkout_args)
-                .map_err(ApiError::Internal)?;
+            self.run_mutate(path, &checkout_args)?;
         }
+        Ok(())
+    }
+
+    /// Append repo-root-relative paths to the root ignore file.
+    pub fn ignore(&self, path: &Path, files: &[String]) -> Result<(), ApiError> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let root = Self::repo_root(path)
+            .ok_or_else(|| ApiError::InvalidArgument("Not a git repository".to_string()))?;
+        let ignore_file = root.join(".gitignore");
+        let mut existing = match std::fs::read_to_string(&ignore_file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(ApiError::Internal(error.to_string())),
+        };
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            existing.push('\n');
+        }
+        let entries: Vec<String> = files
+            .iter()
+            .map(|file| {
+                let mut entry = file.replace('\\', "/").replace('[', "\\[");
+                if entry.starts_with('#') || entry.starts_with('!') {
+                    entry.insert(0, '\\');
+                }
+                entry
+            })
+            .collect();
+        existing.push_str(&entries.join("\n"));
+        existing.push('\n');
+        std::fs::write(ignore_file, existing)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.invalidate(path);
         Ok(())
     }
 
@@ -647,18 +706,45 @@ impl GitService {
         Ok(())
     }
 
-    /// Create a commit with the given message. Returns the new short hash.
-    pub fn commit(&self, path: &Path, message: &str) -> Result<String, String> {
-        self.run_mutate(path, &["commit", "-m", message])?;
-        // Read back the new commit hash
-        let output = git_output(path, &["rev-parse", "--short", "HEAD"], "read commit hash")?;
+    /// Create or amend a commit. Returns its short hash.
+    pub fn commit(
+        &self,
+        path: &Path,
+        message: &str,
+        options: &GitCommitOptions,
+    ) -> Result<String, ApiError> {
+        if options.all {
+            self.stage(path, None, false)?;
+        }
+        let mut args = vec!["commit"];
+        if options.amend {
+            args.push("--amend");
+        }
+        if options.sign_off {
+            args.push("--signoff");
+        }
+        if options.no_verify {
+            args.push("--no-verify");
+        }
+        if !message.is_empty() {
+            args.extend(["-m", message]);
+        } else if options.amend {
+            args.push("--no-edit");
+        } else {
+            return Err(ApiError::InvalidArgument(
+                "Commit message cannot be empty".to_string(),
+            ));
+        }
+        self.run_mutate(path, &args)?;
+        let output = git_output(path, &["rev-parse", "--short", "HEAD"], "read commit hash")
+            .map_err(ApiError::Internal)?;
         Ok(String::from_utf8_lossy(&output).trim().to_string())
     }
 
     /// Soft-reset the last commit, preserving changes as staged, and
     /// return the message that was on that commit so the UI can restore
     /// it into the commit textarea for easy editing or re-use.
-    pub fn undo_last_commit(&self, path: &Path) -> Result<String, String> {
+    pub fn undo_last_commit(&self, path: &Path) -> Result<String, ApiError> {
         // Snapshot the message BEFORE resetting. `%B` is the full raw
         // body (subject + body), which matches what the user originally
         // typed into the textarea. `trim_end` removes both `\n` and
@@ -680,32 +766,130 @@ impl GitService {
         Ok(message)
     }
 
-    /// Push current branch to its upstream remote.
-    pub fn push(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["push"])
+    fn checked_out_branch(&self, path: &Path, branch: Option<&str>) -> Result<String, ApiError> {
+        branch
+            .map(str::to_owned)
+            .or_else(|| self.current_branch(path))
+            .ok_or_else(|| ApiError::InvalidArgument("No branch is checked out".to_string()))
     }
 
-    /// Push with --force-with-lease (safe force push).
-    pub fn push_force_with_lease(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["push", "--force-with-lease"])
+    /// Push an explicitly configured local branch to its upstream.
+    pub fn push(&self, path: &Path, branch: Option<&str>, force: bool) -> Result<(), ApiError> {
+        let branch = self.checked_out_branch(path, branch)?;
+        let (remote, merge) =
+            upstream_config(path, &branch).ok_or_else(|| ApiError::NoUpstream {
+                branch: branch.clone(),
+            })?;
+        let refspec = format!("refs/heads/{branch}:{merge}");
+        let mut args = vec!["push"];
+        if force {
+            args.push("--force-with-lease");
+        }
+        args.extend([remote.as_str(), refspec.as_str()]);
+        self.run_mutate(path, &args)
     }
 
-    /// Pull from the upstream remote (fetch + merge).
-    pub fn pull(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["pull"])
+    /// Pull the current branch's explicit upstream, honoring pull config unless rebasing.
+    pub fn pull(&self, path: &Path, rebase: bool) -> Result<(), ApiError> {
+        let branch = self.checked_out_branch(path, None)?;
+        let (remote, merge) =
+            upstream_config(path, &branch).ok_or_else(|| ApiError::NoUpstream { branch })?;
+        let mut args = vec!["pull"];
+        if rebase {
+            args.push("--rebase");
+        }
+        args.extend([remote.as_str(), merge.as_str()]);
+        self.run_mutate(path, &args)
     }
 
-    /// Fetch from all remotes.
-    pub fn fetch(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["fetch", "--all", "--prune"])
+    /// Fetch one remote or all remotes, pruning stale tracking refs.
+    pub fn fetch(&self, path: &Path, remote: Option<&str>) -> Result<(), ApiError> {
+        match remote {
+            Some(remote) => self.run_mutate(path, &["fetch", "--prune", remote]),
+            None => self.run_mutate(path, &["fetch", "--all", "--prune"]),
+        }
     }
 
-    /// Stash all changes including untracked files.
-    pub fn stash_all(&self, path: &Path, message: Option<&str>) -> Result<(), String> {
-        let mut args = vec!["stash", "push", "--include-untracked"];
-        if let Some(msg) = message {
-            args.push("-m");
-            args.push(msg);
+    /// Publish a local branch and establish its upstream.
+    pub fn publish(
+        &self,
+        path: &Path,
+        branch: Option<&str>,
+        remote: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let branch = self.checked_out_branch(path, branch)?;
+        let remote = match remote
+            .map(str::to_owned)
+            .or_else(|| git_line(path, &["config", "--get", "remote.pushDefault"]))
+        {
+            Some(remote) => remote,
+            None => {
+                let output =
+                    git_output(path, &["remote"], "list remotes").map_err(ApiError::Internal)?;
+                let text = String::from_utf8_lossy(&output);
+                let remotes: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+                match remotes.as_slice() {
+                    [] => {
+                        return Err(ApiError::InvalidArgument(
+                            "Add a remote before publishing".to_string(),
+                        ))
+                    }
+                    [remote] => (*remote).to_string(),
+                    _ if remotes.contains(&"origin") => "origin".to_string(),
+                    _ => {
+                        return Err(ApiError::InvalidArgument(
+                            "Choose a remote to publish to".to_string(),
+                        ))
+                    }
+                }
+            }
+        };
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        self.run_mutate(path, &["push", "-u", &remote, &refspec])
+    }
+
+    /// Pull first, then push only when local commits remain ahead.
+    pub fn sync(&self, path: &Path, rebase: bool) -> Result<(), ApiError> {
+        self.pull(path, rebase)?;
+        let ahead = git_line(path, &["rev-list", "--count", "@{upstream}..HEAD"])
+            .and_then(|count| count.parse::<u32>().ok())
+            .ok_or_else(|| {
+                ApiError::Internal("Failed to count commits ahead of upstream".to_string())
+            })?;
+        if ahead > 0 {
+            self.push(path, None, false)?;
+        }
+        Ok(())
+    }
+
+    /// Stash all, staged, or selected changes.
+    pub fn stash_push(
+        &self,
+        path: &Path,
+        message: Option<&str>,
+        scope: &GitStashScope,
+    ) -> Result<(), ApiError> {
+        let mut args = vec!["stash", "push"];
+        match scope {
+            GitStashScope::All { include_untracked } => {
+                if *include_untracked {
+                    args.push("--include-untracked");
+                }
+            }
+            GitStashScope::Staged => args.push("--staged"),
+            GitStashScope::Paths { paths } => {
+                if paths.is_empty() {
+                    return Err(ApiError::InvalidArgument("No paths to stash".to_string()));
+                }
+                args.push("--include-untracked");
+            }
+        }
+        if let Some(message) = message {
+            args.extend(["-m", message]);
+        }
+        if let GitStashScope::Paths { paths } = scope {
+            args.push("--");
+            args.extend(paths.iter().map(String::as_str));
         }
         self.run_mutate(path, &args)
     }
@@ -763,16 +947,28 @@ impl GitService {
             .collect()
     }
 
-    /// Pop (apply + drop) a stash entry by index.
-    pub fn stash_pop(&self, path: &Path, index: usize) -> Result<(), String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-        self.run_mutate(path, &["stash", "pop", &stash_ref])
+    /// Apply a stash entry, optionally dropping it after success.
+    pub fn stash_apply(&self, path: &Path, index: usize, pop: bool) -> Result<(), ApiError> {
+        let stash_ref = format!("stash@{{{index}}}");
+        self.run_mutate(
+            path,
+            &["stash", if pop { "pop" } else { "apply" }, &stash_ref],
+        )
     }
 
     /// Drop a stash entry by index without applying it.
-    pub fn stash_drop(&self, path: &Path, index: usize) -> Result<(), String> {
+    pub fn stash_drop(&self, path: &Path, index: usize) -> Result<(), ApiError> {
         let stash_ref = format!("stash@{{{}}}", index);
         self.run_mutate(path, &["stash", "drop", &stash_ref])
+    }
+
+    pub fn stash_clear(&self, path: &Path) -> Result<(), ApiError> {
+        self.run_mutate(path, &["stash", "clear"])
+    }
+
+    pub fn stash_branch(&self, path: &Path, index: usize, name: &str) -> Result<(), ApiError> {
+        let stash_ref = format!("stash@{{{index}}}");
+        self.run_mutate(path, &["stash", "branch", name, &stash_ref])
     }
 
     // BRANCH OPERATIONS //
@@ -786,11 +982,6 @@ impl GitService {
     //     comes from a follow-up `rev-list --left-right --count` per
     //     branch with an upstream (errors silently fall to zeros so
     //     branches without upstreams still surface).
-    //   * Paused-state detection ([`Self::branch_status`]) inspects
-    //     `.git/rebase-merge`, `.git/rebase-apply`, and
-    //     `.git/MERGE_HEAD` directly; do not parse `git status` output
-    //     here, the directories are authoritative regardless of how
-    //     the rebase or merge entered the paused state.
 
     /// List every local + remote-tracking branch in one shell-out.
     ///
@@ -857,29 +1048,10 @@ impl GitService {
         Ok(out)
     }
 
-    /// Inspect `.git/` sentinel dirs to determine paused state.
-    ///
-    /// `rebase-merge` is the interactive / new-style rebase dir;
-    /// `rebase-apply` is the legacy `git am`-style rebase dir.
-    /// `MERGE_HEAD` is a flat file written for the duration of a
-    /// merge with conflicts. Use platform-safe `path.join(...)`
-    /// rather than string concatenation.
-    pub fn branch_status(&self, path: &Path) -> sworm_protocol::branch::BranchOpState {
-        use sworm_protocol::branch::BranchOpState;
-        let git_dir = resolve_git_dir(path);
-        if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
-            return BranchOpState::Rebasing;
-        }
-        if git_dir.join("MERGE_HEAD").exists() {
-            return BranchOpState::Merging;
-        }
-        BranchOpState::Idle
-    }
-
     /// Return true when the index, worktree, or untracked set has changes.
     pub fn is_worktree_dirty(&self, path: &Path) -> bool {
-        self.get_changes(path)
-            .is_ok_and(|changes| !changes.is_empty())
+        self.working_status(path)
+            .is_ok_and(|status| !status.changes.is_empty())
     }
 
     /// File metadata for `branch...HEAD` compare. Content stays lazy:
@@ -892,8 +1064,12 @@ impl GitService {
     /// Switch to an existing branch. `git switch` refuses on a dirty
     /// tree; the frontend's `safeCheckout` enforces the dirty gate
     /// before this is reached.
-    pub fn checkout_branch(&self, path: &Path, name: &str) -> Result<(), String> {
+    pub fn checkout_branch(&self, path: &Path, name: &str) -> Result<(), ApiError> {
         self.run_mutate(path, &["switch", name])
+    }
+
+    pub fn checkout_detached(&self, path: &Path, rev: &str) -> Result<(), ApiError> {
+        self.run_mutate(path, &["switch", "--detach", rev])
     }
 
     /// Create a tracking local branch from a remote ref and switch to
@@ -903,7 +1079,7 @@ impl GitService {
         path: &Path,
         remote_name: &str,
         local_name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         self.run_mutate(path, &["switch", "-c", local_name, "--track", remote_name])
     }
 
@@ -914,7 +1090,7 @@ impl GitService {
         name: &str,
         base: &str,
         checkout: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         if checkout {
             self.run_mutate(path, &["switch", "-c", name, base])?;
         } else {
@@ -924,22 +1100,16 @@ impl GitService {
     }
 
     /// Rename a local branch via `git branch -m <old> <new>`.
-    pub fn rename_branch(&self, path: &Path, old: &str, new: &str) -> Result<(), String> {
+    pub fn rename_branch(&self, path: &Path, old: &str, new: &str) -> Result<(), ApiError> {
         self.run_mutate(path, &["branch", "-m", old, new])
     }
 
     /// Delete a local branch. Without `force`, refuses unmerged
     /// branches as a typed error so the frontend can offer the
     /// force-delete fallback without parsing git stderr.
-    pub fn delete_branch(
-        &self,
-        path: &Path,
-        name: &str,
-        force: bool,
-    ) -> Result<(), DeleteBranchError> {
+    pub fn delete_branch(&self, path: &Path, name: &str, force: bool) -> Result<(), ApiError> {
         let flag = if force { "-D" } else { "-d" };
         self.run_mutate(path, &["branch", flag, name])
-            .map_err(|err| delete_branch_error(name, err))
     }
 
     /// Delete a remote branch by pushing a delete to its remote
@@ -949,36 +1119,43 @@ impl GitService {
         path: &Path,
         remote: &str,
         name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         self.run_mutate(path, &["push", remote, "--delete", name])
     }
 
     /// Set or change a branch's upstream tracking ref.
-    pub fn set_upstream(&self, path: &Path, branch: &str, upstream: &str) -> Result<(), String> {
+    pub fn set_upstream(&self, path: &Path, branch: &str, upstream: &str) -> Result<(), ApiError> {
         let arg = format!("--set-upstream-to={}", upstream);
         self.run_mutate(path, &["branch", &arg, branch])
+    }
+
+    pub fn unset_upstream(&self, path: &Path, branch: &str) -> Result<(), ApiError> {
+        self.run_mutate(path, &["branch", "--unset-upstream", branch])
     }
 
     /// Fast-forward a branch to its upstream without checking it out
     /// (or `git pull --ff-only` for the current branch). Both forms
     /// reject non-fast-forward updates with a readable error.
-    pub fn fast_forward(&self, path: &Path, branch: &str) -> Result<(), String> {
-        let current = self.current_branch(path);
-        if current.as_deref() == Some(branch) {
-            return self.run_mutate(path, &["pull", "--ff-only"]);
+    pub fn fast_forward(&self, path: &Path, branch: &str) -> Result<(), ApiError> {
+        let (remote, merge) =
+            upstream_config(path, branch).ok_or_else(|| ApiError::NoUpstream {
+                branch: branch.to_string(),
+            })?;
+        if self.current_branch(path).as_deref() == Some(branch) {
+            return self.run_mutate(path, &["pull", "--ff-only", &remote, &merge]);
         }
-        let upstream = upstream_of(path, branch)
-            .ok_or_else(|| format!("Branch '{}' has no upstream configured", branch))?;
-        let (remote, remote_branch) = upstream
-            .split_once('/')
-            .ok_or_else(|| format!("Cannot parse upstream '{}'", upstream))?;
-        let refspec = format!("{}:{}", remote_branch, branch);
-        self.run_mutate(path, &["fetch", remote, &refspec])
+        let refspec = format!("{merge}:refs/heads/{branch}");
+        self.run_mutate(path, &["fetch", &remote, &refspec])
     }
 
     /// Merge `source` into the current branch. `no_ff` forces a merge
     /// commit even when the merge could fast-forward.
-    pub fn merge_into_current(&self, path: &Path, source: &str, no_ff: bool) -> Result<(), String> {
+    pub fn merge_into_current(
+        &self,
+        path: &Path,
+        source: &str,
+        no_ff: bool,
+    ) -> Result<(), ApiError> {
         let mut args = vec!["merge"];
         if no_ff {
             args.push("--no-ff");
@@ -987,42 +1164,131 @@ impl GitService {
         self.run_mutate(path, &args)
     }
 
-    /// Rebase the current branch onto `target`. Conflicts are surfaced
-    /// through `branch_status` (paused-state directories), not by
-    /// parsing this command's output.
-    pub fn rebase_current_onto(&self, path: &Path, target: &str) -> Result<(), String> {
+    /// Rebase the current branch onto `target`, surfacing typed conflicts.
+    pub fn rebase_current_onto(&self, path: &Path, target: &str) -> Result<(), ApiError> {
         self.run_mutate(path, &["rebase", target])
     }
 
-    /// Continue a paused rebase after the user resolved conflicts.
-    pub fn rebase_continue(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["rebase", "--continue"])
+    /// Continue, skip, or abort a paused operation.
+    pub fn sequencer(
+        &self,
+        path: &Path,
+        operation: GitOperationKind,
+        action: &GitSequencerAction,
+    ) -> Result<(), ApiError> {
+        let command = match operation {
+            GitOperationKind::Merge => "merge",
+            GitOperationKind::Rebase => "rebase",
+            GitOperationKind::CherryPick => "cherry-pick",
+            GitOperationKind::Revert => "revert",
+        };
+        match action {
+            GitSequencerAction::Abort => self.run_mutate(path, &[command, "--abort"]),
+            GitSequencerAction::Skip => {
+                if operation == GitOperationKind::Merge {
+                    return Err(ApiError::InvalidArgument(
+                        "A merge cannot be skipped".to_string(),
+                    ));
+                }
+                self.run_mutate(path, &[command, "--skip"])
+            }
+            GitSequencerAction::Continue { message } => {
+                if let Some(message) = message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                {
+                    self.commit(path, message, &GitCommitOptions::default())?;
+                    if !read_operation(path, &resolve_git_dir(path))
+                        .is_some_and(|state| state.kind == operation)
+                    {
+                        return Ok(());
+                    }
+                }
+                self.run_mutate(path, &[command, "--continue"])
+            }
+        }
     }
 
-    /// Conclude a paused merge with git's prepared MERGE_MSG.
-    pub fn merge_continue(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["merge", "--continue"])
+    /// Resolve conflicts using the chosen index stage, including side deletions.
+    pub fn take_conflict_side(
+        &self,
+        path: &Path,
+        files: &[String],
+        side: GitConflictSide,
+    ) -> Result<(), ApiError> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["ls-files", "-u", "-z", "--"];
+        args.extend(files.iter().map(String::as_str));
+        let output = git_output(path, &args, "list conflict stages").map_err(ApiError::Internal)?;
+        let text = String::from_utf8_lossy(&output);
+        let mut unmerged = HashSet::new();
+        let mut chosen = HashSet::new();
+        let stage = if side == GitConflictSide::Ours {
+            "2"
+        } else {
+            "3"
+        };
+        for record in text.split('\0') {
+            if let Some((metadata, file)) = record.split_once('\t') {
+                unmerged.insert(file);
+                if metadata.split_whitespace().nth(2) == Some(stage) {
+                    chosen.insert(file);
+                }
+            }
+        }
+        let invalid: Vec<&str> = files
+            .iter()
+            .map(String::as_str)
+            .filter(|file| !unmerged.contains(file))
+            .collect();
+        if !invalid.is_empty() {
+            return Err(ApiError::InvalidArgument(format!(
+                "Not conflicted: {}",
+                invalid.join(", ")
+            )));
+        }
+        let (present, deleted): (Vec<&str>, Vec<&str>) = files
+            .iter()
+            .map(String::as_str)
+            .partition(|file| chosen.contains(file));
+        if !present.is_empty() {
+            let flag = if side == GitConflictSide::Ours {
+                "--ours"
+            } else {
+                "--theirs"
+            };
+            let mut checkout = vec!["checkout", flag, "--"];
+            checkout.extend_from_slice(&present);
+            self.run_mutate(path, &checkout)?;
+            let mut add = vec!["add", "--"];
+            add.extend(present);
+            self.run_mutate(path, &add)?;
+        }
+        if !deleted.is_empty() {
+            // A deletion side can leave modified conflict content in the worktree.
+            let mut remove = vec!["rm", "--quiet", "--force", "--"];
+            remove.extend(deleted);
+            self.run_mutate(path, &remove)?;
+        }
+        Ok(())
     }
 
-    /// Skip the current commit during a paused rebase.
-    pub fn rebase_skip(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["rebase", "--skip"])
-    }
-
-    /// Abort an in-flight rebase, restoring pre-rebase state.
-    pub fn rebase_abort(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["rebase", "--abort"])
-    }
-
-    /// Abort an in-flight merge, restoring pre-merge state.
-    pub fn merge_abort(&self, path: &Path) -> Result<(), String> {
-        self.run_mutate(path, &["merge", "--abort"])
+    pub fn delete_conflicted(&self, path: &Path, files: &[String]) -> Result<(), ApiError> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["rm", "--quiet", "--"];
+        args.extend(files.iter().map(String::as_str));
+        self.run_mutate(path, &args)
     }
 
     /// Initialize a new git repository. Repo identity changes (now a
     /// repo), so [`Self::run_mutate`]'s invalidation drops any stale
     /// "not a repo" summary on next read.
-    pub fn init(&self, path: &Path) -> Result<(), String> {
+    pub fn init(&self, path: &Path) -> Result<(), ApiError> {
         self.run_mutate(path, &["init"])
     }
 
@@ -1032,10 +1298,10 @@ impl GitService {
     /// checkout for dirs with existing content. Each step routes through
     /// [`Self::run_mutate`] so the summary cache is invalidated even on
     /// partial completion.
-    pub fn clone_in_place(&self, path: &Path, url: &str) -> Result<(), String> {
+    pub fn clone_in_place(&self, path: &Path, url: &str) -> Result<(), ApiError> {
         let has_content = path
             .read_dir()
-            .map_err(|e| format!("Cannot read directory: {}", e))?
+            .map_err(|e| ApiError::Internal(format!("Cannot read directory: {}", e)))?
             .any(|entry| {
                 entry
                     .map(|e| !e.file_name().to_string_lossy().starts_with('.'))
@@ -1239,11 +1505,11 @@ impl GitService {
         repo: &Path,
         file: &str,
         content: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
         match content {
             Some(content) => {
-                let mode = git_file_mode(repo, file)?;
-                let hash = git_hash_object(repo, file, content)?;
+                let mode = git_file_mode(repo, file).map_err(ApiError::Internal)?;
+                let hash = git_hash_object(repo, file, content).map_err(ApiError::Internal)?;
                 self.run_mutate(
                     repo,
                     &["update-index", "--add", "--cacheinfo", &mode, &hash, file],
@@ -1254,9 +1520,19 @@ impl GitService {
     }
 }
 
+struct WorkingStatus {
+    branch: Option<String>,
+    detached: bool,
+    upstream: Option<String>,
+    changes: Vec<GitChange>,
+    conflicts: Vec<GitConflict>,
+}
+
 #[derive(Default)]
 struct StatusV2 {
     branch: Option<String>,
+    upstream: Option<String>,
+    detached: bool,
     ahead: Option<u32>,
     behind: Option<u32>,
     records: Vec<StatusRecord>,
@@ -1264,23 +1540,24 @@ struct StatusV2 {
 
 enum StatusRecord {
     Tracked { path: String, xy: String },
+    Unmerged { path: String, xy: String },
     Untracked(String),
 }
 
-fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, String> {
-    let output = git_command(path)
-        .args([
-            "--no-optional-locks",
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--untracked-files=all",
-        ])
-        .arg(if with_branch {
-            "--branch"
-        } else {
-            "--no-ahead-behind"
-        })
+fn status_records(path: &Path, ahead_behind: bool) -> Result<Option<StatusV2>, String> {
+    let mut command = git_command(path);
+    command.args([
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+        "--branch",
+    ]);
+    if !ahead_behind {
+        command.arg("--no-ahead-behind");
+    }
+    let output = command
         .output()
         .map_err(|error| format!("Failed to read Git status: {error}"))?;
     if !output.status.success() {
@@ -1298,7 +1575,10 @@ fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, St
         match bytes.first() {
             Some(b'#') => {
                 if let Some(head) = record.strip_prefix("# branch.head ") {
-                    status.branch = (head != "(detached)").then(|| head.to_string());
+                    status.detached = head == "(detached)";
+                    status.branch = (!status.detached).then(|| head.to_string());
+                } else if let Some(upstream) = record.strip_prefix("# branch.upstream ") {
+                    status.upstream = Some(upstream.to_string());
                 } else if let Some(ab) = record.strip_prefix("# branch.ab ") {
                     let (ahead, behind) = ab.split_once(' ').unwrap_or_default();
                     status.ahead = ahead.trim_start_matches('+').parse().ok();
@@ -1315,9 +1595,12 @@ fn status_records(path: &Path, with_branch: bool) -> Result<Option<StatusV2>, St
                 parts.next();
                 let xy = parts.next().unwrap_or_default();
                 if let Some(path) = parts.nth(fields - 3) {
-                    status.records.push(StatusRecord::Tracked {
-                        path: path.to_string(),
-                        xy: xy.to_string(),
+                    let path = path.to_string();
+                    let xy = xy.to_string();
+                    status.records.push(if *kind == b'u' {
+                        StatusRecord::Unmerged { path, xy }
+                    } else {
+                        StatusRecord::Tracked { path, xy }
                     });
                 }
                 if *kind == b'2' {
@@ -1701,19 +1984,33 @@ fn git_command(path: &Path) -> Command {
 /// `checkout` cannot revert unmerged paths, so a discard spanning one would
 /// remove untracked files and then fail. Refuse before touching anything.
 fn ensure_no_conflicts(path: &Path, pathspecs: &[&str]) -> Result<(), ApiError> {
-    let mut args = vec!["diff", "--name-only", "--diff-filter=U", "-z", "--"];
-    args.extend_from_slice(pathspecs);
-    let output = git_output(path, &args, "list conflicted files").map_err(ApiError::Internal)?;
-    match output
-        .split(|&byte| byte == 0)
-        .find(|name| !name.is_empty())
-    {
+    match unmerged_paths(path, pathspecs)?.first() {
         Some(name) => Err(ApiError::InvalidArgument(format!(
-            "Resolve conflicts before discarding: {}",
-            String::from_utf8_lossy(name)
+            "Resolve conflicts before discarding: {name}"
         ))),
         None => Ok(()),
     }
+}
+
+fn unmerged_paths(path: &Path, pathspecs: &[&str]) -> Result<Vec<String>, ApiError> {
+    let mut args = vec!["diff", "--name-only", "--diff-filter=U", "-z", "--"];
+    args.extend_from_slice(pathspecs);
+    let output = git_output(path, &args, "list conflicted files").map_err(ApiError::Internal)?;
+    Ok(String::from_utf8_lossy(&output)
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn has_conflict_markers(text: &str) -> bool {
+    text.lines().any(|line| {
+        line == "======="
+            || ["<<<<<<<", ">>>>>>>"].iter().any(|marker| {
+                line.strip_prefix(marker)
+                    .is_some_and(|suffix| suffix.starts_with(' ') || suffix.starts_with('\t'))
+            })
+    })
 }
 
 fn untracked_files(path: &Path, pathspecs: &[&str]) -> Result<Vec<PathBuf>, String> {
@@ -1933,11 +2230,18 @@ fn parse_tracking_counts(track: &str) -> (i32, i32) {
     (ahead, behind)
 }
 
-/// Look up the upstream short name for a local branch. Returns `None`
-/// when the branch has no tracking ref.
-fn upstream_of(path: &Path, branch: &str) -> Option<String> {
-    let arg = format!("{}@{{upstream}}", branch);
-    git_line(path, &["rev-parse", "--abbrev-ref", &arg])
+/// Read the remote and full upstream merge ref from branch tracking config.
+fn upstream_config(path: &Path, branch: &str) -> Option<(String, String)> {
+    Some((
+        git_line(
+            path,
+            &["config", "--get", &format!("branch.{branch}.remote")],
+        )?,
+        git_line(
+            path,
+            &["config", "--get", &format!("branch.{branch}.merge")],
+        )?,
+    ))
 }
 
 /// Resolve the path to the repo's `.git` directory. Worktrees and
@@ -1948,13 +2252,139 @@ fn resolve_git_dir(path: &Path) -> PathBuf {
     path.join(git_line(path, &["rev-parse", "--git-dir"]).unwrap_or_else(|| ".git".to_string()))
 }
 
-/// Run a mutating git command, returning `Ok(())` on success or
-/// `Err(stderr)` on failure.
+fn read_trimmed(file: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+fn ref_label(path: &Path, oid: &str) -> String {
+    git_line(
+        path,
+        &[
+            "for-each-ref",
+            "--points-at",
+            oid,
+            "--format=%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )
+    .and_then(|refs| refs.lines().next().map(str::to_owned))
+    .unwrap_or_else(|| oid[..7.min(oid.len())].to_string())
+}
+
+fn commit_ref(path: &Path, oid: &str) -> Option<BranchCommitRef> {
+    let output = git_output(
+        path,
+        &["log", "-1", "--format=%H%x00%h%x00%s%x00%an%x00%aI", oid],
+        "read replayed commit",
+    )
+    .ok()?;
+    let text = String::from_utf8_lossy(&output);
+    let mut parts = text.trim_end().split('\0');
+    Some(BranchCommitRef {
+        hash: parts.next()?.to_string(),
+        short_hash: parts.next()?.to_string(),
+        subject: parts.next()?.to_string(),
+        author: parts.next()?.to_string(),
+        date: parts.next()?.to_string(),
+    })
+}
+
+fn read_operation(path: &Path, git_dir: &Path) -> Option<GitOperation> {
+    for (name, step_file, total_file) in [
+        ("rebase-merge", "msgnum", "end"),
+        ("rebase-apply", "next", "last"),
+    ] {
+        let dir = git_dir.join(name);
+        if dir.is_dir() && !dir.join("applying").exists() {
+            let head_name = read_trimmed(&dir.join("head-name"))
+                .filter(|head| head != "detached HEAD")
+                .map(|head| {
+                    head.strip_prefix("refs/heads/")
+                        .unwrap_or(&head)
+                        .to_string()
+                });
+            return Some(GitOperation {
+                kind: GitOperationKind::Rebase,
+                target: read_trimmed(&dir.join("onto")).map(|oid| ref_label(path, &oid)),
+                head_name,
+                step: read_trimmed(&dir.join(step_file)).and_then(|step| step.parse().ok()),
+                total: read_trimmed(&dir.join(total_file)).and_then(|total| total.parse().ok()),
+                commit: read_trimmed(&git_dir.join("REBASE_HEAD"))
+                    .and_then(|oid| commit_ref(path, &oid)),
+            });
+        }
+    }
+    for (sentinel, kind) in [
+        ("MERGE_HEAD", GitOperationKind::Merge),
+        ("CHERRY_PICK_HEAD", GitOperationKind::CherryPick),
+        ("REVERT_HEAD", GitOperationKind::Revert),
+    ] {
+        let file = git_dir.join(sentinel);
+        if file.exists() {
+            let contents = read_trimmed(&file);
+            let oid = contents.as_deref().and_then(|text| text.lines().next());
+            return Some(GitOperation {
+                kind,
+                target: if kind == GitOperationKind::Merge {
+                    oid.map(|oid| ref_label(path, oid))
+                } else {
+                    None
+                },
+                head_name: None,
+                step: None,
+                total: None,
+                commit: if kind == GitOperationKind::Merge {
+                    None
+                } else {
+                    oid.and_then(|oid| commit_ref(path, oid))
+                },
+            });
+        }
+    }
+    let todo = read_trimmed(&git_dir.join("sequencer/todo"))?;
+    let next = todo
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))?;
+    let kind = if next.starts_with("pick ") || next.starts_with("p ") {
+        GitOperationKind::CherryPick
+    } else if next.starts_with("revert ") {
+        GitOperationKind::Revert
+    } else {
+        return None;
+    };
+    Some(GitOperation {
+        kind,
+        target: None,
+        head_name: None,
+        step: None,
+        total: None,
+        commit: None,
+    })
+}
+
+fn read_message_template(git_dir: &Path) -> Option<String> {
+    let text = read_trimmed(&git_dir.join("MERGE_MSG"))
+        .or_else(|| read_trimmed(&git_dir.join("SQUASH_MSG")))?;
+    let text = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Run a mutating git command, classifying known failures for callers.
 ///
 /// Mutators intentionally omit `--no-optional-locks`. Read-only git
 /// calls use it to avoid optional index locks during polling; writes
 /// need Git's normal locking so index and ref updates serialize safely.
-fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
+fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), ApiError> {
     let mut command = git_command(path);
     command.args(args);
     // Mutations reach ssh, credential helpers, and pinentry. With no controlling
@@ -1968,13 +2398,82 @@ fn run_git_mutate(path: &Path, args: &[&str]) -> Result<(), String> {
             Ok(())
         });
     }
-    let output = command.output().map_err(|e| e.to_string())?;
+    let output = command
+        .output()
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     if output.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Err(mutation_error(&output))
     }
+}
+
+fn quoted(line: &str) -> Vec<&str> {
+    line.split('\'').skip(1).step_by(2).collect()
+}
+
+/// Classify a failed mutation so callers act on known git failures instead of message text.
+fn mutation_error(output: &std::process::Output) -> ApiError {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut message = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if message.is_empty() {
+        message = format!("git exited with {}", output.status);
+    }
+    if let Some(line) = stderr
+        .lines()
+        .find(|line| line.contains("used by worktree at '"))
+    {
+        let parts = quoted(line);
+        if let [branch, path, ..] = parts.as_slice() {
+            return ApiError::BranchInWorktree {
+                branch: (*branch).to_string(),
+                path: (*path).to_string(),
+            };
+        }
+    }
+    if let Some(line) = stderr
+        .lines()
+        .find(|line| line.contains("contains modified or untracked files"))
+    {
+        if let Some(path) = quoted(line).first() {
+            return ApiError::WorktreeHasChanges {
+                path: (*path).to_string(),
+                message,
+            };
+        }
+    }
+    if let Some(line) = stderr
+        .lines()
+        .find(|line| line.contains("not fully merged"))
+    {
+        if let Some(branch) = quoted(line).first() {
+            return ApiError::BranchUnmerged {
+                branch: (*branch).to_string(),
+                message,
+            };
+        }
+    }
+    if stderr.contains("failed to push some refs") {
+        return ApiError::PushRejected { message };
+    }
+    if [
+        "CONFLICT (",
+        "unmerged files",
+        "needs merge",
+        "edit all merge conflicts",
+    ]
+    .iter()
+    .any(|marker| stdout.contains(marker) || stderr.contains(marker))
+    {
+        return ApiError::MergeConflicts { message };
+    }
+    ApiError::Internal(message)
 }
 
 fn push_status_entries(changes: &mut Vec<GitChange>, file_path: &str, xy: &str) {
@@ -2062,20 +2561,6 @@ mod tests {
         );
     }
 
-    fn empty_summary() -> GitSummary {
-        GitSummary {
-            is_repo: false,
-            branch: None,
-            base_ref: None,
-            ahead: None,
-            behind: None,
-            changes: vec![],
-            staged_count: 0,
-            unstaged_count: 0,
-            untracked_count: 0,
-        }
-    }
-
     /// A summary computed before an invalidation must never re-populate the
     /// cache after it, otherwise a slow pre-mutation `git status` resurrects
     /// stale state for a full TTL (the staged → unstaged → staged flicker).
@@ -2083,7 +2568,7 @@ mod tests {
     fn stale_summary_never_repopulates_cache() {
         let svc = GitService::new();
         let path = Path::new("/nonexistent/sworm-cache-test");
-        let summary = empty_summary();
+        let summary = GitSummary::default();
 
         svc.invalidate(path);
         let stale_generation = svc.cached_summary(path).unwrap_err();
@@ -2248,7 +2733,13 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "resolved\n").unwrap();
         git(&repo, &["add", "a.txt"]);
 
-        GitService::new().merge_continue(&repo).unwrap();
+        GitService::new()
+            .sequencer(
+                &repo,
+                GitOperationKind::Merge,
+                &GitSequencerAction::Continue { message: None },
+            )
+            .unwrap();
         let message =
             git_output(&repo, &["log", "-1", "--format=%B"], "read merge message").unwrap();
         assert_eq!(
@@ -2267,7 +2758,7 @@ mod tests {
         std::fs::write(repo.join("new/deep/x.txt"), "new\n").unwrap();
 
         GitService::new()
-            .discard_files(&repo, &["a.txt".into(), "new".into()], true)
+            .discard(&repo, Some(&["a.txt".into(), "new".into()]), true)
             .unwrap();
         assert_eq!(
             std::fs::read_to_string(repo.join("a.txt")).unwrap(),
@@ -2287,7 +2778,7 @@ mod tests {
         std::fs::write(repo.join(".git/index.lock"), "").unwrap();
 
         let error = GitService::new()
-            .discard_files(&repo, &["a.txt".into()], true)
+            .discard(&repo, Some(&["a.txt".into()]), true)
             .unwrap_err();
         assert!(error.to_string().contains("index.lock"), "{error}");
         std::fs::remove_dir_all(repo).unwrap();
@@ -2312,16 +2803,16 @@ mod tests {
 
         let svc = GitService::new();
         assert!(matches!(
-            svc.discard_all(&repo, true),
+            svc.discard(&repo, None, true),
             Err(ApiError::InvalidArgument(_))
         ));
         assert!(matches!(
-            svc.discard_files(&repo, &["a.txt".into(), "u.txt".into()], true),
+            svc.discard(&repo, Some(&["a.txt".into(), "u.txt".into()]), true),
             Err(ApiError::InvalidArgument(_))
         ));
         assert!(repo.join("u.txt").exists());
 
-        svc.discard_files(&repo, &["u.txt".into()], true).unwrap();
+        svc.discard(&repo, Some(&["u.txt".into()]), true).unwrap();
         assert!(!repo.join("u.txt").exists());
         std::fs::remove_dir_all(repo).unwrap();
     }
@@ -2371,7 +2862,9 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let push_repo = repo.clone();
         let push = std::thread::spawn(move || {
-            sender.send(GitService::new().push(&push_repo)).ok();
+            sender
+                .send(GitService::new().push(&push_repo, None, false))
+                .ok();
         });
         let result = receiver.recv_timeout(Duration::from_secs(20));
         stop.store(true, Ordering::Relaxed);
@@ -2381,7 +2874,10 @@ mod tests {
             .expect("push must finish without credential prompts")
             .unwrap_err();
         push.join().unwrap();
-        assert!(error.contains("terminal prompts disabled"), "{error}");
+        assert!(
+            error.to_string().contains("terminal prompts disabled"),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
@@ -2406,7 +2902,9 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
         git(&repo, &["add", "a.txt"]);
 
-        GitService::new().commit(&repo, "x").unwrap();
+        GitService::new()
+            .commit(&repo, "x", &GitCommitOptions::default())
+            .unwrap();
         std::fs::remove_dir_all(repo).unwrap();
     }
 
@@ -2703,44 +3201,333 @@ mod tests {
             .expect_err("unmerged branch should be rejected");
 
         match err {
-            DeleteBranchError::BranchUnmerged { branch, message } => {
+            ApiError::BranchUnmerged { branch, message } => {
                 assert_eq!(branch, "topic");
                 assert!(message.to_lowercase().contains("not fully merged"));
             }
-            DeleteBranchError::Git(message) => {
-                panic!("expected BranchUnmerged, got git error: {}", message)
-            }
+            error => panic!("expected BranchUnmerged, got: {error}"),
         }
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `branch_status` covers idle, mid-rebase, mid-merge for P0.T4.
-    /// We synthesise the sentinel directories rather than driving git
-    /// to a paused state; `branch_status` is a pure filesystem probe.
     #[test]
-    fn branch_status_detects_paused_directories() {
-        use sworm_protocol::branch::BranchOpState;
-        let dir = temp_repo("status");
-        let svc = GitService::new();
-
-        assert_eq!(svc.branch_status(&dir), BranchOpState::Idle);
-
-        let git_dir = dir.join(".git");
-        std::fs::create_dir_all(git_dir.join("rebase-merge")).unwrap();
-        assert_eq!(svc.branch_status(&dir), BranchOpState::Rebasing);
-        std::fs::remove_dir_all(git_dir.join("rebase-merge")).unwrap();
-
-        std::fs::create_dir_all(git_dir.join("rebase-apply")).unwrap();
-        assert_eq!(svc.branch_status(&dir), BranchOpState::Rebasing);
+    fn read_operation_detects_sentinels() {
+        let repo = temp_repo("sentinels");
+        let git_dir = repo.join(".git");
+        let oid = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(read_operation(&repo, &git_dir).is_none());
+        std::fs::create_dir(git_dir.join("rebase-merge")).unwrap();
+        let operation = read_operation(&repo, &git_dir).unwrap();
+        assert_eq!(operation.kind, GitOperationKind::Rebase);
+        assert!(operation.target.is_none() && operation.head_name.is_none());
+        assert!(
+            operation.step.is_none() && operation.total.is_none() && operation.commit.is_none()
+        );
+        std::fs::remove_dir(git_dir.join("rebase-merge")).unwrap();
+        std::fs::create_dir(git_dir.join("rebase-apply")).unwrap();
+        std::fs::write(git_dir.join("rebase-apply/applying"), "").unwrap();
+        assert!(read_operation(&repo, &git_dir).is_none());
         std::fs::remove_dir_all(git_dir.join("rebase-apply")).unwrap();
-
-        std::fs::write(git_dir.join("MERGE_HEAD"), "deadbeef\n").unwrap();
-        assert_eq!(svc.branch_status(&dir), BranchOpState::Merging);
+        std::fs::write(git_dir.join("MERGE_HEAD"), &oid).unwrap();
+        let operation = read_operation(&repo, &git_dir).unwrap();
+        assert_eq!(operation.kind, GitOperationKind::Merge);
+        assert_eq!(operation.target.as_deref(), Some("main"));
         std::fs::remove_file(git_dir.join("MERGE_HEAD")).unwrap();
+        std::fs::write(git_dir.join("CHERRY_PICK_HEAD"), &oid).unwrap();
+        let operation = read_operation(&repo, &git_dir).unwrap();
+        assert_eq!(operation.kind, GitOperationKind::CherryPick);
+        assert_eq!(operation.commit.unwrap().subject, "init");
+        std::fs::remove_file(git_dir.join("CHERRY_PICK_HEAD")).unwrap();
+        std::fs::write(git_dir.join("REVERT_HEAD"), &oid).unwrap();
+        assert_eq!(
+            read_operation(&repo, &git_dir).unwrap().kind,
+            GitOperationKind::Revert
+        );
+        std::fs::remove_file(git_dir.join("REVERT_HEAD")).unwrap();
+        std::fs::create_dir(git_dir.join("sequencer")).unwrap();
+        std::fs::write(git_dir.join("sequencer/todo"), "revert abc x\n").unwrap();
+        assert_eq!(
+            read_operation(&repo, &git_dir).unwrap().kind,
+            GitOperationKind::Revert
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
 
-        assert_eq!(svc.branch_status(&dir), BranchOpState::Idle);
+    /// Diverged branches editing the same line, ready for merge or rebase.
+    fn conflicting_branches(tag: &str) -> PathBuf {
+        let repo = temp_repo(tag);
+        git(&repo, &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.join("a.txt"), "feature\n").unwrap();
+        git(&repo, &["commit", "-q", "-am", "feature"]);
+        git(&repo, &["switch", "-q", "main"]);
+        std::fs::write(repo.join("a.txt"), "main\n").unwrap();
+        git(&repo, &["commit", "-q", "-am", "main"]);
+        repo
+    }
 
-        std::fs::remove_dir_all(&dir).ok();
+    fn bare_remote(repo: &Path) -> PathBuf {
+        let remote = repo.with_extension("remote.git");
+        git(repo, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        git(repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        remote
+    }
+
+    #[test]
+    fn mutation_errors_are_typed() {
+        let service = GitService::new();
+        let repo = temp_repo("typed-errors");
+        assert!(matches!(
+            service.push(&repo, None, false),
+            Err(ApiError::NoUpstream { branch }) if branch == "main"
+        ));
+        let remote = bare_remote(&repo);
+        git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        let clone = repo.with_extension("clone");
+        git(
+            &repo,
+            &[
+                "clone",
+                "-q",
+                "--branch",
+                "main",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git(&clone, &["config", "user.email", "t@t.com"]);
+        git(&clone, &["config", "user.name", "t"]);
+        std::fs::write(clone.join("remote.txt"), "remote\n").unwrap();
+        git(&clone, &["add", "remote.txt"]);
+        git(&clone, &["commit", "-q", "-m", "remote"]);
+        git(&clone, &["push", "-q"]);
+        std::fs::write(repo.join("local.txt"), "local\n").unwrap();
+        git(&repo, &["add", "local.txt"]);
+        git(&repo, &["commit", "-q", "-m", "local"]);
+        assert!(matches!(
+            service.push(&repo, None, false),
+            Err(ApiError::PushRejected { .. })
+        ));
+
+        let worktree = repo.with_extension("worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wtb",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        assert!(matches!(
+            service.checkout_branch(&repo, "wtb"),
+            Err(ApiError::BranchInWorktree { branch, path })
+                if branch == "wtb" && Path::new(&path) == worktree
+        ));
+        std::fs::write(worktree.join("dirty.txt"), "dirty\n").unwrap();
+        assert!(matches!(
+            run_git_mutate(&repo, &["worktree", "remove", worktree.to_str().unwrap()]),
+            Err(ApiError::WorktreeHasChanges { path, .. }) if Path::new(&path) == worktree
+        ));
+        git(
+            &repo,
+            &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
+        std::fs::remove_dir_all(clone).unwrap();
+
+        let repo = conflicting_branches("typed-conflicts");
+        assert!(matches!(
+            service.merge_into_current(&repo, "feature", false),
+            Err(ApiError::MergeConflicts { message }) if message.contains("CONFLICT")
+        ));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn stage_refuses_conflict_markers_unless_allowed() {
+        let repo = conflicting_branches("stage-markers");
+        let service = GitService::new();
+        assert!(service.merge_into_current(&repo, "feature", false).is_err());
+        let files = ["a.txt".to_string()];
+        assert!(matches!(
+            service.stage(&repo, Some(&files), false),
+            Err(ApiError::ConflictMarkers { paths }) if paths == files
+        ));
+        service.stage(&repo, Some(&files), true).unwrap();
+        assert!(unmerged_paths(&repo, &[]).unwrap().is_empty());
+        git(&repo, &["merge", "--abort"]);
+        assert!(service.merge_into_current(&repo, "feature", false).is_err());
+        std::fs::write(repo.join("a.txt"), "resolved\n").unwrap();
+        service.stage(&repo, Some(&files), false).unwrap();
+        assert!(unmerged_paths(&repo, &[]).unwrap().is_empty());
+        assert!(has_conflict_markers("<<<<<<< ours\r\n"));
+        assert!(has_conflict_markers("=======\r\n"));
+        assert!(has_conflict_markers(">>>>>>>\ttheirs\n"));
+        assert!(!has_conflict_markers("<<<<<<<not a marker\n========\n"));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn take_side_resolves_with_chosen_version() {
+        let repo = conflicting_branches("take-side");
+        let service = GitService::new();
+        let files = ["a.txt".to_string()];
+        assert!(service.merge_into_current(&repo, "feature", false).is_err());
+        service
+            .take_conflict_side(&repo, &files, GitConflictSide::Theirs)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "feature\n"
+        );
+        assert!(unmerged_paths(&repo, &[]).unwrap().is_empty());
+        git(&repo, &["merge", "--abort"]);
+        git(&repo, &["switch", "-q", "feature"]);
+        git(&repo, &["rm", "a.txt"]);
+        git(&repo, &["commit", "-q", "-m", "delete"]);
+        git(&repo, &["switch", "-q", "main"]);
+        assert!(service.merge_into_current(&repo, "feature", false).is_err());
+        let conflicts = service.working_status(&repo).unwrap().conflicts;
+        assert_eq!(conflicts[0].kind, GitConflictKind::DeletedByThem);
+        service
+            .take_conflict_side(&repo, &files, GitConflictSide::Theirs)
+            .unwrap();
+        assert!(!repo.join("a.txt").exists());
+        assert!(unmerged_paths(&repo, &[]).unwrap().is_empty());
+        assert!(
+            git_output(&repo, &["ls-files", "--", "a.txt"], "read index")
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn publish_then_sync_pushes_ahead_commits() {
+        let repo = temp_repo("publish-sync");
+        let remote = bare_remote(&repo);
+        let service = GitService::new();
+        service.publish(&repo, None, None).unwrap();
+        assert_eq!(
+            git_line(&repo, &["config", "--get", "branch.main.merge"]).as_deref(),
+            Some("refs/heads/main")
+        );
+        std::fs::write(repo.join("a.txt"), "ahead\n").unwrap();
+        git(&repo, &["commit", "-q", "-am", "ahead"]);
+        git(&repo, &["config", "pull.rebase", "false"]);
+        service.sync(&repo, false).unwrap();
+        assert_eq!(
+            git_line(&remote, &["rev-parse", "refs/heads/main"]),
+            git_line(&repo, &["rev-parse", "HEAD"]),
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
+    }
+
+    #[test]
+    fn ignore_appends_entries_on_own_lines() {
+        let repo = temp_repo("ignore");
+        let service = GitService::new();
+        service.ignore(&repo, &[]).unwrap();
+        assert!(!repo.join(".gitignore").exists());
+        std::fs::write(repo.join(".gitignore"), "x").unwrap();
+        service.ignore(&repo, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "x"
+        );
+        assert!(!service.summary_cache.lock().contains_key(&repo));
+        service.ignore(&repo, &["a[1].txt".to_string()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "x\na\\[1].txt\n"
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn sequencer_continue_with_unresolved_rebase_returns_merge_conflicts() {
+        let repo = conflicting_branches("rebase-unresolved");
+        let service = GitService::new();
+        git(&repo, &["switch", "-q", "feature"]);
+        assert!(matches!(
+            service.rebase_current_onto(&repo, "main"),
+            Err(ApiError::MergeConflicts { .. })
+        ));
+        assert!(matches!(
+            service.sequencer(
+                &repo,
+                GitOperationKind::Rebase,
+                &GitSequencerAction::Continue { message: None },
+            ),
+            Err(ApiError::MergeConflicts { .. })
+        ));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn sequencer_continue_with_message_commits_and_finishes_rebase() {
+        let repo = conflicting_branches("rebase-message");
+        let service = GitService::new();
+        git(&repo, &["switch", "-q", "feature"]);
+        assert!(service.rebase_current_onto(&repo, "main").is_err());
+        std::fs::write(repo.join("a.txt"), "resolved\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        service
+            .sequencer(
+                &repo,
+                GitOperationKind::Rebase,
+                &GitSequencerAction::Continue {
+                    message: Some("custom".to_string()),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            git_line(&repo, &["log", "-1", "--format=%s"]).as_deref(),
+            Some("custom")
+        );
+        assert!(read_operation(&repo, &resolve_git_dir(&repo)).is_none());
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn summary_reports_paused_rebase() {
+        let repo = conflicting_branches("rebase-summary");
+        let remote = bare_remote(&repo);
+        git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        git(&repo, &["switch", "-q", "feature"]);
+        git(
+            &repo,
+            &["branch", "--set-upstream-to=origin/main", "feature"],
+        );
+        let service = GitService::new();
+        assert_eq!(
+            service.get_summary(&repo).unwrap().upstream.as_deref(),
+            Some("origin/main")
+        );
+        assert!(service.rebase_current_onto(&repo, "main").is_err());
+        service.invalidate(&repo);
+        let summary = service.get_summary(&repo).unwrap();
+        assert!(summary.detached);
+        let operation = summary.operation.unwrap();
+        assert_eq!(operation.kind, GitOperationKind::Rebase);
+        assert_eq!(operation.head_name.as_deref(), Some("feature"));
+        assert_eq!(operation.target.as_deref(), Some("main"));
+        assert_eq!((operation.step, operation.total), (Some(1), Some(1)));
+        assert_eq!(operation.commit.unwrap().subject, "feature");
+        assert_eq!(summary.conflicts.len(), 1);
+        assert_eq!(summary.conflicts[0].path, "a.txt");
+        assert_eq!(summary.conflicts[0].kind, GitConflictKind::BothModified);
+        assert!(summary.message_template.unwrap().starts_with("feature"));
+        service
+            .sequencer(&repo, GitOperationKind::Rebase, &GitSequencerAction::Abort)
+            .unwrap();
+        assert!(service.get_summary(&repo).unwrap().operation.is_none());
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
     }
 }

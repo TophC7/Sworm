@@ -38,6 +38,25 @@ pub enum ApiError {
     #[error("{message}")]
     TrashUnavailable { message: String },
 
+    /// Push/pull/sync needs an upstream the branch does not have; the UI offers Publish.
+    #[error("Branch '{branch}' has no upstream branch")]
+    NoUpstream { branch: String },
+    /// The remote refused the push (non-fast-forward or stale lease).
+    #[error("{message}")]
+    PushRejected { message: String },
+    /// The command stopped on merge conflicts, or refused because unmerged paths remain.
+    #[error("{message}")]
+    MergeConflicts { message: String },
+    /// The branch is checked out in another worktree.
+    #[error("Branch '{branch}' is checked out in the worktree at {path}")]
+    BranchInWorktree { branch: String, path: String },
+    /// A linked worktree refused removal because it has modified or untracked files.
+    #[error("{message}")]
+    WorktreeHasChanges { path: String, message: String },
+    /// Staging would record files that still contain conflict markers.
+    #[error("Files still contain conflict markers: {}", paths.join(", "))]
+    ConflictMarkers { paths: Vec<String> },
+
     /// A write lost a race: the file changed since the version the caller read.
     #[error("File changed on disk")]
     Conflict { current_version: String },
@@ -86,6 +105,53 @@ impl Serialize for ApiError {
             let mut state = serializer.serialize_struct("ApiError", 2)?;
             state.serialize_field("kind", "trashUnavailable")?;
             state.serialize_field("message", message)?;
+            return state.end();
+        }
+
+        if let ApiError::NoUpstream { branch } = self {
+            let mut state = serializer.serialize_struct("ApiError", 3)?;
+            state.serialize_field("kind", "noUpstream")?;
+            state.serialize_field("branch", branch)?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
+        if let ApiError::PushRejected { .. } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "pushRejected")?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
+        if let ApiError::MergeConflicts { .. } = self {
+            let mut state = serializer.serialize_struct("ApiError", 2)?;
+            state.serialize_field("kind", "mergeConflicts")?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
+        if let ApiError::BranchInWorktree { branch, path } = self {
+            let mut state = serializer.serialize_struct("ApiError", 4)?;
+            state.serialize_field("kind", "branchInWorktree")?;
+            state.serialize_field("branch", branch)?;
+            state.serialize_field("path", path)?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
+        if let ApiError::WorktreeHasChanges { path, .. } = self {
+            let mut state = serializer.serialize_struct("ApiError", 3)?;
+            state.serialize_field("kind", "worktreeHasChanges")?;
+            state.serialize_field("path", path)?;
+            state.serialize_field("message", &self.to_string())?;
+            return state.end();
+        }
+
+        if let ApiError::ConflictMarkers { paths } = self {
+            let mut state = serializer.serialize_struct("ApiError", 3)?;
+            state.serialize_field("kind", "conflictMarkers")?;
+            state.serialize_field("paths", paths)?;
+            state.serialize_field("message", &self.to_string())?;
             return state.end();
         }
 
@@ -140,6 +206,16 @@ impl From<ApiError> for WireError {
             }
             ApiError::DirtyWorktree { message } => WireError::DirtyWorktree { message },
             ApiError::TrashUnavailable { message } => WireError::TrashUnavailable { message },
+            ApiError::NoUpstream { branch } => WireError::NoUpstream { branch },
+            ApiError::PushRejected { message } => WireError::PushRejected { message },
+            ApiError::MergeConflicts { message } => WireError::MergeConflicts { message },
+            ApiError::BranchInWorktree { branch, path } => {
+                WireError::BranchInWorktree { branch, path }
+            }
+            ApiError::WorktreeHasChanges { path, message } => {
+                WireError::WorktreeHasChanges { path, message }
+            }
+            ApiError::ConflictMarkers { paths } => WireError::ConflictMarkers { paths },
             ApiError::Conflict { current_version } => WireError::Conflict { current_version },
             ApiError::Deleted { path } => WireError::Deleted { path },
             ApiError::LspAlreadyActive { session_id } => WireError::LspAlreadyActive { session_id },
@@ -162,6 +238,16 @@ impl From<WireError> for ApiError {
             }
             WireError::DirtyWorktree { message } => ApiError::DirtyWorktree { message },
             WireError::TrashUnavailable { message } => ApiError::TrashUnavailable { message },
+            WireError::NoUpstream { branch } => ApiError::NoUpstream { branch },
+            WireError::PushRejected { message } => ApiError::PushRejected { message },
+            WireError::MergeConflicts { message } => ApiError::MergeConflicts { message },
+            WireError::BranchInWorktree { branch, path } => {
+                ApiError::BranchInWorktree { branch, path }
+            }
+            WireError::WorktreeHasChanges { path, message } => {
+                ApiError::WorktreeHasChanges { path, message }
+            }
+            WireError::ConflictMarkers { paths } => ApiError::ConflictMarkers { paths },
             WireError::Conflict { current_version } => ApiError::Conflict { current_version },
             WireError::Deleted { path } => ApiError::Deleted { path },
             WireError::LspAlreadyActive { session_id } => ApiError::LspAlreadyActive { session_id },
@@ -282,6 +368,73 @@ mod tests {
             json!({
                 "kind": "trashUnavailable",
                 "message": "no trash",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::NoUpstream {
+                branch: "feature".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "noUpstream",
+                "branch": "feature",
+                "message": "Branch 'feature' has no upstream branch",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::PushRejected {
+                message: "failed to push some refs".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "pushRejected",
+                "message": "failed to push some refs",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::MergeConflicts {
+                message: "CONFLICT (content): Merge conflict in a.txt".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "mergeConflicts",
+                "message": "CONFLICT (content): Merge conflict in a.txt",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::BranchInWorktree {
+                branch: "feature".to_string(),
+                path: "/tmp/worktree".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "branchInWorktree",
+                "branch": "feature",
+                "path": "/tmp/worktree",
+                "message": "Branch 'feature' is checked out in the worktree at /tmp/worktree",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::WorktreeHasChanges {
+                path: "/tmp/worktree".to_string(),
+                message: "worktree contains modified or untracked files".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "kind": "worktreeHasChanges",
+                "path": "/tmp/worktree",
+                "message": "worktree contains modified or untracked files",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ApiError::ConflictMarkers {
+                paths: vec!["a.txt".to_string(), "b.txt".to_string()],
+            })
+            .unwrap(),
+            json!({
+                "kind": "conflictMarkers",
+                "paths": ["a.txt", "b.txt"],
+                "message": "Files still contain conflict markers: a.txt, b.txt",
             })
         );
         assert_eq!(

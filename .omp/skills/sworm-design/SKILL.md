@@ -497,11 +497,25 @@ Overlay: `fixed inset-0 bg-ground/70 backdrop-blur-sm`. The one place blur is us
 
 ### 11.10 Dropdown / context menu
 
-`src/lib/components/ui/menu-recipe.ts` owns the shared content, item and separator classes for dropdown and context menus. Keep all six wrappers on this recipe.
+`src/lib/components/ui/menu-recipe.ts` owns the shared content, item, indicator, group-heading, shortcut and separator classes for both families. Every wrapper in `ui/dropdown-menu` and `ui/context-menu` sits on it, follows shadcn-svelte's shape (bits primitive props + bindable `ref` + `data-slot`), and the two families export identical parts: `Content`, `Item`, `CheckboxItem`, `RadioGroup`, `RadioItem`, `Group`, `GroupHeading`, `Separator`, `Shortcut`, `SubTrigger`, `SubContent`, plus `Root`/`Trigger`/`Sub` primitive re-exports. Bits options (`closeOnSelect`, `textValue`, `side`, `sideOffset`, `align`, …) pass straight through.
 
-Content = `z-50 min-w-[180px] rounded-lg border border-edge bg-raised py-1 text-base shadow-popover`.
+Content (`menuContentVariants`) = `z-50 min-w-[180px] overflow-x-hidden overflow-y-auto rounded-lg border border-edge bg-raised py-1 text-sm shadow-popover`, capped at the bits available-height var so tall menus scroll. **Menus default to `text-sm`**; don't re-add it per call site. SubContent uses the same recipe.
 
-Items = `flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left outline-none focus-visible:shadow-focus-ring`. Enabled items use `cursor-pointer text-fg hover:bg-surface focus:bg-surface`; destructive items use `text-danger hover:bg-danger-bg focus:bg-danger-bg`. Disabled items use only `cursor-not-allowed text-muted/50`, with no hover/focus fill.
+Items = `relative flex cursor-pointer items-center gap-2 rounded-sm px-3 py-1.5 text-fg select-none outline-none focus-visible:shadow-focus-ring`. State is all data attributes, so consumers never pass styling state:
+
+- Highlight: `data-highlighted:bg-surface` (no `hover:`/`focus:`). Fills are guarded with `not-data-disabled:`.
+- Disabled (`data-disabled`): `cursor-not-allowed text-muted/50`, no fill. Item drops `onclick` while disabled.
+- Destructive (`destructive` prop → `data-destructive`): `text-danger`, highlight `bg-danger-bg`, icons `text-danger`.
+- `inset` prop → `data-inset:ps-8`, lining text up with checkbox/radio labels. Available on Item, SubTrigger and GroupHeading.
+- Icons: `[&_svg]:shrink-0`; SVGs without a `text-` class render `text-muted`. No automatic size: pass lucide `size={14}`.
+
+`onclick` on Item covers mouse and keyboard: bits turns Enter/Space into a DOM click.
+
+CheckboxItem / RadioItem = item recipe + `ps-8`, with the indicator (`Check`, or a `Circle` at `size-2 fill-current`) absolutely placed in the left padding. `closeOnSelect={false}` keeps the menu open.
+
+GroupHeading = `px-3 py-1 text-xs font-medium uppercase tracking-wide text-muted`. It must sit inside `Group` or `RadioGroup` (bits group context).
+
+Shortcut = `<span>` with `ms-auto ps-6 text-xs text-subtle`, placed last in an item.
 
 Separator = `mx-2 my-1 h-px bg-edge`.
 

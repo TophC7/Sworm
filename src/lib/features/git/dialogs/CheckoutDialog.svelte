@@ -39,11 +39,15 @@
     run: async () => {
       if (!branchName) return
       await runGitAction(folderPath, async (path) => {
-        await backend.git.stashAll(path, `auto-stash before switch to ${branchName}`)
+        await backend.git.stash(path, {
+          kind: 'push',
+          message: `auto-stash before switch to ${branchName}`,
+          scope: { kind: 'all', includeUntracked: true }
+        })
         if (remoteBranchName) {
-          await backend.git.branch.checkoutRemoteAsLocal(path, remoteBranchName, branchName)
+          await backend.git.branch(path, { kind: 'checkout_remote', remoteName: remoteBranchName, localName: branchName })
         } else {
-          await backend.git.branch.checkout(path, branchName)
+          await backend.git.branch(path, { kind: 'checkout', name: branchName })
         }
       })
       branches.markRecent(folderPath, branchName)

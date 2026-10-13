@@ -32,7 +32,7 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await runGitAction(folderPath, (path) => backend.git.branch.rename(path, oldName, name))
+      await runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'rename', oldName, newName: name }))
     },
     onDone: () => (open = false)
   })

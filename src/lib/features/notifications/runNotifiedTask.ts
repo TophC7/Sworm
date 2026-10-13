@@ -16,6 +16,8 @@ export interface RunNotifiedTaskOptions<T> {
   }
   success?: NotificationStage<T>
   error?: NotificationStage<unknown>
+  /** Turn a known error into a follow-up instead of an error toast. */
+  recover?: (error: unknown) => (() => Promise<unknown>) | null
 }
 
 function resolveMessage<T>(message: MessageResolver<T> | undefined, value: T): string | undefined {
@@ -46,6 +48,12 @@ export async function runNotifiedTask<T>(
 
     return result
   } catch (error) {
+    const recovery = options.recover?.(error)
+    if (recovery) {
+      dismissNotification(notificationId)
+      await recovery()
+      return undefined
+    }
     notify.update(notificationId, {
       title: resolveMessage(options.error?.title, error) ?? options.loading.title,
       description: resolveMessage(options.error?.description, error) ?? getErrorMessage(error),

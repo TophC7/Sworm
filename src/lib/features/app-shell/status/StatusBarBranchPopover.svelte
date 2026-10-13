@@ -39,12 +39,6 @@
     }
   })
 
-  $effect(() => {
-    if (!open || !entry || entry.opState === 'idle') return
-    branches.pollOpState(folderPath)
-    return () => branches.stopOpStatePolling(folderPath)
-  })
-
   // Resolve recents → BranchSummary, dropping names that no longer
   // exist (deleted branch, fresh clone). Cap at 5.
   let recentSummaries = $derived.by(() => {
@@ -139,10 +133,10 @@
         {:else}
           {#each visible as branch (branch.name)}
             <DropdownMenu.Item
-              class="flex items-center gap-2 py-1 text-sm"
+              class="py-1"
               onclick={() => void selectBranch(branch.name)}
             >
-              <GitBranchIcon size={12} class="shrink-0 text-muted" />
+              <GitBranchIcon size={12} />
               <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
               <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} twoColor />
               <span class="shrink-0 text-2xs text-subtle">{timeAgo(branch.tip.date)}</span>
@@ -152,7 +146,7 @@
       </div>
 
       <div class="border-t border-edge p-1">
-        <DropdownMenu.Item class="px-2 py-1 text-sm text-muted" onclick={viewAllBranches}>
+        <DropdownMenu.Item class="px-2 py-1 text-muted" onclick={viewAllBranches}>
           View all branches…
         </DropdownMenu.Item>
       </div>

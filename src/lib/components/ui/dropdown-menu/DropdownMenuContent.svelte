@@ -1,30 +1,22 @@
 <script lang="ts">
-  import { DropdownMenu } from 'bits-ui'
+  import { DropdownMenu as DropdownMenuPrimitive } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
-  import { menuContentClass } from '../menu-recipe'
-  import type { Snippet } from 'svelte'
+  import { menuContentVariants } from '../menu-recipe'
 
   let {
-    class: className,
-    children,
+    ref = $bindable(null),
     sideOffset = 4,
-    align,
+    class: className,
     ...rest
-  }: {
-    class?: string
-    children?: Snippet
-    sideOffset?: number
-    align?: 'start' | 'center' | 'end'
-  } = $props()
+  }: DropdownMenuPrimitive.ContentProps = $props()
 </script>
 
-<DropdownMenu.Portal>
-  <DropdownMenu.Content
+<DropdownMenuPrimitive.Portal>
+  <DropdownMenuPrimitive.Content
+    bind:ref
+    data-slot="dropdown-menu-content"
     {sideOffset}
-    {align}
-    class={cn(menuContentClass, className)}
+    class={cn(menuContentVariants({ source: 'dropdown' }), className)}
     {...rest}
-  >
-    {#if children}{@render children()}{/if}
-  </DropdownMenu.Content>
-</DropdownMenu.Portal>
+  />
+</DropdownMenuPrimitive.Portal>

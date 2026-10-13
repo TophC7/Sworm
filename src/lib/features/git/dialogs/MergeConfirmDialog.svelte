@@ -1,8 +1,8 @@
 <!--
   @component
   MergeConfirmDialog: confirm `git merge <source>` into the current
-  branch. Conflicts route to the existing GitFileTree pane via
-  `onConflict`; this dialog never embeds conflict resolution.
+  branch. Conflicts route to Source Control; this dialog never embeds
+  conflict resolution.
 -->
 
 <script lang="ts">
@@ -10,8 +10,9 @@
   import { Button } from '$lib/components/ui/button'
   import { Checkbox } from '$lib/components/ui/checkbox'
   import * as Dialog from '$lib/components/ui/dialog'
+  import { showMergeConflicts } from '$lib/features/git/actions.svelte'
+  import { isGitError } from '$lib/features/git/errors'
   import { runGitAction } from '$lib/features/git/state.svelte'
-  import { getErrorMessage } from '$lib/utils/client-error'
   import DialogError from '$lib/features/git/dialogs/DialogError.svelte'
   import { runDialogSubmit } from '$lib/features/git/dialogs/runDialogSubmit.svelte'
 
@@ -19,14 +20,12 @@
     open = $bindable(false),
     folderPath,
     source,
-    current,
-    onConflict
+    current
   }: {
     open?: boolean
     folderPath: string
     source: string
     current: string
-    onConflict?: (message: string) => void
   } = $props()
 
   let noFf = $state(false)
@@ -34,14 +33,10 @@
   const submitState = runDialogSubmit({
     run: async () => {
       try {
-        await runGitAction(folderPath, (path) => backend.git.branch.merge(path, source, { noFf }))
+        await runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'merge', source, noFf }))
       } catch (e) {
-        const msg = getErrorMessage(e)
-        // Conflicts surface as a server error containing 'conflict'.
-        // Close the dialog and let the parent show a non-modal notice
-        // routing the user to GitFileTree.
-        if (msg.toLowerCase().includes('conflict')) {
-          onConflict?.(msg)
+        if (isGitError(e, 'mergeConflicts')) {
+          showMergeConflicts(e.message)
           return
         }
         throw e

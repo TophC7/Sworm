@@ -1,14 +1,15 @@
 // Folder-keyed branches state using Svelte 5 runes.
 //
-// Owns the Branches view list, paused-op status, preferences, recents,
+// Owns the Branches view list, preferences, recents,
 // and dirty checkout handling. Preferences persist per workbench and folder
 // under the app_state key `branchesView:<id>:<folderPath>`.
 
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
+import { isGitError } from '$lib/features/git/errors'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { platform } from '$lib/platform'
-import type { BranchOpState, BranchSummary, GitSummary } from '$lib/types/backend'
+import type { BranchSummary, GitSummary } from '$lib/types/backend'
 
 // TYPES //
 
@@ -34,7 +35,6 @@ const RECENT_CAP = 10
 
 interface FolderEntry {
   list: BranchSummary[]
-  opState: BranchOpState
   prefs: BranchesViewPrefs
   fetching: boolean
   fetchedThisSession: boolean
@@ -50,7 +50,6 @@ const branchStore = createFolderKeyedStore<FolderEntry>()
 // different folder starts a fresh fetch.
 const inFlightLoads = new Map<string, Promise<void>>()
 const inFlightFetches = new Map<string, Promise<void>>()
-const OP_STATE_POLL_MS = 1500
 
 interface LoadOptions {
   autoFetch?: boolean
@@ -67,7 +66,7 @@ export const byFolder = {
   }
 }
 
-/** Forget the folder's branch state and stop op-state polling; called when the workbench releases the folder. */
+/** Forget the folder's branch state; called when the workbench releases the folder. */
 export function releaseBranchFolder(folderPath: string) {
   branchStore.delete(folderPath)
   inFlightLoads.delete(folderPath)
@@ -159,16 +158,14 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
   promise = (async () => {
     const prefs = await loadPrefs(folderPath)
     let list: BranchSummary[] = []
-    let opState: BranchOpState = 'idle'
     try {
-      ;[list, opState] = await Promise.all([backend.git.branch.list(folderPath), backend.git.branch.status(folderPath)])
+      list = await backend.git.listBranches(folderPath)
     } catch (e) {
       console.error(`Failed to load branches for ${folderPath}:`, e)
     }
     if (branchStore.generation(folderPath) !== generation) return
     branchStore.set(folderPath, {
       list,
-      opState,
       prefs,
       fetching: false,
       fetchedThisSession: false,
@@ -182,18 +179,15 @@ export function loadFor(folderPath: string, options: LoadOptions = {}): Promise<
   return promise
 }
 
-/** Re-pull `branch.list` + `branch.status` and merge into the entry.
+/** Re-pull `listBranches` and merge into the entry.
  * Prefs and transient flags survive. Runs as part of every full repo
  * refresh (see `onRepoRefresh` below); not called directly by feature code. */
 async function refresh(folderPath: string): Promise<void> {
   const generation = branchStore.generation(folderPath)
   try {
-    const [list, opState] = await Promise.all([
-      backend.git.branch.list(folderPath),
-      backend.git.branch.status(folderPath)
-    ])
+    const list = await backend.git.listBranches(folderPath)
     if (branchStore.generation(folderPath) !== generation) return
-    branchStore.patch(folderPath, { list, opState })
+    branchStore.patch(folderPath, { list })
   } catch (e) {
     console.error(`Failed to refresh branches for ${folderPath}:`, e)
   }
@@ -238,7 +232,7 @@ export function fetchBranches(folderPath: string): Promise<void> {
   let promise: Promise<void>
   promise = (async () => {
     try {
-      await runGitAction(folderPath, (path) => backend.git.fetch(path))
+      await runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'fetch', remote: null }))
       if (branchStore.generation(folderPath) !== generation) return
       branchStore.patch(folderPath, { fetching: false, fetchedThisSession: true, lastFetchedAt: Date.now() })
     } catch (e) {
@@ -291,16 +285,6 @@ export class DirtyCheckoutError extends Error {
   }
 }
 
-
-interface BackendDirtyWorktreeError {
-  kind: 'dirtyWorktree'
-  message: string
-}
-
-function isBackendDirtyWorktreeError(err: unknown): err is BackendDirtyWorktreeError {
-  return typeof err === 'object' && err !== null && 'kind' in err && err.kind === 'dirtyWorktree'
-}
-
 /**
  * Run `checkout` only when the working tree is clean. On dirty trees,
  * throws `DirtyCheckoutError` so the caller can open `CheckoutDialog`
@@ -309,7 +293,7 @@ function isBackendDirtyWorktreeError(err: unknown): err is BackendDirtyWorktreeE
  */
 async function guardedCheckout(
   folderPath: string,
-  recentName: string,
+  recentName: string | null,
   checkout: (path: string) => Promise<void>
 ): Promise<void> {
   const { dirty, summary } = await dirtyCheck(folderPath)
@@ -319,49 +303,29 @@ async function guardedCheckout(
   try {
     await runGitAction(folderPath, checkout)
   } catch (e) {
-    // runGitAction already refreshed, so the summary reflects the tree that blocked the switch.
-    if (isBackendDirtyWorktreeError(e)) throw new DirtyCheckoutError(getGitSummary(folderPath))
+    if (isGitError(e, 'dirtyWorktree')) {
+      // Joins the refresh runGitAction started, so the summary reflects the tree that blocked the switch.
+      await refreshGit(folderPath)
+      throw new DirtyCheckoutError(getGitSummary(folderPath))
+    }
     throw e
   }
-  markRecent(folderPath, recentName)
+  if (recentName !== null) markRecent(folderPath, recentName)
 }
 
 /** Switch to local branch `name`; see `guardedCheckout` for dirty-tree handling. */
 export function safeCheckout(folderPath: string, name: string): Promise<void> {
-  return guardedCheckout(folderPath, name, (path) => backend.git.branch.checkout(path, name))
+  return guardedCheckout(folderPath, name, (path) => backend.git.branch(path, { kind: 'checkout', name }))
 }
 
 /** Create `localName` tracking `remoteName` and switch to it; see `guardedCheckout`. */
 export function safeCheckoutRemoteAsLocal(folderPath: string, remoteName: string, localName: string): Promise<void> {
   return guardedCheckout(folderPath, localName, (path) =>
-    backend.git.branch.checkoutRemoteAsLocal(path, remoteName, localName)
+    backend.git.branch(path, { kind: 'checkout_remote', remoteName, localName })
   )
 }
 
-// PAUSED OP POLLING //
-
-/**
- * Poll `branch.status` every 1500ms while a component observes a
- * non-idle op state. Multiple consumers share one interval and each
- * releases through `stopOpStatePolling`.
- */
-export function pollOpState(folderPath: string) {
-  branchStore.startPolling(folderPath, {
-    intervalMs: OP_STATE_POLL_MS,
-    tick: async (path) => {
-      try {
-        const next = await backend.git.branch.status(path)
-        if (branchStore.get(path)?.opState !== next) {
-          branchStore.patch(path, { opState: next })
-        }
-      } catch (e) {
-        console.error('opState poll failed:', e)
-        branchStore.stopAllPolling(path)
-      }
-    }
-  })
-}
-
-export function stopOpStatePolling(folderPath: string) {
-  branchStore.stopPolling(folderPath)
+/** Switch to detached revision `rev`; see `guardedCheckout` for dirty-tree handling. */
+export function safeCheckoutDetached(folderPath: string, rev: string): Promise<void> {
+  return guardedCheckout(folderPath, null, (path) => backend.git.branch(path, { kind: 'checkout_detached', rev }))
 }

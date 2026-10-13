@@ -341,33 +341,9 @@ macro_rules! sworm_rpc_ops {
                 limit: usize,
             ) -> Vec<$crate::git::GraphCommit>;
             #[route(path)]
-            GitStageAll => git_stage_all(
+            GitPaths => git_paths(
                 path: String,
-            ) -> ();
-            #[route(path)]
-            GitStageFiles => git_stage_files(
-                path: String,
-                files: Vec<String>,
-            ) -> ();
-            #[route(path)]
-            GitUnstageAll => git_unstage_all(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitUnstageFiles => git_unstage_files(
-                path: String,
-                files: Vec<String>,
-            ) -> ();
-            #[route(path)]
-            GitDiscardAll => git_discard_all(
-                path: String,
-                permanent: bool,
-            ) -> ();
-            #[route(path)]
-            GitDiscardFiles => git_discard_files(
-                path: String,
-                files: Vec<String>,
-                permanent: bool,
+                op: $crate::git::GitPathsOp,
             ) -> ();
             #[route(path)]
             GitGetFullPatch => git_get_full_patch(
@@ -394,31 +370,21 @@ macro_rules! sworm_rpc_ops {
             GitCommit => git_commit(
                 path: String,
                 message: String,
+                options: $crate::git::GitCommitOptions,
             ) -> String;
             #[route(path)]
             GitUndoLastCommit => git_undo_last_commit(
                 path: String,
             ) -> String;
             #[route(path)]
-            GitPush => git_push(
+            GitRemote => git_remote(
                 path: String,
+                op: $crate::git::GitRemoteOp,
             ) -> ();
             #[route(path)]
-            GitPushForceWithLease => git_push_force_with_lease(
+            GitStash => git_stash(
                 path: String,
-            ) -> ();
-            #[route(path)]
-            GitPull => git_pull(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitFetch => git_fetch(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitStashAll => git_stash_all(
-                path: String,
-                message: Option<String>,
+                op: $crate::git::GitStashOp,
             ) -> ();
             #[route(path)]
             GitStashCount => git_stash_count(
@@ -428,16 +394,6 @@ macro_rules! sworm_rpc_ops {
             GitStashList => git_stash_list(
                 path: String,
             ) -> Vec<$crate::git::StashEntry>;
-            #[route(path)]
-            GitStashPop => git_stash_pop(
-                path: String,
-                index: usize,
-            ) -> ();
-            #[route(path)]
-            GitStashDrop => git_stash_drop(
-                path: String,
-                index: usize,
-            ) -> ();
             #[route(project_path)]
             GitShowFile => git_show_file(
                 project_path: String,
@@ -458,91 +414,25 @@ macro_rules! sworm_rpc_ops {
                 path: String,
             ) -> Vec<$crate::branch::BranchSummary>;
             #[route(path)]
-            GitBranchStatus => git_branch_status(
-                path: String,
-            ) -> $crate::branch::BranchOpState;
-            #[route(path)]
             GitDiffBranchAgainstHead => git_diff_branch_against_head(
                 path: String,
                 branch: String,
             ) -> Vec<$crate::file_diff::FileDiff>;
             #[route(path)]
-            GitCheckoutBranch => git_checkout_branch(
+            GitBranch => git_branch(
                 path: String,
-                name: String,
+                op: $crate::git::GitBranchOp,
             ) -> ();
             #[route(path)]
-            GitCheckoutRemoteAsLocal => git_checkout_remote_as_local(
+            GitSequencer => git_sequencer(
                 path: String,
-                remote_name: String,
-                local_name: String,
+                operation: $crate::git::GitOperationKind,
+                action: $crate::git::GitSequencerAction,
             ) -> ();
             #[route(path)]
-            GitCreateBranch => git_create_branch(
+            GitConflicts => git_conflicts(
                 path: String,
-                name: String,
-                base: String,
-                checkout: bool,
-            ) -> ();
-            #[route(path)]
-            GitRenameBranch => git_rename_branch(
-                path: String,
-                old_name: String,
-                new_name: String,
-            ) -> ();
-            #[route(path)]
-            GitDeleteBranch => git_delete_branch(
-                path: String,
-                name: String,
-                force: bool,
-            ) -> ();
-            #[route(path)]
-            GitDeleteRemoteBranch => git_delete_remote_branch(
-                path: String,
-                remote: String,
-                name: String,
-            ) -> ();
-            #[route(path)]
-            GitSetUpstream => git_set_upstream(
-                path: String,
-                branch: String,
-                upstream: String,
-            ) -> ();
-            #[route(path)]
-            GitFastForwardBranch => git_fast_forward_branch(
-                path: String,
-                name: String,
-            ) -> ();
-            #[route(path)]
-            GitMergeIntoCurrent => git_merge_into_current(
-                path: String,
-                source: String,
-                no_ff: bool,
-            ) -> ();
-            #[route(path)]
-            GitRebaseCurrentOnto => git_rebase_current_onto(
-                path: String,
-                target: String,
-            ) -> ();
-            #[route(path)]
-            GitRebaseContinue => git_rebase_continue(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitMergeContinue => git_merge_continue(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitRebaseSkip => git_rebase_skip(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitRebaseAbort => git_rebase_abort(
-                path: String,
-            ) -> ();
-            #[route(path)]
-            GitMergeAbort => git_merge_abort(
-                path: String,
+                op: $crate::git::GitConflictsOp,
             ) -> ();
             #[route(folder_path)]
             IssuesList => issues_list(
@@ -1008,6 +898,32 @@ pub enum WireError {
     /// The OS trash refused the item; the caller may retry as a permanent delete.
     TrashUnavailable {
         message: String,
+    },
+    /// Push/pull/sync needs an upstream the branch does not have; the UI offers Publish.
+    NoUpstream {
+        branch: String,
+    },
+    /// The remote refused the push (non-fast-forward or stale lease).
+    PushRejected {
+        message: String,
+    },
+    /// The command stopped on merge conflicts, or refused because unmerged paths remain.
+    MergeConflicts {
+        message: String,
+    },
+    /// The branch is checked out in another worktree.
+    BranchInWorktree {
+        branch: String,
+        path: String,
+    },
+    /// A linked worktree refused removal because it has modified or untracked files.
+    WorktreeHasChanges {
+        path: String,
+        message: String,
+    },
+    /// Staging would record files that still contain conflict markers.
+    ConflictMarkers {
+        paths: Vec<String>,
     },
     Unauthorized {
         message: String,

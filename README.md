@@ -119,7 +119,7 @@ Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command
 
 `Ctrl+O` opens the location browser in the same wider shell as the command palette. The current folder starts selected, followed by recent folders, workbenches, and servers—no Places/Folders tabs. Right browses the selected folder, Left goes to its parent, and Enter opens it; while filtering, use Alt+Right/Left so text caret keys keep working. `Ctrl+L` edits the path, Tab completes it, and Escape cancels path editing before closing. The Servers control is keyboard-focusable from every location; `Alt+Home` returns to the locations list. Server entry starts at its working directory, while explicit `~` still goes home.
 
-Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open. The folder view keeps a contents preview and an Open Folder action (`Ctrl+Enter`) for its current directory.
+Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open. The browser's desktop system-dialog button uses the same captured temporary-tab replacement rule. The folder view keeps a contents preview and an Open Folder action (`Ctrl+Enter`) for its current directory.
 
 ### Use your project's Nix environment
 

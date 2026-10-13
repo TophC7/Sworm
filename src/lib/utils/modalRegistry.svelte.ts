@@ -21,7 +21,7 @@
 //
 // Uses `SvelteSet` so that registrations/unregistrations emit
 // reactive signals — a `$derived` calling `isAnyModalOpen()` will
-// re-evaluate when DialogContent mounts or unmounts.
+// re-evaluate when Dialog.Content mounts or unmounts.
 
 import { SvelteSet } from 'svelte/reactivity'
 

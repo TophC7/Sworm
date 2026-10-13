@@ -1,17 +1,15 @@
 <script lang="ts">
-  import { backend } from '$lib/api/backend'
   import { parseStashMessage } from '$lib/features/git/gitRefs'
   import ChangedFilesTree from '$lib/features/git/ChangedFilesTree.svelte'
   import { openStashDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
-  import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
   import { sidebarRowVariants } from '$lib/components/ui/sidebar-row'
   import { ClockIcon, Play, Trash2 } from '$lib/icons/lucideExports'
   import { GRAPH_COLORS } from '$lib/features/git/graph'
-  import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
-  import { getStashes, loadStashes, runGitAction } from '$lib/features/git/state.svelte'
+  import { dropStash, popStash } from '$lib/features/git/actions.svelte'
+  import { getStashes, loadStashes } from '$lib/features/git/state.svelte'
 
   let { folderPath, branchColorMap = new Map() }: {
     folderPath: string
@@ -46,37 +44,11 @@
 
 
   async function handlePop(index: number) {
-    await runNotifiedTask(
-      async () => {
-        await runGitAction(folderPath, (path) => backend.git.stashPop(path, index))
-        expandedIndex = null
-      },
-      {
-        loading: { title: 'Applying stash', description: `stash@{${index}}` },
-        success: { title: 'Stash applied', description: `stash@{${index}}` },
-        error: { title: 'Apply stash failed' }
-      }
-    )
+    if (await popStash(folderPath, index)) expandedIndex = null
   }
 
   async function handleDrop(idx: number) {
-    const proceed = await confirmAsync({
-      title: 'Drop Stash?',
-      message: 'This will permanently delete this stash entry. This cannot be undone.',
-      confirmLabel: 'Drop'
-    })
-    if (!proceed) return
-    await runNotifiedTask(
-      async () => {
-        await runGitAction(folderPath, (path) => backend.git.stashDrop(path, idx))
-        if (expandedIndex === idx) expandedIndex = null
-      },
-      {
-        loading: { title: 'Dropping stash', description: `stash@{${idx}}` },
-        success: { title: 'Stash dropped', description: `stash@{${idx}}` },
-        error: { title: 'Drop stash failed' }
-      }
-    )
+    if ((await dropStash(folderPath, idx)) && expandedIndex === idx) expandedIndex = null
   }
 </script>
 

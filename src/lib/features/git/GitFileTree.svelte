@@ -26,7 +26,7 @@
   import { discardFiles, stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
   import {
     commitFolder, discardAllFolder, fetchFolder, forcePushWithLease, pullFolder,
-    pushFolder, stageAllFolder, stashAllFolder, undoLastCommit, unstageAllFolder
+    pushFolder, stageAllFolder, stashFolder, undoLastCommit, unstageAllFolder
   } from '$lib/features/git/actions.svelte'
   import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
@@ -231,7 +231,7 @@
     try {
       switch (action) {
         case 'stage':
-          await stageFiles(folderPath, files)
+          if (!(await stageFiles(folderPath, files))) return
           break
         case 'unstage':
           await unstageFiles(folderPath, files)
@@ -333,7 +333,11 @@
       staged,
       onDropFiles: async (files, targetStaged) => {
         try {
-          await (targetStaged ? stageFiles(folderPath, files) : unstageFiles(folderPath, files))
+          if (targetStaged) {
+            if (!(await stageFiles(folderPath, files))) return
+          } else {
+            await unstageFiles(folderPath, files)
+          }
           notify.success(
             targetStaged ? 'Files staged' : 'Files unstaged',
             `${files.length} file${files.length === 1 ? '' : 's'}`
@@ -363,7 +367,7 @@
           >
             <ChevronDown size={11} />
           </DropdownMenu.Trigger>
-          <DropdownMenu.Content class="min-w-[180px] text-sm">
+          <DropdownMenu.Content class="min-w-[180px]">
             <DropdownMenu.Item onclick={() => pullFolder(folderPath)}>Pull</DropdownMenu.Item>
             <DropdownMenu.Item onclick={() => pushFolder(folderPath)}>Push</DropdownMenu.Item>
             <DropdownMenu.Item onclick={() => fetchFolder(folderPath)}>Fetch</DropdownMenu.Item>
@@ -456,7 +460,7 @@
                 </IconButton>
               {/if}
               {#if !isStaged}
-                <IconButton tooltip="Stash all" onclick={() => stashAllFolder(folderPath)}>
+                <IconButton tooltip="Stash all" onclick={() => stashFolder(folderPath, { kind: 'all', includeUntracked: true })}>
                   <PackageIcon size={13} />
                 </IconButton>
               {/if}

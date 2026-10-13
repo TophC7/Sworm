@@ -3,7 +3,6 @@
 import { getHostTransport, type PtySinks, type StreamHandle, type Unsubscribe } from './transport'
 import type {
   AppRuntimeInfo,
-  BranchOpState,
   BranchSummary,
   BuiltinCatalog,
   CommitDetail,
@@ -27,8 +26,16 @@ import type {
   TerminalSettings,
   WindowSettings,
   GitBrief,
+  GitBranchOp,
+  GitCommitOptions,
+  GitConflictsOp,
+  GitOperationKind,
+  GitPathsOp,
   GitChangedEvent,
   GitQuickDiffData,
+  GitRemoteOp,
+  GitSequencerAction,
+  GitStashOp,
   GitSummary,
   GraphCommit,
   Issue,
@@ -246,23 +253,8 @@ export const backend = {
     },
 
     // Write operations
-    stageAll(path: string): Promise<void> {
-      return invoke<void>('git_stage_all', { path })
-    },
-    stageFiles(path: string, files: string[]): Promise<void> {
-      return invoke<void>('git_stage_files', { path, files })
-    },
-    unstageAll(path: string): Promise<void> {
-      return invoke<void>('git_unstage_all', { path })
-    },
-    unstageFiles(path: string, files: string[]): Promise<void> {
-      return invoke<void>('git_unstage_files', { path, files })
-    },
-    discardAll(path: string, permanent = false): Promise<void> {
-      return invoke<void>('git_discard_all', { path, permanent })
-    },
-    discardFiles(path: string, files: string[], permanent = false): Promise<void> {
-      return invoke<void>('git_discard_files', { path, files, permanent })
+    paths(path: string, op: GitPathsOp): Promise<void> {
+      return invoke<void>('git_paths', { path, op })
     },
     getFullPatch(path: string): Promise<string | null> {
       return invoke<string | null>('git_get_full_patch', { path })
@@ -287,38 +279,27 @@ export const backend = {
         content
       })
     },
-    commit(path: string, message: string): Promise<string> {
-      return invoke<string>('git_commit', { path, message })
+    commit(path: string, message: string, options: Partial<GitCommitOptions> = {}): Promise<string> {
+      return invoke<string>('git_commit', {
+        path,
+        message,
+        options: { amend: false, all: false, signOff: false, noVerify: false, ...options }
+      })
     },
     undoLastCommit(path: string): Promise<string> {
       return invoke<string>('git_undo_last_commit', { path })
     },
-    push(path: string): Promise<void> {
-      return invoke<void>('git_push', { path })
+    remote(path: string, op: GitRemoteOp): Promise<void> {
+      return invoke<void>('git_remote', { path, op })
     },
-    pushForceWithLease(path: string): Promise<void> {
-      return invoke<void>('git_push_force_with_lease', { path })
-    },
-    pull(path: string): Promise<void> {
-      return invoke<void>('git_pull', { path })
-    },
-    fetch(path: string): Promise<void> {
-      return invoke<void>('git_fetch', { path })
-    },
-    stashAll(path: string, message?: string): Promise<void> {
-      return invoke<void>('git_stash_all', { path, message: message ?? null })
+    stash(path: string, op: GitStashOp): Promise<void> {
+      return invoke<void>('git_stash', { path, op })
     },
     stashCount(path: string): Promise<number> {
       return invoke<number>('git_stash_count', { path })
     },
     stashList(path: string): Promise<StashEntry[]> {
       return invoke<StashEntry[]>('git_stash_list', { path })
-    },
-    stashPop(path: string, index: number): Promise<void> {
-      return invoke<void>('git_stash_pop', { path, index })
-    },
-    stashDrop(path: string, index: number): Promise<void> {
-      return invoke<void>('git_stash_drop', { path, index })
     },
     init(path: string): Promise<void> {
       return invoke<void>('git_init', { path })
@@ -327,95 +308,23 @@ export const backend = {
       return invoke<void>('git_clone_in_place', { path, url })
     },
 
-    /**
-     * Branch read + write surface. Each method maps one-to-one onto a
-     * `git_*` Tauri command in `src-tauri/src/commands/git.rs`. All
-     * mutating calls route through `run_mutate` server-side, so the
-     * summary cache invalidates and the StatusBar reflects the new
-     * state inside one poll cycle.
-     */
-    branch: {
-      list(path: string): Promise<BranchSummary[]> {
-        return invoke<BranchSummary[]>('git_list_branches', { path })
-      },
-      commits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
-        return invoke<GraphCommit[]>('git_get_branch_commits', {
-          path,
-          branch,
-          limit
-        })
-      },
-      status(path: string): Promise<BranchOpState> {
-        return invoke<BranchOpState>('git_branch_status', { path })
-      },
-      diffAgainstHead(path: string, branch: string): Promise<FileDiff[]> {
-        return invoke<FileDiff[]>('git_diff_branch_against_head', {
-          path,
-          branch
-        })
-      },
-      checkout(path: string, name: string): Promise<void> {
-        return invoke<void>('git_checkout_branch', { path, name })
-      },
-      checkoutRemoteAsLocal(path: string, remoteName: string, localName: string): Promise<void> {
-        return invoke<void>('git_checkout_remote_as_local', {
-          path,
-          remoteName,
-          localName
-        })
-      },
-      create(path: string, name: string, base: string, opts: { checkout?: boolean } = {}): Promise<void> {
-        return invoke<void>('git_create_branch', {
-          path,
-          name,
-          base,
-          checkout: opts.checkout ?? false
-        })
-      },
-      rename(path: string, oldName: string, newName: string): Promise<void> {
-        return invoke<void>('git_rename_branch', { path, oldName, newName })
-      },
-      delete(path: string, name: string, opts: { force?: boolean } = {}): Promise<void> {
-        return invoke<void>('git_delete_branch', {
-          path,
-          name,
-          force: opts.force ?? false
-        })
-      },
-      deleteRemote(path: string, remote: string, name: string): Promise<void> {
-        return invoke<void>('git_delete_remote_branch', { path, remote, name })
-      },
-      setUpstream(path: string, branch: string, upstream: string): Promise<void> {
-        return invoke<void>('git_set_upstream', { path, branch, upstream })
-      },
-      fastForward(path: string, name: string): Promise<void> {
-        return invoke<void>('git_fast_forward_branch', { path, name })
-      },
-      merge(path: string, source: string, opts: { noFf?: boolean } = {}): Promise<void> {
-        return invoke<void>('git_merge_into_current', {
-          path,
-          source,
-          noFf: opts.noFf ?? false
-        })
-      },
-      rebaseOnto(path: string, target: string): Promise<void> {
-        return invoke<void>('git_rebase_current_onto', { path, target })
-      },
-      rebaseContinue(path: string): Promise<void> {
-        return invoke<void>('git_rebase_continue', { path })
-      },
-      mergeContinue(path: string): Promise<void> {
-        return invoke<void>('git_merge_continue', { path })
-      },
-      rebaseSkip(path: string): Promise<void> {
-        return invoke<void>('git_rebase_skip', { path })
-      },
-      rebaseAbort(path: string): Promise<void> {
-        return invoke<void>('git_rebase_abort', { path })
-      },
-      mergeAbort(path: string): Promise<void> {
-        return invoke<void>('git_merge_abort', { path })
-      }
+    listBranches(path: string): Promise<BranchSummary[]> {
+      return invoke<BranchSummary[]>('git_list_branches', { path })
+    },
+    getBranchCommits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
+      return invoke<GraphCommit[]>('git_get_branch_commits', { path, branch, limit })
+    },
+    diffBranchAgainstHead(path: string, branch: string): Promise<FileDiff[]> {
+      return invoke<FileDiff[]>('git_diff_branch_against_head', { path, branch })
+    },
+    branch(path: string, op: GitBranchOp): Promise<void> {
+      return invoke<void>('git_branch', { path, op })
+    },
+    sequencer(path: string, operation: GitOperationKind, action: GitSequencerAction): Promise<void> {
+      return invoke<void>('git_sequencer', { path, operation, action })
+    },
+    conflicts(path: string, op: GitConflictsOp): Promise<void> {
+      return invoke<void>('git_conflicts', { path, op })
     }
   },
 

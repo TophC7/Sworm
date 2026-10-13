@@ -71,7 +71,7 @@
       <!-- ── File/folder-targeted menu ── -->
       {#if canRevealInFileManager}
         <ContextMenu.Item onclick={onRevealInFolder}>
-          <FolderOpenIcon size={14} class="shrink-0 text-muted" />
+          <FolderOpenIcon size={14} />
           <span>Reveal in File Manager</span>
         </ContextMenu.Item>
       {/if}
@@ -82,12 +82,12 @@
         {/if}
 
         <ContextMenu.Item onclick={onOpenInEditor}>
-          <FileCodeIcon size={14} class="shrink-0 text-muted" />
+          <FileCodeIcon size={14} />
           <span>Open in Editor</span>
         </ContextMenu.Item>
 
         <ContextMenu.Item onclick={onOpenDiff}>
-          <FileDiff size={14} class="shrink-0 text-muted" />
+          <FileDiff size={14} />
           <span>Open Diff</span>
         </ContextMenu.Item>
       {/if}
@@ -98,16 +98,16 @@
 
       {#if canNativeFileClipboard}
         <ContextMenu.Item onclick={onCut}>
-          <ScissorsIcon size={14} class="shrink-0 text-muted" />
+          <ScissorsIcon size={14} />
           <span>Cut</span>
         </ContextMenu.Item>
         <ContextMenu.Item onclick={onCopy}>
-          <CopyIcon size={14} class="shrink-0 text-muted" />
+          <CopyIcon size={14} />
           <span>Copy</span>
         </ContextMenu.Item>
         {#if targetType === 'directory'}
           <ContextMenu.Item onclick={onPaste}>
-            <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
+            <ClipboardPasteIcon size={14} />
             <span>Paste</span>
           </ContextMenu.Item>
         {/if}
@@ -116,39 +116,39 @@
       {#if canNativeFileClipboard}<ContextMenu.Separator />{/if}
 
       <ContextMenu.Item onclick={onCopyPath}>
-        <ClipboardIcon size={14} class="shrink-0 text-muted" />
+        <ClipboardIcon size={14} />
         <span>Copy Path</span>
       </ContextMenu.Item>
       <ContextMenu.Item onclick={onCopyRelativePath}>
-        <ClipboardIcon size={14} class="shrink-0 text-muted" />
+        <ClipboardIcon size={14} />
         <span>Copy Relative Path</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator />
 
       <ContextMenu.Item onclick={onRename}>
-        <PencilIcon size={14} class="shrink-0 text-muted" />
+        <PencilIcon size={14} />
         <span>Rename</span>
       </ContextMenu.Item>
       <ContextMenu.Item destructive onclick={onDelete}>
-        <Trash2 size={14} class="shrink-0" />
+        <Trash2 size={14} />
         <span>Delete</span>
       </ContextMenu.Item>
     {:else}
       <!-- ── Empty space menu ── -->
       <ContextMenu.Item onclick={onNewFile}>
-        <Plus size={14} class="shrink-0 text-muted" />
+        <Plus size={14} />
         <span>New File</span>
       </ContextMenu.Item>
       <ContextMenu.Item onclick={onNewFolder}>
-        <FolderOpenIcon size={14} class="shrink-0 text-muted" />
+        <FolderOpenIcon size={14} />
         <span>New Folder</span>
       </ContextMenu.Item>
       <ContextMenu.Separator />
 
       {#if canNativeFileClipboard}
         <ContextMenu.Item onclick={onPaste}>
-          <ClipboardPasteIcon size={14} class="shrink-0 text-muted" />
+          <ClipboardPasteIcon size={14} />
           <span>Paste</span>
         </ContextMenu.Item>
       {/if}
@@ -157,12 +157,12 @@
 
       {#if canRevealInFileManager}
         <ContextMenu.Item onclick={onOpenExternal}>
-          <SquareArrowOutUpRight size={14} class="shrink-0 text-muted" />
+          <SquareArrowOutUpRight size={14} />
           <span>Reveal in File Manager</span>
         </ContextMenu.Item>
       {/if}
       <ContextMenu.Item onclick={onCopyFolderPath}>
-        <ClipboardIcon size={14} class="shrink-0 text-muted" />
+        <ClipboardIcon size={14} />
         <span>Copy Path</span>
       </ContextMenu.Item>
     {/if}

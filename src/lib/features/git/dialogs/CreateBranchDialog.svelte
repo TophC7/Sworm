@@ -41,7 +41,7 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await runGitAction(folderPath, (path) => backend.git.branch.create(path, name, base, { checkout: alsoCheckout }))
+      await runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'create', name, base, checkout: alsoCheckout }))
       if (alsoCheckout) branches.markRecent(folderPath, name)
     },
     onDone: () => (open = false)

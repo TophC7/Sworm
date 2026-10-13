@@ -1,30 +1,33 @@
 <script lang="ts">
-  import { DropdownMenu } from 'bits-ui'
+  import { DropdownMenu as DropdownMenuPrimitive } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
   import { menuItemClass } from '../menu-recipe'
-  import type { Snippet } from 'svelte'
 
   let {
+    ref = $bindable(null),
     class: className,
+    inset,
     destructive = false,
     disabled = false,
     onclick,
-    children,
     ...rest
-  }: {
-    class?: string
+  }: DropdownMenuPrimitive.ItemProps & {
+    inset?: boolean
     destructive?: boolean
-    disabled?: boolean
-    onclick?: (e?: Event) => void
-    children?: Snippet
   } = $props()
+
+  // bits turns Enter/Space into a DOM click, so `onclick` also covers keyboard activation.
+  // bits only guards its own select handler; disabled rows keep pointer events for
+  // cursor-not-allowed, so the consumer's click is dropped here.
 </script>
 
-<DropdownMenu.Item
+<DropdownMenuPrimitive.Item
+  bind:ref
+  data-slot="dropdown-menu-item"
+  data-inset={inset || undefined}
+  data-destructive={destructive || undefined}
   {disabled}
-  onSelect={(e) => onclick?.(e)}
-  class={cn(menuItemClass(destructive, disabled), className)}
+  onclick={disabled ? undefined : onclick}
+  class={cn(menuItemClass, className)}
   {...rest}
->
-  {#if children}{@render children()}{/if}
-</DropdownMenu.Item>
+/>

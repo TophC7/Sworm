@@ -11,18 +11,6 @@ pub enum BranchKind {
     Remote,
 }
 
-/// Current "in-flight" state of the working tree, derived directly
-/// from `.git/` sentinel directories rather than parsing porcelain.
-/// `Idle` covers normal day-to-day operation; the other variants drive
-/// the paused-state status sub-row in the Branches view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BranchOpState {
-    Idle,
-    Rebasing,
-    Merging,
-}
-
 /// Lightweight commit reference attached to each branch summary so the
 /// list can show the tip's subject, author, and time without a second
 /// round-trip per row. Hash is the full 40-char OID; `short_hash` is

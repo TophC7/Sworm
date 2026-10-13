@@ -483,7 +483,95 @@ export interface GitSummary {
   staged_count: number
   unstaged_count: number
   untracked_count: number
+  upstream: string | null
+  detached: boolean
+  operation: GitOperation | null
+  conflicts: GitConflict[]
+  message_template: string | null
 }
+
+export type GitOperationKind = 'merge' | 'rebase' | 'cherry_pick' | 'revert'
+
+export interface GitOperation {
+  kind: GitOperationKind
+  target: string | null
+  headName: string | null
+  step: number | null
+  total: number | null
+  commit: BranchCommitRef | null
+}
+
+export type GitConflictKind =
+  | 'both_modified'
+  | 'both_added'
+  | 'both_deleted'
+  | 'added_by_us'
+  | 'added_by_them'
+  | 'deleted_by_us'
+  | 'deleted_by_them'
+
+export interface GitConflict {
+  path: string
+  kind: GitConflictKind
+}
+
+export type GitPathsOp =
+  | { kind: 'stage'; files: string[] | null; allowConflictMarkers: boolean }
+  | { kind: 'unstage'; files: string[] | null }
+  | { kind: 'discard'; files: string[] | null; permanent: boolean }
+  | { kind: 'ignore'; files: string[] }
+
+export interface GitCommitOptions {
+  amend: boolean
+  all: boolean
+  signOff: boolean
+  noVerify: boolean
+}
+
+export type GitRemoteOp =
+  | { kind: 'fetch'; remote: string | null }
+  | { kind: 'pull'; rebase: boolean }
+  | { kind: 'push'; branch: string | null; force: boolean }
+  | { kind: 'publish'; branch: string | null; remote: string | null }
+  | { kind: 'sync'; rebase: boolean }
+
+export type GitStashScope =
+  | { kind: 'all'; includeUntracked: boolean }
+  | { kind: 'staged' }
+  | { kind: 'paths'; paths: string[] }
+
+export type GitStashOp =
+  | { kind: 'push'; message: string | null; scope: GitStashScope }
+  | { kind: 'apply'; index: number }
+  | { kind: 'pop'; index: number }
+  | { kind: 'drop'; index: number }
+  | { kind: 'clear' }
+  | { kind: 'branch'; index: number; name: string }
+
+export type GitBranchOp =
+  | { kind: 'checkout'; name: string }
+  | { kind: 'checkout_detached'; rev: string }
+  | { kind: 'checkout_remote'; remoteName: string; localName: string }
+  | { kind: 'create'; name: string; base: string; checkout: boolean }
+  | { kind: 'rename'; oldName: string; newName: string }
+  | { kind: 'delete'; name: string; force: boolean }
+  | { kind: 'delete_remote'; remote: string; name: string }
+  | { kind: 'set_upstream'; branch: string; upstream: string }
+  | { kind: 'unset_upstream'; branch: string }
+  | { kind: 'fast_forward'; name: string }
+  | { kind: 'merge'; source: string; noFf: boolean }
+  | { kind: 'rebase'; target: string }
+
+export type GitSequencerAction =
+  | { kind: 'continue'; message: string | null }
+  | { kind: 'skip' }
+  | { kind: 'abort' }
+
+export type GitConflictSide = 'ours' | 'theirs'
+
+export type GitConflictsOp =
+  | { kind: 'take_side'; files: string[]; side: GitConflictSide }
+  | { kind: 'delete'; files: string[] }
 
 /** Cheap git state for Home project cards; `changed` counts distinct paths. */
 export interface GitBrief {
@@ -730,8 +818,6 @@ export interface StashEntry {
 // shape directly.
 
 export type BranchKind = 'local' | 'remote'
-
-export type BranchOpState = 'idle' | 'rebasing' | 'merging'
 
 export interface BranchCommitRef {
   hash: string

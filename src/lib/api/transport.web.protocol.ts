@@ -64,6 +64,28 @@ export function normalizeWireError(value: unknown): Error | Record<string, unkno
       return { kind: 'dirtyWorktree', message: field(value, 'message') }
     case 'trash_unavailable':
       return { kind: 'trashUnavailable', message: field(value, 'message') }
+    case 'no_upstream': {
+      const branch = field(value, 'branch')
+      return { kind: 'noUpstream', branch, message: `Branch '${branch}' has no upstream branch` }
+    }
+    case 'push_rejected':
+      return { kind: 'pushRejected', message: field(value, 'message') }
+    case 'merge_conflicts':
+      return { kind: 'mergeConflicts', message: field(value, 'message') }
+    case 'branch_in_worktree': {
+      const branch = field(value, 'branch')
+      const path = field(value, 'path')
+      return { kind: 'branchInWorktree', branch, path, message: `Branch '${branch}' is checked out in the worktree at ${path}` }
+    }
+    case 'worktree_has_changes':
+      return { kind: 'worktreeHasChanges', path: field(value, 'path'), message: field(value, 'message') }
+    case 'conflict_markers': {
+      const { paths } = value
+      if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string')) {
+        throw new Error('Invalid wire error: paths')
+      }
+      return { kind: 'conflictMarkers', paths, message: `Files still contain conflict markers: ${paths.join(', ')}` }
+    }
     case 'conflict':
       return { kind: 'conflict', currentVersion: field(value, 'current_version') }
     case 'deleted':

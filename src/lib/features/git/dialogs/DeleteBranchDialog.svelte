@@ -3,13 +3,14 @@
   DeleteBranchDialog: first attempt is a regular delete; if the
   backend returns an unmerged-branch error, the dialog flips to a
   danger state and offers force-delete. Remote branches route
-  through `deleteRemote`.
+  through the `delete_remote` operation.
 -->
 
 <script lang="ts">
   import { backend } from '$lib/api/backend'
   import { Button } from '$lib/components/ui/button'
   import * as Dialog from '$lib/components/ui/dialog'
+  import { isGitError } from '$lib/features/git/errors'
   import { runGitAction } from '$lib/features/git/state.svelte'
   import type { BranchSummary } from '$lib/types/backend'
   import { splitRemoteBranchRef } from '$lib/features/git/gitRefs'
@@ -26,21 +27,6 @@
     branch: BranchSummary
   } = $props()
 
-  interface BranchUnmergedError {
-    kind: 'branchUnmerged'
-    branch: string
-    message: string
-  }
-
-  function isBranchUnmergedError(error: unknown): error is BranchUnmergedError {
-    return (
-      typeof error === 'object' &&
-      error !== null &&
-      'kind' in error &&
-      (error as { kind?: unknown }).kind === 'branchUnmerged'
-    )
-  }
-
   let unmergedWarning = $state(false)
 
   const submitState = runDialogSubmit({
@@ -51,15 +37,15 @@
           if (!remoteRef) {
             throw new Error(`Cannot infer remote for ${branch.name}`)
           }
-          await backend.git.branch.deleteRemote(path, remoteRef.remote, remoteRef.branch)
+          await backend.git.branch(path, { kind: 'delete_remote', remote: remoteRef.remote, name: remoteRef.branch })
         } else {
-          await backend.git.branch.delete(path, branch.name, { force: unmergedWarning })
+          await backend.git.branch(path, { kind: 'delete', name: branch.name, force: unmergedWarning })
         }
       })
     },
     onDone: () => (open = false),
     onError: (error) => {
-      if (branch.kind === 'local' && !unmergedWarning && isBranchUnmergedError(error)) {
+      if (branch.kind === 'local' && !unmergedWarning && isGitError(error, 'branchUnmerged')) {
         unmergedWarning = true
         return true
       }

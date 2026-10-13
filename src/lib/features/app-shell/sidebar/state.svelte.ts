@@ -43,6 +43,11 @@ export function setGitSidebarTab(tab: GitSidebarTab) {
   gitSidebarTab = tab
 }
 
+export function revealGitChanges() {
+  sidebarCollapsed = false
+  sidebarView = 'git'
+}
+
 export function revealGitBranches(folderPath: string) {
   sidebarCollapsed = false
   sidebarView = 'git'

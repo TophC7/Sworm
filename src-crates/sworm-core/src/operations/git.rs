@@ -1,11 +1,12 @@
 use crate::errors::ApiError;
 use crate::host::Host;
-use crate::services::git::DeleteBranchError;
 use std::path::{Path, PathBuf};
-use sworm_protocol::branch::{BranchOpState, BranchSummary};
+use sworm_protocol::branch::BranchSummary;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, DiffFileContent, GitBrief, GitQuickDiffData, GitSummary, GraphCommit, StashEntry,
+    CommitDetail, DiffFileContent, GitBranchOp, GitBrief, GitCommitOptions, GitConflictsOp,
+    GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemoteOp, GitSequencerAction, GitStashOp,
+    GitSummary, GraphCommit, StashEntry,
 };
 
 /// Lightweight defense against arg-injection for branch / remote
@@ -237,47 +238,27 @@ impl Host {
 
     // WRITE OPERATIONS //
 
-    /// Stage all changes (tracked + untracked).
-    pub fn git_stage_all(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .stage_all(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Stage specific files or directories.
-    pub fn git_stage_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
-        self.git
-            .stage_files(Path::new(&path), &files)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Unstage all staged changes.
-    pub fn git_unstage_all(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .unstage_all(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Unstage specific files or directories.
-    pub fn git_unstage_files(&self, path: String, files: Vec<String>) -> Result<(), ApiError> {
-        self.git
-            .unstage_files(Path::new(&path), &files)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Discard all unstaged changes and untracked files.
-    pub fn git_discard_all(&self, path: String, permanent: bool) -> Result<(), ApiError> {
-        self.git.discard_all(Path::new(&path), permanent)
-    }
-
-    /// Discard changes for specific files or directories.
-    pub fn git_discard_files(
-        &self,
-        path: String,
-        files: Vec<String>,
-        permanent: bool,
-    ) -> Result<(), ApiError> {
-        self.git.discard_files(Path::new(&path), &files, permanent)
+    /// Stage, unstage, discard, or ignore working-tree paths.
+    pub fn git_paths(&self, path: String, op: GitPathsOp) -> Result<(), ApiError> {
+        let repo = Path::new(&path);
+        match op {
+            GitPathsOp::Stage {
+                files,
+                allow_conflict_markers,
+            } => self
+                .git
+                .stage(repo, files.as_deref(), allow_conflict_markers),
+            GitPathsOp::Unstage { files } => self.git.unstage(repo, files.as_deref()),
+            GitPathsOp::Discard { files, permanent } => {
+                self.git.discard(repo, files.as_deref(), permanent)
+            }
+            GitPathsOp::Ignore { files } => {
+                for file in &files {
+                    validated_project_file(&path, file)?;
+                }
+                self.git.ignore(repo, &files)
+            }
+        }
     }
 
     /// Get the combined patch for all working-tree changes.
@@ -325,57 +306,76 @@ impl Host {
         validated_project_file(&project_path, &file_path)?;
         self.git
             .stage_file_content(Path::new(&project_path), &file_path, content.as_deref())
-            .map_err(ApiError::Internal)
     }
 
-    /// Create a commit with the given message.
-    pub fn git_commit(&self, path: String, message: String) -> Result<String, ApiError> {
+    /// Create or amend a commit with the given message and options.
+    pub fn git_commit(
+        &self,
+        path: String,
+        message: String,
+        options: GitCommitOptions,
+    ) -> Result<String, ApiError> {
         let trimmed = message.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && !options.amend {
             return Err(ApiError::InvalidArgument(
                 "Commit message cannot be empty".to_string(),
             ));
         }
-        self.git
-            .commit(Path::new(&path), trimmed)
-            .map_err(ApiError::Internal)
+        self.git.commit(Path::new(&path), trimmed, &options)
     }
 
     /// Undo the last commit (soft reset to HEAD~1). Returns the commit
     /// message so the frontend can restore it into the commit textarea.
     pub fn git_undo_last_commit(&self, path: String) -> Result<String, ApiError> {
-        self.git
-            .undo_last_commit(Path::new(&path))
-            .map_err(ApiError::Internal)
+        self.git.undo_last_commit(Path::new(&path))
     }
 
-    /// Push current branch to upstream.
-    pub fn git_push(&self, path: String) -> Result<(), ApiError> {
-        self.git.push(Path::new(&path)).map_err(ApiError::Internal)
+    /// Fetch, pull, push, publish, or synchronize with a remote.
+    pub fn git_remote(&self, path: String, op: GitRemoteOp) -> Result<(), ApiError> {
+        let repo = Path::new(&path);
+        match op {
+            GitRemoteOp::Fetch { remote } => {
+                if let Some(remote) = &remote {
+                    validated_ref_name(remote)?;
+                }
+                self.git.fetch(repo, remote.as_deref())
+            }
+            GitRemoteOp::Pull { rebase } => self.git.pull(repo, rebase),
+            GitRemoteOp::Push { branch, force } => {
+                if let Some(branch) = &branch {
+                    validated_ref_name(branch)?;
+                }
+                self.git.push(repo, branch.as_deref(), force)
+            }
+            GitRemoteOp::Publish { branch, remote } => {
+                if let Some(branch) = &branch {
+                    validated_ref_name(branch)?;
+                }
+                if let Some(remote) = &remote {
+                    validated_ref_name(remote)?;
+                }
+                self.git.publish(repo, branch.as_deref(), remote.as_deref())
+            }
+            GitRemoteOp::Sync { rebase } => self.git.sync(repo, rebase),
+        }
     }
 
-    /// Push with --force-with-lease.
-    pub fn git_push_force_with_lease(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .push_force_with_lease(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Pull from upstream (fetch + merge).
-    pub fn git_pull(&self, path: String) -> Result<(), ApiError> {
-        self.git.pull(Path::new(&path)).map_err(ApiError::Internal)
-    }
-
-    /// Fetch from all remotes.
-    pub fn git_fetch(&self, path: String) -> Result<(), ApiError> {
-        self.git.fetch(Path::new(&path)).map_err(ApiError::Internal)
-    }
-
-    /// Stash all changes including untracked files.
-    pub fn git_stash_all(&self, path: String, message: Option<String>) -> Result<(), ApiError> {
-        self.git
-            .stash_all(Path::new(&path), message.as_deref())
-            .map_err(ApiError::Internal)
+    /// Create, apply, remove, or branch from stash entries.
+    pub fn git_stash(&self, path: String, op: GitStashOp) -> Result<(), ApiError> {
+        let repo = Path::new(&path);
+        match op {
+            GitStashOp::Push { message, scope } => {
+                self.git.stash_push(repo, message.as_deref(), &scope)
+            }
+            GitStashOp::Apply { index } => self.git.stash_apply(repo, index, false),
+            GitStashOp::Pop { index } => self.git.stash_apply(repo, index, true),
+            GitStashOp::Drop { index } => self.git.stash_drop(repo, index),
+            GitStashOp::Clear => self.git.stash_clear(repo),
+            GitStashOp::Branch { index, name } => {
+                validated_ref_name(&name)?;
+                self.git.stash_branch(repo, index, &name)
+            }
+        }
     }
 
     /// Count stash entries (lightweight, no per-entry file stats).
@@ -388,20 +388,6 @@ impl Host {
     /// List all stash entries.
     pub fn git_stash_list(&self, path: String) -> Result<Vec<StashEntry>, ApiError> {
         Ok(self.git.stash_list(Path::new(&path)))
-    }
-
-    /// Pop a stash entry (apply + drop).
-    pub fn git_stash_pop(&self, path: String, index: usize) -> Result<(), ApiError> {
-        self.git
-            .stash_pop(Path::new(&path), index)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Drop a stash entry without applying.
-    pub fn git_stash_drop(&self, path: String, index: usize) -> Result<(), ApiError> {
-        self.git
-            .stash_drop(Path::new(&path), index)
-            .map_err(ApiError::Internal)
     }
 
     /// Return file content at a specific git revision.
@@ -425,14 +411,12 @@ impl Host {
 
     /// Initialize a new git repository in the given directory.
     pub fn git_init(&self, path: String) -> Result<(), ApiError> {
-        self.git.init(Path::new(&path)).map_err(ApiError::Internal)
+        self.git.init(Path::new(&path))
     }
 
     /// Clone a repository into the given directory (in-place, no subfolder).
     pub fn git_clone_in_place(&self, path: String, url: String) -> Result<(), ApiError> {
-        self.git
-            .clone_in_place(Path::new(&path), &url)
-            .map_err(ApiError::Internal)
+        self.git.clone_in_place(Path::new(&path), &url)
     }
 
     // BRANCH OPERATIONS //
@@ -442,11 +426,6 @@ impl Host {
         self.git
             .list_branches(Path::new(&path))
             .map_err(ApiError::Internal)
-    }
-
-    /// Current paused-state of the working tree (idle / rebasing / merging).
-    pub fn git_branch_status(&self, path: String) -> Result<BranchOpState, ApiError> {
-        Ok(self.git.branch_status(Path::new(&path)))
     }
 
     /// File metadata for `branch...HEAD` compare.
@@ -459,179 +438,109 @@ impl Host {
         Ok(self.git.diff_branch_against_head(Path::new(&path), &branch))
     }
 
-    /// Switch HEAD to an existing branch.
-    pub fn git_checkout_branch(&self, path: String, name: String) -> Result<(), ApiError> {
-        validated_ref_name(&name)?;
+    /// Switch branches or update their refs and tracking configuration.
+    pub fn git_branch(&self, path: String, op: GitBranchOp) -> Result<(), ApiError> {
         let repo = Path::new(&path);
-        if self.git.is_worktree_dirty(repo) {
+        match &op {
+            GitBranchOp::Checkout { name } => validated_ref_name(name)?,
+            GitBranchOp::CheckoutDetached { rev } => {
+                validated_git_ref(rev).or_else(|_| validated_ref_name(rev))?;
+            }
+            GitBranchOp::CheckoutRemote {
+                remote_name,
+                local_name,
+            } => {
+                validated_ref_name(remote_name)?;
+                validated_ref_name(local_name)?;
+            }
+            _ => {}
+        }
+        if matches!(
+            &op,
+            GitBranchOp::Checkout { .. }
+                | GitBranchOp::CheckoutDetached { .. }
+                | GitBranchOp::CheckoutRemote { .. }
+        ) && self.git.is_worktree_dirty(repo)
+        {
             return Err(ApiError::DirtyWorktree {
                 message: "Stash or commit changes before switching branches".to_string(),
             });
         }
-        self.git
-            .checkout_branch(repo, &name)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Create a tracking local branch from a remote ref and switch to it.
-    pub fn git_checkout_remote_as_local(
-        &self,
-        path: String,
-        remote_name: String,
-        local_name: String,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&remote_name)?;
-        validated_ref_name(&local_name)?;
-        let repo = Path::new(&path);
-        if self.git.is_worktree_dirty(repo) {
-            return Err(ApiError::DirtyWorktree {
-                message: "Stash or commit changes before switching branches".to_string(),
-            });
+        match op {
+            GitBranchOp::Checkout { name } => self.git.checkout_branch(repo, &name),
+            GitBranchOp::CheckoutDetached { rev } => self.git.checkout_detached(repo, &rev),
+            GitBranchOp::CheckoutRemote {
+                remote_name,
+                local_name,
+            } => self
+                .git
+                .checkout_remote_as_local(repo, &remote_name, &local_name),
+            GitBranchOp::Create {
+                name,
+                base,
+                checkout,
+            } => {
+                validated_ref_name(&name)?;
+                validated_ref_name(&base)?;
+                self.git.create_branch(repo, &name, &base, checkout)
+            }
+            GitBranchOp::Rename { old_name, new_name } => {
+                validated_ref_name(&old_name)?;
+                validated_ref_name(&new_name)?;
+                self.git.rename_branch(repo, &old_name, &new_name)
+            }
+            GitBranchOp::Delete { name, force } => {
+                validated_ref_name(&name)?;
+                self.git.delete_branch(repo, &name, force)
+            }
+            GitBranchOp::DeleteRemote { remote, name } => {
+                validated_ref_name(&remote)?;
+                validated_ref_name(&name)?;
+                self.git.delete_remote_branch(repo, &remote, &name)
+            }
+            GitBranchOp::SetUpstream { branch, upstream } => {
+                validated_ref_name(&branch)?;
+                validated_upstream_ref(&upstream)?;
+                self.git.set_upstream(repo, &branch, &upstream)
+            }
+            GitBranchOp::UnsetUpstream { branch } => {
+                validated_ref_name(&branch)?;
+                self.git.unset_upstream(repo, &branch)
+            }
+            GitBranchOp::FastForward { name } => {
+                validated_ref_name(&name)?;
+                self.git.fast_forward(repo, &name)
+            }
+            GitBranchOp::Merge { source, no_ff } => {
+                validated_ref_name(&source)?;
+                self.git.merge_into_current(repo, &source, no_ff)
+            }
+            GitBranchOp::Rebase { target } => {
+                validated_ref_name(&target)?;
+                self.git.rebase_current_onto(repo, &target)
+            }
         }
-        self.git
-            .checkout_remote_as_local(repo, &remote_name, &local_name)
-            .map_err(ApiError::Internal)
     }
 
-    /// Create a branch off `base`, optionally switching to it after.
-    pub fn git_create_branch(
+    /// Continue, skip, or abort a paused Git operation.
+    pub fn git_sequencer(
         &self,
         path: String,
-        name: String,
-        base: String,
-        checkout: bool,
+        operation: GitOperationKind,
+        action: GitSequencerAction,
     ) -> Result<(), ApiError> {
-        validated_ref_name(&name)?;
-        validated_ref_name(&base)?;
-        self.git
-            .create_branch(Path::new(&path), &name, &base, checkout)
-            .map_err(ApiError::Internal)
+        self.git.sequencer(Path::new(&path), operation, &action)
     }
 
-    /// Rename a local branch.
-    pub fn git_rename_branch(
-        &self,
-        path: String,
-        old_name: String,
-        new_name: String,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&old_name)?;
-        validated_ref_name(&new_name)?;
-        self.git
-            .rename_branch(Path::new(&path), &old_name, &new_name)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Delete a local branch. Without `force`, refuses unmerged branches
-    /// with a typed error so the dialog can offer the force-delete fallback.
-    pub fn git_delete_branch(
-        &self,
-        path: String,
-        name: String,
-        force: bool,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&name)?;
-        self.git
-            .delete_branch(Path::new(&path), &name, force)
-            .map_err(|err| match err {
-                DeleteBranchError::BranchUnmerged { branch, message } => {
-                    ApiError::BranchUnmerged { branch, message }
-                }
-                DeleteBranchError::Git(message) => ApiError::Internal(message),
-            })
-    }
-
-    /// Delete a branch on a remote (`git push <remote> --delete <name>`).
-    pub fn git_delete_remote_branch(
-        &self,
-        path: String,
-        remote: String,
-        name: String,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&remote)?;
-        validated_ref_name(&name)?;
-        self.git
-            .delete_remote_branch(Path::new(&path), &remote, &name)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Set or change a branch's upstream tracking ref.
-    pub fn git_set_upstream(
-        &self,
-        path: String,
-        branch: String,
-        upstream: String,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&branch)?;
-        validated_upstream_ref(&upstream)?;
-        self.git
-            .set_upstream(Path::new(&path), &branch, &upstream)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Fast-forward a branch to its upstream without checking it out.
-    /// Falls back to `git pull --ff-only` for the current branch.
-    pub fn git_fast_forward_branch(&self, path: String, name: String) -> Result<(), ApiError> {
-        validated_ref_name(&name)?;
-        self.git
-            .fast_forward(Path::new(&path), &name)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Merge `source` into the current branch.
-    pub fn git_merge_into_current(
-        &self,
-        path: String,
-        source: String,
-        no_ff: bool,
-    ) -> Result<(), ApiError> {
-        validated_ref_name(&source)?;
-        self.git
-            .merge_into_current(Path::new(&path), &source, no_ff)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Rebase the current branch onto `target`.
-    pub fn git_rebase_current_onto(&self, path: String, target: String) -> Result<(), ApiError> {
-        validated_ref_name(&target)?;
-        self.git
-            .rebase_current_onto(Path::new(&path), &target)
-            .map_err(ApiError::Internal)
-    }
-
-    /// Continue a paused rebase after the user resolved conflicts.
-    pub fn git_rebase_continue(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .rebase_continue(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Conclude a paused merge with git's prepared message.
-    pub fn git_merge_continue(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .merge_continue(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Skip the current commit during a paused rebase.
-    pub fn git_rebase_skip(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .rebase_skip(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Abort an in-flight rebase.
-    pub fn git_rebase_abort(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .rebase_abort(Path::new(&path))
-            .map_err(ApiError::Internal)
-    }
-
-    /// Abort an in-flight merge.
-    pub fn git_merge_abort(&self, path: String) -> Result<(), ApiError> {
-        self.git
-            .merge_abort(Path::new(&path))
-            .map_err(ApiError::Internal)
+    /// Resolve conflicted paths by taking a side or deleting them.
+    pub fn git_conflicts(&self, path: String, op: GitConflictsOp) -> Result<(), ApiError> {
+        let repo = Path::new(&path);
+        match op {
+            GitConflictsOp::TakeSide { files, side } => {
+                self.git.take_conflict_side(repo, &files, side)
+            }
+            GitConflictsOp::Delete { files } => self.git.delete_conflicted(repo, &files),
+        }
     }
 }
 

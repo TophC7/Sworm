@@ -36,7 +36,7 @@
     loading = true
     error = null
     try {
-      files = await backend.git.branch.diffAgainstHead(folderPath, branchName)
+      files = await backend.git.diffBranchAgainstHead(folderPath, branchName)
     } catch (e) {
       error = getErrorMessage(e)
       files = []

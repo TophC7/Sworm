@@ -21,8 +21,17 @@
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
-  import { runGitAction } from '$lib/features/git/state.svelte'
-  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getGitSummary } from '$lib/features/git/state.svelte'
+  import {
+    abortOperation,
+    continueOperation,
+    fastForwardBranch,
+    fetchFolder,
+    pullFolder,
+    pushFolder,
+    rebaseOnto,
+    skipOperation
+  } from '$lib/features/git/actions.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { groupBySlash, type BranchTreeNode } from '$lib/utils/git/branchHierarchy'
   import { basename } from '$lib/utils/paths'
@@ -73,6 +82,7 @@
 
   let entry = $derived(branches.byFolder.get(folderPath))
   let prefs = $derived(entry?.prefs)
+  const operation = $derived(getGitSummary(folderPath)?.operation ?? null)
 
   let search = $state('')
   let searchInputEl = $state<HTMLInputElement | null>(null)
@@ -100,9 +110,6 @@
 
   let compareOpen = $state(false)
   let compareTarget = $state<string>('')
-
-  // Inline conflict notice; cleared when the user dismisses it.
-  let conflictNotice = $state<string | null>(null)
 
   type BranchHistoryEntry = {
     commits: GraphCommit[]
@@ -234,7 +241,7 @@
 
     try {
       const path = folderPath
-      const commits = await backend.git.branch.commits(path, branch.name, requestLimit)
+      const commits = await backend.git.getBranchCommits(path, branch.name, requestLimit)
       if (path !== folderPath) return
       historyByBranch.set(branch.name, {
         commits: commits.slice(0, limit),
@@ -263,16 +270,6 @@
     const existing = historyByBranch.get(branch.name)
     if (!existing) void loadBranchHistory(branch, BRANCH_HISTORY_PAGE_SIZE)
   }
-
-  // OP STATE POLLING //
-
-  $effect(() => {
-    if (!entry) return
-    if (entry.opState !== 'idle') {
-      branches.pollOpState(folderPath)
-    }
-    return () => branches.stopOpStatePolling(folderPath)
-  })
 
   let lastFocusRequest = $state(0)
   $effect(() => {
@@ -323,14 +320,7 @@
     })
     if (!proceed) return
 
-    try {
-      await runGitAction(folderPath, (path) => backend.git.branch.rebaseOnto(path, target))
-    } catch (e) {
-      const msg = getErrorMessage(e)
-      // Conflicts leave the repo paused; the refresh already showed that state.
-      if (msg.toLowerCase().includes('conflict')) return
-      notify.error('Rebase failed', msg)
-    }
+    await rebaseOnto(folderPath, target)
   }
 
   function openCompareModal(branch: BranchSummary) {
@@ -353,59 +343,16 @@
   async function runSmartAction(branch: BranchSummary) {
     const action = smartAction(branch)
     if (action.kind === 'disabled') return
-    try {
-      await runGitAction(folderPath, async (path) => {
-        if (action.kind === 'push' && branch.isCurrent) {
-          await backend.git.push(path)
-        } else if (action.kind === 'pull' && branch.isCurrent) {
-          await backend.git.pull(path)
-        } else if (action.kind === 'pull') {
-          // Non-current branch: fast-forward against its upstream.
-          await backend.git.branch.fastForward(path, branch.name)
-        } else if (action.kind === 'fetch') {
-          await backend.git.fetch(path)
-        }
-        // Push for a non-current branch isn't a v1 case; refuse.
-      })
-    } catch (e) {
-      console.error('Smart action failed:', e)
+    if (action.kind === 'push') {
+      await pushFolder(folderPath, branch.name)
+    } else if (action.kind === 'pull' && branch.isCurrent) {
+      await pullFolder(folderPath)
+    } else if (action.kind === 'pull') {
+      await fastForwardBranch(folderPath, branch.name)
+    } else if (action.kind === 'fetch') {
+      await fetchFolder(folderPath)
     }
   }
-
-  // Continue / Skip / Abort handlers for the paused-state status row.
-
-  async function continueOp() {
-    try {
-      await runGitAction(folderPath, async (path) => {
-        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseContinue(path)
-        else if (entry?.opState === 'merging') await backend.git.branch.mergeContinue(path)
-      })
-    } catch (e) {
-      console.error('Continue failed:', e)
-    }
-  }
-
-  async function skipOp() {
-    try {
-      await runGitAction(folderPath, async (path) => {
-        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseSkip(path)
-      })
-    } catch (e) {
-      console.error('Skip failed:', e)
-    }
-  }
-
-  async function abortOp() {
-    try {
-      await runGitAction(folderPath, async (path) => {
-        if (entry?.opState === 'rebasing') await backend.git.branch.rebaseAbort(path)
-        else if (entry?.opState === 'merging') await backend.git.branch.mergeAbort(path)
-      })
-    } catch (e) {
-      console.error('Abort failed:', e)
-    }
-  }
-
 
   async function copyName(name: string) {
     try {
@@ -418,14 +365,6 @@
   function switchToBranch(branch: BranchSummary) {
     if (branch.kind === 'remote') void checkoutRemote(branch)
     else void attemptCheckout(branch.name)
-  }
-
-  async function fastForwardFromMenu(name: string) {
-    try {
-      await runGitAction(folderPath, (path) => backend.git.branch.fastForward(path, name))
-    } catch (e) {
-      console.error('Fast-forward failed:', e)
-    }
   }
 
   async function checkoutRemote(branch: BranchSummary) {
@@ -463,46 +402,45 @@
       <DropdownMenu.Trigger class={iconButtonVariants()} aria-label="Branch actions">
         <MoreHorizontalIcon size={13} />
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content class="min-w-[210px] text-sm" align="end">
-        <DropdownMenu.Item class="flex items-center gap-2" onclick={() => openCreateDialog()}>
-          <Plus size={14} class="shrink-0 text-muted" />
+      <DropdownMenu.Content class="min-w-[210px]" align="end">
+        <DropdownMenu.Item onclick={() => openCreateDialog()}>
+          <Plus size={14} />
           <span>New branch…</span>
         </DropdownMenu.Item>
         <DropdownMenu.Item
-          class="flex items-center gap-2"
           disabled={entry?.fetching === true}
           onclick={() => void runFetch()}
         >
-          <RefreshCwIcon size={14} class="shrink-0 text-muted" />
+          <RefreshCwIcon size={14} />
           <span>Fetch from remotes</span>
         </DropdownMenu.Item>
 
         <DropdownMenu.Separator />
 
-        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleLayout}>
+        <DropdownMenu.Item onclick={toggleLayout}>
           {#if prefs?.layout === 'tree'}
-            <ListIcon size={14} class="shrink-0 text-muted" />
+            <ListIcon size={14} />
             <span>Switch to flat list</span>
           {:else}
-            <ListTreeIcon size={14} class="shrink-0 text-muted" />
+            <ListTreeIcon size={14} />
             <span>Switch to tree</span>
           {/if}
         </DropdownMenu.Item>
-        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleSort}>
+        <DropdownMenu.Item onclick={toggleSort}>
           {#if prefs?.sort === 'alpha'}
-            <ArrowDown01Icon size={14} class="shrink-0 text-muted" />
+            <ArrowDown01Icon size={14} />
             <span>Sort by date</span>
           {:else}
-            <ArrowDownAZIcon size={14} class="shrink-0 text-muted" />
+            <ArrowDownAZIcon size={14} />
             <span>Sort alphabetically</span>
           {/if}
         </DropdownMenu.Item>
-        <DropdownMenu.Item class="flex items-center gap-2" onclick={toggleShowRemote}>
+        <DropdownMenu.Item onclick={toggleShowRemote}>
           {#if prefs?.showRemote}
-            <CloudOffIcon size={14} class="shrink-0 text-muted" />
+            <CloudOffIcon size={14} />
             <span>Hide remote branches</span>
           {:else}
-            <CloudIcon size={14} class="shrink-0 text-muted" />
+            <CloudIcon size={14} />
             <span>Show remote branches</span>
           {/if}
         </DropdownMenu.Item>
@@ -511,38 +449,26 @@
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto">
-    {#if entry && entry.opState !== 'idle'}
+    {#if operation}
       <Alert.Root variant="warning" layout="banner">
         <AlertTriangle size={13} class="shrink-0" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="flex-1">
-              {entry.opState === 'rebasing' ? 'Rebasing in progress.' : 'Merging in progress.'}
+              {{
+                merge: 'Merging in progress.',
+                rebase: 'Rebasing in progress.',
+                cherry_pick: 'Cherry-picking in progress.',
+                revert: 'Reverting in progress.'
+              }[operation.kind]}
             </span>
-            <Button size="xs" variant="ghost" onclick={() => void continueOp()}>Continue</Button>
-            {#if entry.opState === 'rebasing'}
-              <Button size="xs" variant="ghost" onclick={() => void skipOp()}>Skip</Button>
+            <Button size="xs" variant="ghost" onclick={() => void continueOperation(folderPath)}>Continue</Button>
+            {#if operation.kind !== 'merge'}
+              <Button size="xs" variant="ghost" onclick={() => void skipOperation(folderPath)}>Skip</Button>
             {/if}
-            <Button size="xs" variant="destructive" onclick={() => void abortOp()}>Abort</Button>
+            <Button size="xs" variant="destructive" onclick={() => void abortOperation(folderPath)}>Abort</Button>
           </div>
         </div>
-      </Alert.Root>
-    {/if}
-
-    {#if conflictNotice}
-      <Alert.Root variant="danger" layout="banner">
-        <AlertTriangle size={13} class="mt-0.5 shrink-0" />
-        <div class="flex-1">
-          <p>Merge produced conflicts. Resolve them in the file tree above.</p>
-          <p class="mt-0.5 text-2xs text-muted">{conflictNotice}</p>
-        </div>
-        <button
-          type="button"
-          class="text-muted hover:text-fg focus-visible:shadow-focus-ring focus-visible:outline-none"
-          onclick={() => (conflictNotice = null)}
-        >
-          Dismiss
-        </button>
       </Alert.Root>
     {/if}
 
@@ -785,30 +711,30 @@
     <ContextMenu.Content>
       {#if !branch.isCurrent}
         <ContextMenu.Item onclick={() => switchToBranch(branch)}>
-          <Check size={14} class="shrink-0 text-muted" />
+          <Check size={14} />
           <span>Switch to branch</span>
         </ContextMenu.Item>
       {/if}
       <ContextMenu.Item onclick={() => openCompareModal(branch)}>
-        <GitCompareIcon size={14} class="shrink-0 text-muted" />
+        <GitCompareIcon size={14} />
         <span>Compare with HEAD</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator />
 
       <ContextMenu.Item onclick={() => openCreateDialog(branch.name)}>
-        <Plus size={14} class="shrink-0 text-muted" />
+        <Plus size={14} />
         <span>Create branch from here…</span>
       </ContextMenu.Item>
       {#if branch.kind === 'local' && !branch.isCurrent}
         <ContextMenu.Item onclick={() => openRenameDialog(branch)}>
-          <PencilIcon size={14} class="shrink-0 text-muted" />
+          <PencilIcon size={14} />
           <span>Rename…</span>
         </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent}
         <ContextMenu.Item destructive onclick={() => openDeleteDialog(branch)}>
-          <Trash2 size={14} class="shrink-0" />
+          <Trash2 size={14} />
           <span>Delete…</span>
         </ContextMenu.Item>
       {/if}
@@ -816,11 +742,11 @@
       {#if !branch.isCurrent}
         <ContextMenu.Separator />
         <ContextMenu.Item onclick={() => openMergeDialog(branch)}>
-          <GitMergeIcon size={14} class="shrink-0 text-muted" />
+          <GitMergeIcon size={14} />
           <span>Merge into current</span>
         </ContextMenu.Item>
         <ContextMenu.Item onclick={() => void openRebaseDialog(branch)}>
-          <GitPullRequestIcon size={14} class="shrink-0 text-muted" />
+          <GitPullRequestIcon size={14} />
           <span>Rebase current onto this</span>
         </ContextMenu.Item>
       {/if}
@@ -829,18 +755,18 @@
 
       {#if branch.kind === 'local'}
         <ContextMenu.Item onclick={() => openUpstreamDialog(branch)}>
-          <CloudIcon size={14} class="shrink-0 text-muted" />
+          <CloudIcon size={14} />
           <span>Set upstream…</span>
         </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
-        <ContextMenu.Item onclick={() => void fastForwardFromMenu(branch.name)}>
-          <ArrowDownToLineIcon size={14} class="shrink-0 text-muted" />
+        <ContextMenu.Item onclick={() => void fastForwardBranch(folderPath, branch.name)}>
+          <ArrowDownToLineIcon size={14} />
           <span>Fast-forward</span>
         </ContextMenu.Item>
       {/if}
       <ContextMenu.Item onclick={() => void copyName(branch.name)}>
-        <ClipboardIcon size={14} class="shrink-0 text-muted" />
+        <ClipboardIcon size={14} />
         <span>Copy name</span>
       </ContextMenu.Item>
     </ContextMenu.Content>
@@ -887,7 +813,6 @@
     bind:open={mergeOpen}
     source={mergeSource}
     current={currentName}
-    onConflict={(message) => (conflictNotice = message)}
     {folderPath}
   />
 {/if}

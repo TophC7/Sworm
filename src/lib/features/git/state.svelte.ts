@@ -16,6 +16,7 @@
 
 import { backend } from '$lib/api/backend'
 import { withTrashFallback } from '$lib/features/files/trash'
+import { withConflictMarkerConfirm } from '$lib/features/git/errors'
 import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/summaryPatches'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
@@ -98,6 +99,11 @@ function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolea
     a.staged_count !== b.staged_count ||
     a.unstaged_count !== b.unstaged_count ||
     a.untracked_count !== b.untracked_count ||
+    a.upstream !== b.upstream ||
+    a.detached !== b.detached ||
+    a.message_template !== b.message_template ||
+    a.conflicts.length !== b.conflicts.length ||
+    JSON.stringify(a.operation) !== JSON.stringify(b.operation) ||
     a.changes.length !== b.changes.length
   ) {
     return false
@@ -113,6 +119,12 @@ function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolea
       left.additions !== right.additions ||
       left.deletions !== right.deletions
     ) {
+      return false
+    }
+  }
+
+  for (let i = 0; i < a.conflicts.length; i++) {
+    if (a.conflicts[i].path !== b.conflicts[i].path || a.conflicts[i].kind !== b.conflicts[i].kind) {
       return false
     }
   }
@@ -315,8 +327,9 @@ export function refreshGit(folderPath: string): Promise<void> {
 
 /**
  * Run a git mutation against a folder, then refresh. An `optimistic` patch is
- * applied to the summary before the backend call so the UI moves instantly;
- * the refresh afterwards (also on error) restores ground truth. Errors propagate.
+ * applied to the summary before the backend call so the UI moves instantly.
+ * Success resolves after the refresh; failures reject at once so follow-up
+ * prompts don't wait on it, while the refresh restores ground truth behind them.
  */
 export async function runGitAction<T>(
   folderPath: string,
@@ -328,56 +341,64 @@ export async function runGitAction<T>(
   const current = rt ? getGitSummary(folderPath) : null
   if (options.optimistic && current) gitStore.patch(folderPath, { summary: options.optimistic(current) })
   if (rt) rt.inFlightActions++
-  try {
-    return await fn(folderPath)
-  } finally {
-    if (rt && runtimes.get(folderPath) === rt) {
-      const remaining = --rt.inFlightActions
-      rt.epoch++
-      const pendingScope = remaining > 0 ? null : rt.pendingActionScope
-      if (pendingScope) rt.pendingActionScope = null
-      await refreshRepo(folderPath, scope === 'all' || pendingScope === 'all' ? 'all' : 'summary')
-    }
+  const settle = (): Promise<void> => {
+    if (!rt || runtimes.get(folderPath) !== rt) return Promise.resolve()
+    const remaining = --rt.inFlightActions
+    rt.epoch++
+    const pendingScope = remaining > 0 ? null : rt.pendingActionScope
+    if (pendingScope) rt.pendingActionScope = null
+    return refreshRepo(folderPath, scope === 'all' || pendingScope === 'all' ? 'all' : 'summary')
   }
+  let result: T
+  try {
+    result = await fn(folderPath)
+  } catch (error) {
+    void settle()
+    throw error
+  }
+  await settle()
+  return result
 }
 
-export function stageFiles(folderPath: string, files: string[]): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.stageFiles(path, files), {
+export function stageFiles(folderPath: string, files: string[]): Promise<boolean> {
+  return withConflictMarkerConfirm((allow) => runGitAction(folderPath, (path) =>
+    backend.git.paths(path, { kind: 'stage', files, allowConflictMarkers: allow }), {
     scope: 'summary',
     optimistic: (summary) => stageChanges(summary, files)
-  })
+  }))
 }
 
-export function stageAll(folderPath: string): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.stageAll(path), {
+export function stageAll(folderPath: string): Promise<boolean> {
+  return withConflictMarkerConfirm((allow) => runGitAction(folderPath, (path) =>
+    backend.git.paths(path, { kind: 'stage', files: null, allowConflictMarkers: allow }), {
     scope: 'summary',
     optimistic: (summary) => stageChanges(summary, null)
-  })
+  }))
 }
 
 export function unstageFiles(folderPath: string, files: string[]): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.unstageFiles(path, files), {
+  return runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'unstage', files }), {
     scope: 'summary',
     optimistic: (summary) => unstageChanges(summary, files)
   })
 }
 
 export function unstageAll(folderPath: string): Promise<void> {
-  return runGitAction(folderPath, (path) => backend.git.unstageAll(path), {
+  return runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'unstage', files: null }), {
     scope: 'summary',
     optimistic: (summary) => unstageChanges(summary, null)
   })
 }
 
 export function discardFiles(folderPath: string, files: string[]): Promise<boolean> {
-  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.discardFiles(path, files, permanent), {
+  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files, permanent }), {
     scope: 'summary',
     optimistic: (summary) => discardChanges(summary, files)
   }))
 }
 
 export function discardAll(folderPath: string): Promise<boolean> {
-  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.discardAll(path, permanent), {
+  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files: null, permanent }), {
     scope: 'summary',
     optimistic: (summary) => discardChanges(summary, null)
   }))

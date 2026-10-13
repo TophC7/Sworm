@@ -1,24 +1,20 @@
 <script lang="ts">
-  import { ContextMenu } from 'bits-ui'
+  import { ContextMenu as ContextMenuPrimitive } from 'bits-ui'
   import { cn } from '$lib/utils/cn'
-  import { menuContentClass } from '../menu-recipe'
-  import type { Snippet } from 'svelte'
+  import { menuContentVariants } from '../menu-recipe'
 
   let {
+    ref = $bindable(null),
     class: className,
-    children,
     ...rest
-  }: {
-    class?: string
-    children?: Snippet
-  } = $props()
+  }: ContextMenuPrimitive.ContentProps = $props()
 </script>
 
-<ContextMenu.Portal>
-  <ContextMenu.Content
-    class={cn(menuContentClass, className)}
+<ContextMenuPrimitive.Portal>
+  <ContextMenuPrimitive.Content
+    bind:ref
+    data-slot="context-menu-content"
+    class={cn(menuContentVariants({ source: 'context' }), className)}
     {...rest}
-  >
-    {#if children}{@render children()}{/if}
-  </ContextMenu.Content>
-</ContextMenu.Portal>
+  />
+</ContextMenuPrimitive.Portal>

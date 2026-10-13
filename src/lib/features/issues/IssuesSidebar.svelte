@@ -161,10 +161,6 @@
     })
   }
 
-  function preventClose(e?: Event) {
-    e?.preventDefault?.()
-  }
-
   function toggleEpic(id: string) {
     const next = new Set(collapsedEpics)
     if (next.has(id)) next.delete(id)
@@ -272,51 +268,43 @@
           >
             <Filter size={12} />
           </DropdownMenu.Trigger>
-          <DropdownMenu.Content class="min-w-[230px] text-sm" align="end">
-            <div class="px-3 py-1 text-xs font-medium tracking-wide text-muted uppercase">Status</div>
-            {#each STATUS_TOKENS as [token, label] (token)}
-              {@const on = hasToken(query, token)}
-              <DropdownMenu.Item
-                class="flex items-center gap-2"
-                onclick={(e) => {
-                  preventClose(e)
-                  flipToken(token)
-                }}
-              >
-                <Check size={14} class="shrink-0 {on ? 'text-accent' : 'text-transparent'}" />
-                <span class="font-mono text-2xs text-muted">{token}</span>
-                <span>{label}</span>
-              </DropdownMenu.Item>
-            {/each}
-
-            <DropdownMenu.Separator />
-
-            <div class="px-3 py-1 text-xs font-medium tracking-wide text-muted uppercase">Priority</div>
-            <div class="flex items-center gap-1 px-3 py-1">
-              {#each ALL_PRIORITIES as p (p)}
-                {@const token = `p:${p}`}
-                <ToggleChip class="w-7" pressed={hasToken(query, token)} onclick={() => flipToken(token)}>
-                  P{p}
-                </ToggleChip>
+          <DropdownMenu.Content class="min-w-[230px]" align="end">
+            <DropdownMenu.Group>
+              <DropdownMenu.GroupHeading>Status</DropdownMenu.GroupHeading>
+              {#each STATUS_TOKENS as [token, label] (token)}
+                <DropdownMenu.CheckboxItem
+                  checked={hasToken(query, token)}
+                  onCheckedChange={() => flipToken(token)}
+                  closeOnSelect={false}
+                >
+                  <span class="font-mono text-2xs text-muted">{token}</span>
+                  <span>{label}</span>
+                </DropdownMenu.CheckboxItem>
               {/each}
-            </div>
+            </DropdownMenu.Group>
 
             <DropdownMenu.Separator />
 
-            <div class="px-3 py-1 text-xs font-medium tracking-wide text-muted uppercase">Sort</div>
-            {#each SORT_MODES as mode (mode)}
-              {@const on = sortMode === mode}
-              <DropdownMenu.Item
-                class="flex items-center gap-2"
-                onclick={(e) => {
-                  preventClose(e)
-                  sortMode = mode
-                }}
-              >
-                <Check size={14} class="shrink-0 {on ? 'text-accent' : 'text-transparent'}" />
-                <span>{SORT_LABEL[mode]}</span>
-              </DropdownMenu.Item>
-            {/each}
+            <DropdownMenu.Group>
+              <DropdownMenu.GroupHeading>Priority</DropdownMenu.GroupHeading>
+              <div class="flex items-center gap-1 px-3 py-1">
+                {#each ALL_PRIORITIES as p (p)}
+                  {@const token = `p:${p}`}
+                  <ToggleChip class="w-7" pressed={hasToken(query, token)} onclick={() => flipToken(token)}>
+                    P{p}
+                  </ToggleChip>
+                {/each}
+              </div>
+            </DropdownMenu.Group>
+
+            <DropdownMenu.Separator />
+
+            <DropdownMenu.RadioGroup value={sortMode} onValueChange={(v) => (sortMode = v as SortMode)}>
+              <DropdownMenu.GroupHeading>Sort</DropdownMenu.GroupHeading>
+              {#each SORT_MODES as mode (mode)}
+                <DropdownMenu.RadioItem value={mode} closeOnSelect={false}>{SORT_LABEL[mode]}</DropdownMenu.RadioItem>
+              {/each}
+            </DropdownMenu.RadioGroup>
           </DropdownMenu.Content>
         </DropdownMenu.Root>
       </div>
@@ -446,27 +434,27 @@
       </ContextMenu.Trigger>
       <ContextMenu.Content>
         <ContextMenu.Item onclick={() => void openEpicTab(folderPath, epic.id, epic.title)}>
-          <Layers size={14} class="shrink-0 text-muted" />
+          <Layers size={14} />
           <span>Open epic</span>
         </ContextMenu.Item>
         <ContextMenu.Item onclick={() => openCapture('issue', epic.id)}>
-          <Plus size={14} class="shrink-0 text-muted" />
+          <Plus size={14} />
           <span>New issue in epic…</span>
         </ContextMenu.Item>
         <ContextMenu.Separator />
         {#if epic.status !== 'archived'}
           <ContextMenu.Item onclick={() => void run('Archive epic failed', () => updateEpic(folderPath, epic.id, { status: 'archived' }))}>
-            <ArchiveIcon size={14} class="shrink-0 text-muted" />
+            <ArchiveIcon size={14} />
             <span>Archive epic</span>
           </ContextMenu.Item>
         {/if}
         <ContextMenu.Item onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(epic.id))}>
-          <ClipboardIcon size={14} class="shrink-0 text-muted" />
+          <ClipboardIcon size={14} />
           <span>Copy id</span>
         </ContextMenu.Item>
         <ContextMenu.Separator />
         <ContextMenu.Item destructive onclick={() => void confirmDeleteEpic(epic)}>
-          <Trash2 size={14} class="shrink-0" />
+          <Trash2 size={14} />
           <span>Delete epic…</span>
         </ContextMenu.Item>
       </ContextMenu.Content>
@@ -522,11 +510,11 @@
     </ContextMenu.Trigger>
     <ContextMenu.Content>
       <ContextMenu.Item onclick={() => void openIssueTab(folderPath, issue.id, issue.title)}>
-        <CircleDot size={14} class="shrink-0 text-muted" />
+        <CircleDot size={14} />
         <span>Open issue</span>
       </ContextMenu.Item>
       <ContextMenu.Item onclick={() => void run('Claim failed', () => claimIssue(folderPath, issue.id))}>
-        <Check size={14} class="shrink-0 text-muted" />
+        <Check size={14} />
         <span>Claim</span>
       </ContextMenu.Item>
       <ContextMenu.Separator />
@@ -540,12 +528,12 @@
       {/each}
       <ContextMenu.Separator />
       <ContextMenu.Item onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(issue.id))}>
-        <ClipboardIcon size={14} class="shrink-0 text-muted" />
+        <ClipboardIcon size={14} />
         <span>Copy id</span>
       </ContextMenu.Item>
       <ContextMenu.Separator />
       <ContextMenu.Item destructive onclick={() => void confirmDeleteIssue(issue)}>
-        <Trash2 size={14} class="shrink-0" />
+        <Trash2 size={14} />
         <span>Delete issue…</span>
       </ContextMenu.Item>
     </ContextMenu.Content>

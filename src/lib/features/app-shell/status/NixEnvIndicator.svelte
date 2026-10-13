@@ -46,7 +46,7 @@
       {#if detection}
         {#each detection.detected_files as file}
           {@const isSelected = detection.selected?.nix_file === file}
-          <DropdownMenu.Item class="flex items-center justify-between gap-2" onclick={() => selectNixFile(folderPath, file)}>
+          <DropdownMenu.Item class="justify-between" onclick={() => selectNixFile(folderPath, file)}>
             <span class={isSelected ? 'text-accent' : ''}>{file}</span>
             {#if isSelected}
               <Check size={12} class="text-accent" />
@@ -73,10 +73,8 @@
           {/if}
 
           <DropdownMenu.Item destructive onclick={() => clearNix(folderPath)}>
-            <span class="flex items-center gap-1.5">
-              <X size={12} />
-              Disable Nix env
-            </span>
+            <X size={12} />
+            Disable Nix env
           </DropdownMenu.Item>
         {/if}
       {/if}

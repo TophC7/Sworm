@@ -25,7 +25,7 @@
         <DropdownMenu.Item onclick={entry.onSelect} disabled={entry.disabled}>
           <span>{entry.label}</span>
           {#if entry.shortcut}
-            <span class="ml-6 text-xs text-subtle">{entry.shortcut}</span>
+            <DropdownMenu.Shortcut>{entry.shortcut}</DropdownMenu.Shortcut>
           {/if}
         </DropdownMenu.Item>
       {/if}
