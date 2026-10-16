@@ -20,6 +20,7 @@ macro_rules! forward_command {
     (#[route($route:ident)] FolderRelease => $($row:tt)*) => {};
     (#[route($route:ident)] FilesWatchDirs => $($row:tt)*) => {};
     (#[route($route:ident)] GitWatch => $($row:tt)*) => {};
+    (#[route($route:ident)] GitWorktree => $($row:tt)*) => {};
     (#[route($route:ident)] SessionStart => $($row:tt)*) => {};
     (#[route($route:ident)] TasksStart => $($row:tt)*) => {};
     (#[route($route:ident)] LspStart => $($row:tt)*) => {};
@@ -105,6 +106,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         // Window commands
         window::window_create,
         window::window_ready,
+        window::window_open_target_finished,
         window::window_close,
         window::window_claim_file,
         window::window_release_file,
@@ -237,6 +239,9 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         git_branch,
         git_sequencer,
         git_conflicts,
+        git_worktree_list,
+        git_worktree_default_path,
+        git::git_worktree,
         // LSP commands
         lsp_list_servers,
         lsp_set_server_config,

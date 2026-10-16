@@ -148,7 +148,7 @@
         <MoreHorizontalIcon size={14} />
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="end" sideOffset={4}>
-        <DropdownMenu.Item destructive onclick={onClose}>Close Workbench…</DropdownMenu.Item>
+        <DropdownMenu.Item destructive onSelect={onClose}>Close Workbench…</DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Root>
   </div>

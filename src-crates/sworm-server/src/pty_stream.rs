@@ -159,9 +159,15 @@ pub(crate) async fn run(
 ) {
     let fanout = context.run_fanout(&run_id);
     let live = if let Some(fanout) = fanout {
+        let admission = Arc::clone(&host.admission).read_owned().await;
         let host = Arc::clone(&host);
         let id = run_id.clone();
-        match tokio::task::spawn_blocking(move || host.pty.cursor(&id)).await {
+        match tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            host.pty.cursor(&id)
+        })
+        .await
+        {
             Ok(end) => end.map(|end| (fanout, end)),
             Err(error) => {
                 write_stream_error(
@@ -179,24 +185,27 @@ pub(crate) async fn run(
     };
     let Some((fanout, end)) = live else {
         // The process is gone from memory; its transcript may still be on disk.
+        let admission = Arc::clone(&host.admission).read_owned().await;
         let archived_host = Arc::clone(&host);
         let archived_id = run_id.clone();
-        let archived =
-            match tokio::task::spawn_blocking(move || archived_host.completed_run(&archived_id))
-                .await
-            {
-                Ok(archived) => archived,
-                Err(error) => {
-                    write_stream_error(
-                        &mut send,
-                        WireError::Internal {
-                            message: format!("PTY archive task failed: {error}"),
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            };
+        let archived = match tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            archived_host.completed_run(&archived_id)
+        })
+        .await
+        {
+            Ok(archived) => archived,
+            Err(error) => {
+                write_stream_error(
+                    &mut send,
+                    WireError::Internal {
+                        message: format!("PTY archive task failed: {error}"),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
         match archived {
             Ok(Some(completed)) => {
                 if let Err(error) = replay_completed(&mut send, completed, cursor).await {
@@ -292,9 +301,13 @@ pub(crate) async fn run(
             let _ = writer.await;
         }
     }
+    let admission = Arc::clone(&host.admission).read_owned().await;
 
-    if let Err(error) =
-        tokio::task::spawn_blocking(move || fanout.finish(&host, &run_id, generation)).await
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        fanout.finish(&host, &run_id, generation)
+    })
+    .await
     {
         tracing::warn!(%error, "PTY lease detachment task failed");
     }
@@ -328,10 +341,12 @@ async fn write_loop(
                 format!("PTY stream queue full or closed: {error}")
             })
         });
+        let admission = Arc::clone(&host.admission).read_owned().await;
         let attaching = Arc::clone(&fanout);
         let attach_host = Arc::clone(&host);
         let attach_id = run_id.clone();
         let outcome = tokio::task::spawn_blocking(move || {
+            let _admission = admission;
             attaching.attach(&attach_host, &attach_id, generation, sink, cursor)
         })
         .await
@@ -363,9 +378,11 @@ async fn write_loop(
 
         match outcome {
             AttachOutcome::Attached => {
+                let admission = Arc::clone(&host.admission).read_owned().await;
                 let state_host = Arc::clone(&host);
                 let state_id = run_id.clone();
                 let gone = tokio::task::spawn_blocking(move || {
+                    let _admission = admission;
                     state_host.pty.run_state(&state_id).is_none()
                 })
                 .await
@@ -489,14 +506,17 @@ async fn read_input(
     let run_id: Arc<str> = Arc::from(run_id);
     loop {
         let input = recv.read_tagged::<PtyUp>().await?;
+        let admission = Arc::clone(&host.admission).read_owned().await;
         let host = Arc::clone(&host);
         let fanout = Arc::clone(&fanout);
         let id = Arc::clone(&run_id);
         // PTY I/O may block. Do not pin QUIC workers to this run's backend.
-        let result =
-            tokio::task::spawn_blocking(move || fanout.input(&host, &id, generation, input))
-                .await
-                .map_err(|error| format!("PTY input task failed: {error}"))?;
+        let result = tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            fanout.input(&host, &id, generation, input)
+        })
+        .await
+        .map_err(|error| format!("PTY input task failed: {error}"))?;
         if let Err(error) = result {
             tracing::debug!(%error, run_id = %run_id, "PTY input rejected");
         }

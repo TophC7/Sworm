@@ -6,11 +6,12 @@
   import { openCommitDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import GitStashList from '$lib/features/git/GitStashList.svelte'
   import GitBranches from '$lib/features/git/GitBranches.svelte'
+  import GitWorktrees from '$lib/features/git/GitWorktrees.svelte'
   import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
   import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitBranchPlusIcon, GitGraphIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
+  import { GitBranchPlusIcon, GitGraphIcon, ListTreeIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
   import { SvelteMap } from 'svelte/reactivity'
   import * as branches from '$lib/features/git/branches.svelte'
   import { getGitSidebarTab, setGitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
@@ -81,7 +82,6 @@
     expandedDetail = detail
   }
 
-
   /** Map branch names to their graph lane colors (first occurrence wins). */
   let branchColorMap = $derived.by(() => {
     const map = new Map<string, string>()
@@ -94,7 +94,6 @@
     }
     return map
   })
-
 </script>
 
 <div class="flex h-full flex-col text-base">
@@ -105,18 +104,16 @@
           ? 'Graph'
           : activeTab === 'stashes'
             ? `Stashes${stashCount > 0 ? ` (${stashCount})` : ''}`
-            : 'Branches'}
+            : activeTab === 'branches'
+              ? 'Branches'
+              : 'Worktrees'}
       </span>
       {#if activeTab === 'branches' && branchEntry?.fetching}
         <LoaderCircle size={11} class="animate-spin text-muted" aria-label="Fetching branches" />
       {/if}
     </span>
     <div class="flex items-center gap-0.5">
-      <IconButton
-        tooltip="Commit graph"
-        active={activeTab === 'graph'}
-        onclick={() => setGitSidebarTab('graph')}
-      >
+      <IconButton tooltip="Commit graph" active={activeTab === 'graph'} onclick={() => setGitSidebarTab('graph')}>
         <GitGraphIcon size={13} />
       </IconButton>
       <IconButton
@@ -126,12 +123,11 @@
       >
         <PackageIcon size={13} />
       </IconButton>
-      <IconButton
-        tooltip="Branches"
-        active={activeTab === 'branches'}
-        onclick={() => setGitSidebarTab('branches')}
-      >
+      <IconButton tooltip="Branches" active={activeTab === 'branches'} onclick={() => setGitSidebarTab('branches')}>
         <GitBranchPlusIcon size={13} />
+      </IconButton>
+      <IconButton tooltip="Worktrees" active={activeTab === 'worktrees'} onclick={() => setGitSidebarTab('worktrees')}>
+        <ListTreeIcon size={13} />
       </IconButton>
     </div>
   </div>
@@ -166,7 +162,8 @@
                   {@const detail = expandedDetail}
                   <ChangedFilesTree
                     files={detail.files}
-                    open={(path) => openCommitDiff(folderPath, row.commit.hash, detail.short_hash, detail.message, path)}
+                    open={(path) =>
+                      openCommitDiff(folderPath, row.commit.hash, detail.short_hash, detail.message, path)}
                   />
                 {/if}
               </div>
@@ -177,7 +174,9 @@
     {/if}
   {:else if activeTab === 'stashes'}
     <GitStashList {folderPath} {branchColorMap} />
-  {:else}
+  {:else if activeTab === 'branches'}
     <GitBranches {folderPath} {branchColorMap} />
+  {:else}
+    <GitWorktrees {folderPath} />
   {/if}
 </div>

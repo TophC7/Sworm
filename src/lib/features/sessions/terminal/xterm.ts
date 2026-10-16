@@ -1,5 +1,8 @@
 import { MONO_FONT_FAMILY } from '$lib/fonts'
 import type { ITerminalOptions, Terminal } from '@xterm/xterm'
+import { getActiveTab } from '$lib/features/workbench/state.svelte'
+import type { TabId } from '$lib/features/workbench/model'
+import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
 
 export const TERMINAL_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
@@ -32,6 +35,12 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
     brightCyan: '#ffddd3',
     brightWhite: '#fffaf8'
   }
+}
+
+/** Recheck at the actual focus call: attach/start and animation frames can outlive modal/tab changes. */
+export function focusTerminal(term: Terminal | null, tabId: TabId): void {
+  if (isAnyModalOpen() || getActiveTab()?.id !== tabId) return
+  term?.focus()
 }
 
 export function writeAndWait(term: Terminal, data: string | Uint8Array): Promise<void> {

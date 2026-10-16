@@ -15,6 +15,8 @@
   import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
   import type { BranchSummary, GitSummary } from '$lib/types/backend'
   import { timeAgo } from '$lib/utils/date'
+  import { notify } from '$lib/features/notifications/state.svelte'
+  import { getErrorMessage } from '$lib/utils/client-error'
 
   let { folderPath }: { folderPath: string } = $props()
 
@@ -87,18 +89,21 @@
   let checkoutOpen = $state(false)
   let checkoutTarget = $state<string>('')
   let checkoutSummary = $state<GitSummary | null>(null)
+  let checkoutFolderPath = $state('')
 
   async function selectBranch(name: string) {
+    const initiatingFolder = folderPath
     open = false
     try {
-      await branches.safeCheckout(folderPath, name)
+      await branches.safeCheckout(initiatingFolder, name)
     } catch (e) {
       if (e instanceof branches.DirtyCheckoutError) {
         checkoutTarget = name
+        checkoutFolderPath = initiatingFolder
         checkoutSummary = e.summary
         checkoutOpen = true
       } else {
-        console.error('Checkout failed:', e)
+        notify.error('Checkout failed', getErrorMessage(e))
       }
     }
   }
@@ -132,10 +137,7 @@
           <div class="px-3 py-2 text-sm text-subtle">No matches.</div>
         {:else}
           {#each visible as branch (branch.name)}
-            <DropdownMenu.Item
-              class="py-1"
-              onclick={() => void selectBranch(branch.name)}
-            >
+            <DropdownMenu.Item class="py-1" onSelect={() => void selectBranch(branch.name)}>
               <GitBranchIcon size={12} />
               <span class="min-w-0 flex-1 truncate font-mono">{branch.name}</span>
               <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} twoColor />
@@ -146,7 +148,7 @@
       </div>
 
       <div class="border-t border-edge p-1">
-        <DropdownMenu.Item class="px-2 py-1 text-muted" onclick={viewAllBranches}>
+        <DropdownMenu.Item class="px-2 py-1 text-muted" onSelect={viewAllBranches}>
           View all branches…
         </DropdownMenu.Item>
       </div>
@@ -155,5 +157,10 @@
 {/if}
 
 {#if checkoutOpen}
-  <CheckoutDialog bind:open={checkoutOpen} branchName={checkoutTarget} summary={checkoutSummary} {folderPath} />
+  <CheckoutDialog
+    bind:open={checkoutOpen}
+    branchName={checkoutTarget}
+    summary={checkoutSummary}
+    folderPath={checkoutFolderPath}
+  />
 {/if}

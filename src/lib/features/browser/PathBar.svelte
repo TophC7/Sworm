@@ -9,11 +9,13 @@
   let {
     path,
     onnavigate,
-    onhosts
+    onhosts,
+    hostPinned = false
   }: {
     path: string
     onnavigate: (path: string) => void
     onhosts: () => void
+    hostPinned?: boolean
   } = $props()
 
   let remote = $derived(splitRemotePath(path))
@@ -57,7 +59,14 @@
   class="flex min-w-0 flex-1 scrollbar-none items-center gap-0.5 overflow-x-auto"
   {@attach keepEndVisible}
 >
-  <Button variant="ghost" size="xs" class="shrink-0" title="Choose Server" onclick={onhosts}>
+  <Button
+    variant="ghost"
+    size="xs"
+    class="shrink-0"
+    disabled={hostPinned}
+    title={hostPinned ? 'Selection stays on this server' : 'Choose Server'}
+    onclick={onhosts}
+  >
     {#if remote}<ServerIcon size={12} />{:else}<MonitorIcon size={12} />{/if}
     {remote?.server ?? localHostLabel()}
   </Button>

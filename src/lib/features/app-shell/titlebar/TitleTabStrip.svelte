@@ -143,8 +143,7 @@
     return (
       dragFrom >= 0 ||
       draggedGroup !== null ||
-      (platform.native !== null &&
-        (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)))
+      (platform.native !== null && (types.includes(DND_MIME.SWORM_TAB) || types.includes(DND_MIME.SWORM_WORKBENCH)))
     )
   }
 
@@ -257,13 +256,10 @@
   // TASK MENU //
   async function handleTaskStop(tab: Tab) {
     if (tab.kind !== 'task') return
-    await runNotifiedTask(
-      () => stopTaskProcess(tab),
-      {
-        loading: { title: 'Stopping task', description: tab.label },
-        error: { title: 'Stop task failed' }
-      }
-    )
+    await runNotifiedTask(() => stopTaskProcess(tab), {
+      loading: { title: 'Stopping task', description: tab.label },
+      error: { title: 'Stop task failed' }
+    })
   }
 
   async function handleTaskRestart(tab: Tab) {
@@ -347,13 +343,13 @@
 
     <ContextMenu.Content>
       {#if tab.kind === 'session'}
-        <ContextMenu.Item onclick={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
+        <ContextMenu.Item onSelect={() => void (sessionLive ? stopSession(tab) : restartSession(tab))}>
           {sessionLive ? 'Stop' : 'Restart'}
         </ContextMenu.Item>
       {/if}
       {#if tab.kind === 'task'}
         {@const taskRunning = tab.status === 'running' || tab.status === 'starting'}
-        <ContextMenu.Item onclick={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
+        <ContextMenu.Item onSelect={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
           {taskRunning ? 'Stop' : 'Restart'}
         </ContextMenu.Item>
       {/if}
@@ -361,7 +357,7 @@
         <!-- Lock only makes sense on content tabs where accidental input
                  can cause damage (session terminals, Monaco text tabs). New tab pages
                  and diff tabs skip this affordance entirely. -->
-        <ContextMenu.Item onclick={() => toggleTabLocked(tab.id)}>
+        <ContextMenu.Item onSelect={() => toggleTabLocked(tab.id)}>
           {tab.locked ? 'Unlock Tab' : 'Lock Tab'}
         </ContextMenu.Item>
         <ContextMenu.Separator />
@@ -369,7 +365,7 @@
       <ContextMenu.Item
         destructive
         disabled={tab.locked || transferring}
-        onclick={() => void closeTabWithChecks(tab.id)}
+        onSelect={() => void closeTabWithChecks(tab.id)}
       >
         Close
       </ContextMenu.Item>
@@ -387,17 +383,17 @@
 
 {#snippet groupActions(group: WorkbenchGroup, Item: typeof ContextMenu.Item, Separator: typeof ContextMenu.Separator)}
   {#if group.state === 'busy' || group.state === 'revoked'}
-    <Item onclick={() => void takeOverServerWorkbench(group.server)}>Take Back</Item>
+    <Item onSelect={() => void takeOverServerWorkbench(group.server)}>Take Back</Item>
   {:else if group.state === 'offline'}
-    <Item onclick={() => void retryGroup(group.server)}>Retry</Item>
+    <Item onSelect={() => void retryGroup(group.server)}>Retry</Item>
   {:else if group.state === 'active'}
-    <Item onclick={() => void moveServerWorkbenchToNewWindow(group.server)}>Move to New Window</Item>
+    <Item onSelect={() => void moveServerWorkbenchToNewWindow(group.server)}>Move to New Window</Item>
   {/if}
   {#if group.state !== 'active'}
-    <Item onclick={() => void removeServerWorkbenchFromWindow(group.server)}>Remove from Window</Item>
+    <Item onSelect={() => void removeServerWorkbenchFromWindow(group.server)}>Remove from Window</Item>
   {/if}
   <Separator />
-  <Item destructive onclick={() => void confirmCloseGroup(group.server)}>Close Workbench…</Item>
+  <Item destructive onSelect={() => void confirmCloseGroup(group.server)}>Close Workbench…</Item>
 {/snippet}
 
 <div
@@ -491,8 +487,5 @@
   </div>
 
   <!-- Keep trailing title-bar space both draggable and a tab drop target. -->
-  <div
-    data-tauri-drag-region={platform.native ? '' : undefined}
-    class="min-w-0 flex-1 self-stretch"
-  ></div>
+  <div data-tauri-drag-region={platform.native ? '' : undefined} class="min-w-0 flex-1 self-stretch"></div>
 </div>

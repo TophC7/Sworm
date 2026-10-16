@@ -3,7 +3,7 @@ import type { StreamHandle } from '$lib/api/transport'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
-import { TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
+import { focusTerminal, TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
 import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
@@ -126,7 +126,7 @@ export class TerminalSessionManager {
    */
   focus(): void {
     if (!this.inputEnabled) return
-    this.terminal?.focus()
+    focusTerminal(this.terminal, this.tabId)
   }
 
   registerErrorListener(listener: ErrorListener): () => void {

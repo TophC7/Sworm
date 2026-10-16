@@ -75,6 +75,7 @@ export interface NativePlatform {
   window: {
     create(target?: OpenTarget): Promise<string>
     ready(restoredTaskRuns: string[]): Promise<void>
+    openTargetFinished(target: OpenTarget): Promise<void>
     close(): Promise<void>
     onCloseRequested(handler: (event: { preventDefault(): void }) => void): Promise<Unsubscribe>
     onOpenTarget(handler: (target: OpenTarget) => void): Promise<Unsubscribe>

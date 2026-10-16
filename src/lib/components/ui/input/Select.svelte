@@ -21,11 +21,6 @@
   } = $props()
 </script>
 
-<select
-  data-slot="select"
-  bind:value
-  class={cn(inputVariants(), className)}
-  {...rest}
->
+<select data-slot="select" bind:value class={cn(inputVariants(), 'scheme-dark', className)} {...rest}>
   {#if children}{@render children()}{/if}
 </select>

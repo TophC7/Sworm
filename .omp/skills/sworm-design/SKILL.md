@@ -489,6 +489,8 @@ The beam is always `accent`. Session state is carried by the status dot inside t
 
 Close affordance: hidden until hover, `text-muted hover:bg-edge hover:text-bright`.
 
+`TabButton` keeps its native `auxclick` listener bound and checks the optional consumer callback inside it. Locking disables the callback, not the listener; conditionally removing a spread handler can leave a stale native listener calling `undefined`.
+
 ### 11.9 Dialog
 
 `Dialog.Content` = `bg-raised border border-edge rounded-2xl shadow-popover p-5`. Inside it, cards step to `bg-overlay`; inputs step to `bg-surface`. Dialog title uses `text-xl font-semibold text-bright`.
@@ -504,12 +506,12 @@ Content (`menuContentVariants`) = `z-50 min-w-[180px] overflow-x-hidden overflow
 Items = `relative flex cursor-pointer items-center gap-2 rounded-sm px-3 py-1.5 text-fg select-none outline-none focus-visible:shadow-focus-ring`. State is all data attributes, so consumers never pass styling state:
 
 - Highlight: `data-highlighted:bg-surface` (no `hover:`/`focus:`). Fills are guarded with `not-data-disabled:`.
-- Disabled (`data-disabled`): `cursor-not-allowed text-muted/50`, no fill. Item drops `onclick` while disabled.
+- Disabled (`data-disabled`): `cursor-not-allowed text-muted/50`, no fill. Bits rejects selection before running the consumer action.
 - Destructive (`destructive` prop → `data-destructive`): `text-danger`, highlight `bg-danger-bg`, icons `text-danger`.
 - `inset` prop → `data-inset:ps-8`, lining text up with checkbox/radio labels. Available on Item, SubTrigger and GroupHeading.
 - Icons: `[&_svg]:shrink-0`; SVGs without a `text-` class render `text-muted`. No automatic size: pass lucide `size={14}`.
 
-`onclick` on Item covers mouse and keyboard: bits turns Enter/Space into a DOM click.
+Use `onSelect` on Item for mouse and keyboard activation; `onclick` is not part of the wrapper contract. Bits checks disabled before the action and closes afterwards, so an action may mark itself busy or open a dialog without leaving its menu and body lock behind. `event.preventDefault()` on the selection event cancels closing; `closeOnSelect={false}` keeps the menu open intentionally.
 
 CheckboxItem / RadioItem = item recipe + `ps-8`, with the indicator (`Check`, or a `Circle` at `size-2 fill-current`) absolutely placed in the left padding. `closeOnSelect={false}` keeps the menu open.
 

@@ -280,11 +280,16 @@ export interface EffectiveLspServerSettings {
   settings: unknown | null
 }
 
+export interface GitSettings {
+  worktree_copy: Record<string, boolean>
+}
+
 export interface EffectiveSettings {
   window: WindowSettings
   terminal: TerminalSettings
   nix: NixSettings
   explorer: ExplorerSettings
+  git: GitSettings
   formatting: FormattingSettings
   providers: Record<string, ProviderSettings>
   lsp: { servers: Record<string, EffectiveLspServerSettings> }
@@ -536,9 +541,7 @@ export type GitRemoteOp =
   | { kind: 'sync'; rebase: boolean }
 
 export type GitStashScope =
-  | { kind: 'all'; includeUntracked: boolean }
-  | { kind: 'staged' }
-  | { kind: 'paths'; paths: string[] }
+  { kind: 'all'; includeUntracked: boolean } | { kind: 'staged' } | { kind: 'paths'; paths: string[] }
 
 export type GitStashOp =
   | { kind: 'push'; message: string | null; scope: GitStashScope }
@@ -547,6 +550,40 @@ export type GitStashOp =
   | { kind: 'drop'; index: number }
   | { kind: 'clear' }
   | { kind: 'branch'; index: number; name: string }
+
+export interface GitWorktree {
+  path: string
+  head: string | null
+  branch: string | null
+  isMain: boolean
+  isCurrent: boolean
+  bare: boolean
+  locked: string | null
+  prunable: string | null
+}
+
+export interface GitWorktreeList {
+  commonDir: string
+  mainPath: string | null
+  worktrees: GitWorktree[]
+}
+
+export type GitWorktreeCheckout =
+  | { kind: 'existing_branch'; name: string }
+  | { kind: 'new_branch'; name: string; base: string }
+  | { kind: 'detached'; rev: string }
+
+export type GitWorktreeOp =
+  | { kind: 'add'; destination: string; checkout: GitWorktreeCheckout }
+  | { kind: 'remove'; worktreePath: string; force: boolean }
+  | { kind: 'prune' }
+  | { kind: 'migrate'; worktreePath: string }
+
+export type GitWorktreeResult =
+  | { kind: 'added'; path: string; copyComplete: boolean; warnings: string[] }
+  | { kind: 'removed' }
+  | { kind: 'pruned' }
+  | { kind: 'migrated'; mainPath: string; recoveryStash: string | null }
 
 export type GitBranchOp =
   | { kind: 'checkout'; name: string }
@@ -562,16 +599,12 @@ export type GitBranchOp =
   | { kind: 'merge'; source: string; noFf: boolean }
   | { kind: 'rebase'; target: string }
 
-export type GitSequencerAction =
-  | { kind: 'continue'; message: string | null }
-  | { kind: 'skip' }
-  | { kind: 'abort' }
+export type GitSequencerAction = { kind: 'continue'; message: string | null } | { kind: 'skip' } | { kind: 'abort' }
 
 export type GitConflictSide = 'ours' | 'theirs'
 
 export type GitConflictsOp =
-  | { kind: 'take_side'; files: string[]; side: GitConflictSide }
-  | { kind: 'delete'; files: string[] }
+  { kind: 'take_side'; files: string[]; side: GitConflictSide } | { kind: 'delete'; files: string[] }
 
 /** Cheap git state for Home project cards; `changed` counts distinct paths. */
 export interface GitBrief {
@@ -672,6 +705,7 @@ export interface TaskDefinition {
   singleton?: boolean
   clearOnRerun?: boolean
   confirm?: boolean
+  runOn?: 'worktreeCreated'
 }
 
 export type IssueStatus = 'todo' | 'in_progress' | 'blocked' | 'completed' | 'wont_fix' | 'archived'
@@ -834,6 +868,7 @@ export interface BranchSummary {
   /** True for the currently checked-out HEAD (one local row at most). */
   isCurrent: boolean
   upstream: string | null
+  worktreePath: string | null
   ahead: number
   behind: number
   tip: BranchCommitRef

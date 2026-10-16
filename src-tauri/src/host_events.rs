@@ -66,7 +66,7 @@ pub fn desktop_event_sink(
                         json!({ "filePath": new_path.to_string_lossy() }),
                     );
                 }
-                windows.rename_claims_under(&old_path, &new_path);
+                windows.rename_claims_under(&old_path, &new_path)?;
                 app.emit(
                     "file-path-changed",
                     json!({

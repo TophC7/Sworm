@@ -25,8 +25,16 @@
   } from '$lib/icons/lucideExports'
   import { discardFiles, stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
   import {
-    commitFolder, discardAllFolder, fetchFolder, forcePushWithLease, pullFolder,
-    pushFolder, stageAllFolder, stashFolder, undoLastCommit, unstageAllFolder
+    commitFolder,
+    discardAllFolder,
+    fetchFolder,
+    forcePushWithLease,
+    pullFolder,
+    pushFolder,
+    stageAllFolder,
+    stashFolder,
+    undoLastCommit,
+    unstageAllFolder
   } from '$lib/features/git/actions.svelte'
   import { openHeadSnapshot, openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
@@ -62,7 +70,6 @@
 
   const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
-
 
   function getDirKey(section: string, path: string): string {
     return `${section}:${path}`
@@ -175,7 +182,6 @@
     if (!proceed) return
     await discardAllFolder(folderPath)
   }
-
 
   async function openActualFile(filePath: string) {
     try {
@@ -368,14 +374,16 @@
             <ChevronDown size={11} />
           </DropdownMenu.Trigger>
           <DropdownMenu.Content class="min-w-[180px]">
-            <DropdownMenu.Item onclick={() => pullFolder(folderPath)}>Pull</DropdownMenu.Item>
-            <DropdownMenu.Item onclick={() => pushFolder(folderPath)}>Push</DropdownMenu.Item>
-            <DropdownMenu.Item onclick={() => fetchFolder(folderPath)}>Fetch</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => pullFolder(folderPath)}>Pull</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => pushFolder(folderPath)}>Push</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => fetchFolder(folderPath)}>Fetch</DropdownMenu.Item>
             <DropdownMenu.Separator />
-            <DropdownMenu.Item onclick={() => forcePushWithLease(folderPath)}>Force Push (with lease)</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => forcePushWithLease(folderPath)}
+              >Force Push (with lease)</DropdownMenu.Item
+            >
             {#if hasCommits}
               <DropdownMenu.Separator />
-              <DropdownMenu.Item destructive onclick={handleUndoLastCommit}>Undo Last Commit</DropdownMenu.Item>
+              <DropdownMenu.Item destructive onSelect={handleUndoLastCommit}>Undo Last Commit</DropdownMenu.Item>
             {/if}
           </DropdownMenu.Content>
         </DropdownMenu.Root>
@@ -404,40 +412,33 @@
     {/if}
   {/snippet}
 
-  {#snippet fileGroup(label: string, tree: FileTreeNode<GitChange>[], keySuffix: string, isStaged: boolean, count: number)}
+  {#snippet fileGroup(
+    label: string,
+    tree: FileTreeNode<GitChange>[],
+    keySuffix: string,
+    isStaged: boolean,
+    count: number
+  )}
     {#if hasChanges}
       <div class="relative py-1" {@attach gitZoneAttachment(isStaged)}>
         {#snippet rowActions(node: FileTreeNode<GitChange>)}
           {@const target = makeTreeTarget(node)}
           {#if !isStaged}
-            <IconButton
-              tooltip="Revert changes"
-              tone="danger"
-              onclick={() => queueDiscard(target)}
-            >
+            <IconButton tooltip="Revert changes" tone="danger" onclick={() => queueDiscard(target)}>
               <Undo2Icon size={13} />
             </IconButton>
           {/if}
           {#if isStaged}
-            <IconButton
-              tooltip="Unstage changes"
-              onclick={() => void runTreeAction('unstage', target)}
-            >
+            <IconButton tooltip="Unstage changes" onclick={() => void runTreeAction('unstage', target)}>
               <MinusCircle size={13} />
             </IconButton>
           {:else}
-            <IconButton
-              tooltip="Stage changes"
-              onclick={() => void runTreeAction('stage', target)}
-            >
+            <IconButton tooltip="Stage changes" onclick={() => void runTreeAction('stage', target)}>
               <PlusCircle size={13} />
             </IconButton>
           {/if}
           {#if node.type === 'file' && canOpenActualFile(node)}
-            <IconButton
-              tooltip="Open actual file"
-              onclick={() => void openActualFile(target.path)}
-            >
+            <IconButton tooltip="Open actual file" onclick={() => void openActualFile(target.path)}>
               <SquareArrowOutUpRight size={13} />
             </IconButton>
           {/if}
@@ -460,7 +461,10 @@
                 </IconButton>
               {/if}
               {#if !isStaged}
-                <IconButton tooltip="Stash all" onclick={() => stashFolder(folderPath, { kind: 'all', includeUntracked: true })}>
+                <IconButton
+                  tooltip="Stash all"
+                  onclick={() => stashFolder(folderPath, { kind: 'all', includeUntracked: true })}
+                >
                   <PackageIcon size={13} />
                 </IconButton>
               {/if}
@@ -552,4 +556,3 @@
     {@render fileGroup('Changes', unstagedTree, 'unstaged', false, unstagedFiles.length)}
   </GitContextMenu>
 </div>
-

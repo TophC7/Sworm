@@ -37,20 +37,31 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      if (!branchName) return
-      await runGitAction(folderPath, async (path) => {
-        await backend.git.stash(path, {
-          kind: 'push',
-          message: `auto-stash before switch to ${branchName}`,
-          scope: { kind: 'all', includeUntracked: true }
+      const initiatingFolder = folderPath
+      const target = branchName
+      const remoteTarget = remoteBranchName
+      if (!target || (await branches.offerOccupiedWorktree(initiatingFolder, target))) return
+      try {
+        await runGitAction(initiatingFolder, async (path) => {
+          // Recheck immediately before stash: merely opening another checkout must never stash this one.
+          if (await branches.offerOccupiedWorktree(initiatingFolder, target)) return false
+          await backend.git.stash(path, {
+            kind: 'push',
+            message: `auto-stash before switch to ${target}`,
+            scope: { kind: 'all', includeUntracked: true }
+          })
+          if (remoteTarget) {
+            await backend.git.branch(path, { kind: 'checkout_remote', remoteName: remoteTarget, localName: target })
+          } else {
+            await backend.git.branch(path, { kind: 'checkout', name: target })
+          }
+          branches.markRecent(initiatingFolder, target)
+          return true
         })
-        if (remoteBranchName) {
-          await backend.git.branch(path, { kind: 'checkout_remote', remoteName: remoteBranchName, localName: branchName })
-        } else {
-          await backend.git.branch(path, { kind: 'checkout', name: branchName })
-        }
-      })
-      branches.markRecent(folderPath, branchName)
+      } catch (error) {
+        if (await branches.handleOccupiedWorktreeError(initiatingFolder, error)) return
+        throw error
+      }
     },
     onDone: () => {
       open = false

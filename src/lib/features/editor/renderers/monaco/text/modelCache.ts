@@ -328,9 +328,19 @@ export function discardUntitledTextModelBuffer(folderPath: string, tabId: string
 
 function transferEntry(tab: TextTabRef): TextModelEntry | undefined {
   if (tab.gitRef) return undefined
-  return entries.get(
-    tab.filePath != null ? fileKey(tab.folderPath, tab.filePath) : untitledKey(tab.folderPath, tab.id)
-  )
+  return entries.get(tab.filePath != null ? fileKey(tab.folderPath, tab.filePath) : untitledKey(tab.folderPath, tab.id))
+}
+
+export interface TextModelRevision {
+  model: object
+  version: number
+}
+
+/** Unsaved-close consent applies only to this exact model and edit generation. */
+export function textModelRevision(tab: TextTabRef): TextModelRevision | null {
+  const entry = transferEntry(tab)
+  if (!entry || entry.model.isDisposed()) return null
+  return { model: entry.model, version: entry.model.getVersionId() }
 }
 
 export function exportModelTransfer(tab: TextTabRef): TextModelTransferState | null {
@@ -358,9 +368,7 @@ export function importModelTransfer(state: TextModelTransferState, monaco: Monac
   if (cached) disposeEntry(cached)
 
   const uri =
-    state.filePath != null && state.folderPath != null
-      ? fileModelUri(monaco, state.folderPath, state.filePath)
-      : null
+    state.filePath != null && state.folderPath != null ? fileModelUri(monaco, state.folderPath, state.filePath) : null
   const model = uri ? monaco.editor.getModel(uri) : null
   // setValue clears Monaco's local undo/redo stack; cross-realm history is unsupported.
   const transferredModel = model ?? monaco.editor.createModel(state.value, state.language, uri ?? undefined)

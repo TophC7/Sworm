@@ -46,7 +46,7 @@
       {#if detection}
         {#each detection.detected_files as file}
           {@const isSelected = detection.selected?.nix_file === file}
-          <DropdownMenu.Item class="justify-between" onclick={() => selectNixFile(folderPath, file)}>
+          <DropdownMenu.Item class="justify-between" onSelect={() => selectNixFile(folderPath, file)}>
             <span class={isSelected ? 'text-accent' : ''}>{file}</span>
             {#if isSelected}
               <Check size={12} class="text-accent" />
@@ -57,14 +57,14 @@
         {#if detection.selected}
           <DropdownMenu.Separator />
           {#if detection.selected.status === 'ready'}
-            <DropdownMenu.Item onclick={() => evaluateNix(folderPath)}>Re-evaluate</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => evaluateNix(folderPath)}>Re-evaluate</DropdownMenu.Item>
           {:else if detection.selected.status === 'error' || detection.selected.status === 'timeout'}
             <div class="px-3 py-1.5 text-sm text-danger">
               {detection.selected.error_message ?? 'Evaluation failed'}
             </div>
-            <DropdownMenu.Item onclick={() => evaluateNix(folderPath)}>Retry</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => evaluateNix(folderPath)}>Retry</DropdownMenu.Item>
           {:else if detection.selected.status === 'pending'}
-            <DropdownMenu.Item onclick={() => evaluateNix(folderPath)}>Evaluate</DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => evaluateNix(folderPath)}>Evaluate</DropdownMenu.Item>
           {:else if detection.selected.status === 'evaluating' || evaluatingNow}
             <div class="flex items-center gap-1.5 px-3 py-1.5 text-sm text-muted">
               <LoaderCircle size={10} class="animate-spin" />
@@ -72,7 +72,7 @@
             </div>
           {/if}
 
-          <DropdownMenu.Item destructive onclick={() => clearNix(folderPath)}>
+          <DropdownMenu.Item destructive onSelect={() => clearNix(folderPath)}>
             <X size={12} />
             Disable Nix env
           </DropdownMenu.Item>

@@ -1,4 +1,7 @@
-use crate::stream::{StreamReader, StreamWriter};
+use crate::{
+    dispatch::FolderOperation,
+    stream::{StreamReader, StreamWriter},
+};
 use std::sync::Arc;
 use sworm_core::{errors::ApiError, Host};
 use sworm_protocol::rpc::{FileReadDown, WireError, MAX_FILE_CHUNK_BYTES};
@@ -6,6 +9,7 @@ use tokio::{sync::watch, task::JoinSet};
 
 pub(crate) async fn run(
     host: Arc<Host>,
+    folder: FolderOperation,
     project_path: String,
     file_path: String,
     version: String,
@@ -24,13 +28,23 @@ pub(crate) async fn run(
             }
         });
     }
-    produce(host, project_path, file_path, version, &mut send, shutdown).await;
+    produce(
+        host,
+        folder,
+        project_path,
+        file_path,
+        version,
+        &mut send,
+        shutdown,
+    )
+    .await;
     readers.abort_all();
     while readers.join_next().await.is_some() {}
 }
 
 async fn produce(
     host: Arc<Host>,
+    folder: FolderOperation,
     project_path: String,
     file_path: String,
     version: String,
@@ -44,6 +58,7 @@ async fn produce(
         result = async move {
             tokio::task::spawn_blocking(move || {
                 host.file_open_read_stream(project_path, file_path, version)
+                    .map(|reader| (reader, folder))
             })
             .await
             .map_err(ApiError::from)?
@@ -53,7 +68,7 @@ async fn produce(
         Err(error) => FileReadDown::Error {
             error: error.into(),
         },
-        Ok(mut reader) => {
+        Ok((mut reader, mut folder)) => {
             // One chunk buffer for the whole stream, moved into each blocking read and back.
             let mut chunk = Vec::with_capacity(MAX_FILE_CHUNK_BYTES);
             loop {
@@ -62,7 +77,7 @@ async fn produce(
                 let read = tokio::task::spawn_blocking(move || {
                     chunk.clear();
                     let count = reader.read_chunk(&mut chunk);
-                    (reader, chunk, count)
+                    (reader, folder, chunk, count)
                 });
                 let result = tokio::select! {
                     biased;
@@ -70,7 +85,7 @@ async fn produce(
                     _ = send.stopped() => return,
                     result = read => result,
                 };
-                let (next_reader, next_chunk, count) = match result {
+                let (next_reader, next_folder, next_chunk, count) = match result {
                     Ok(result) => result,
                     Err(error) => {
                         break FileReadDown::Error {
@@ -81,6 +96,7 @@ async fn produce(
                     }
                 };
                 reader = next_reader;
+                folder = next_folder;
                 chunk = next_chunk;
                 match count {
                     Err(error) => {

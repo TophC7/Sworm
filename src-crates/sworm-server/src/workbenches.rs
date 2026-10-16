@@ -349,12 +349,16 @@ async fn blocking<T: Send + 'static>(
     host: &Arc<Host>,
     work: impl FnOnce(&Host) -> Result<T, WireError> + Send + 'static,
 ) -> Result<T, WireError> {
+    let admission = Arc::clone(&host.admission).read_owned().await;
     let host = Arc::clone(host);
-    tokio::task::spawn_blocking(move || work(&host))
-        .await
-        .map_err(|error| WireError::Internal {
-            message: format!("workbench storage task failed: {error}"),
-        })?
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        work(&host)
+    })
+    .await
+    .map_err(|error| WireError::Internal {
+        message: format!("workbench storage task failed: {error}"),
+    })?
 }
 
 fn not_found(id: &str) -> WireError {

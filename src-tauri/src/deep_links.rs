@@ -115,7 +115,12 @@ fn open(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {
     for url in urls {
         match url.scheme() {
             "sworm" => match parse_workspace_link(url.as_str()) {
-                Some(path) => app.state::<AppState>().windows.route_open_path(app, &path),
+                Some(path) => {
+                    if let Err(error) = app.state::<AppState>().windows.route_open_path(app, &path)
+                    {
+                        tracing::error!(%path, %error, "Workspace open request refused");
+                    }
+                }
                 None => tracing::warn!("Ignoring malformed workspace link: {url}"),
             },
             "sworm-pair" => pairing.push(url.into()),

@@ -1,12 +1,13 @@
 use crate::events::EventSink;
 use crate::services::completed_runs::CompletedRun;
-use parking_lot::Mutex;
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use parking_lot::{Condvar, Mutex};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sworm_protocol::pty::PtyEvent;
 use sworm_protocol::rpc::PtyCursor;
 use tracing::{error, info, warn};
@@ -18,6 +19,172 @@ const RETAINED_OUTPUT_CAP: usize = 8 * 1024 * 1024;
 /// chunks off the front instead of memmoving the entire window every flush.
 const RETAINED_CHUNK_CAP: usize = 256 * 1024;
 static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+static NEXT_CHILD: AtomicU64 = AtomicU64::new(1);
+pub(crate) const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// OS wait acknowledgement, independent of transcript/event finalization.
+#[derive(Default)]
+pub(crate) struct ChildExit {
+    pub(crate) result: Mutex<Option<Result<Option<i32>, String>>>,
+    pub(crate) changed: Condvar,
+}
+
+impl ChildExit {
+    pub(crate) fn result(&self) -> Option<Result<Option<i32>, String>> {
+        self.result.lock().clone()
+    }
+
+    fn wait(&self) -> Result<Option<i32>, String> {
+        let mut result = self.result.lock();
+        while result.is_none() {
+            self.changed.wait(&mut result);
+        }
+        result.as_ref().expect("wait completed").clone()
+    }
+
+    fn pause_until(&self, deadline: Instant) {
+        let mut result = self.result.lock();
+        if result.is_none() {
+            self.changed.wait_until(&mut result, deadline);
+        } else {
+            drop(result);
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn signal_process(target: libc::pid_t, signal: libc::c_int) -> Result<(), String> {
+    if target == 0 || target == -1 || (target < 0 && -target == unsafe { libc::getpgrp() }) {
+        return Err("Refusing to signal Sworm's own process group".to_string());
+    }
+    if unsafe { libc::kill(target, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(format!("Failed to signal process {target}: {error}"))
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn groups_terminated(groups: &[libc::pid_t]) -> Result<bool, String> {
+    for &group in groups {
+        if group <= 1 || group == unsafe { libc::getpgrp() } {
+            return Err("Refusing to inspect Sworm's own process group".to_string());
+        }
+        if unsafe { libc::kill(-group, 0) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(format!("Failed to inspect process group {group}: {error}"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // An orphan zombie cannot access the checkout. The recorded leader
+            // still requires its separate successful OS wait acknowledgement.
+            for entry in std::fs::read_dir("/proc").map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_none_or(|name| name.parse::<u32>().is_err())
+                {
+                    continue;
+                }
+                let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+                    Ok(stat) => stat,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(format!("Failed to inspect process group: {error}")),
+                };
+                let (_, fields) = stat.rsplit_once(')').ok_or("Invalid /proc process stat")?;
+                let mut fields = fields.split_whitespace();
+                let state = fields.next().ok_or("Missing /proc process state")?;
+                let process_group = fields
+                    .nth(1)
+                    .ok_or("Missing /proc process group")?
+                    .parse::<libc::pid_t>()
+                    .map_err(|error| error.to_string())?;
+                if process_group == group && state != "Z" && state != "X" {
+                    return Ok(false);
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Signal only the recorded leader and known child groups, then prove reaping
+/// and group termination. A wait error is never an exit acknowledgement.
+#[cfg(unix)]
+pub(crate) fn stop_process(
+    pid: Option<u32>,
+    groups: &[libc::pid_t],
+    exit: &ChildExit,
+    deadline: Instant,
+    mut poll_exit: impl FnMut(),
+) -> Result<(), String> {
+    let pid = pid
+        .and_then(|pid| libc::pid_t::try_from(pid).ok())
+        .filter(|pid| *pid > 1)
+        .ok_or("Missing PTY/LSP child identity")?;
+    let deadline = deadline.min(Instant::now() + PROCESS_STOP_TIMEOUT);
+    poll_exit();
+    match exit.result() {
+        Some(Err(error)) => return Err(error),
+        Some(Ok(_)) if groups_terminated(groups)? => return Ok(()),
+        _ => {}
+    }
+    if Instant::now() >= deadline {
+        return Err(format!("Timed out waiting for child {pid} to exit"));
+    }
+    let graceful = deadline.min(Instant::now() + Duration::from_secs(1));
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        poll_exit();
+        {
+            // The reaper also takes this latch before try_wait/wait. Once it
+            // acknowledges exit, the numeric PID must never be signalled again.
+            let result = exit.result.lock();
+            if let Some(Err(error)) = result.as_ref() {
+                return Err(error.clone());
+            }
+            for &group in groups {
+                if group <= 1 {
+                    return Err(format!("Invalid child process group: {group}"));
+                }
+                signal_process(-group, signal)?;
+            }
+            if result.is_none() {
+                signal_process(pid, signal)?;
+            }
+        }
+        let phase_deadline = if signal == libc::SIGTERM {
+            graceful
+        } else {
+            deadline
+        };
+        loop {
+            poll_exit();
+            match exit.result() {
+                Some(Err(error)) => return Err(error),
+                Some(Ok(_)) if groups_terminated(groups)? => return Ok(()),
+                _ => {}
+            }
+            if Instant::now() >= phase_deadline {
+                break;
+            }
+            exit.pause_until(phase_deadline.min(Instant::now() + Duration::from_millis(20)));
+        }
+    }
+    Err(format!(
+        "Timed out waiting for child {pid} and its process groups to exit"
+    ))
+}
 
 /// Receives a finished retained transcript. Called outside PTY/stream locks.
 pub type CompletedRunSink = Arc<dyn Fn(CompletedRun) + Send + Sync>;
@@ -608,7 +775,103 @@ pub trait RunBackend: Send + Sync {
 struct LocalBackend {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    pid: Option<u32>,
+    exit: ChildExit,
+    stop: Mutex<()>,
+    #[cfg(unix)]
+    groups: Mutex<Vec<libc::pid_t>>,
+}
+
+impl LocalBackend {
+    fn poll_exit(&self) {
+        let mut result = self.exit.result.lock();
+        if result.is_some() {
+            return;
+        }
+        let mut child = self.child.lock();
+        let waited = match child.try_wait() {
+            Ok(None) => return,
+            Ok(Some(_)) => child.wait().map(|status| Some(status.exit_code() as i32)),
+            Err(error) => Err(error),
+        };
+        // Publish immediately after OS wait, never after reader finalization.
+        *result = Some(waited.map_err(|error| format!("Failed waiting for PTY child: {error}")));
+        self.exit.changed.notify_all();
+    }
+
+    fn stop(&self, deadline: Instant) -> Result<(), String> {
+        let _stop = self
+            .stop
+            .try_lock_until(deadline)
+            .ok_or("Timed out waiting for an already-stopping PTY child")?;
+        #[cfg(unix)]
+        {
+            let mut groups = self.groups.lock();
+            if groups.is_empty() && matches!(self.exit.result(), Some(Ok(_))) {
+                return Ok(());
+            }
+            if let Some(group) = self.master.lock().process_group_leader() {
+                if !groups.contains(&group) {
+                    groups.push(group);
+                }
+            }
+            let stopped =
+                stop_process(self.pid, &groups, &self.exit, deadline, || self.poll_exit());
+            if stopped.is_ok() {
+                groups.clear();
+            }
+            stopped
+        }
+        #[cfg(not(unix))]
+        {
+            if self.exit.result().is_none() {
+                self.child
+                    .lock()
+                    .kill()
+                    .map_err(|error| error.to_string())?;
+            }
+            while self.exit.result().is_none() && Instant::now() < deadline {
+                self.poll_exit();
+                self.exit
+                    .pause_until(deadline.min(Instant::now() + Duration::from_millis(20)));
+            }
+            self.exit
+                .result()
+                .ok_or("Timed out waiting for PTY child")?
+                .map(|_| ())
+        }
+    }
+
+    fn has_exited(&self) -> bool {
+        if !matches!(self.exit.result(), Some(Ok(_))) {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            let mut groups = self.groups.lock();
+            if !groups.is_empty() {
+                if let Some(group) = self.master.lock().process_group_leader() {
+                    if !groups.contains(&group) {
+                        groups.push(group);
+                    }
+                }
+            }
+            if groups_terminated(&groups).unwrap_or(false) {
+                groups.clear();
+                return true;
+            }
+            false
+        }
+        #[cfg(not(unix))]
+        true
+    }
+}
+
+struct PendingPtyExit {
+    run_id: String,
+    root: PathBuf,
+    backend: Arc<LocalBackend>,
 }
 
 impl RunBackend for LocalBackend {
@@ -635,10 +898,7 @@ impl RunBackend for LocalBackend {
     }
 
     fn kill(&self) -> Result<(), String> {
-        self.killer
-            .lock()
-            .kill()
-            .map_err(|error| format!("Failed to kill PTY child: {error}"))
+        self.stop(Instant::now() + PROCESS_STOP_TIMEOUT)
     }
 
     fn detaches_on_shutdown(&self) -> bool {
@@ -661,6 +921,7 @@ struct RunEntry {
 
 struct RunEntryState {
     owner_id: Option<String>,
+    project_root: Option<PathBuf>,
     run: RunSlot,
 }
 
@@ -674,6 +935,7 @@ struct LivePty {
     backend: Arc<dyn RunBackend>,
     shutdown: Arc<AtomicBool>,
     finalized: Arc<AtomicBool>,
+    local: Option<Arc<LocalBackend>>,
     event_sink: PtyEventSink,
 }
 
@@ -687,6 +949,7 @@ impl LivePty {
 /// PTY service managing live runs and completed retained transcripts.
 pub struct PtyService {
     sessions: Arc<Mutex<HashMap<String, Arc<RunEntry>>>>,
+    pending_exits: Arc<Mutex<HashMap<u64, Arc<PendingPtyExit>>>>,
     #[cfg(test)]
     startup_hook: Mutex<Option<Arc<dyn Fn(&str, Option<u32>) + Send + Sync>>>,
 }
@@ -717,6 +980,7 @@ impl PtyService {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            pending_exits: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             startup_hook: Mutex::new(None),
         }
@@ -730,6 +994,7 @@ impl PtyService {
         let entry = Arc::new(RunEntry {
             state: Mutex::new(RunEntryState {
                 owner_id,
+                project_root: None,
                 run: RunSlot::Reserved,
             }),
         });
@@ -819,6 +1084,7 @@ impl PtyService {
     pub fn spawn(
         &self,
         run_id: String,
+        project_root: &Path,
         cmd: &str,
         args: &[&str],
         cwd: Option<&str>,
@@ -830,7 +1096,11 @@ impl PtyService {
         on_exit: Option<Box<dyn FnOnce(&str, Option<i32>) + Send>>,
         completed: Option<CompletedRunSink>,
     ) -> Result<PtyEventSink, String> {
+        let project_root = project_root
+            .canonicalize()
+            .map_err(|error| format!("Failed to resolve PTY project folder: {error}"))?;
         let entry = self.reserve(&run_id, owner_id)?;
+        entry.state.lock().project_root = Some(project_root.clone());
         let reservation = StartupReservation {
             service: self,
             run_id: &run_id,
@@ -851,6 +1121,15 @@ impl PtyService {
                 pixel_height: 0,
             })
             .map_err(|error| format!("Failed to open PTY: {error}"))?;
+        // Resolve all fallible PTY handles before there is a child to orphan.
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| format!("Failed to get PTY writer: {error}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| format!("Failed to clone PTY reader: {error}"))?;
 
         let mut cmd_builder = CommandBuilder::new(cmd);
         for arg in args {
@@ -865,55 +1144,79 @@ impl PtyService {
             }
         }
 
-        let mut child = pair
+        let child = pair
             .slave
             .spawn_command(cmd_builder)
             .map_err(|error| format!("Failed to spawn process: {error}"))?;
         let pid = child.process_id();
-        let mut killer = child.clone_killer();
+        #[cfg(unix)]
+        let leader_group = pid.and_then(|pid| {
+            let group = unsafe { libc::getpgid(pid as libc::pid_t) };
+            (group > 1).then_some(group)
+        });
+        let backend = Arc::new(LocalBackend {
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
+            pid,
+            exit: ChildExit::default(),
+            stop: Mutex::new(()),
+            #[cfg(unix)]
+            groups: Mutex::new(leader_group.into_iter().collect()),
+        });
+        let child_id = NEXT_CHILD.fetch_add(1, Ordering::Relaxed);
+        self.pending_exits.lock().insert(
+            child_id,
+            Arc::new(PendingPtyExit {
+                run_id: run_id.clone(),
+                root: project_root,
+                backend: Arc::clone(&backend),
+            }),
+        );
         #[cfg(test)]
         let hook = self.startup_hook.lock().clone();
         #[cfg(test)]
         if let Some(hook) = hook {
             hook(&run_id, pid);
         }
-        let setup = (|| {
-            let writer = pair
-                .master
-                .take_writer()
-                .map_err(|error| format!("Failed to get PTY writer: {error}"))?;
-            let reader = pair
-                .master
-                .try_clone_reader()
-                .map_err(|error| format!("Failed to clone PTY reader: {error}"))?;
-            Ok::<_, String>((writer, reader))
-        })();
-        let (writer, mut reader) = match setup {
-            Ok(handles) => handles,
-            Err(error) => {
-                let _ = killer.kill();
-                let _ = child.wait();
-                return Err(error);
+        let reaper = Arc::clone(&backend);
+        let pending_exits = Arc::clone(&self.pending_exits);
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("pty-wait-{run_id}"))
+            .spawn(move || loop {
+                reaper.poll_exit();
+                match reaper.exit.result() {
+                    Some(Err(_)) => break,
+                    Some(Ok(_)) if reaper.has_exited() => {
+                        pending_exits.lock().remove(&child_id);
+                        break;
+                    }
+                    _ => {}
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            })
+        {
+            let stopped = backend.stop(Instant::now() + PROCESS_STOP_TIMEOUT);
+            if stopped.is_ok() {
+                self.pending_exits.lock().remove(&child_id);
             }
-        };
+            return Err(format!(
+                "Failed to spawn PTY wait thread: {error}; cleanup: {stopped:?}"
+            ));
+        }
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let finalized = Arc::new(AtomicBool::new(false));
         let event_sink = PtyEventSink::new(run_id.clone(), subscriber, RunRetention::Retained);
         let live = Arc::new(LivePty {
-            backend: Arc::new(LocalBackend {
-                master: Mutex::new(pair.master),
-                writer: Mutex::new(writer),
-                killer: Mutex::new(killer),
-            }),
+            backend: backend.clone(),
+            local: Some(Arc::clone(&backend)),
             shutdown: Arc::clone(&shutdown),
             finalized: Arc::clone(&finalized),
             event_sink: event_sink.clone(),
         });
-        // The reader waits for publication. If thread creation fails, child is
-        // still here to kill and reap; a cancelled reservation cannot publish.
-        let child_holder = Arc::new(Mutex::new(Some(child)));
-        let child_for_thread = Arc::clone(&child_holder);
+        // The reader waits for publication; OS reaping is independent of reads.
+        let exit_for_thread = Arc::clone(&backend);
         let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<()>(0);
 
         let sid_for_thread = run_id.clone();
@@ -927,7 +1230,6 @@ impl PtyService {
                 if start_rx.recv().is_err() {
                     return;
                 }
-                let mut child = child_for_thread.lock().take().expect("published PTY child");
                 let mut buf = [0u8; PTY_READ_BUF_SIZE];
                 let pending: Arc<Mutex<Vec<u8>>> =
                     Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
@@ -991,14 +1293,13 @@ impl PtyService {
                     }
                 }
 
-                let exit_status = child.wait();
-                let exit_code = exit_status
-                    .as_ref()
-                    .ok()
-                    .map(|status| status.exit_code() as i32);
-                if let Err(error) = exit_status {
-                    warn!("Failed waiting for PTY child {sid_for_thread}: {error}");
-                }
+                let exit_code = match exit_for_thread.exit.wait() {
+                    Ok(code) => code,
+                    Err(error) => {
+                        warn!("Failed waiting for PTY child {sid_for_thread}: {error}");
+                        None
+                    }
+                };
 
                 if finalized.swap(true, Ordering::AcqRel) {
                     info!("Skipping duplicate PTY finalization for {sid_for_thread}");
@@ -1022,17 +1323,19 @@ impl PtyService {
                 Self::remove_if_current(&sessions_for_thread, &sid_for_thread, &entry_for_thread);
             });
         if let Err(error) = started {
-            let _ = live.backend.kill();
-            if let Some(mut child) = child_holder.lock().take() {
-                let _ = child.wait();
+            let stopped = backend.stop(Instant::now() + PROCESS_STOP_TIMEOUT);
+            if stopped.is_ok() {
+                self.pending_exits.lock().remove(&child_id);
             }
-            return Err(format!("Failed to spawn reader thread: {error}"));
+            return Err(format!(
+                "Failed to spawn reader thread: {error}; cleanup: {stopped:?}"
+            ));
         }
         if let Err(error) = self.publish(&run_id, &entry, Arc::clone(&live)) {
             live.fence();
-            let _ = live.backend.kill();
-            if let Some(mut child) = child_holder.lock().take() {
-                let _ = child.wait();
+            let stopped = backend.stop(Instant::now() + PROCESS_STOP_TIMEOUT);
+            if stopped.is_ok() {
+                self.pending_exits.lock().remove(&child_id);
             }
             return Err(error);
         }
@@ -1059,6 +1362,7 @@ impl PtyService {
         let event_sink = PtyEventSink::new(run_id.clone(), subscriber, RunRetention::Ephemeral);
         let live = Arc::new(LivePty {
             backend: Arc::from(backend),
+            local: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             finalized: Arc::new(AtomicBool::new(false)),
             event_sink: event_sink.clone(),
@@ -1345,22 +1649,89 @@ impl PtyService {
 
     /// Kill a run explicitly. This always kills an adopted backend.
     pub fn kill(&self, run_id: &str) -> Result<(), String> {
-        let Ok(entry) = self.entry(run_id) else {
-            return Ok(());
-        };
-        if let Some(live) = Self::remove_if_current(&self.sessions, run_id, &entry) {
-            Self::stop_live(&live, true)?;
+        self.kill_until(run_id, Instant::now() + PROCESS_STOP_TIMEOUT)
+    }
+
+    fn kill_until(&self, run_id: &str, deadline: Instant) -> Result<(), String> {
+        if let Ok(entry) = self.entry(run_id) {
+            if let Ok(live) = Self::active_entry(&entry, run_id) {
+                Self::stop_live(&live, true, deadline)?;
+            }
+            Self::remove_if_current(&self.sessions, run_id, &entry);
         }
-        info!("PTY session {run_id} killed");
+        // An earlier stop/discard may have retired the active entry already.
+        let pending: Vec<_> = self
+            .pending_exits
+            .lock()
+            .iter()
+            .filter(|(_, pending)| pending.run_id == run_id)
+            .map(|(id, pending)| (*id, Arc::clone(pending)))
+            .collect();
+        for (id, pending) in pending {
+            pending.backend.stop(deadline)?;
+            self.pending_exits.lock().remove(&id);
+        }
+        info!("PTY session {run_id} stopped and reaped");
         Ok(())
     }
 
-    fn stop_live(live: &LivePty, kill_adopted: bool) -> Result<(), String> {
-        live.fence();
-        if (kill_adopted || !live.backend.detaches_on_shutdown()) && !live.event_sink.is_completed()
+    /// Called under Host's exclusive admission. Project association, not task
+    /// cwd or current subscriber ownership, selects all retained incarnations.
+    pub fn drain_roots(&self, roots: &[PathBuf], deadline: Instant) -> Result<(), String> {
+        let deadline = deadline.min(Instant::now() + PROCESS_STOP_TIMEOUT);
+        let run_ids: Vec<String> = self
+            .entries()
+            .into_iter()
+            .filter_map(|(id, entry)| {
+                let state = entry.state.lock();
+                state
+                    .project_root
+                    .as_ref()
+                    .is_some_and(|folder| roots.iter().any(|root| folder.starts_with(root)))
+                    .then_some(id)
+            })
+            .collect();
+        let pending: Vec<_> = self
+            .pending_exits
+            .lock()
+            .iter()
+            .filter(|(_, pending)| roots.iter().any(|root| pending.root.starts_with(root)))
+            .map(|(id, pending)| (*id, Arc::clone(pending)))
+            .collect();
+        for (id, pending) in pending {
+            // Stop this incarnation, not a reused textual run ID in a different
+            // project. The record outlives active-map removal and wait errors.
+            pending.backend.stop(deadline)?;
+            self.pending_exits.lock().remove(&id);
+        }
+        for run_id in &run_ids {
+            if let Ok(entry) = self.entry(run_id) {
+                let affected = entry
+                    .state
+                    .lock()
+                    .project_root
+                    .as_ref()
+                    .is_some_and(|folder| roots.iter().any(|root| folder.starts_with(root)));
+                if affected {
+                    if let Ok(live) = Self::active_entry(&entry, run_id) {
+                        Self::stop_live(&live, true, deadline)?;
+                    }
+                    Self::remove_if_current(&self.sessions, run_id, &entry);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn stop_live(live: &LivePty, kill_adopted: bool, deadline: Instant) -> Result<(), String> {
+        if let Some(local) = &live.local {
+            local.stop(deadline)?;
+        } else if (kill_adopted || !live.backend.detaches_on_shutdown())
+            && !live.event_sink.is_completed()
         {
             live.backend.kill()?;
         }
+        live.fence();
         Ok(())
     }
 
@@ -1443,7 +1814,8 @@ impl PtyService {
             return false;
         };
         if let Some(live) = live {
-            if let Err(error) = Self::stop_live(&live, true) {
+            if let Err(error) = Self::stop_live(&live, true, Instant::now() + PROCESS_STOP_TIMEOUT)
+            {
                 warn!("Failed to kill PTY {run_id} on owner close: {error}");
             }
         }
@@ -1460,7 +1832,8 @@ impl PtyService {
             return false;
         };
         if let Some(live) = live {
-            if let Err(error) = Self::stop_live(&live, false) {
+            if let Err(error) = Self::stop_live(&live, false, Instant::now() + PROCESS_STOP_TIMEOUT)
+            {
                 warn!("Failed to release PTY {run_id} on owner close: {error}");
             }
         }
@@ -1488,13 +1861,10 @@ impl PtyService {
         };
         if let Some(live) = &live {
             // Backend I/O happens outside registry and stream locks.
-            let kill_needed = !live.event_sink.is_completed();
-            if kill_needed {
-                if let Err(error) = live.backend.kill() {
-                    if !live.event_sink.is_completed() {
-                        return Err(error);
-                    }
-                }
+            if let Some(local) = &live.local {
+                local.stop(Instant::now() + PROCESS_STOP_TIMEOUT)?;
+            } else if !live.event_sink.is_completed() {
+                live.backend.kill()?;
             }
             live.fence();
         }
@@ -1591,7 +1961,9 @@ impl PtyService {
                     if !live.backend.detaches_on_shutdown() {
                         killed += 1;
                     }
-                    if let Err(error) = Self::stop_live(&live, false) {
+                    if let Err(error) =
+                        Self::stop_live(&live, false, Instant::now() + PROCESS_STOP_TIMEOUT)
+                    {
                         warn!("Failed to kill PTY {id} during shutdown: {error}");
                     }
                 }
@@ -1616,6 +1988,7 @@ mod tests {
     ) -> Result<PtyEventSink, String> {
         service.spawn(
             id.to_string(),
+            &std::env::current_dir().unwrap(),
             "sh",
             &["-c", script],
             None,
@@ -1627,6 +2000,220 @@ mod tests {
             None,
             None,
         )
+    }
+
+    struct LocalFixture {
+        service: PtyService,
+        root: PathBuf,
+    }
+
+    impl LocalFixture {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("sworm-pty-drain-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            Self {
+                service: PtyService::new(),
+                root: root.canonicalize().unwrap(),
+            }
+        }
+
+        fn spawn(&self, id: &str, script: &str) {
+            self.service
+                .spawn(
+                    id.into(),
+                    &self.root,
+                    "sh",
+                    &["-c", script],
+                    Some(self.root.to_str().unwrap()),
+                    None,
+                    80,
+                    24,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+    }
+
+    impl Drop for LocalFixture {
+        fn drop(&mut self) {
+            self.service.kill_all();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn wait_for(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + PROCESS_STOP_TIMEOUT;
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "child never reached expected state"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_stop_reaps_leader_and_kills_term_ignoring_foreground_group() {
+        let fixture = LocalFixture::new();
+        fixture.spawn(
+            "foreground",
+            "set -m; sh -c 'trap \"\" TERM; echo $$ > foreground.pid; exec sleep 60'",
+        );
+        wait_for(|| {
+            std::fs::read_to_string(fixture.root.join("foreground.pid"))
+                .is_ok_and(|pid| pid.trim().parse::<i32>().is_ok())
+        });
+        let foreground: libc::pid_t = std::fs::read_to_string(fixture.root.join("foreground.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let live = fixture.service.active("foreground").unwrap();
+        let backend = live.local.as_ref().unwrap();
+        let leader = backend.pid.unwrap() as libc::pid_t;
+        let foreground_group = unsafe { libc::getpgid(foreground) };
+        assert_ne!(foreground_group, unsafe { libc::getpgid(leader) });
+        assert_ne!(foreground_group, unsafe { libc::getpgrp() });
+
+        fixture.service.kill("foreground").unwrap();
+
+        assert!(matches!(backend.exit.result(), Some(Ok(_))));
+        assert!(groups_terminated(&[foreground_group]).unwrap());
+        assert_eq!(
+            unsafe { libc::kill(leader, 0) },
+            -1,
+            "leader was not reaped"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(fixture.service.pending_exits.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drain_retains_retired_children_on_timeout_and_acknowledges_fenced_wait() {
+        let fixture = LocalFixture::new();
+        fixture.spawn("retired", "exec sleep 60");
+        let entry = fixture.service.entry("retired").unwrap();
+        let live = PtyService::active_entry(&entry, "retired").unwrap();
+        let backend = live.local.as_ref().unwrap();
+        live.fence();
+        PtyService::remove_if_current(&fixture.service.sessions, "retired", &entry);
+        assert!(fixture.service.run_state("retired").is_none());
+
+        assert!(fixture
+            .service
+            .drain_roots(std::slice::from_ref(&fixture.root), Instant::now(),)
+            .is_err());
+        assert!(!fixture.service.pending_exits.lock().is_empty());
+        assert!(backend.exit.result().is_none());
+        assert!(fixture.root.is_dir());
+
+        fixture
+            .service
+            .drain_roots(
+                std::slice::from_ref(&fixture.root),
+                Instant::now() + PROCESS_STOP_TIMEOUT,
+            )
+            .unwrap();
+        assert!(matches!(backend.exit.result(), Some(Ok(_))));
+        // Completion before the waiter subscribes must not lose a wakeup.
+        assert!(backend.exit.wait().is_ok());
+        assert!(
+            !live.event_sink.is_completed(),
+            "fenced finalization was not skipped"
+        );
+        assert!(fixture.service.pending_exits.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn draining_a_retired_incarnation_does_not_stop_reused_id_in_another_project() {
+        let unrelated = LocalFixture::new();
+        let fixture = LocalFixture::new();
+        fixture.spawn("reused", "exec sleep 60");
+        let old_entry = fixture.service.entry("reused").unwrap();
+        let old = PtyService::active_entry(&old_entry, "reused").unwrap();
+        old.fence();
+        PtyService::remove_if_current(&fixture.service.sessions, "reused", &old_entry);
+        fixture
+            .service
+            .spawn(
+                "reused".into(),
+                &unrelated.root,
+                "sh",
+                &["-c", "exec sleep 60"],
+                Some(unrelated.root.to_str().unwrap()),
+                None,
+                80,
+                24,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let new = fixture.service.active("reused").unwrap();
+        let new_backend = new.local.as_ref().unwrap();
+
+        fixture
+            .service
+            .drain_roots(
+                std::slice::from_ref(&fixture.root),
+                Instant::now() + PROCESS_STOP_TIMEOUT,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            old.local.as_ref().unwrap().exit.result(),
+            Some(Ok(_))
+        ));
+        assert!(new_backend.exit.result().is_none());
+        assert_eq!(fixture.service.run_state("reused"), Some(PtyRunState::Live));
+        assert_eq!(unsafe { libc::kill(new_backend.pid.unwrap() as i32, 0) }, 0);
+        fixture.service.kill("reused").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_external_reap_is_a_wait_failure_not_a_successful_drain() {
+        let fixture = LocalFixture::new();
+        *fixture.service.startup_hook.lock() = Some(Arc::new(|_, pid| {
+            if let Some(pid) = pid {
+                assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+                let mut status = 0;
+                assert_eq!(
+                    unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) },
+                    pid as i32
+                );
+            }
+        }));
+        fixture.spawn("externally-reaped", "exec sleep 60");
+        wait_for(|| {
+            fixture
+                .service
+                .pending_exits
+                .lock()
+                .values()
+                .any(|pending| matches!(pending.backend.exit.result(), Some(Err(_))))
+        });
+        let error = fixture
+            .service
+            .drain_roots(
+                std::slice::from_ref(&fixture.root),
+                Instant::now() + PROCESS_STOP_TIMEOUT,
+            )
+            .unwrap_err();
+        assert!(error.contains("Failed waiting for PTY child"));
+        assert_eq!(fixture.service.pending_exits.lock().len(), 1);
+        assert!(fixture.root.is_dir());
     }
 
     #[derive(Debug, PartialEq)]
@@ -2713,6 +3300,7 @@ mod tests {
         service
             .spawn(
                 "archived".to_string(),
+                &std::env::current_dir().unwrap(),
                 "sh",
                 &["-c", "printf archived"],
                 None,

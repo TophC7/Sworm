@@ -80,6 +80,7 @@ pub(super) struct FolderClaim {
 pub(super) struct RemoteSlot {
     pub(super) cached: AsyncMutex<Option<CachedRemote>>,
     pub(super) claims: Mutex<HashMap<String, FolderClaim>>,
+    pub(super) claim_restore: AsyncMutex<()>,
     pub(super) events: Mutex<Option<JoinHandle<()>>>,
     pub(super) status: Mutex<RemoteStatus>,
 }
@@ -89,6 +90,7 @@ impl RemoteSlot {
         Self {
             cached: AsyncMutex::new(None),
             claims: Mutex::new(HashMap::new()),
+            claim_restore: AsyncMutex::new(()),
             events: Mutex::new(None),
             status: Mutex::new(RemoteStatus::default()),
         }
@@ -539,6 +541,7 @@ async fn run_events(router: Weak<RouterInner>, slot: Weak<RemoteSlot>, server: S
 }
 
 async fn restore_claims(server: &str, slot: &RemoteSlot, client: &RemoteClient) {
+    let _restore = slot.claim_restore.lock().await;
     let claims: Vec<_> = slot
         .claims
         .lock()
@@ -548,10 +551,10 @@ async fn restore_claims(server: &str, slot: &RemoteSlot, client: &RemoteClient) 
     for (folder, claim) in claims {
         let claim_result = client
             .call_as(
-                &Request::FolderResolve {
-                    path: folder.clone(),
+                &Request::FolderClaim {
+                    folder_path: folder.clone(),
                 },
-                Reply::folder_resolve,
+                Reply::folder_claim,
             )
             .await;
         if let Err(error) = claim_result {

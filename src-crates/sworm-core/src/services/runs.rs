@@ -231,6 +231,17 @@ impl RunCoordinator {
             .collect()
     }
 
+    /// Includes completed/archive-only metadata after PTY entries have gone.
+    pub(crate) fn ids_in_roots(&self, roots: &[PathBuf]) -> Vec<String> {
+        self.state
+            .lock()
+            .records
+            .iter()
+            .filter(|(_, run)| roots.iter().any(|root| run.folder.starts_with(root)))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// Set once, before daemon runs start. Desktop hosts leave transcripts in memory.
     pub(crate) fn configure_completed_runs(&self, store: Arc<CompletedRunStore>) {
         let mut state = self.state.lock();
@@ -526,6 +537,150 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_drain_uses_project_registration_not_task_cwd_or_attachment() {
+        let project = Fixture::new("sh -c 'echo $$ > project.pid; exec sleep 60'");
+        let unrelated = Fixture::new("sh -c 'echo $$ > unrelated.pid; exec sleep 60'");
+        fs::write(
+            project.folder.join(".sworm/tasks.jsonc"),
+            serde_json::json!({
+                "version": 1,
+                "tasks": [{
+                    "id": "once", "label": "Once",
+                    "command": "sh -c 'echo $$ > project.pid; exec sleep 60'",
+                    "cwd": unrelated.path(), "singleton": true
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for (id, folder) in [("project", project.path()), ("unrelated", unrelated.path())] {
+            project
+                .host
+                .tasks_start(
+                    id.into(),
+                    folder,
+                    "once".into(),
+                    None,
+                    80,
+                    24,
+                    None,
+                    Some("disconnected-owner".into()),
+                    false,
+                )
+                .unwrap();
+        }
+        wait_until(|| {
+            unrelated.folder.join("project.pid").is_file()
+                && unrelated.folder.join("unrelated.pid").is_file()
+        });
+        let project_pid: i32 = fs::read_to_string(unrelated.folder.join("project.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let unrelated_pid: i32 = fs::read_to_string(unrelated.folder.join("unrelated.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        // Ordinary folder release must not acquire explicit-stop semantics.
+        project.host.release_folder(&project.folder);
+        assert!(project.host.run_status("project").unwrap().live);
+        let writer = project.host.admission.blocking_write();
+        project
+            .host
+            .drain_worktree_roots(&[project.path()])
+            .unwrap();
+        drop(writer);
+
+        assert_eq!(unsafe { libc::kill(project_pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(project.host.runs.describe(&["project".into()]).is_empty());
+        assert!(project.host.run_status("unrelated").unwrap().live);
+        assert_eq!(unsafe { libc::kill(unrelated_pid, 0) }, 0);
+        // A project singleton stopped by the barrier must release its lease.
+        project
+            .host
+            .tasks_start(
+                "project-again".into(),
+                project.path(),
+                "once".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("disconnected-owner".into()),
+                false,
+            )
+            .unwrap();
+        project.host.tasks_stop("project-again".into()).unwrap();
+        project.host.tasks_stop("unrelated".into()).unwrap();
+        assert_eq!(unsafe { libc::kill(unrelated_pid, 0) }, -1);
+    }
+
+    #[test]
+    fn worktree_drain_retires_archive_only_runs_after_successful_os_wait() {
+        let fixture = Fixture::new("printf archived");
+        fixture
+            .host
+            .configure_completed_runs(Arc::new(CompletedRunStore::new(
+                Arc::clone(&fixture.host.db),
+                2,
+                chrono::Duration::days(7),
+            )));
+        fixture
+            .host
+            .tasks_start(
+                "archived".into(),
+                fixture.path(),
+                "once".into(),
+                None,
+                80,
+                24,
+                None,
+                Some("disconnected-owner".into()),
+                false,
+            )
+            .unwrap();
+        wait_until(|| {
+            fixture.host.pty.run_state("archived").is_none()
+                && fixture
+                    .host
+                    .runs
+                    .completed_run("archived")
+                    .unwrap()
+                    .is_some()
+        });
+        let canonical = fixture.folder.canonicalize().unwrap();
+        assert_eq!(
+            fixture
+                .host
+                .runs
+                .ids_in_roots(std::slice::from_ref(&canonical)),
+            ["archived"]
+        );
+
+        let writer = fixture.host.admission.blocking_write();
+        fixture
+            .host
+            .drain_worktree_roots(&[fixture.path()])
+            .unwrap();
+        drop(writer);
+        assert!(fixture.host.runs.describe(&["archived".into()]).is_empty());
+        assert!(fixture
+            .host
+            .runs
+            .completed_run("archived")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

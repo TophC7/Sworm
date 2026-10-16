@@ -33,6 +33,36 @@ impl<'a> Target<'a> {
     pub fn remote_uri(server: &str, path: &str) -> String {
         format!("sworm://{server}/{}", path.trim_start_matches('/'))
     }
+
+    /// Remote paths cannot be canonicalized on this machine. Normalize their
+    /// components without interpreting path bytes as a local filesystem path.
+    pub(crate) fn normalize_remote_path(path: &str) -> Result<String, ApiError> {
+        use std::path::{Component, Path};
+        if !Path::new(path).is_absolute() {
+            return Err(ApiError::InvalidArgument(format!(
+                "Remote path must be absolute: {path}"
+            )));
+        }
+        let mut normalized = PathBuf::from("/");
+        for component in Path::new(path).components() {
+            match component {
+                Component::RootDir | Component::CurDir => {}
+                Component::Normal(name) => normalized.push(name),
+                Component::ParentDir if normalized.parent().is_some() => {
+                    normalized.pop();
+                }
+                _ => {
+                    return Err(ApiError::InvalidArgument(format!(
+                        "Remote path escapes its root: {path}"
+                    )))
+                }
+            }
+        }
+        normalized
+            .into_os_string()
+            .into_string()
+            .map_err(|_| ApiError::InvalidArgument("Remote path is not UTF-8".into()))
+    }
 }
 
 /// Absolute URI of a workspace-relative path inside a remote folder.
@@ -81,6 +111,22 @@ pub fn reject_remote(command: &str, path: &str) -> Result<(), ApiError> {
     }
 }
 
+/// Nested worktree paths must stay on the same host as the repository route.
+pub(super) fn worktree_host_path(route: &str, nested: &str) -> Result<String, ApiError> {
+    match (Target::parse(route)?, Target::parse(nested)?) {
+        (Target::Local, Target::Local) => Ok(nested.to_owned()),
+        (
+            Target::Remote { server, .. },
+            Target::Remote {
+                server: owner,
+                path,
+            },
+        ) if server == owner => Ok(path.to_owned()),
+        _ => Err(ApiError::InvalidArgument(format!(
+            "Worktree paths must be on the same host as {route}: {nested}"
+        ))),
+    }
+}
 pub(super) fn not_controller(workbench: &str) -> ApiError {
     ApiError::from(sworm_protocol::rpc::WireError::NotController {
         workbench: workbench.to_owned(),
@@ -89,7 +135,17 @@ pub(super) fn not_controller(workbench: &str) -> ApiError {
 
 pub(crate) fn remote_error(server: &str, error: RemoteError) -> ApiError {
     match error {
-        RemoteError::Wire(error) => ApiError::from(error),
+        RemoteError::Wire(error) => {
+            let mut error = ApiError::from(error);
+            match &mut error {
+                ApiError::BranchInWorktree { path, .. }
+                | ApiError::WorktreeHasChanges { path, .. } => {
+                    *path = Target::remote_uri(server, path);
+                }
+                _ => {}
+            }
+            error
+        }
         RemoteError::Connection(message)
         | RemoteError::Timeout(message)
         | RemoteError::Transport(message)

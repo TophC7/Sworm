@@ -21,6 +21,14 @@ pub struct TasksFile {
     pub tasks: Vec<TaskDefinition>,
 }
 
+/// Automatic lifecycle trigger for a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskRunOn {
+    /// Run after a worktree is created and its configured files are copied.
+    WorktreeCreated,
+}
+
 /// A single reusable terminal command exposed as a task.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -70,4 +78,35 @@ pub struct TaskDefinition {
     /// Use for destructive or expensive commands.
     #[serde(default)]
     pub confirm: bool,
+
+    /// Automatically run after creating a worktree. Omit to run manually.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_on: Option<TaskRunOn>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worktree_creation_trigger_is_explicit_and_optional() {
+        let mut definition = serde_json::json!({
+            "id": "setup",
+            "label": "Setup",
+            "command": "printf ready"
+        });
+        let manual: TaskDefinition = serde_json::from_value(definition.clone()).unwrap();
+        assert_eq!(manual.run_on, None);
+        assert!(serde_json::to_value(manual).unwrap().get("runOn").is_none());
+
+        definition["runOn"] = serde_json::json!("worktreeCreated");
+        let automatic: TaskDefinition = serde_json::from_value(definition.clone()).unwrap();
+        assert_eq!(automatic.run_on, Some(TaskRunOn::WorktreeCreated));
+        assert_eq!(
+            serde_json::to_value(automatic).unwrap()["runOn"],
+            "worktreeCreated"
+        );
+        definition["runOn"] = serde_json::json!("folderOpen");
+        assert!(serde_json::from_value::<TaskDefinition>(definition).is_err());
+    }
 }

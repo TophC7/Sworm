@@ -37,6 +37,10 @@ import type {
   GitSequencerAction,
   GitStashOp,
   GitSummary,
+  GitWorktreeCheckout,
+  GitWorktreeList,
+  GitWorktreeOp,
+  GitWorktreeResult,
   GraphCommit,
   Issue,
   IssueComment,
@@ -203,6 +207,15 @@ export const backend = {
   },
 
   git: {
+    listWorktrees(path: string): Promise<GitWorktreeList> {
+      return invoke<GitWorktreeList>('git_worktree_list', { path })
+    },
+    defaultWorktreePath(path: string, checkout: GitWorktreeCheckout, root: string | null = null): Promise<string> {
+      return invoke<string>('git_worktree_default_path', { path, checkout, root })
+    },
+    worktree(path: string, op: GitWorktreeOp): Promise<GitWorktreeResult> {
+      return invoke<GitWorktreeResult>('git_worktree', { path, op })
+    },
     getSummary(path: string): Promise<GitSummary> {
       return invoke<GitSummary>('git_get_summary', { path })
     },

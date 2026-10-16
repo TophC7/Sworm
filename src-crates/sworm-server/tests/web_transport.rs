@@ -3308,6 +3308,19 @@ async fn run(home: &Path) -> Result<()> {
     );
     drop(occupied);
     write_web(serde_json::json!({ "assets_dir": home.join("assets") }))?;
+    let mut default_web_config = sworm_server::config::load(&startup_config.join("server.jsonc"))?
+        .web
+        .context("default web configuration missing")?;
+    assert!(
+        default_web_config.listen.ip().is_loopback(),
+        "default bind exposed non-loopback interface",
+    );
+    // Exercise the default interface without competing with a running daemon.
+    default_web_config.listen.set_port(0);
+    write_web(serde_json::json!({
+        "listen": default_web_config.listen.to_string(),
+        "assets_dir": default_web_config.assets_dir,
+    }))?;
     let default_web = serve(options()).await?;
     assert!(
         default_web

@@ -22,7 +22,7 @@ pub fn window_create(
             .create_workbench_window(&app, None)
             .map(|window| window.label().to_string()),
     }
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -33,7 +33,9 @@ pub async fn window_ready(
 ) -> Result<(), ApiError> {
     let host = state.host.clone();
     let owner = window.label().to_owned();
+    let admission = host.admission.clone().read_owned().await;
     tokio::task::spawn_blocking(move || {
+        let _admission = admission;
         host.release_unrestored_tasks(&owner, &restored_task_runs.into_iter().collect())
     })
     .await??;
@@ -45,6 +47,18 @@ pub async fn window_ready(
 }
 
 #[tauri::command]
+pub fn window_open_target_finished(
+    window: WebviewWindow,
+    target: OpenTarget,
+    state: State<'_, AppState>,
+) -> Result<(), ApiError> {
+    state
+        .windows
+        .open_target_finished(window.label(), &target)
+        .map_err(ApiError::InvalidArgument)
+}
+
+#[tauri::command]
 pub async fn pty_pause(
     window: WebviewWindow,
     run_id: String,
@@ -52,9 +66,13 @@ pub async fn pty_pause(
 ) -> Result<u64, ApiError> {
     let host = state.host.clone();
     let owner = window.label().to_owned();
-    tokio::task::spawn_blocking(move || host.pty.pause_owned(&run_id, &owner))
-        .await?
-        .map_err(ApiError::Pty)
+    let admission = host.admission.clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        host.pty.pause_owned(&run_id, &owner)
+    })
+    .await?
+    .map_err(ApiError::Pty)
 }
 
 #[tauri::command]
@@ -73,7 +91,9 @@ pub async fn pty_attach(
         output: channel_sink(output),
         events: channel_sink(events),
     };
+    let admission = host.admission.clone().read_owned().await;
     tokio::task::spawn_blocking(move || {
+        let _admission = admission;
         windows.attach_transfer_pty(&transfer_id, &owner, &run_id, subscriber, &host.pty)
     })
     .await?
@@ -92,7 +112,7 @@ pub fn window_claim_file(
     state
         .windows
         .claim_file(&window, file, tab_id, reveal)
-        .map_err(ApiError::Internal)
+        .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -102,8 +122,10 @@ pub fn window_release_file(
     state: State<'_, AppState>,
 ) -> Result<(), ApiError> {
     let file = resolve_file_path(&file_path)?;
-    state.windows.release_file(window.label(), &file);
-    Ok(())
+    state
+        .windows
+        .release_file(window.label(), &file)
+        .map_err(ApiError::InvalidArgument)
 }
 #[tauri::command]
 pub async fn window_transfer_initiate(
@@ -114,9 +136,13 @@ pub async fn window_transfer_initiate(
 ) -> Result<String, ApiError> {
     let owner = window.label().to_owned();
     let windows = state.windows.clone();
-    tokio::task::spawn_blocking(move || windows.initiate_tab_transfer(&app, &owner, params))
-        .await?
-        .map_err(ApiError::Internal)
+    let admission = state.host.admission.clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        windows.initiate_tab_transfer(&app, &owner, params)
+    })
+    .await?
+    .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -128,9 +154,13 @@ pub async fn window_transfer_source_exported(
 ) -> Result<(), ApiError> {
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
-    tokio::task::spawn_blocking(move || windows.source_export_ready(&app, &owner, payload))
-        .await?
-        .map_err(ApiError::Internal)
+    let admission = state.host.admission.clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        windows.source_export_ready(&app, &owner, payload)
+    })
+    .await?
+    .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -142,9 +172,13 @@ pub async fn window_transfer_target_staged(
 ) -> Result<(), ApiError> {
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
-    tokio::task::spawn_blocking(move || windows.target_stage_ready(&app, &owner, &transfer_id))
-        .await?
-        .map_err(ApiError::Internal)
+    let admission = state.host.admission.clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        windows.target_stage_ready(&app, &owner, &transfer_id)
+    })
+    .await?
+    .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -157,7 +191,9 @@ pub async fn window_transfer_abort(
 ) -> Result<(), ApiError> {
     let windows = state.windows.clone();
     let owner = window.label().to_owned();
+    let admission = state.host.admission.clone().read_owned().await;
     tokio::task::spawn_blocking(move || {
+        let _admission = admission;
         windows.abort_tab_transfer_as(&app, &owner, &transfer_id, &reason)
     })
     .await?
@@ -187,7 +223,7 @@ pub async fn window_group_handoff(
             target_window,
         )
         .await
-        .map_err(ApiError::Internal)
+        .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -213,7 +249,7 @@ pub async fn window_group_exported(
             model_states,
         )
         .await
-        .map_err(ApiError::Internal)
+        .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]
@@ -227,7 +263,7 @@ pub async fn window_group_staged(
         .windows
         .group_staged(&app, window.label(), &transfer_id)
         .await
-        .map_err(ApiError::Internal)
+        .map_err(ApiError::InvalidArgument)
 }
 
 #[tauri::command]

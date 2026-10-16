@@ -107,8 +107,14 @@ impl Host {
         let resolved =
             resolve_launch(server, &config, &env, &root_path).map_err(ApiError::Internal)?;
 
-        self.lsp
-            .spawn(session_id, owner_id, config.trace, resolved, events)
+        self.lsp.spawn(
+            session_id,
+            &folder,
+            owner_id,
+            config.trace,
+            resolved,
+            events,
+        )
     }
 
     pub fn lsp_send(&self, session_id: String, message_json: String) -> Result<(), ApiError> {
@@ -121,9 +127,9 @@ impl Host {
         self.lsp_kill(&session_id).map_err(ApiError::Internal)
     }
 
-    /// Blocking twin of `lsp_stop`, for holders of a lock or a `Drop` impl
-    /// that must kill a server without an executor. Killing is synchronous
-    /// anyway: the async signature exists only for the RPC table.
+    /// Blocking twin of `lsp_stop`; success proves OS exit and termination of
+    /// the server's process group, within the same five-second stop deadline.
+    /// Reader/stream shutdown alone is not an exit acknowledgement.
     pub fn lsp_kill(&self, session_id: &str) -> Result<(), String> {
         self.lsp.kill(session_id)
     }

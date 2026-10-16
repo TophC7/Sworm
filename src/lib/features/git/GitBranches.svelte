@@ -22,6 +22,7 @@
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
+  import { openFolder } from '$lib/features/workbench/state.svelte'
   import {
     abortOperation,
     continueOperation,
@@ -41,6 +42,7 @@
   import { getGitBranchesFocusRequest } from '$lib/features/app-shell/sidebar/state.svelte'
   import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
   import CreateBranchDialog from '$lib/features/git/dialogs/CreateBranchDialog.svelte'
+  import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
   import RenameBranchDialog from '$lib/features/git/dialogs/RenameBranchDialog.svelte'
   import DeleteBranchDialog from '$lib/features/git/dialogs/DeleteBranchDialog.svelte'
   import SetUpstreamDialog from '$lib/features/git/dialogs/SetUpstreamDialog.svelte'
@@ -57,6 +59,7 @@
     ClockIcon,
     CloudIcon,
     CloudOffIcon,
+    FolderOpenIcon,
     GitBranchIcon,
     GitCompareIcon,
     GitMergeIcon,
@@ -70,12 +73,15 @@
     RotateCw,
     Trash2
   } from '$lib/icons/lucideExports'
-  import type { BranchSummary, CommitDetail, GitSummary, GraphCommit } from '$lib/types/backend'
+  import type { BranchSummary, CommitDetail, GitSummary, GitWorktreeCheckout, GraphCommit } from '$lib/types/backend'
   import { platform } from '$lib/platform'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
   import { SvelteMap } from 'svelte/reactivity'
 
-  let { folderPath, branchColorMap }: {
+  let {
+    folderPath,
+    branchColorMap
+  }: {
     folderPath: string
     branchColorMap?: Map<string, string>
   } = $props()
@@ -91,9 +97,13 @@
   let checkoutTarget = $state<string>('')
   let checkoutRemoteTarget = $state<string | null>(null)
   let checkoutSummary = $state<GitSummary | null>(null)
+  let checkoutFolderPath = $state('')
 
   let createOpen = $state(false)
   let createBase = $state<string>('')
+
+  let createWorktreeOpen = $state(false)
+  let worktreeCheckout = $state<GitWorktreeCheckout>({ kind: 'new_branch', name: '', base: 'HEAD' })
 
   let renameOpen = $state(false)
   let renameTarget = $state<string>('')
@@ -128,7 +138,6 @@
   $effect(() => {
     void branches.loadFor(folderPath)
   })
-
 
   async function runFetch() {
     try {
@@ -181,10 +190,12 @@
 
   async function attemptCheckout(name: string) {
     if (!name) return
+    const path = folderPath
     try {
-      await branches.safeCheckout(folderPath, name)
+      await branches.safeCheckout(path, name)
     } catch (e) {
       if (e instanceof branches.DirtyCheckoutError) {
+        checkoutFolderPath = path
         checkoutTarget = name
         checkoutRemoteTarget = null
         checkoutSummary = e.summary
@@ -288,6 +299,14 @@
     createOpen = true
   }
 
+  function openCreateWorktreeDialog(branch: BranchSummary) {
+    worktreeCheckout =
+      branch.kind === 'local' && !branch.isCurrent && branch.worktreePath === null
+        ? { kind: 'existing_branch', name: branch.name }
+        : { kind: 'new_branch', name: '', base: branch.name }
+    createWorktreeOpen = true
+  }
+
   function openRenameDialog(branch: BranchSummary) {
     renameTarget = branch.name
     renameOpen = true
@@ -369,11 +388,13 @@
 
   async function checkoutRemote(branch: BranchSummary) {
     if (branch.kind !== 'remote') return
+    const path = folderPath
     const localName = localNameForRemoteRef(branch.name)
     try {
-      await branches.safeCheckoutRemoteAsLocal(folderPath, branch.name, localName)
+      await branches.safeCheckoutRemoteAsLocal(path, branch.name, localName)
     } catch (e) {
       if (e instanceof branches.DirtyCheckoutError) {
+        checkoutFolderPath = path
         checkoutTarget = localName
         checkoutRemoteTarget = branch.name
         checkoutSummary = e.summary
@@ -403,21 +424,18 @@
         <MoreHorizontalIcon size={13} />
       </DropdownMenu.Trigger>
       <DropdownMenu.Content class="min-w-[210px]" align="end">
-        <DropdownMenu.Item onclick={() => openCreateDialog()}>
+        <DropdownMenu.Item onSelect={() => openCreateDialog()}>
           <Plus size={14} />
           <span>New branch…</span>
         </DropdownMenu.Item>
-        <DropdownMenu.Item
-          disabled={entry?.fetching === true}
-          onclick={() => void runFetch()}
-        >
+        <DropdownMenu.Item disabled={entry?.fetching === true} onSelect={() => void runFetch()}>
           <RefreshCwIcon size={14} />
           <span>Fetch from remotes</span>
         </DropdownMenu.Item>
 
         <DropdownMenu.Separator />
 
-        <DropdownMenu.Item onclick={toggleLayout}>
+        <DropdownMenu.Item onSelect={toggleLayout}>
           {#if prefs?.layout === 'tree'}
             <ListIcon size={14} />
             <span>Switch to flat list</span>
@@ -426,7 +444,7 @@
             <span>Switch to tree</span>
           {/if}
         </DropdownMenu.Item>
-        <DropdownMenu.Item onclick={toggleSort}>
+        <DropdownMenu.Item onSelect={toggleSort}>
           {#if prefs?.sort === 'alpha'}
             <ArrowDown01Icon size={14} />
             <span>Sort by date</span>
@@ -435,7 +453,7 @@
             <span>Sort alphabetically</span>
           {/if}
         </DropdownMenu.Item>
-        <DropdownMenu.Item onclick={toggleShowRemote}>
+        <DropdownMenu.Item onSelect={toggleShowRemote}>
           {#if prefs?.showRemote}
             <CloudOffIcon size={14} />
             <span>Hide remote branches</span>
@@ -546,6 +564,16 @@
       <div class="text-xs text-subtle">No upstream configured.</div>
     {/if}
 
+    {#if branch.worktreePath}
+      <div class="space-y-1 text-xs">
+        <div class="flex items-center gap-1 text-muted">
+          <ListTreeIcon size={11} class={branch.isCurrent ? 'text-accent' : 'text-muted'} />
+          <span>{branch.isCurrent ? 'Current worktree' : 'Checked out in another worktree'}</span>
+        </div>
+        <div class="font-mono break-all text-muted">{branch.worktreePath}</div>
+      </div>
+    {/if}
+
     {#if branch.ahead > 0 || branch.behind > 0}
       <div class="flex items-center gap-1.5 text-xs">
         {#if branch.ahead > 0}
@@ -648,6 +676,13 @@
               {displayName ??
                 (prefs?.layout === 'tree' && branch.kind === 'local' ? basename(branch.name) : branch.name)}
             </span>
+            {#if branch.worktreePath}
+              <ListTreeIcon
+                size={11}
+                class={branch.isCurrent ? 'shrink-0 text-accent' : 'shrink-0 text-muted'}
+                aria-label={branch.isCurrent ? 'Current worktree' : 'Checked out elsewhere'}
+              />
+            {/if}
 
             <AheadBehindBadge ahead={branch.ahead} behind={branch.behind} />
           </Tooltip.Trigger>
@@ -710,30 +745,40 @@
 
     <ContextMenu.Content>
       {#if !branch.isCurrent}
-        <ContextMenu.Item onclick={() => switchToBranch(branch)}>
+        <ContextMenu.Item onSelect={() => switchToBranch(branch)}>
           <Check size={14} />
           <span>Switch to branch</span>
         </ContextMenu.Item>
       {/if}
-      <ContextMenu.Item onclick={() => openCompareModal(branch)}>
+      {#if branch.worktreePath && !branch.isCurrent}
+        <ContextMenu.Item onSelect={() => void openFolder(branch.worktreePath!)}>
+          <FolderOpenIcon size={14} />
+          <span>Open Worktree</span>
+        </ContextMenu.Item>
+      {/if}
+      <ContextMenu.Item onSelect={() => openCompareModal(branch)}>
         <GitCompareIcon size={14} />
         <span>Compare with HEAD</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator />
 
-      <ContextMenu.Item onclick={() => openCreateDialog(branch.name)}>
+      <ContextMenu.Item onSelect={() => openCreateDialog(branch.name)}>
         <Plus size={14} />
         <span>Create branch from here…</span>
       </ContextMenu.Item>
+      <ContextMenu.Item onSelect={() => openCreateWorktreeDialog(branch)}>
+        <ListTreeIcon size={14} />
+        <span>Create Worktree…</span>
+      </ContextMenu.Item>
       {#if branch.kind === 'local' && !branch.isCurrent}
-        <ContextMenu.Item onclick={() => openRenameDialog(branch)}>
+        <ContextMenu.Item onSelect={() => openRenameDialog(branch)}>
           <PencilIcon size={14} />
           <span>Rename…</span>
         </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent}
-        <ContextMenu.Item destructive onclick={() => openDeleteDialog(branch)}>
+        <ContextMenu.Item destructive onSelect={() => openDeleteDialog(branch)}>
           <Trash2 size={14} />
           <span>Delete…</span>
         </ContextMenu.Item>
@@ -741,11 +786,11 @@
 
       {#if !branch.isCurrent}
         <ContextMenu.Separator />
-        <ContextMenu.Item onclick={() => openMergeDialog(branch)}>
+        <ContextMenu.Item onSelect={() => openMergeDialog(branch)}>
           <GitMergeIcon size={14} />
           <span>Merge into current</span>
         </ContextMenu.Item>
-        <ContextMenu.Item onclick={() => void openRebaseDialog(branch)}>
+        <ContextMenu.Item onSelect={() => void openRebaseDialog(branch)}>
           <GitPullRequestIcon size={14} />
           <span>Rebase current onto this</span>
         </ContextMenu.Item>
@@ -754,18 +799,18 @@
       <ContextMenu.Separator />
 
       {#if branch.kind === 'local'}
-        <ContextMenu.Item onclick={() => openUpstreamDialog(branch)}>
+        <ContextMenu.Item onSelect={() => openUpstreamDialog(branch)}>
           <CloudIcon size={14} />
           <span>Set upstream…</span>
         </ContextMenu.Item>
       {/if}
       {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
-        <ContextMenu.Item onclick={() => void fastForwardBranch(folderPath, branch.name)}>
+        <ContextMenu.Item onSelect={() => void fastForwardBranch(folderPath, branch.name)}>
           <ArrowDownToLineIcon size={14} />
           <span>Fast-forward</span>
         </ContextMenu.Item>
       {/if}
-      <ContextMenu.Item onclick={() => void copyName(branch.name)}>
+      <ContextMenu.Item onSelect={() => void copyName(branch.name)}>
         <ClipboardIcon size={14} />
         <span>Copy name</span>
       </ContextMenu.Item>
@@ -783,12 +828,16 @@
     branchName={checkoutTarget}
     remoteBranchName={checkoutRemoteTarget}
     summary={checkoutSummary}
-    {folderPath}
+    folderPath={checkoutFolderPath}
   />
 {/if}
 
 {#if createOpen}
   <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {folderPath} />
+{/if}
+
+{#if createWorktreeOpen}
+  <CreateWorktreeDialog bind:open={createWorktreeOpen} initialCheckout={worktreeCheckout} {folderPath} />
 {/if}
 
 {#if renameOpen}
@@ -809,12 +858,7 @@
 {/if}
 
 {#if mergeOpen}
-  <MergeConfirmDialog
-    bind:open={mergeOpen}
-    source={mergeSource}
-    current={currentName}
-    {folderPath}
-  />
+  <MergeConfirmDialog bind:open={mergeOpen} source={mergeSource} current={currentName} {folderPath} />
 {/if}
 
 {#if compareOpen}

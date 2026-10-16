@@ -17,7 +17,7 @@ use sworm_protocol::{
     rpc::{LspDown, LspUp},
 };
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, watch, Mutex as AsyncMutex},
     task::AbortHandle,
     time::timeout,
 };
@@ -51,6 +51,8 @@ struct Lease {
     owner: String,
     /// Identifies this lease across reuses of the session id.
     token: u64,
+    gate: Arc<AsyncMutex<()>>,
+    closing: bool,
     events: mpsc::Sender<LspEvent>,
     /// Set when an event could not be queued. LSP has no replay, so a dropped
     /// frame either hangs a request forever or desynchronizes an incrementally
@@ -63,6 +65,7 @@ struct Lease {
 pub(crate) struct LspSink {
     pub(crate) events: EventSink<LspEvent>,
     pub(crate) token: u64,
+    pub(crate) gate: Arc<AsyncMutex<()>>,
 }
 
 impl LspStreams {
@@ -81,7 +84,7 @@ impl LspStreams {
     pub(crate) fn sink(&self, session_id: &str, owner: &str) -> Option<LspSink> {
         let entries = self.leases.entries.lock();
         let lease = entries.get(session_id)?;
-        if lease.owner != owner {
+        if lease.owner != owner || lease.closing {
             return None;
         }
         let token = lease.token;
@@ -97,17 +100,8 @@ impl LspStreams {
                 })
             }),
             token,
+            gate: Arc::clone(&lease.gate),
         })
-    }
-
-    /// Whether this connection still holds the session's lease. `lsp_stop`
-    /// authorization: stopping is killing, so a foreign caller must be refused.
-    pub(crate) fn owns(&self, session_id: &str, owner: &str) -> bool {
-        self.leases
-            .entries
-            .lock()
-            .get(session_id)
-            .is_some_and(|lease| lease.owner == owner)
     }
 
     /// Whether the lease that issued `token` is still the live one.
@@ -116,7 +110,7 @@ impl LspStreams {
             .entries
             .lock()
             .get(session_id)
-            .is_some_and(|lease| lease.token == token)
+            .is_some_and(|lease| lease.token == token && !lease.closing)
     }
 
     /// Take the session's lease, or `None` when another stream still holds it.
@@ -133,11 +127,14 @@ impl LspStreams {
             return None;
         }
         let token = self.leases.next_token.fetch_add(1, Ordering::Relaxed);
+        let gate = Arc::new(AsyncMutex::new(()));
         entries.insert(
             session_id.to_owned(),
             Lease {
                 owner: owner.to_owned(),
                 token,
+                gate: Arc::clone(&gate),
+                closing: false,
                 events,
                 overflowed,
             },
@@ -147,19 +144,21 @@ impl LspStreams {
             host,
             session_id: session_id.to_owned(),
             token,
+            gate,
             input: None,
         })
     }
 }
 
-/// One stream's lease. Dropping it — by teardown, cancellation, or a runtime
-/// that is going away mid-stream — aborts the stream's reader task and kills
-/// the session's server, so neither can outlive the stream that owns them.
+/// One stream's lease. Teardown/cancellation aborts its reader and submits an
+/// owned, admitted child shutdown. The session ID stays reserved until shutdown
+/// completes, even when the stream no longer awaits its result.
 struct LspLease {
     leases: Arc<Leases>,
     host: Arc<Host>,
     session_id: String,
     token: u64,
+    gate: Arc<AsyncMutex<()>>,
     input: Option<AbortHandle>,
 }
 
@@ -177,18 +176,43 @@ impl Drop for LspLease {
             input.abort();
         }
         let mut entries = self.leases.entries.lock();
-        if !entries
-            .get(&self.session_id)
-            .is_some_and(|lease| lease.token == self.token)
-        {
+        let Some(lease) = entries.get_mut(&self.session_id) else {
+            return;
+        };
+        if lease.token != self.token {
             return;
         }
-        // Kill while still holding the lease: no replacement can claim this
-        // session id between the kill and the release, so a teardown can only
-        // ever kill the server it started. The connection's PTYs are untouched
-        // — they outlive the desktop by design.
-        let _ = self.host.lsp_kill(&self.session_id);
-        entries.remove(&self.session_id);
+        // Keep this ID reserved while the owned teardown waits for admission
+        // and any in-flight start; replacement streams must not be killed.
+        lease.closing = true;
+        let gate = Arc::clone(&lease.gate);
+        drop(entries);
+        let host = Arc::clone(&self.host);
+        let leases = Arc::clone(&self.leases);
+        let session_id = self.session_id.clone();
+        let token = self.token;
+        tokio::spawn(async move {
+            let admission = Arc::clone(&host.admission).read_owned().await;
+            let _operation = gate.lock_owned().await;
+            let result = tokio::task::spawn_blocking(move || {
+                let _admission = admission;
+                let result = host.lsp_kill(&session_id);
+                let mut entries = leases.entries.lock();
+                if entries
+                    .get(&session_id)
+                    .is_some_and(|lease| lease.token == token)
+                {
+                    entries.remove(&session_id);
+                }
+                result
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "LSP stream teardown failed"),
+                Err(error) => tracing::warn!(%error, "LSP stream teardown task failed"),
+            }
+        });
     }
 }
 
@@ -202,6 +226,7 @@ pub(crate) async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let (sender, mut events) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let admission = Arc::clone(&host.admission).read_owned().await;
     let overflowed = Arc::new(AtomicBool::new(false));
     // A second stream for a live session is refused rather than allowed to
     // take over: the desktop stops a session before it restarts it, and a
@@ -214,9 +239,11 @@ pub(crate) async fn run(
         sender.clone(),
         Arc::clone(&overflowed),
     ) else {
+        drop(admission);
         refuse(&mut send, &session_id).await;
         return;
     };
+    drop(admission);
 
     // Announcing readiness only after the lease is held keeps `lsp_start` from
     // racing the registration it depends on.
@@ -228,7 +255,10 @@ pub(crate) async fn run(
     // cancel a half-read frame and desynchronize the stream.
     let mut input = tokio::spawn(read_input(
         Arc::clone(&host),
+        Arc::clone(&context),
         session_id.clone(),
+        Arc::clone(&lease.gate),
+        lease.token,
         recv,
         sender,
     ));
@@ -265,8 +295,8 @@ pub(crate) async fn run(
         }
     }
 
-    // Dropping the lease aborts the reader, kills only this session's server,
-    // then releases its fenced session id.
+    // Lease teardown aborts the reader and owns this session's admitted shutdown
+    // before releasing its fenced ID; it never stops this connection's PTYs.
     let pending_input = !input.is_finished();
     drop(lease);
     if pending_input {
@@ -293,14 +323,36 @@ async fn refuse(send: &mut StreamWriter, session_id: &str) {
 /// Forward client messages to the server's stdin in arrival order.
 async fn read_input(
     host: Arc<Host>,
+    context: Arc<ServerContext>,
     session_id: String,
+    gate: Arc<AsyncMutex<()>>,
+    token: u64,
     mut recv: StreamReader,
     events: mpsc::Sender<LspEvent>,
 ) {
     loop {
         match recv.read_json::<LspUp>().await {
             Ok(LspUp::Message { payload_json }) => {
-                if let Err(error) = host.lsp_send(session_id.clone(), payload_json) {
+                let admission = Arc::clone(&host.admission).read_owned().await;
+                let operation = Arc::clone(&gate).lock_owned().await;
+                let send_host = Arc::clone(&host);
+                let context = Arc::clone(&context);
+                let id = session_id.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let _admission = admission;
+                    let _operation = operation;
+                    if !context.lsp.is_current(&id, token) {
+                        return Err(sworm_core::errors::ApiError::InvalidArgument(
+                            "LSP stream closed before its message was sent".into(),
+                        ));
+                    }
+                    send_host.lsp_send(id, payload_json)
+                })
+                .await;
+                if let Err(error) = result
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                {
                     // stdin is gone: report it once and let the stream end.
                     let _ = events
                         .send(LspEvent::Error {

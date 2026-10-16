@@ -1,47 +1,17 @@
 use crate::errors::ApiError;
+use crate::events::HostEvent;
 use crate::host::Host;
+use crate::services::git::validated_ref_name;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use sworm_protocol::branch::BranchSummary;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
-    CommitDetail, DiffFileContent, GitBranchOp, GitBrief, GitCommitOptions, GitConflictsOp,
-    GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemoteOp, GitSequencerAction, GitStashOp,
-    GitSummary, GraphCommit, StashEntry,
+    CommitDetail, DiffFileContent, GitBranchOp, GitBrief, GitChangeScope, GitChangedEvent,
+    GitCommitOptions, GitConflictsOp, GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemoteOp,
+    GitSequencerAction, GitStashOp, GitSummary, GitWorktreeCheckout, GitWorktreeList,
+    GitWorktreeOp, GitWorktreeResult, GraphCommit, StashEntry,
 };
-
-/// Lightweight defense against arg-injection for branch / remote
-/// names. Rejects empties, leading `-` (would be parsed as a flag by
-/// the git CLI), embedded whitespace and control chars, the `..` / `@{`
-/// sequences, and the metacharacters `git check-ref-format` rejects.
-/// Frontend validation is more permissive (mirrors `check-ref-format`
-/// directly); this layer only stops the obvious shell-side hazards.
-fn validated_ref_name(name: &str) -> Result<(), ApiError> {
-    if name.is_empty() {
-        return Err(ApiError::InvalidArgument(
-            "Branch name is empty".to_string(),
-        ));
-    }
-    if name.starts_with('-') {
-        return Err(ApiError::InvalidArgument(
-            "Branch name cannot start with '-'".to_string(),
-        ));
-    }
-    if name.contains("..") || name.contains("@{") {
-        return Err(ApiError::InvalidArgument(format!(
-            "Invalid branch name: {}",
-            name
-        )));
-    }
-    for c in name.chars() {
-        if c.is_control() || c == ' ' || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\') {
-            return Err(ApiError::InvalidArgument(format!(
-                "Invalid branch name: {}",
-                name
-            )));
-        }
-    }
-    Ok(())
-}
 
 /// Validate an upstream tracking ref in `<remote>/<branch>` form.
 pub(crate) fn validated_upstream_ref(upstream: &str) -> Result<(), ApiError> {
@@ -542,6 +512,106 @@ impl Host {
             GitConflictsOp::Delete { files } => self.git.delete_conflicted(repo, &files),
         }
     }
+    pub fn git_worktree_list(&self, path: &str) -> Result<GitWorktreeList, ApiError> {
+        self.git.list_worktrees(Path::new(path))
+    }
+
+    pub fn git_worktree_default_path(
+        &self,
+        path: &str,
+        checkout: GitWorktreeCheckout,
+        root: Option<String>,
+    ) -> Result<String, ApiError> {
+        let common = self.git.worktree_common_dir(Path::new(path))?;
+        let root = match root {
+            Some(root) => Some(root),
+            None => self
+                .app_state_get(format!("git:worktree-root:{common}"))?
+                .map(|value| {
+                    serde_json::from_str::<String>(&value).map_err(|error| {
+                        ApiError::Internal(format!("Invalid remembered worktree root: {error}"))
+                    })
+                })
+                .transpose()?,
+        };
+        self.git
+            .default_worktree_path(Path::new(path), &checkout, root.as_deref())
+    }
+
+    /// Fresh membership/roots for the transport's ownership reservation and
+    /// authoritative drain. Mechanics validate again under the common-dir lock.
+    pub fn git_worktree_affected_roots(
+        &self,
+        path: &str,
+        op: &GitWorktreeOp,
+    ) -> Result<Vec<String>, ApiError> {
+        self.git.worktree_affected_roots(Path::new(path), op)
+    }
+
+    /// Remove/Migrate may only be invoked by the custom transport path while its
+    /// exclusive admission guard and zero-owner reservation remain held.
+    pub fn git_worktree(
+        &self,
+        path: &str,
+        op: GitWorktreeOp,
+    ) -> Result<GitWorktreeResult, ApiError> {
+        let common_dir = self.git.worktree_common_dir(Path::new(path))?;
+        let patterns = if matches!(op, GitWorktreeOp::Add { .. }) {
+            let source = self.git.worktree_checkout_root(Path::new(path))?;
+            let source = source.to_str().ok_or_else(|| {
+                ApiError::InvalidArgument("Invoking checkout path is not UTF-8".into())
+            })?;
+            self.settings_get_effective(Some(source.to_owned()))?
+                .settings
+                .git
+                .worktree_copy
+        } else {
+            BTreeMap::new()
+        };
+        let mut result = self.git.worktree(Path::new(path), op, &patterns);
+        if let Ok(GitWorktreeResult::Added { path, warnings, .. }) = &mut result {
+            let remembered = Path::new(path)
+                .parent()
+                .ok_or_else(|| ApiError::Internal("Created worktree has no parent".into()))
+                .and_then(|parent| {
+                    serde_json::to_string(parent.to_str().ok_or_else(|| {
+                        ApiError::InvalidArgument("Worktree parent is not UTF-8".into())
+                    })?)
+                    .map_err(|error| ApiError::Internal(error.to_string()))
+                })
+                .and_then(|value| {
+                    self.app_state_put(format!("git:worktree-root:{common_dir}"), value)
+                });
+            if let Err(error) = remembered {
+                warnings.push(format!(
+                    "Worktree was created, but its root preference could not be saved: {error}"
+                ));
+            }
+        }
+        // Full refresh even after a partial migration failure. Loaded subfolders
+        // are their own UI keys, so do not emit only checkout-root events.
+        let mut refresh = BTreeSet::from([path.to_owned()]);
+        for folder in self.git_watchers.watched_folders() {
+            if self
+                .git
+                .worktree_common_dir(&folder)
+                .is_ok_and(|common| common == common_dir)
+            {
+                if let Some(folder) = folder.to_str() {
+                    refresh.insert(folder.to_owned());
+                }
+            }
+        }
+        for folder in refresh {
+            self.git.invalidate(Path::new(&folder));
+            self.emit(HostEvent::GitChanged(GitChangedEvent {
+                folder_path: folder,
+                scope: GitChangeScope::All,
+                error: None,
+            }));
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -599,5 +669,107 @@ mod tests {
         assert!(validated_project_file(&project_str, "../etc/passwd").is_err());
 
         fs::remove_dir_all(&project).expect("remove temp project");
+    }
+    #[test]
+    fn first_created_custom_worktree_root_is_shared_across_checkouts() {
+        use super::*;
+        use std::sync::Arc;
+        struct Temporary(PathBuf);
+        impl Drop for Temporary {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let temp = Temporary(std::env::temp_dir().join(format!(
+            "sworm-worktree-preference-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let main = temp.0.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&main)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "Sworm Test"]);
+        git(&["config", "user.email", "test@sworm.invalid"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        let hooks = temp.0.join("empty-hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        std::fs::write(main.join("tracked.txt"), "committed\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        let host = Host::new(temp.0.join("state.db"), Arc::new(|_| Ok(()))).unwrap();
+        let custom = temp.0.join("first custom root");
+        let destination = custom.join("feature");
+        let result = host
+            .git_worktree(
+                main.to_str().unwrap(),
+                GitWorktreeOp::Add {
+                    destination: destination.to_str().unwrap().to_owned(),
+                    checkout: GitWorktreeCheckout::NewBranch {
+                        name: "feature".into(),
+                        base: "HEAD".into(),
+                    },
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            GitWorktreeResult::Added {
+                copy_complete: true,
+                ..
+            }
+        ));
+        let common = host
+            .git_worktree_list(main.to_str().unwrap())
+            .unwrap()
+            .common_dir;
+        let remembered: String = serde_json::from_str(
+            &host
+                .app_state_get(format!("git:worktree-root:{common}"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(Path::new(&remembered), custom);
+        for invoking in [&main, &destination] {
+            let default = host
+                .git_worktree_default_path(
+                    invoking.to_str().unwrap(),
+                    GitWorktreeCheckout::NewBranch {
+                        name: "another".into(),
+                        base: "HEAD".into(),
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(Path::new(&default), custom.join("another"));
+        }
+        // Explicit roots remain authoritative over the shared preference.
+        let explicit = temp.0.join("override");
+        assert_eq!(
+            Path::new(
+                &host
+                    .git_worktree_default_path(
+                        main.to_str().unwrap(),
+                        GitWorktreeCheckout::Detached { rev: "HEAD".into() },
+                        Some(explicit.to_str().unwrap().into())
+                    )
+                    .unwrap()
+            )
+            .parent(),
+            Some(explicit.as_path())
+        );
+        drop(host);
     }
 }

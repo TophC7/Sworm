@@ -185,6 +185,7 @@ impl SettingsService {
                 | "terminal"
                 | "nix"
                 | "explorer"
+                | "git"
                 | "formatting"
                 | "providers"
                 | "lsp"
@@ -499,6 +500,7 @@ mod tests {
             "terminal",
             "nix",
             "explorer",
+            "git",
             "formatting",
             "providers",
             "lsp",

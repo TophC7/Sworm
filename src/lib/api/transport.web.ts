@@ -229,7 +229,6 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
           intent.watchedRevision = -1
           continue
         }
-        if (!intent.dirs && folders.get(path) === intent) folders.delete(path)
         return
       }
       if (intent.registeredGeneration !== targetGeneration) {
@@ -258,12 +257,34 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
     intent: FolderIntent,
     targetGeneration: number,
     directWatch = false,
-    claimOnly = false
+    claimOnly = false,
+    release = false
   ): Promise<void> {
     const operation = intent.queue
       .catch(() => {})
-      .then(() => reconcile(path, intent, targetGeneration, directWatch, claimOnly))
-    intent.queue = operation.catch(() => {})
+      .then(async () => {
+        if (release) {
+          // Path RPCs can acquire host ownership without declaring a watch/claim here.
+          // An explicit release must always await the host, including repeats and failed-release retries.
+          await rawRpc('folder_release', { folderPath: path }, targetGeneration)
+          intent.registeredGeneration = 0
+          intent.watchedRevision = -1
+        }
+        await reconcile(path, intent, targetGeneration, directWatch, claimOnly)
+      })
+    const settled = operation.catch(() => {})
+    intent.queue = settled
+    void settled.then(() => {
+      // Retain one queue until its last operation settles: a queued release must not overtake a new claim.
+      if (
+        intent.queue === settled &&
+        !intent.claimed &&
+        !intent.dirs &&
+        intent.registeredGeneration === 0 &&
+        folders.get(path) === intent
+      )
+        folders.delete(path)
+    })
     return operation
   }
 
@@ -518,7 +539,7 @@ export function createWebHostTransport(options: WebHostTransportOptions): WebHos
         if (!intent.claimed && !intent.dirs && folders.get(path) === intent) folders.delete(path)
         throw new Error(DISCONNECTED)
       }
-      await enqueue(path, intent, token, method === 'files_watch_dirs')
+      await enqueue(path, intent, token, method === 'files_watch_dirs', false, method === 'folder_release')
       return undefined as T
     }
     const result = await rawRpc<T>(method, params)

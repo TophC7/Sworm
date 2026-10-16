@@ -16,9 +16,13 @@
   let bootstrapError = $state<string | null>(null)
 
   async function openTarget(target: OpenTarget): Promise<void> {
-    if (target.type === 'folder') await openFolder(target.folder_path)
-    else if (target.type === 'file') await openTextFile(target.folder_path, target.file_path)
-    else await openWorkbench(target.server, target.workbench_id, false)
+    try {
+      if (target.type === 'folder') await openFolder(target.folder_path)
+      else if (target.type === 'file') await openTextFile(target.folder_path, target.file_path)
+      else await openWorkbench(target.server, target.workbench_id, false)
+    } finally {
+      await platform.native?.window.openTargetFinished(target)
+    }
   }
 
   onMount(() => {

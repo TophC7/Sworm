@@ -6,7 +6,7 @@
 import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
-import { TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
+import { focusTerminal, TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
 import { setTaskTabStatus } from '$lib/features/workbench/state.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
 import { requireNative } from '$lib/platform'
@@ -262,7 +262,7 @@ export class TaskTerminal {
   }
 
   focus(): void {
-    this.term.focus()
+    focusTerminal(this.term, this.tabId)
   }
 
   /** Stop the PTY without tearing down xterm — allows the user to

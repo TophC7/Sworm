@@ -22,7 +22,7 @@
       {#if entry.kind === 'separator'}
         <DropdownMenu.Separator />
       {:else}
-        <DropdownMenu.Item onclick={entry.onSelect} disabled={entry.disabled}>
+        <DropdownMenu.Item onSelect={entry.onSelect} disabled={entry.disabled}>
           <span>{entry.label}</span>
           {#if entry.shortcut}
             <DropdownMenu.Shortcut>{entry.shortcut}</DropdownMenu.Shortcut>

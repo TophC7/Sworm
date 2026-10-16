@@ -123,6 +123,7 @@ impl Host {
 
         if let Err(error) = self.pty.spawn(
             run_id.clone(),
+            &folder,
             &shell,
             &shell_args,
             Some(&cwd),

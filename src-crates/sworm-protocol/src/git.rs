@@ -152,6 +152,79 @@ pub struct DiffFileContent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktree {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub is_main: bool,
+    pub is_current: bool,
+    pub bare: bool,
+    pub locked: Option<String>,
+    pub prunable: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeList {
+    pub common_dir: String,
+    pub main_path: Option<String>,
+    pub worktrees: Vec<GitWorktree>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitWorktreeCheckout {
+    ExistingBranch { name: String },
+    NewBranch { name: String, base: String },
+    Detached { rev: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitWorktreeOp {
+    Add {
+        destination: String,
+        checkout: GitWorktreeCheckout,
+    },
+    Remove {
+        worktree_path: String,
+        force: bool,
+    },
+    Prune,
+    Migrate {
+        worktree_path: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitWorktreeResult {
+    Added {
+        path: String,
+        copy_complete: bool,
+        warnings: Vec<String>,
+    },
+    Removed,
+    Pruned,
+    Migrated {
+        main_path: String,
+        recovery_stash: Option<String>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",

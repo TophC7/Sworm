@@ -5,8 +5,25 @@ import { isGitError } from '$lib/features/git/errors'
 import { discardAll, getGitSummary, runGitAction, stageAll, unstageAll } from '$lib/features/git/state.svelte'
 import { runNotifiedTask, type RunNotifiedTaskOptions } from '$lib/features/notifications/runNotifiedTask'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
-import type { GitCommitOptions, GitConflictSide, GitStashScope } from '$lib/types/backend'
+import { forgetRecentWorktree } from '$lib/features/folders/state.svelte'
+import { forgetWorktree, refreshWorktreeRepository, refreshWorktrees } from '$lib/features/git/worktrees.svelte'
+import { openTaskTab, startTaskTab } from '$lib/features/tasks/service.svelte'
+import { closeWorktreeTabs } from '$lib/features/workbench/tabActions.svelte'
+import {
+  forgetClosedWorktreeTabs,
+  getActiveFolderPath,
+  getTabs,
+  openFolder
+} from '$lib/features/workbench/state.svelte'
+import type {
+  GitCommitOptions,
+  GitConflictSide,
+  GitStashScope,
+  GitWorktreeCheckout,
+  GitWorktreeResult
+} from '$lib/types/backend'
+import { getErrorMessage } from '$lib/utils/client-error'
+import { isPathWithin } from '$lib/utils/paths'
 
 const GIT_ACTION_NOTIFICATIONS = {
   pull: {
@@ -178,12 +195,14 @@ function runNotifiedGitAction<T>(
 
 export function pullFolder(folderPath: string, rebase = false): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.pull, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'pull', rebase })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'pull', rebase }))
+  )
 }
 
 export function pushFolder(folderPath: string, branch: string | null = null): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.push, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'push', branch, force: false })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'push', branch, force: false }))
+  )
 }
 
 export async function forcePushWithLease(folderPath: string, branch: string | null = null): Promise<void> {
@@ -196,12 +215,14 @@ export async function forcePushWithLease(folderPath: string, branch: string | nu
   })
   if (!proceed) return
   await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.forcePush, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'push', branch, force: true })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'push', branch, force: true }))
+  )
 }
 
 export function fetchFolder(folderPath: string, remote: string | null = null): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.fetch, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'fetch', remote })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'fetch', remote }))
+  )
 }
 
 export function publishBranch(
@@ -210,12 +231,14 @@ export function publishBranch(
   remote: string | null = null
 ): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.publish, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'publish', branch, remote })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'publish', branch, remote }))
+  )
 }
 
 export function syncFolder(folderPath: string, rebase = false): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.sync, () =>
-    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'sync', rebase })))
+    runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'sync', rebase }))
+  )
 }
 
 export async function commitFolder(
@@ -225,7 +248,8 @@ export async function commitFolder(
   after: 'push' | 'sync' | null = null
 ): Promise<string | undefined> {
   const hash = await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.commit, () =>
-    runGitAction(folderPath, (path) => backend.git.commit(path, message, options)))
+    runGitAction(folderPath, (path) => backend.git.commit(path, message, options))
+  )
   if (hash && after === 'push') await pushFolder(folderPath)
   if (hash && after === 'sync') await syncFolder(folderPath)
   return hash
@@ -240,7 +264,8 @@ export async function undoLastCommit(folderPath: string): Promise<string | undef
   })
   if (!proceed) return undefined
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.undoLastCommit, () =>
-    runGitAction(folderPath, (path) => backend.git.undoLastCommit(path)))
+    runGitAction(folderPath, (path) => backend.git.undoLastCommit(path))
+  )
 }
 
 export function stageAllFolder(folderPath: string): Promise<boolean | undefined> {
@@ -255,27 +280,44 @@ export function discardAllFolder(folderPath: string): Promise<boolean | undefine
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.discardAll, () => discardAll(folderPath))
 }
 
-export function stashFolder(folderPath: string, scope: GitStashScope, message: string | null = null): Promise<void | undefined> {
+export function stashFolder(
+  folderPath: string,
+  scope: GitStashScope,
+  message: string | null = null
+): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.stash, () =>
-    runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'push', message, scope })))
+    runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'push', message, scope }))
+  )
 }
 
 export async function applyStash(folderPath: string, index: number): Promise<boolean> {
   const options = GIT_ACTION_NOTIFICATIONS.applyStash
-  return (await runNotifiedGitAction(folderPath, {
-    ...options,
-    loading: { ...options.loading, description: `stash@{${index}}` },
-    success: { ...options.success, description: `stash@{${index}}` }
-  }, () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'apply', index })).then(() => true))) === true
+  return (
+    (await runNotifiedGitAction(
+      folderPath,
+      {
+        ...options,
+        loading: { ...options.loading, description: `stash@{${index}}` },
+        success: { ...options.success, description: `stash@{${index}}` }
+      },
+      () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'apply', index })).then(() => true)
+    )) === true
+  )
 }
 
 export async function popStash(folderPath: string, index: number): Promise<boolean> {
   const options = GIT_ACTION_NOTIFICATIONS.applyStash
-  return (await runNotifiedGitAction(folderPath, {
-    ...options,
-    loading: { ...options.loading, description: `stash@{${index}}` },
-    success: { ...options.success, description: `stash@{${index}}` }
-  }, () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'pop', index })).then(() => true))) === true
+  return (
+    (await runNotifiedGitAction(
+      folderPath,
+      {
+        ...options,
+        loading: { ...options.loading, description: `stash@{${index}}` },
+        success: { ...options.success, description: `stash@{${index}}` }
+      },
+      () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'pop', index })).then(() => true)
+    )) === true
+  )
 }
 
 export async function dropStash(folderPath: string, index: number): Promise<boolean> {
@@ -286,11 +328,17 @@ export async function dropStash(folderPath: string, index: number): Promise<bool
   })
   if (!proceed) return false
   const options = GIT_ACTION_NOTIFICATIONS.dropStash
-  return (await runNotifiedGitAction(folderPath, {
-    ...options,
-    loading: { ...options.loading, description: `stash@{${index}}` },
-    success: { ...options.success, description: `stash@{${index}}` }
-  }, () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'drop', index })).then(() => true))) === true
+  return (
+    (await runNotifiedGitAction(
+      folderPath,
+      {
+        ...options,
+        loading: { ...options.loading, description: `stash@{${index}}` },
+        success: { ...options.success, description: `stash@{${index}}` }
+      },
+      () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'drop', index })).then(() => true)
+    )) === true
+  )
 }
 
 export async function clearStashes(folderPath: string): Promise<boolean> {
@@ -300,64 +348,86 @@ export async function clearStashes(folderPath: string): Promise<boolean> {
     confirmLabel: 'Drop All'
   })
   if (!proceed) return false
-  return (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.clearStashes, () =>
-    runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'clear' })).then(() => true))) === true
+  return (
+    (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.clearStashes, () =>
+      runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'clear' })).then(() => true)
+    )) === true
+  )
 }
 
 export async function branchFromStash(folderPath: string, index: number, name: string): Promise<boolean> {
-  return (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.branchFromStash, () =>
-    runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'branch', index, name })).then(() => true))) === true
+  return (
+    (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.branchFromStash, () =>
+      runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'branch', index, name })).then(() => true)
+    )) === true
+  )
 }
 
 export function ignoreFiles(folderPath: string, files: string[]): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.ignore, () =>
-    runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'ignore', files })))
+    runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'ignore', files }))
+  )
 }
 
 export function fastForwardBranch(folderPath: string, name: string): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.fastForward, () =>
-    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'fast_forward', name })))
+    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'fast_forward', name }))
+  )
 }
 
 export function rebaseOnto(folderPath: string, target: string): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.rebase, () =>
-    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'rebase', target })))
+    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'rebase', target }))
+  )
 }
 
 export function unsetUpstream(folderPath: string, branch: string): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.unsetUpstream, () =>
-    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'unset_upstream', branch })))
+    runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'unset_upstream', branch }))
+  )
 }
 
-export function continueOperation(folderPath: string, message: string | null = null): Promise<void | undefined> | undefined {
+export function continueOperation(
+  folderPath: string,
+  message: string | null = null
+): Promise<void | undefined> | undefined {
   const kind = getGitSummary(folderPath)?.operation?.kind
   if (!kind) return
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.continueOperation(kind.replace('_', '-')), () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'continue', message })))
+    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'continue', message }))
+  )
 }
 
 export function skipOperation(folderPath: string): Promise<void | undefined> | undefined {
   const kind = getGitSummary(folderPath)?.operation?.kind
   if (!kind) return
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.skipOperation, () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'skip' })))
+    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'skip' }))
+  )
 }
 
 export function abortOperation(folderPath: string): Promise<void | undefined> | undefined {
   const kind = getGitSummary(folderPath)?.operation?.kind
   if (!kind) return
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.abortOperation(kind.replace('_', '-')), () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'abort' })))
+    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'abort' }))
+  )
 }
 
-export function takeConflictSide(folderPath: string, files: string[], side: GitConflictSide): Promise<void | undefined> {
+export function takeConflictSide(
+  folderPath: string,
+  files: string[],
+  side: GitConflictSide
+): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.takeConflictSide, () =>
-    runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'take_side', files, side })))
+    runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'take_side', files, side }))
+  )
 }
 
 export function deleteConflicted(folderPath: string, files: string[]): Promise<void | undefined> {
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteConflicted, () =>
-    runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files })))
+    runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files }))
+  )
 }
 
 export async function pullActiveFolder(): Promise<void> {
@@ -385,4 +455,174 @@ export async function undoLastCommitActiveFolder(): Promise<void> {
   const folderPath = getActiveFolderPath()
   if (!folderPath) return
   await undoLastCommit(folderPath)
+}
+
+/** Add is never retried: a lost response may already have created this checkout. */
+export async function createWorktree(
+  folderPath: string,
+  destination: string,
+  checkout: GitWorktreeCheckout,
+  onCreated?: () => void
+): Promise<Extract<GitWorktreeResult, { kind: 'added' }>> {
+  let result: GitWorktreeResult
+  try {
+    result = await runGitAction(folderPath, (path) =>
+      backend.git.worktree(path, { kind: 'add', destination, checkout })
+    )
+  } catch (error) {
+    await refreshWorktrees(folderPath)
+    throw error
+  }
+  if (result.kind !== 'added') throw new Error('The host returned an unexpected worktree creation result.')
+  onCreated?.()
+  try {
+    const inventory = await refreshWorktrees(folderPath)
+    if (inventory) await refreshWorktreeRepository(inventory)
+    if (result.warnings.length > 0 || !result.copyComplete) {
+      notify.warning(
+        result.copyComplete ? 'Worktree setup warnings' : 'Worktree setup incomplete',
+        `${result.path}\n${result.warnings.join('\n')}${!result.copyComplete ? '\nAutomatic setup tasks were skipped.' : ''}`
+      )
+    }
+    await openFolder(result.path)
+    if (!getTabs().some((tab) => tab.folderPath === result.path)) {
+      notify.error(
+        'Worktree created but not opened',
+        `Open ${result.path} from Worktrees. Git creation will not be retried.`
+      )
+      return result
+    }
+    notify.success('Worktree created', result.path)
+    if (!result.copyComplete) return result
+    try {
+      const tasks = await backend.tasks.list(result.path)
+      for (const task of tasks) {
+        if (task.runOn !== 'worktreeCreated') continue
+        try {
+          const tabId = await openTaskTab(result.path, task)
+          if (tabId !== null) await startTaskTab(tabId, task.clearOnRerun ?? false)
+        } catch (error) {
+          notify.error(`Setup task failed: ${task.label}`, getErrorMessage(error))
+        }
+      }
+    } catch (error) {
+      notify.error(
+        'Worktree task discovery failed',
+        `${result.path}\n${getErrorMessage(error)} The checkout was retained.`
+      )
+    }
+  } catch (error) {
+    notify.error(
+      'Worktree created; setup failed',
+      `${result.path}\n${getErrorMessage(error)} Git creation will not be retried.`
+    )
+  }
+  return result
+}
+
+export async function removeWorktree(folderPath: string, worktreePath: string): Promise<void> {
+  await runNotifiedTask(
+    async () => {
+      const inventory = await backend.git.listWorktrees(folderPath)
+      const member = inventory.worktrees.find((worktree) => worktree.path === worktreePath)
+      if (!member || member.isMain || member.locked !== null || member.prunable !== null || member.bare) {
+        throw new Error('Only a live, unlocked linked worktree can be removed. Use Prune for stale registrations.')
+      }
+      const wasActive = isPathWithin(worktreePath, getActiveFolderPath() ?? '')
+      const proceed = await confirmAsync({
+        title: 'Remove Worktree?',
+        message: `${worktreePath}\n\nAssociated tabs, sessions and tasks will close. The branch is retained. Sworm stops its managed processes only; stop external terminals and independently daemonized commands before continuing.`,
+        confirmLabel: 'Remove Worktree'
+      })
+      if (!proceed || !(await closeWorktreeTabs([worktreePath]))) return
+      try {
+        await runGitAction(folderPath, (path) =>
+          backend.git.worktree(path, { kind: 'remove', worktreePath, force: false })
+        )
+      } catch (error) {
+        if (!isGitError(error, 'worktreeHasChanges')) throw error
+        const force = await confirmAsync({
+          title: 'Force Delete Worktree?',
+          message: `${worktreePath}\n\nTracked, untracked and ignored files in this worktree will be permanently deleted. The branch is retained. This cannot be undone.`,
+          confirmLabel: 'Force Delete'
+        })
+        if (!force) return
+        if (!(await closeWorktreeTabs([worktreePath]))) return
+        await runGitAction(folderPath, (path) =>
+          backend.git.worktree(path, { kind: 'remove', worktreePath, force: true })
+        )
+      }
+      forgetClosedWorktreeTabs(worktreePath)
+      forgetWorktree(worktreePath)
+      try {
+        await forgetRecentWorktree(worktreePath)
+      } catch (error) {
+        notify.warning('Worktree removed; recents cleanup failed', getErrorMessage(error))
+      }
+      await refreshWorktreeRepository(inventory)
+      if (wasActive && inventory.mainPath) {
+        await openFolder(inventory.mainPath)
+        if (!getTabs().some((tab) => tab.folderPath === inventory.mainPath)) {
+          notify.error(
+            'Open primary checkout failed',
+            `The worktree was removed. The primary checkout remains at ${inventory.mainPath}.`
+          )
+        }
+      }
+      notify.success('Worktree removed', worktreePath)
+    },
+    { loading: { title: 'Removing worktree', description: worktreePath }, error: { title: 'Remove worktree failed' } }
+  )
+}
+
+export async function pruneWorktrees(folderPath: string): Promise<void> {
+  await runNotifiedTask(
+    async () => {
+      const inventory = await backend.git.listWorktrees(folderPath)
+      await runGitAction(folderPath, (path) => backend.git.worktree(path, { kind: 'prune' }))
+      await refreshWorktreeRepository(inventory)
+    },
+    {
+      loading: { title: 'Pruning worktrees' },
+      success: { title: 'Stale worktree registrations pruned' },
+      error: { title: 'Prune worktrees failed' }
+    }
+  )
+}
+
+export async function migrateWorktreeChanges(folderPath: string, worktreePath: string): Promise<void> {
+  await runNotifiedTask(
+    async () => {
+      const inventory = await backend.git.listWorktrees(folderPath)
+      const source = inventory.worktrees.find((worktree) => worktree.path === worktreePath)
+      const mainPath = inventory.mainPath
+      if (!source || source.isMain || source.bare || source.prunable !== null || !mainPath) {
+        throw new Error('Migration requires a live linked worktree and a primary checkout.')
+      }
+      const proceed = await confirmAsync({
+        title: 'Migrate Changes to Main?',
+        message: `Source: ${worktreePath}\nMain: ${mainPath}\n\nCaller-owned tabs, sessions and tasks in both folders will close. Main must be clean. Staged, unstaged and nonignored untracked changes move to main; ignored files stay behind. The source worktree stays and a named recovery stash is retained, including on success.\n\nStop external terminals and independently daemonized commands first. Sworm can stop only its managed processes.`,
+        confirmLabel: 'Migrate Changes'
+      })
+      if (!proceed || !(await closeWorktreeTabs([worktreePath, mainPath]))) return
+      try {
+        const result = await runGitAction(folderPath, (path) =>
+          backend.git.worktree(path, { kind: 'migrate', worktreePath })
+        )
+        if (result.kind !== 'migrated') throw new Error('The host returned an unexpected migration result.')
+        notify.success(
+          'Changes migrated to main',
+          result.recoveryStash
+            ? `Recovery stash retained: ${result.recoveryStash}`
+            : 'The source worktree had no changes to migrate.'
+        )
+      } finally {
+        await openFolder(mainPath)
+        if (getTabs().some((tab) => tab.folderPath === mainPath)) revealGitChanges()
+        else notify.error('Open primary checkout failed', `Open ${mainPath} to inspect migration state.`)
+        await refreshWorktreeRepository(inventory)
+      }
+    },
+    { loading: { title: 'Migrating worktree changes' }, error: { title: 'Worktree migration failed' } }
+  )
 }

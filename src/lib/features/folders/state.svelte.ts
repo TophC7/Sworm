@@ -4,6 +4,7 @@
 
 import { backend } from '$lib/api/backend'
 import type { RecentFolder } from '$lib/types/backend'
+import { isPathWithin } from '$lib/utils/paths'
 
 let recentFolders = $state<RecentFolder[]>([])
 let recentFoldersListening = false
@@ -42,4 +43,11 @@ export function pushRecentFolder(path: string): void {
     ...recentFolders.filter((folder) => folder.path !== path)
   ]
   void backend.folders.recentTouch(path).catch((e) => console.warn('Failed to touch recent folder:', e))
+}
+
+/** Remove a deleted checkout and its descendant folders from local and persisted recents. */
+export async function forgetRecentWorktree(rootPath: string): Promise<void> {
+  const paths = recentFolders.filter((folder) => isPathWithin(rootPath, folder.path)).map((folder) => folder.path)
+  recentFolders = recentFolders.filter((folder) => !isPathWithin(rootPath, folder.path))
+  if (paths.length > 0) await backend.folders.recentRemove(paths)
 }

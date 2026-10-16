@@ -187,11 +187,7 @@ async function refreshGitNow(folderPath: string): Promise<void> {
     if (!summary.is_repo) patch.watchError = null
     gitStore.patch(folderPath, patch)
   } catch (error) {
-    if (
-      runtimes.get(folderPath) !== rt ||
-      rt.epoch !== epoch ||
-      rt.lastApplied > seq
-    ) {
+    if (runtimes.get(folderPath) !== rt || rt.epoch !== epoch || rt.lastApplied > seq) {
       return
     }
     rt.lastApplied = seq
@@ -238,11 +234,7 @@ async function refreshStashes(folderPath: string): Promise<void> {
 }
 
 /** Coalesce a first load per folder+kind; later callers join the in-flight promise. */
-function loadOnce(
-  rt: FolderRuntime,
-  kind: 'graph' | 'stashes' | 'watch',
-  load: () => Promise<void>
-): Promise<void> {
+function loadOnce(rt: FolderRuntime, kind: 'graph' | 'stashes' | 'watch', load: () => Promise<void>): Promise<void> {
   const existing = rt.loads.get(kind)
   if (existing) return existing
   const promise = load().finally(() => {
@@ -323,6 +315,12 @@ export function refreshGit(folderPath: string): Promise<void> {
   return refreshRepo(folderPath, 'summary')
 }
 
+/** Full refresh for sibling checkout mutations, including loaded branch/worktree views. */
+export function refreshRepository(folderPath: string): Promise<void> {
+  ensureEntry(folderPath)
+  return refreshRepo(folderPath, 'all')
+}
+
 // MUTATE //
 
 /**
@@ -361,19 +359,25 @@ export async function runGitAction<T>(
 }
 
 export function stageFiles(folderPath: string, files: string[]): Promise<boolean> {
-  return withConflictMarkerConfirm((allow) => runGitAction(folderPath, (path) =>
-    backend.git.paths(path, { kind: 'stage', files, allowConflictMarkers: allow }), {
-    scope: 'summary',
-    optimistic: (summary) => stageChanges(summary, files)
-  }))
+  return withConflictMarkerConfirm((allow) =>
+    runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'stage', files, allowConflictMarkers: allow }), {
+      scope: 'summary',
+      optimistic: (summary) => stageChanges(summary, files)
+    })
+  )
 }
 
 export function stageAll(folderPath: string): Promise<boolean> {
-  return withConflictMarkerConfirm((allow) => runGitAction(folderPath, (path) =>
-    backend.git.paths(path, { kind: 'stage', files: null, allowConflictMarkers: allow }), {
-    scope: 'summary',
-    optimistic: (summary) => stageChanges(summary, null)
-  }))
+  return withConflictMarkerConfirm((allow) =>
+    runGitAction(
+      folderPath,
+      (path) => backend.git.paths(path, { kind: 'stage', files: null, allowConflictMarkers: allow }),
+      {
+        scope: 'summary',
+        optimistic: (summary) => stageChanges(summary, null)
+      }
+    )
+  )
 }
 
 export function unstageFiles(folderPath: string, files: string[]): Promise<void> {
@@ -391,17 +395,21 @@ export function unstageAll(folderPath: string): Promise<void> {
 }
 
 export function discardFiles(folderPath: string, files: string[]): Promise<boolean> {
-  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files, permanent }), {
-    scope: 'summary',
-    optimistic: (summary) => discardChanges(summary, files)
-  }))
+  return withTrashFallback((permanent) =>
+    runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files, permanent }), {
+      scope: 'summary',
+      optimistic: (summary) => discardChanges(summary, files)
+    })
+  )
 }
 
 export function discardAll(folderPath: string): Promise<boolean> {
-  return withTrashFallback((permanent) => runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files: null, permanent }), {
-    scope: 'summary',
-    optimistic: (summary) => discardChanges(summary, null)
-  }))
+  return withTrashFallback((permanent) =>
+    runGitAction(folderPath, (path) => backend.git.paths(path, { kind: 'discard', files: null, permanent }), {
+      scope: 'summary',
+      optimistic: (summary) => discardChanges(summary, null)
+    })
+  )
 }
 
 // LIFECYCLE //

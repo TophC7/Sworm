@@ -218,6 +218,14 @@ impl Default for ExplorerSettings {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GitSettings {
+    /// Untracked files copied into new worktrees. Matching false entries veto
+    /// matching true entries, including overlapping directory patterns.
+    pub worktree_copy: BTreeMap<String, bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderSettings {
@@ -281,6 +289,7 @@ pub struct EffectiveSettings {
     pub terminal: TerminalSettings,
     pub nix: NixSettings,
     pub explorer: ExplorerSettings,
+    pub git: GitSettings,
     pub formatting: FormattingSettings,
     /// Keyed by internal provider ID.
     pub providers: BTreeMap<String, ProviderSettings>,
@@ -295,6 +304,7 @@ impl Default for EffectiveSettings {
             terminal: TerminalSettings::default(),
             nix: NixSettings::default(),
             explorer: ExplorerSettings::default(),
+            git: GitSettings::default(),
             formatting: FormattingSettings::default(),
             providers: default_provider_settings(),
             lsp: LspSettings::default(),

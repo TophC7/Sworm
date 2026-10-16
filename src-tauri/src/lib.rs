@@ -55,7 +55,9 @@ pub fn run() {
                 }
             } else {
                 for path in paths {
-                    state.windows.route_open_path(app, &path);
+                    if let Err(error) = state.windows.route_open_path(app, &path) {
+                        tracing::error!(%path, %error, "External open request refused");
+                    }
                 }
             }
         }))
@@ -86,8 +88,10 @@ pub fn run() {
             // would open the same workspace twice.
             if deep_link_arg(&argv).is_none() {
                 for path in launch_path_args(&argv, cwd.as_deref()) {
-                    windows.route_open_path(app.handle(), &path);
-                    tracing::info!("First-launch argv opened path: {path}");
+                    match windows.route_open_path(app.handle(), &path) {
+                        Ok(()) => tracing::info!("First-launch argv opened path: {path}"),
+                        Err(error) => tracing::error!(%path, %error, "Launch open request refused"),
+                    }
                 }
             }
             // Before the blank-window fallback: a workspace link opens its own.

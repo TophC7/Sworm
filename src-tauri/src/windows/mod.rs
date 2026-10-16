@@ -59,7 +59,7 @@ impl Default for WindowManifest {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OpenTarget {
     Folder {
@@ -111,6 +111,7 @@ struct ActiveTransfer {
     exported: bool,
     pty_run_id: Option<String>,
     file_path: Option<PathBuf>,
+    folder_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,8 +126,184 @@ struct LiveWindowRecord {
     file_claims: HashMap<PathBuf, String>,
 }
 
+#[derive(Clone, Debug)]
+struct ClaimTarget {
+    server: Option<String>,
+    path: PathBuf,
+    folder: bool,
+}
+
+impl ClaimTarget {
+    fn parse(value: &str, folder: bool) -> Result<Self, String> {
+        let (server, path) =
+            match crate::router::Target::parse(value).map_err(|error| error.to_string())? {
+                crate::router::Target::Local => (None, canonical_claim_path(Path::new(value))?),
+                crate::router::Target::Remote { server, path } => (
+                    Some(server.to_owned()),
+                    PathBuf::from(
+                        crate::router::Target::normalize_remote_path(path)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                ),
+            };
+        path.to_str().ok_or("canonical claim path is not UTF-8")?;
+        Ok(Self {
+            server,
+            path,
+            folder,
+        })
+    }
+
+    fn from_path(path: &Path, folder: bool) -> Result<Self, String> {
+        Self::parse(path.to_str().ok_or("claim path is not UTF-8")?, folder)
+    }
+
+    fn key(&self) -> Result<PathBuf, String> {
+        match &self.server {
+            Some(server) => Ok(PathBuf::from(crate::router::Target::remote_uri(
+                server,
+                self.path.to_str().ok_or("claim path is not UTF-8")?,
+            ))),
+            None => Ok(self.path.clone()),
+        }
+    }
+
+    fn overlaps(&self, root: &Self) -> bool {
+        self.server == root.server
+            && (self.path.starts_with(&root.path)
+                || (self.folder && root.path.starts_with(&self.path)))
+    }
+}
+
+fn canonical_claim_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let mut ancestor = absolute.as_path();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                return Ok(sworm_core::services::folders::normalize_absolute_path(
+                    &canonical.join(
+                        absolute
+                            .strip_prefix(ancestor)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or_else(|| error.to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+impl OpenTarget {
+    fn claim_target(&self) -> Result<ClaimTarget, String> {
+        match self {
+            Self::Folder { folder_path } => ClaimTarget::parse(folder_path, true),
+            Self::File {
+                folder_path,
+                file_path,
+            } => {
+                let folder = ClaimTarget::parse(folder_path, true)?;
+                let relative = Path::new(file_path);
+                if relative.is_absolute()
+                    || relative
+                        .components()
+                        .any(|part| matches!(part, std::path::Component::ParentDir))
+                {
+                    return Err("open file target must be project-relative".into());
+                }
+                let path = folder.path.join(relative);
+                let path = if folder.server.is_none() {
+                    canonical_claim_path(&path)?
+                } else {
+                    path
+                };
+                Ok(ClaimTarget {
+                    path,
+                    folder: false,
+                    ..folder
+                })
+            }
+            // A workbench's folders are not known until its snapshot is fetched.
+            Self::Workbench { server, .. } => {
+                if server.is_empty() {
+                    return Err("workbench server must not be empty".into());
+                }
+                Ok(ClaimTarget {
+                    server: Some(server.clone()),
+                    path: PathBuf::from("/"),
+                    folder: true,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct WindowRecords {
+    windows: HashMap<String, LiveWindowRecord>,
+    reservations: HashMap<uuid::Uuid, Vec<ClaimTarget>>,
+    transfer_intents: HashMap<String, Vec<ClaimTarget>>,
+}
+
+impl std::ops::Deref for WindowRecords {
+    type Target = HashMap<String, LiveWindowRecord>;
+    fn deref(&self) -> &Self::Target {
+        &self.windows
+    }
+}
+
+impl std::ops::DerefMut for WindowRecords {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.windows
+    }
+}
+
+impl WindowRecords {
+    fn admit(&self, target: &ClaimTarget) -> Result<(), String> {
+        if self
+            .reservations
+            .values()
+            .flatten()
+            .any(|root| target.overlaps(root))
+        {
+            return Err(format!(
+                "Worktree operation in progress for {}; wait before opening or transferring it",
+                target.path.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn insert_transfer_intent(
+        &mut self,
+        id: &str,
+        targets: Vec<ClaimTarget>,
+    ) -> Result<(), String> {
+        for target in &targets {
+            self.admit(target)?;
+        }
+        self.transfer_intents.insert(id.to_owned(), targets);
+        Ok(())
+    }
+}
+
+/// Own this guard inside the task performing the mutation, not its cancellable waiter.
+pub struct WorktreeReservation {
+    records: Arc<Mutex<WindowRecords>>,
+    id: uuid::Uuid,
+}
+
+impl Drop for WorktreeReservation {
+    fn drop(&mut self) {
+        self.records.lock().reservations.remove(&self.id);
+    }
+}
+
 pub struct WindowCoordinatorService {
-    records: Mutex<HashMap<String, LiveWindowRecord>>,
+    records: Arc<Mutex<WindowRecords>>,
     active_transfers: Mutex<HashMap<String, ActiveTransfer>>,
     group_transfers: Mutex<HashMap<String, Arc<groups::GroupTransfer>>>,
     exit_requested: AtomicBool,
@@ -136,12 +313,60 @@ pub struct WindowCoordinatorService {
 impl WindowCoordinatorService {
     pub fn new() -> Self {
         Self {
-            records: Mutex::new(HashMap::new()),
+            records: Arc::new(Mutex::new(WindowRecords::default())),
             active_transfers: Mutex::new(HashMap::new()),
             group_transfers: Mutex::new(HashMap::new()),
             exit_requested: AtomicBool::new(false),
             pending_cleanup: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn reserve_worktree_roots(&self, roots: &[String]) -> Result<WorktreeReservation, String> {
+        let roots: Vec<_> = roots
+            .iter()
+            .map(|root| ClaimTarget::parse(root, true))
+            .collect::<Result<_, _>>()?;
+        let mut records = self.records.lock();
+        for root in &roots {
+            records.admit(root)?;
+        }
+        for record in records.values() {
+            for folder in &record.folder_claims {
+                let target = ClaimTarget::from_path(folder, true)?;
+                if roots.iter().any(|root| target.overlaps(root)) {
+                    return Err(occupied_worktree(folder));
+                }
+            }
+            for file in record.file_claims.keys() {
+                let target = ClaimTarget::from_path(file, false)?;
+                if roots.iter().any(|root| target.overlaps(root)) {
+                    return Err(occupied_worktree(file));
+                }
+            }
+            for pending in &record.pending_open_targets {
+                let target = pending.claim_target()?;
+                if roots.iter().any(|root| target.overlaps(root)) {
+                    return Err(format!(
+                        "Worktree {} has a pending open; close it in the other window first",
+                        target.key()?.display()
+                    ));
+                }
+            }
+        }
+        for target in records.transfer_intents.values().flatten() {
+            if roots.iter().any(|root| target.overlaps(root)) {
+                return Err(format!(
+                    "Worktree {} has a transfer in progress; finish or cancel it first",
+                    target.key()?.display()
+                ));
+            }
+        }
+        let id = uuid::Uuid::new_v4();
+        records.reservations.insert(id, roots);
+        Ok(WorktreeReservation {
+            records: self.records.clone(),
+            id,
+        })
     }
 
     fn track_cleanup(&self) -> std::sync::mpsc::Sender<()> {
@@ -378,7 +603,7 @@ impl WindowCoordinatorService {
                 .get_mut(label)
                 .ok_or_else(|| format!("unknown window label: {label}"))?;
             record.ready = true;
-            std::mem::take(&mut record.pending_open_targets)
+            record.pending_open_targets.clone()
         };
         let window = app
             .get_webview_window(label)
@@ -393,48 +618,81 @@ impl WindowCoordinatorService {
         Ok(targets)
     }
 
-    pub fn queue_open_target(&self, label: &str, target: OpenTarget, app: &tauri::AppHandle) {
-        let ready = {
-            let mut records = self.records.lock();
-            let Some(record) = records.get_mut(label) else {
-                tracing::warn!("Cannot route open target to unknown window {label}");
-                return;
-            };
-            if !record.ready {
-                record.pending_open_targets.push(target.clone());
-            }
-            record.ready
-        };
-        if ready {
-            if let Some(window) = app.get_webview_window(label) {
-                if let Err(error) = window.emit_to(window.label(), "open-target", &target) {
-                    tracing::error!("Failed to emit open target to {label}: {error}");
-                }
-            }
+    pub fn queue_open_target(
+        &self,
+        label: &str,
+        target: OpenTarget,
+        app: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        if self.queue_open_record(label, target.clone())? {
+            let window = app
+                .get_webview_window(label)
+                .ok_or_else(|| format!("window not found: {label}"))?;
+            window
+                .emit_to(window.label(), "open-target", &target)
+                .map_err(|error| format!("failed to emit open target to {label}: {error}"))?;
         }
+        Ok(())
     }
 
-    pub fn claim_folder(&self, label: &str, folder: PathBuf) {
-        if let Some(record) = self.records.lock().get_mut(label) {
-            record.folder_claims.insert(folder);
-        }
+    fn queue_open_record(&self, label: &str, target: OpenTarget) -> Result<bool, String> {
+        let target_claim = target.claim_target()?;
+        let mut records = self.records.lock();
+        records.admit(&target_claim)?;
+        let record = records
+            .get_mut(label)
+            .ok_or_else(|| format!("unknown window label: {label}"))?;
+        // Emission is not completion: opening/claiming a folder can await a remote host.
+        record.pending_open_targets.push(target);
+        Ok(record.ready)
     }
 
-    pub fn release_folder(&self, label: &str, folder: &Path) -> bool {
+    pub fn open_target_finished(&self, label: &str, target: &OpenTarget) -> Result<(), String> {
+        let mut records = self.records.lock();
+        let record = records
+            .get_mut(label)
+            .ok_or_else(|| format!("unknown window label: {label}"))?;
+        if let Some(index) = record
+            .pending_open_targets
+            .iter()
+            .position(|pending| pending == target)
+        {
+            record.pending_open_targets.remove(index);
+        }
+        Ok(())
+    }
+
+    pub fn claim_folder(&self, label: &str, folder: PathBuf) -> Result<(), String> {
+        let target = ClaimTarget::from_path(&folder, true)?;
+        let folder = target.key()?;
+        let mut records = self.records.lock();
+        records.admit(&target)?;
+        let record = records
+            .get_mut(label)
+            .ok_or_else(|| format!("unknown window label: {label}"))?;
+        record.folder_claims.insert(folder);
+        Ok(())
+    }
+
+    pub fn release_folder(&self, label: &str, folder: &Path) -> Result<bool, String> {
+        let folder = ClaimTarget::from_path(folder, true)?.key()?;
         let mut records = self.records.lock();
         if let Some(record) = records.get_mut(label) {
-            record.folder_claims.remove(folder);
+            record.folder_claims.remove(&folder);
         }
-        !records
+        Ok(!records
             .values()
-            .any(|record| record.folder_claims.contains(folder))
+            .any(|record| record.folder_claims.contains(&folder)))
     }
 
     pub fn folder_claimed(&self, folder: &Path) -> bool {
+        let folder = ClaimTarget::from_path(folder, true)
+            .and_then(|target| target.key())
+            .unwrap_or_else(|_| folder.to_path_buf());
         self.records
             .lock()
             .values()
-            .any(|record| record.folder_claims.contains(folder))
+            .any(|record| record.folder_claims.contains(&folder))
     }
 
     pub fn claim_file(
@@ -444,7 +702,7 @@ impl WindowCoordinatorService {
         tab_id: String,
         reveal: Option<serde_json::Value>,
     ) -> Result<ClaimFileResult, String> {
-        let result = self.claim_file_record(window.label(), &file_path, &tab_id);
+        let result = self.claim_file_record(window.label(), &file_path, &tab_id)?;
         let ClaimFileResult::Redirect {
             owner_label,
             tab_id: owner_tab_id,
@@ -468,33 +726,44 @@ impl WindowCoordinatorService {
         Ok(result)
     }
 
-    fn claim_file_record(&self, label: &str, file: &Path, tab_id: &str) -> ClaimFileResult {
+    fn claim_file_record(
+        &self,
+        label: &str,
+        file: &Path,
+        tab_id: &str,
+    ) -> Result<ClaimFileResult, String> {
+        let target = ClaimTarget::from_path(file, false)?;
+        let file = target.key()?;
         let mut records = self.records.lock();
+        records.admit(&target)?;
+        if !records.contains_key(label) {
+            return Err(format!("unknown window label: {label}"));
+        }
         if let Some((owner_label, owner_tab_id)) =
             records.iter().find_map(|(other_label, record)| {
                 (other_label != label)
-                    .then(|| record.file_claims.get(file))
+                    .then(|| record.file_claims.get(&file))
                     .flatten()
                     .map(|other_tab_id| (other_label.clone(), other_tab_id.clone()))
             })
         {
-            return ClaimFileResult::Redirect {
+            return Ok(ClaimFileResult::Redirect {
                 owner_label,
                 tab_id: owner_tab_id,
-            };
+            });
         }
         if let Some(record) = records.get_mut(label) {
-            record
-                .file_claims
-                .insert(file.to_path_buf(), tab_id.to_string());
+            record.file_claims.insert(file, tab_id.to_string());
         }
-        ClaimFileResult::Claimed
+        Ok(ClaimFileResult::Claimed)
     }
 
-    pub fn release_file(&self, label: &str, file: &Path) {
+    pub fn release_file(&self, label: &str, file: &Path) -> Result<(), String> {
+        let file = ClaimTarget::from_path(file, false)?.key()?;
         if let Some(record) = self.records.lock().get_mut(label) {
-            record.file_claims.remove(file);
+            record.file_claims.remove(&file);
         }
+        Ok(())
     }
 
     pub fn release_claims_under(&self, root: &Path) -> usize {
@@ -514,8 +783,20 @@ impl WindowCoordinatorService {
         removed
     }
 
-    pub fn rename_claims_under(&self, old_root: &Path, new_root: &Path) {
-        for record in self.records.lock().values_mut() {
+    pub fn rename_claims_under(&self, old_root: &Path, new_root: &Path) -> Result<(), String> {
+        let mut records = self.records.lock();
+        for record in records.values() {
+            for key in record
+                .file_claims
+                .keys()
+                .filter(|key| key.starts_with(old_root))
+            {
+                let destination =
+                    new_root.join(key.strip_prefix(old_root).expect("matched ancestor"));
+                records.admit(&ClaimTarget::from_path(&destination, false)?)?;
+            }
+        }
+        for record in records.values_mut() {
             let keys: Vec<_> = record
                 .file_claims
                 .keys()
@@ -524,12 +805,14 @@ impl WindowCoordinatorService {
                 .collect();
             for key in keys {
                 if let Some(tab_id) = record.file_claims.remove(&key) {
-                    record
-                        .file_claims
-                        .insert(new_root.join(key.strip_prefix(old_root).unwrap()), tab_id);
+                    record.file_claims.insert(
+                        new_root.join(key.strip_prefix(old_root).expect("matched ancestor")),
+                        tab_id,
+                    );
                 }
             }
         }
+        Ok(())
     }
 
     pub fn transfer_file_claim(
@@ -539,20 +822,23 @@ impl WindowCoordinatorService {
         file: &Path,
         tab_id: &str,
     ) -> Result<(), String> {
+        let target = ClaimTarget::from_path(file, false)?;
+        let file = target.key()?;
         let mut records = self.records.lock();
+        records.admit(&target)?;
         if !records.contains_key(target_label) {
             return Err(format!("unknown target window label: {target_label}"));
         }
         if source_label != target_label {
             if let Some(source) = records.get_mut(source_label) {
-                source.file_claims.remove(file);
+                source.file_claims.remove(&file);
             }
         }
         records
             .get_mut(target_label)
             .expect("target window checked above")
             .file_claims
-            .insert(file.to_path_buf(), tab_id.to_string());
+            .insert(file, tab_id.to_string());
         Ok(())
     }
     pub fn initiate_tab_transfer<R: tauri::Runtime>(
@@ -565,44 +851,7 @@ impl WindowCoordinatorService {
             return Err("transfer target belongs to a different window".to_string());
         }
         self.abort_expired_transfers(app);
-        {
-            let records = self.records.lock();
-            if !records.contains_key(&params.source_window) {
-                return Err(format!(
-                    "unknown source window label: {}",
-                    params.source_window
-                ));
-            }
-            if !records.contains_key(&params.target_window) {
-                return Err(format!(
-                    "unknown target window label: {}",
-                    params.target_window
-                ));
-            }
-        }
-
-        let mut transfers = self.active_transfers.lock();
-        if transfers.values().any(|transfer| {
-            transfer.source_window == params.source_window && transfer.tab_id == params.tab_id
-        }) {
-            return Err("tab transfer already in progress for this tab".to_string());
-        }
-        let transfer_id = format!("transfer-{}", uuid::Uuid::new_v4());
-        transfers.insert(
-            transfer_id.clone(),
-            ActiveTransfer {
-                id: transfer_id.clone(),
-                source_window: params.source_window.clone(),
-                target_window: params.target_window,
-                tab_id: params.tab_id.clone(),
-                target_index: params.target_index,
-                created_at: Instant::now(),
-                exported: false,
-                pty_run_id: None,
-                file_path: None,
-            },
-        );
-        drop(transfers);
+        let transfer_id = self.insert_tab_transfer(&params)?;
 
         if let Err(error) = app
             .emit_to(
@@ -616,6 +865,7 @@ impl WindowCoordinatorService {
             .map_err(|error| format!("failed to request tab transfer: {error}"))
         {
             self.active_transfers.lock().remove(&transfer_id);
+            self.records.lock().transfer_intents.remove(&transfer_id);
             return Err(error);
         }
 
@@ -623,7 +873,15 @@ impl WindowCoordinatorService {
         let timeout_id = transfer_id.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(TRANSFER_TIMEOUT).await;
+            let Some(host) = timeout_app
+                .try_state::<AppState>()
+                .map(|state| state.host.clone())
+            else {
+                return;
+            };
+            let admission = host.admission.clone().read_owned().await;
             if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                let _admission = admission;
                 if let Some(state) = timeout_app.try_state::<AppState>() {
                     state
                         .windows
@@ -636,6 +894,55 @@ impl WindowCoordinatorService {
             }
         });
         Ok(transfer_id)
+    }
+
+    fn insert_tab_transfer(&self, params: &TabTransferInitiateParams) -> Result<String, String> {
+        let mut transfers = self.active_transfers.lock();
+        if transfers.values().any(|transfer| {
+            transfer.source_window == params.source_window && transfer.tab_id == params.tab_id
+        }) {
+            return Err("tab transfer already in progress for this tab".into());
+        }
+        let mut records = self.records.lock();
+        let source = records
+            .get(&params.source_window)
+            .ok_or_else(|| format!("unknown source window label: {}", params.source_window))?;
+        if !records.contains_key(&params.target_window) {
+            return Err(format!(
+                "unknown target window label: {}",
+                params.target_window
+            ));
+        }
+        // Before export the coordinator knows the window's folders, not the tab's.
+        // Keep this snapshot until settlement even if the source closes/releases.
+        let mut targets = source
+            .folder_claims
+            .iter()
+            .map(|folder| ClaimTarget::from_path(folder, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (file, tab_id) in &source.file_claims {
+            if tab_id == &params.tab_id {
+                targets.push(ClaimTarget::from_path(file, false)?);
+            }
+        }
+        let id = format!("transfer-{}", uuid::Uuid::new_v4());
+        records.insert_transfer_intent(&id, targets)?;
+        transfers.insert(
+            id.clone(),
+            ActiveTransfer {
+                id: id.clone(),
+                source_window: params.source_window.clone(),
+                target_window: params.target_window.clone(),
+                tab_id: params.tab_id.clone(),
+                target_index: params.target_index,
+                created_at: Instant::now(),
+                exported: false,
+                pty_run_id: None,
+                file_path: None,
+                folder_path: None,
+            },
+        );
+        Ok(id)
     }
 
     pub fn source_export_ready<R: tauri::Runtime>(
@@ -700,9 +1007,31 @@ impl WindowCoordinatorService {
             let active = transfers
                 .get_mut(&payload.transfer_id)
                 .ok_or_else(|| format!("unknown or expired transfer: {}", payload.transfer_id))?;
+            let mut records = self.records.lock();
+            let mut targets = records
+                .transfer_intents
+                .get(&payload.transfer_id)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(folder) = payload
+                .tab
+                .get("folderPath")
+                .and_then(serde_json::Value::as_str)
+            {
+                targets.push(ClaimTarget::parse(folder, true)?);
+            }
+            if let Some(file) = &file_path {
+                targets.push(ClaimTarget::from_path(file, false)?);
+            }
+            records.insert_transfer_intent(&payload.transfer_id, targets)?;
             active.exported = true;
             active.pty_run_id = pty_run_id;
             active.file_path = file_path;
+            active.folder_path = payload
+                .tab
+                .get("folderPath")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from);
         }
 
         app.emit_to(
@@ -732,6 +1061,17 @@ impl WindowCoordinatorService {
         if transfer.target_window != target_window || !transfer.exported {
             return Err("transfer is not staged for this target window".to_string());
         }
+        {
+            let records = self.records.lock();
+            for target in records
+                .transfer_intents
+                .get(transfer_id)
+                .into_iter()
+                .flatten()
+            {
+                records.admit(target)?;
+            }
+        }
 
         if let Some(run_id) = &transfer.pty_run_id {
             let state = app
@@ -760,12 +1100,16 @@ impl WindowCoordinatorService {
                 return Err(error);
             }
         }
+        if let Some(folder) = &transfer.folder_path {
+            self.claim_folder(&transfer.target_window, folder.clone())?;
+        }
         if let Some(run_id) = &transfer.pty_run_id {
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.pty.commit_transfer(run_id);
             }
         }
         transfers.remove(transfer_id);
+        self.records.lock().transfer_intents.remove(transfer_id);
         drop(transfers);
 
         self.emit_transfer_event(
@@ -817,6 +1161,7 @@ impl WindowCoordinatorService {
                     }
                 }
             }
+            self.records.lock().transfer_intents.remove(transfer_id);
             let payload = serde_json::json!({
                 "transferId": &transfer.id,
                 "reason": reason,
@@ -950,22 +1295,18 @@ impl WindowCoordinatorService {
         }
     }
 
-    pub fn route_open_path(&self, app: &tauri::AppHandle, path_str: &str) {
-        // Remote workspaces are URIs, not filesystem paths: nothing local to
-        // canonicalize or stat.
-        if path_str.starts_with("sworm://") {
-            self.route_open_folder(app, path_str.to_string());
-            return;
+    pub fn route_open_path(&self, app: &tauri::AppHandle, path_str: &str) -> Result<(), String> {
+        // Remote workspaces are URIs, not filesystem paths: nothing local to stat.
+        if let crate::router::Target::Remote { .. } =
+            crate::router::Target::parse(path_str).map_err(|error| error.to_string())?
+        {
+            return self.route_open_folder(app, path_str.to_string());
         }
 
         let requested = PathBuf::from(path_str);
-        let canonical = match requested.canonicalize() {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!("Cannot open path {}: {error}", requested.display());
-                return;
-            }
-        };
+        let canonical = requested
+            .canonicalize()
+            .map_err(|error| format!("Cannot open path {}: {error}", requested.display()))?;
         let window = match resolve_effective_settings_for_folder_path(None) {
             Ok(resolved) => resolved.settings.window,
             Err(error) => {
@@ -975,16 +1316,20 @@ impl WindowCoordinatorService {
         };
 
         if canonical.is_dir() {
-            self.route_open_folder(app, canonical.to_string_lossy().into_owned());
-            return;
+            return self.route_open_folder(
+                app,
+                canonical
+                    .to_str()
+                    .ok_or("open path is not UTF-8")?
+                    .to_owned(),
+            );
         }
 
         if !canonical.is_file() {
-            tracing::warn!(
+            return Err(format!(
                 "Open target is neither a file nor folder: {}",
                 canonical.display()
-            );
-            return;
+            ));
         }
 
         if let Some(label) = self.file_claim_owner(&canonical) {
@@ -993,8 +1338,7 @@ impl WindowCoordinatorService {
                 .longest_claimed_folder(&canonical)
                 .map(|(_, path)| path)
                 .unwrap_or_else(|| canonical.parent().unwrap_or(Path::new("/")).to_path_buf());
-            self.queue_open_target(&label, file_target(&folder, &canonical), app);
-            return;
+            return self.queue_open_target(&label, file_target(&folder, &canonical), app);
         }
 
         let claimed = self.longest_claimed_folder(&canonical);
@@ -1008,23 +1352,23 @@ impl WindowCoordinatorService {
         match window.external_file_open_mode {
             ExternalFileOpenMode::PreferFolder => {
                 if let Some((label, _)) = claimed {
-                    self.queue_open_target(&label, target, app);
+                    self.queue_open_target(&label, target, app)
                 } else {
-                    self.open_window_with_target(app, target);
+                    self.open_window_with_target(app, target)
                 }
             }
             ExternalFileOpenMode::FocusedWindow => {
                 if let Some(label) = self.get_focused_window_label() {
-                    self.queue_open_target(&label, target, app);
+                    self.queue_open_target(&label, target, app)
                 } else {
-                    self.open_window_with_target(app, target);
+                    self.open_window_with_target(app, target)
                 }
             }
             ExternalFileOpenMode::NewWindow => self.open_window_with_target(app, target),
         }
     }
 
-    fn route_open_folder(&self, app: &tauri::AppHandle, folder_path: String) {
+    fn route_open_folder(&self, app: &tauri::AppHandle, folder_path: String) -> Result<(), String> {
         let mode = match resolve_effective_settings_for_folder_path(None) {
             Ok(resolved) => resolved.settings.window.external_folder_open_mode,
             Err(error) => {
@@ -1051,14 +1395,29 @@ impl WindowCoordinatorService {
     }
 
     pub fn remote_claimed(&self, server: &str) -> bool {
-        let prefix = crate::router::Target::remote_uri(server, "");
-        self.records.lock().values().any(|record| {
+        let records = self.records.lock();
+        records.values().any(|record| {
             record
                 .folder_claims
                 .iter()
                 .chain(record.file_claims.keys())
-                .any(|path| path.to_string_lossy().starts_with(&prefix))
-        })
+                .any(|path| {
+                    path.to_str().is_some_and(|path| matches!(
+                    crate::router::Target::parse(path),
+                    Ok(crate::router::Target::Remote { server: owner, .. }) if owner == server
+                ))
+                })
+                || record.pending_open_targets.iter().any(|target| {
+                    target
+                        .claim_target()
+                        .is_ok_and(|target| target.server.as_deref() == Some(server))
+                })
+        }) || records
+            .transfer_intents
+            .values()
+            .chain(records.reservations.values())
+            .flatten()
+            .any(|target| target.server.as_deref() == Some(server))
     }
 
     fn record_focus(&self, label: &str) {
@@ -1121,15 +1480,18 @@ impl WindowCoordinatorService {
         app: &tauri::AppHandle,
         target: OpenTarget,
     ) -> Result<String, String> {
+        self.records.lock().admit(&target.claim_target()?)?;
         let window = self.create_workbench_window(app, None)?;
-        self.queue_open_target(window.label(), target, app);
+        self.queue_open_target(window.label(), target, app)?;
         Ok(window.label().to_owned())
     }
 
-    fn open_window_with_target(&self, app: &tauri::AppHandle, target: OpenTarget) {
-        if let Err(error) = self.create_window_with_target(app, target) {
-            tracing::error!("Failed to create window for open target: {error}");
-        }
+    fn open_window_with_target(
+        &self,
+        app: &tauri::AppHandle,
+        target: OpenTarget,
+    ) -> Result<(), String> {
+        self.create_window_with_target(app, target).map(|_| ())
     }
 
     fn file_claim_owner(&self, file: &Path) -> Option<String> {
@@ -1177,6 +1539,13 @@ impl WindowCoordinatorService {
             .collect()
     }
 }
+fn occupied_worktree(path: &Path) -> String {
+    format!(
+        "Worktree is still open at {}; close its tabs in every other window first",
+        path.display()
+    )
+}
+
 fn finish_window_close(
     app: &tauri::AppHandle,
     label: &str,
@@ -1184,7 +1553,10 @@ fn finish_window_close(
     detach_runs: bool,
 ) {
     let state = app.state::<AppState>();
-    state.windows.abort_transfers_for_window(app, label);
+    {
+        let _admission = state.host.admission.blocking_read();
+        state.windows.abort_transfers_for_window(app, label);
+    }
     tauri::async_runtime::block_on(state.windows.abort_groups_for_window(app, label));
     release_window_resources(&state, label, detach_runs);
     crate::deep_links::window_closed(app, label);
@@ -1209,10 +1581,13 @@ fn finish_window_close(
 fn release_window_resources(state: &AppState, label: &str, detach_runs: bool) {
     let final_folders = state.windows.remove_window(label);
     let protected = state.windows.protected_pty_runs(label);
-    if detach_runs {
-        state.host.detach_owner(label, &protected);
-    } else {
-        state.host.release_owner(label, &protected);
+    {
+        let _admission = state.host.admission.blocking_read();
+        if detach_runs {
+            state.host.detach_owner(label, &protected);
+        } else {
+            state.host.release_owner(label, &protected);
+        }
     }
     // Remote LSP servers have no local Host entry, so `release_owner` above
     // cannot see them. Both kills are owner-scoped and LSP session ids are
@@ -1228,6 +1603,7 @@ fn release_window_resources(state: &AppState, label: &str, detach_runs: bool) {
 /// Evict the shared resources of a folder that lost its last owning window.
 pub(crate) fn release_folder_resources(state: &AppState, folder: &Path) {
     state.router.release_folder(&folder.to_string_lossy());
+    let _admission = state.host.admission.blocking_read();
     state.host.release_folder(folder);
 }
 
@@ -1555,7 +1931,9 @@ mod tests {
 
         let file = PathBuf::from("/repo/file.rs");
         assert!(matches!(
-            service.claim_file_record(source.label(), &file, "tab-exported"),
+            service
+                .claim_file_record(source.label(), &file, "tab-exported")
+                .unwrap(),
             ClaimFileResult::Claimed
         ));
         let exported_id = service
@@ -1679,6 +2057,10 @@ mod tests {
             windows: Arc::clone(&service),
         });
 
+        let project = temporary
+            .path()
+            .canonicalize()
+            .expect("canonical test project");
         for (scenario, commit, exit_while_paused) in [
             ("abort", false, true),
             ("abort-detached", false, true),
@@ -1692,6 +2074,7 @@ mod tests {
             host.pty
                 .spawn(
                     run_id.clone(),
+                    &project,
                     "/bin/sh",
                     &["-c", "stty -echo; while IFS= read -r line; do [ \"$line\" = quit ] && exit 0; printf '<%s>\\n' \"$line\"; done"],
                     None,
@@ -2020,11 +2403,13 @@ mod tests {
         let file = Path::new("/repo/src/main.rs");
 
         assert!(matches!(
-            service.claim_file_record("workbench-a", file, "tab-a"),
+            service
+                .claim_file_record("workbench-a", file, "tab-a")
+                .unwrap(),
             ClaimFileResult::Claimed
         ));
         assert!(matches!(
-            service.claim_file_record("workbench-b", file, "tab-b"),
+            service.claim_file_record("workbench-b", file, "tab-b").unwrap(),
             ClaimFileResult::Redirect {
                 ref owner_label,
                 ref tab_id
@@ -2051,8 +2436,12 @@ mod tests {
         add_window(&service, "workbench-root", 3);
         add_window(&service, "workbench-src", 1);
         let file = Path::new("/repo/src/lib.rs");
-        service.claim_folder("workbench-root", PathBuf::from("/repo"));
-        service.claim_folder("workbench-src", PathBuf::from("/repo/src"));
+        service
+            .claim_folder("workbench-root", PathBuf::from("/repo"))
+            .unwrap();
+        service
+            .claim_folder("workbench-src", PathBuf::from("/repo/src"))
+            .unwrap();
 
         let (owner, folder) = service
             .longest_claimed_folder(file)
@@ -2061,7 +2450,9 @@ mod tests {
         assert_eq!(folder, Path::new("/repo/src"));
 
         assert!(matches!(
-            service.claim_file_record("workbench-root", file, "tab-file"),
+            service
+                .claim_file_record("workbench-root", file, "tab-file")
+                .unwrap(),
             ClaimFileResult::Claimed
         ));
         assert_eq!(
@@ -2087,10 +2478,240 @@ mod tests {
         add_window(&service, "workbench-a", 1);
         add_window(&service, "workbench-b", 2);
         let folder = Path::new("/repo");
-        service.claim_folder("workbench-a", folder.to_path_buf());
-        service.claim_folder("workbench-b", folder.to_path_buf());
+        service
+            .claim_folder("workbench-a", folder.to_path_buf())
+            .unwrap();
+        service
+            .claim_folder("workbench-b", folder.to_path_buf())
+            .unwrap();
 
-        assert!(!service.release_folder("workbench-a", folder));
-        assert!(service.release_folder("workbench-b", folder));
+        assert!(!service.release_folder("workbench-a", folder).unwrap());
+        assert!(service.release_folder("workbench-b", folder).unwrap());
+    }
+
+    #[test]
+    fn reservation_matches_host_and_components_and_refuses_descendant_owners() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "caller", 1);
+        add_window(&service, "other", 2);
+        let root = "sworm://shared/repo/a".to_owned();
+        service
+            .claim_folder("other", PathBuf::from("sworm://shared/repo/a/./child"))
+            .unwrap();
+        assert!(service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .is_err());
+        service
+            .release_folder("other", Path::new("sworm://shared/repo/a/./child"))
+            .unwrap();
+        for unrelated in ["/repo/a", "sworm://other/repo/a", "sworm://shared/repo/a2"] {
+            service
+                .claim_folder("other", PathBuf::from(unrelated))
+                .unwrap();
+        }
+        let held = service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .unwrap();
+        for overlap in [
+            "sworm://shared/repo/a",
+            "sworm://shared/repo/a/child",
+            "sworm://shared/repo",
+        ] {
+            assert!(service
+                .claim_folder("caller", PathBuf::from(overlap))
+                .is_err());
+        }
+        assert!(service
+            .claim_file_record("caller", Path::new("sworm://shared/repo/a/file"), "text")
+            .is_err());
+        assert!(service
+            .transfer_file_claim(
+                "other",
+                "caller",
+                Path::new("sworm://shared/repo/a/file"),
+                "text"
+            )
+            .is_err());
+        assert!(service
+            .claim_file_record("caller", Path::new("sworm://shared/repo/a2/file"), "normal")
+            .is_ok());
+        assert!(service
+            .reserve_worktree_roots(&["sworm://shared/../../repo".into()])
+            .is_err());
+        drop(held);
+        service
+            .claim_folder("caller", PathBuf::from(&root))
+            .unwrap();
+    }
+
+    #[test]
+    fn emitted_and_queued_opens_count_until_async_handler_finishes() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "queued", 1);
+        add_window(&service, "ready", 2);
+        service.records.lock().get_mut("ready").unwrap().ready = true;
+        let root = "sworm://shared/repo/a".to_owned();
+        let queued = OpenTarget::Folder {
+            folder_path: format!("{root}/child"),
+        };
+        let emitted = OpenTarget::File {
+            folder_path: root.clone(),
+            file_path: "src/file".into(),
+        };
+        assert!(!service.queue_open_record("queued", queued.clone()).unwrap());
+        assert!(service.queue_open_record("ready", emitted.clone()).unwrap());
+        assert!(service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .is_err());
+        service.open_target_finished("queued", &queued).unwrap();
+        assert!(service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .is_err());
+        service.open_target_finished("ready", &emitted).unwrap();
+        let held = service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .unwrap();
+        assert!(service.queue_open_record("ready", emitted).is_err());
+        assert!(service.queue_open_record("queued", queued).is_err());
+        assert!(service
+            .queue_open_record(
+                "ready",
+                OpenTarget::Folder {
+                    folder_path: "sworm://shared/repo/a2".into(),
+                }
+            )
+            .is_ok());
+        drop(held);
+    }
+
+    #[test]
+    fn tab_transfer_intent_outlives_source_folder_release() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "source", 1);
+        add_window(&service, "target", 2);
+        let root = "sworm://shared/repo/a".to_owned();
+        service
+            .claim_folder("source", PathBuf::from(&root))
+            .unwrap();
+        let id = service
+            .insert_tab_transfer(&TabTransferInitiateParams {
+                source_window: "source".into(),
+                target_window: "target".into(),
+                tab_id: "session".into(),
+                target_index: 0,
+            })
+            .unwrap();
+        service.release_folder("source", Path::new(&root)).unwrap();
+        assert!(service
+            .reserve_worktree_roots(std::slice::from_ref(&root))
+            .is_err());
+        assert!(service
+            .reserve_worktree_roots(&["sworm://different/repo/a".into()])
+            .is_ok());
+        service.active_transfers.lock().remove(&id);
+        service.records.lock().transfer_intents.remove(&id);
+        assert!(service.reserve_worktree_roots(&[root]).is_ok());
+    }
+
+    #[test]
+    fn reservation_and_new_claim_choose_one_atomic_winner() {
+        let service = Arc::new(WindowCoordinatorService::new());
+        add_window(&service, "entrant", 1);
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let finish = Arc::new(std::sync::Barrier::new(3));
+        let reserver = {
+            let (service, start, finish) = (service.clone(), start.clone(), finish.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let held = service.reserve_worktree_roots(&["sworm://shared/repo/a".into()]);
+                let won = held.is_ok();
+                finish.wait();
+                won
+            })
+        };
+        let entrant = {
+            let (service, start, finish) = (service.clone(), start.clone(), finish.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let won = service
+                    .claim_folder("entrant", PathBuf::from("sworm://shared/repo/a/child"))
+                    .is_ok();
+                finish.wait();
+                won
+            })
+        };
+        start.wait();
+        finish.wait();
+        assert_ne!(reserver.join().unwrap(), entrant.join().unwrap());
+    }
+
+    #[test]
+    fn local_symlinks_and_missing_descendants_use_canonical_ancestors() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("worktree");
+        std::fs::create_dir(&root).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "entrant", 1);
+        let held = service
+            .reserve_worktree_roots(&[root.to_str().unwrap().into()])
+            .unwrap();
+        assert!(service
+            .claim_folder("entrant", alias.join("missing/deeper"))
+            .is_err());
+        assert!(service
+            .claim_file_record("entrant", &alias.join("missing/file"), "text")
+            .is_err());
+        let records = Arc::downgrade(&service.records);
+        drop(service);
+        assert!(
+            records.upgrade().is_some(),
+            "owned reservation retains its mutex independently"
+        );
+        std::thread::spawn(move || drop(held)).join().unwrap();
+        assert!(records.upgrade().is_none());
+    }
+
+    #[test]
+    fn canonical_remote_file_claims_block_and_release_across_path_aliases() {
+        let service = WindowCoordinatorService::new();
+        add_window(&service, "source", 1);
+        add_window(&service, "other", 2);
+        let file = Path::new("sworm://shared/repo/a/src/../file");
+        service.claim_file_record("source", file, "text").unwrap();
+        assert!(matches!(
+            service
+                .claim_file_record("other", Path::new("sworm://shared/repo/a/./file"), "second")
+                .unwrap(),
+            ClaimFileResult::Redirect { .. }
+        ));
+        assert!(service
+            .reserve_worktree_roots(&["sworm://shared/repo/a".into()])
+            .is_err());
+        service
+            .release_file("source", Path::new("sworm://shared/repo/a/file"))
+            .unwrap();
+        service
+            .claim_folder("source", PathBuf::from("sworm://shared/repo/a/./"))
+            .unwrap();
+        service
+            .claim_folder("other", PathBuf::from("sworm://shared/repo/a/src/.."))
+            .unwrap();
+        assert!(!service
+            .release_folder("source", Path::new("sworm://shared/repo/a"))
+            .unwrap());
+        assert!(service
+            .release_folder("other", Path::new("sworm://shared/repo/a/"))
+            .unwrap());
+        assert!(
+            service
+                .release_folder("other", Path::new("sworm://shared/repo/a"))
+                .unwrap(),
+            "strict release retries must still release the host's last owner"
+        );
+        assert!(service
+            .reserve_worktree_roots(&["sworm://shared/repo/a".into()])
+            .is_ok());
     }
 }

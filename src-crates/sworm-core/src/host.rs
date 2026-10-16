@@ -27,6 +27,8 @@ use sworm_protocol::rpc::WorkbenchRun;
 /// Services and workflows executing on one development host. The embedding
 /// application supplies storage location, event delivery and lifetime policy.
 pub struct Host {
+    // ponytail: host-wide destructive-operation gate; shard by affected roots if contention matters
+    pub admission: Arc<tokio::sync::RwLock<()>>,
     pub db: Arc<DatabaseService>,
     pub(crate) providers: ProviderService,
     pub pty: PtyService,
@@ -55,6 +57,7 @@ impl Host {
         let issues = Arc::new(IssueService::new());
         let git = Arc::new(GitService::new());
         Ok(Self {
+            admission: Arc::new(tokio::sync::RwLock::new(())),
             db,
             providers: ProviderService,
             pty: PtyService::new(),
@@ -89,6 +92,30 @@ impl Host {
         self.files.evict(folder);
         self.tasks.stop(folder);
         self.git.evict(folder);
+    }
+
+    /// Called only under exclusive admission after all affected ownership claims
+    /// have been released. Active and already-stopping children must be reaped
+    /// before a worktree can be removed or its changes migrated.
+    pub fn drain_worktree_roots(&self, roots: &[String]) -> Result<(), ApiError> {
+        let roots = roots
+            .iter()
+            .map(|root| std::fs::canonicalize(root).map_err(ApiError::from))
+            .collect::<Result<Vec<_>, _>>()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let run_ids = self.runs.ids_in_roots(&roots);
+        self.pty
+            .drain_roots(&roots, deadline)
+            .map_err(ApiError::Pty)?;
+        for run_id in run_ids {
+            self.runs.with_run(&run_id, |runs| {
+                runs.release(&run_id);
+                self.forget_run(&run_id);
+            });
+        }
+        self.lsp
+            .drain_roots(&roots, deadline)
+            .map_err(ApiError::Internal)
     }
 
     /// Release resources tied to a specific window/owner label while preserving

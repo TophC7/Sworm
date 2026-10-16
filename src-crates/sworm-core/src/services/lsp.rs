@@ -1,6 +1,9 @@
 use crate::errors::ApiError;
 use crate::events::EventSink;
 use crate::services::builtins::LoadedBuiltinLspServerDefinition;
+#[cfg(unix)]
+use crate::services::pty::{groups_terminated, stop_process};
+use crate::services::pty::{ChildExit, PROCESS_STOP_TIMEOUT};
 use sworm_protocol::lsp::{
     LspEvent, LspServerConnectionStatus, LspServerStatus, LspTransportTraceDirection,
 };
@@ -9,12 +12,14 @@ use sworm_protocol::settings::{LspServerConfigRecord, LspTraceLevel};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 const LSP_MAX_HEADER_BYTES: usize = 64 * 1024;
@@ -29,47 +34,149 @@ pub struct ResolvedLspCommand {
 }
 
 pub struct LspService {
-    sessions: Arc<Mutex<HashMap<String, LiveLspSession>>>,
+    registry: Arc<Mutex<LspRegistry>>,
+}
+
+#[derive(Default)]
+struct LspRegistry {
+    sessions: HashMap<String, LiveLspSession>,
+    pending: HashMap<String, Arc<LspProcess>>,
 }
 
 struct LiveLspSession {
     stdin: std::process::ChildStdin,
-    child: Arc<Mutex<Child>>,
-    shutdown: Arc<AtomicBool>,
-    finalized: Arc<AtomicBool>,
-    runtime_id: String,
+    process: Arc<LspProcess>,
     trace: LspTraceLevel,
-    events: EventSink<LspEvent>,
     owner_id: Option<String>,
 }
 
-impl LiveLspSession {
-    fn terminate(&self) -> io::Result<()> {
+struct LspProcess {
+    session_id: String,
+    runtime_id: String,
+    project_root: PathBuf,
+    pid: u32,
+    child: Mutex<Child>,
+    exit: ChildExit,
+    shutdown: AtomicBool,
+    finalized: AtomicBool,
+    events: EventSink<LspEvent>,
+    #[cfg(unix)]
+    group: Mutex<Option<libc::pid_t>>,
+}
+
+impl LspProcess {
+    fn poll_exit(&self) {
+        // Signals take this same latch: a reaped numeric PID is never killed.
+        let mut result = self.exit.result.lock();
+        if result.is_some() {
+            return;
+        }
+        *result = match self.child.lock().try_wait() {
+            Ok(Some(status)) => Some(Ok(status.code())),
+            Ok(None) => None,
+            Err(error) => Some(Err(format!("Failed waiting for LSP process: {error}"))),
+        };
+        if result.is_some() {
+            self.exit.changed.notify_all();
+        }
+    }
+
+    fn suppress_exit(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.finalized.store(true, Ordering::Release);
+    }
+
+    // Ordinary owner/stream teardown keeps its existing kill-and-remove policy.
+    // The independent pending record still fences later destructive operations.
+    fn signal_kill(&self) -> io::Result<()> {
+        self.suppress_exit();
+        let result = self.exit.result.lock();
+        if matches!(result.as_ref(), Some(Ok(_))) {
+            return Ok(());
+        }
+        if let Some(Err(error)) = result.as_ref() {
+            return Err(io::Error::other(error.clone()));
+        }
         self.child.lock().kill()
+    }
+
+    fn stop(&self, deadline: Instant) -> Result<(), String> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        #[cfg(unix)]
+        {
+            // Serializes concurrent stops and clears a proven-dead group before
+            // another stop can reuse its numeric identity.
+            let mut group = self.group.lock();
+            stop_process(
+                Some(self.pid),
+                group.as_slice(),
+                &self.exit,
+                deadline,
+                || {
+                    self.poll_exit();
+                },
+            )?;
+            *group = None;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            self.poll_exit();
+            if self.exit.result().is_none() {
+                self.signal_kill().map_err(|error| error.to_string())?;
+            }
+            loop {
+                self.poll_exit();
+                if let Some(result) = self.exit.result() {
+                    return result.map(|_| ());
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("Timed out waiting for LSP process {}", self.pid));
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    fn fully_exited(&self) -> bool {
+        if !matches!(self.exit.result(), Some(Ok(_))) {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            let mut group = self.group.lock();
+            if groups_terminated(group.as_slice()).unwrap_or(false) {
+                *group = None;
+                true
+            } else {
+                false
+            }
+        }
+        #[cfg(not(unix))]
+        true
     }
 }
 
 impl LspService {
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            registry: Arc::new(Mutex::new(LspRegistry::default())),
         }
     }
 
     pub fn spawn(
         &self,
         session_id: String,
+        project_root: &Path,
         owner_id: Option<String>,
         trace: LspTraceLevel,
         resolved: ResolvedLspCommand,
         events: EventSink<LspEvent>,
     ) -> Result<(), ApiError> {
-        // Reject instead of clobbering: the lease holder (a daemon LSP stream
-        // or a desktop window) decides when its server dies, so a start for a
-        // live id is the caller's to resolve, never a silent restart of
-        // someone else's session.
+        // The invoking project, not the server's nested cwd/root_path, owns it.
+        let project_root = project_root.canonicalize().map_err(ApiError::from)?;
+        // The lease holder decides when its server dies, never a silent restart
+        // of someone else's session.
         if self.is_alive(&session_id) {
             return Err(already_active(&session_id));
         }
@@ -82,233 +189,296 @@ impl LspService {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
 
-        let mut child = command.spawn().map_err(|error| {
-            ApiError::Internal(format!("Failed to spawn LSP process: {}", error))
-        })?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| ApiError::Internal(format!("Failed to spawn LSP process: {error}")))?;
         let pid = child.id();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ApiError::Internal("LSP stdout pipe missing".to_owned()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ApiError::Internal("LSP stderr pipe missing".to_owned()))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| ApiError::Internal("LSP stdin pipe missing".to_owned()))?;
+        let pipes = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let process = Arc::new(LspProcess {
+            session_id: session_id.clone(),
+            runtime_id: uuid::Uuid::new_v4().to_string(),
+            project_root,
+            pid,
+            child: Mutex::new(child),
+            exit: ChildExit::default(),
+            shutdown: AtomicBool::new(false),
+            finalized: AtomicBool::new(false),
+            events: Arc::clone(&events),
+            #[cfg(unix)]
+            group: Mutex::new(Some(libc::pid_t::try_from(pid).unwrap_or(0))),
+        });
 
-        let child = Arc::new(Mutex::new(child));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let finalized = Arc::new(AtomicBool::new(false));
-        let runtime_id = uuid::Uuid::new_v4().to_string();
-
-        {
-            let mut sessions = self.sessions.lock();
-            // Two starts can clear the check above concurrently; the loser
-            // kills the process it just spawned rather than orphaning it.
-            if sessions.contains_key(&session_id) {
-                drop(sessions);
-                let mut loser = child.lock();
-                let _ = loser.kill();
-                // Reap it here: a session that never registered has no wait
-                // thread to collect it.
-                let _ = loser.wait();
-                return Err(already_active(&session_id));
+        let (stdout, stderr) = {
+            let mut registry = self.registry.lock();
+            // Register even rejected or incompletely started incarnations:
+            // failed cleanup must remain visible to the destructive barrier.
+            registry
+                .pending
+                .insert(process.runtime_id.clone(), Arc::clone(&process));
+            if registry.sessions.contains_key(&session_id) {
+                drop(registry);
+                return Err(self.startup_failure(&process, already_active(&session_id)));
             }
-            sessions.insert(
+            let (Some(stdin), Some(stdout), Some(stderr)) = pipes else {
+                drop(registry);
+                return Err(self.startup_failure(
+                    &process,
+                    ApiError::Internal("LSP process pipe missing".to_owned()),
+                ));
+            };
+            registry.sessions.insert(
                 session_id.clone(),
                 LiveLspSession {
                     stdin,
-                    child: Arc::clone(&child),
-                    shutdown: Arc::clone(&shutdown),
-                    finalized: Arc::clone(&finalized),
-                    runtime_id: runtime_id.clone(),
+                    process: Arc::clone(&process),
                     trace,
-                    events: Arc::clone(&events),
                     owner_id,
                 },
             );
-        }
+            (stdout, stderr)
+        };
 
         let _ = (events)(LspEvent::Started {
-            session_id: session_id.clone(),
+            session_id,
             pid: Some(pid),
-            resolved_path: Some(resolved.program.clone()),
+            resolved_path: Some(resolved.program),
         });
 
-        self.spawn_stdout_thread(
-            session_id.clone(),
-            runtime_id.clone(),
-            stdout,
-            Arc::clone(&child),
-            trace,
-            Arc::clone(&events),
-            Arc::clone(&shutdown),
-        );
-        self.spawn_stderr_thread(
-            session_id.clone(),
-            runtime_id.clone(),
-            stderr,
-            trace,
-            Arc::clone(&events),
-            Arc::clone(&shutdown),
-        );
-        self.spawn_wait_thread(session_id, runtime_id, child, events, shutdown, finalized);
-
+        let startup = self
+            .spawn_stdout_thread(Arc::clone(&process), stdout, trace)
+            .and_then(|_| self.spawn_stderr_thread(Arc::clone(&process), stderr, trace))
+            .and_then(|_| self.spawn_wait_thread(Arc::clone(&process)));
+        if let Err(error) = startup {
+            return Err(self.startup_failure(
+                &process,
+                ApiError::Internal(format!("Failed to spawn LSP reader/wait thread: {error}")),
+            ));
+        }
         Ok(())
     }
 
-    pub fn send(&self, session_id: &str, message_json: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock();
-        let live = sessions
-            .get_mut(session_id)
-            .ok_or_else(|| format!("No active LSP session: {}", session_id))?;
+    fn startup_failure(&self, process: &Arc<LspProcess>, error: ApiError) -> ApiError {
+        {
+            let mut registry = self.registry.lock();
+            if registry
+                .sessions
+                .get(&process.session_id)
+                .is_some_and(|live| live.process.runtime_id == process.runtime_id)
+            {
+                registry.sessions.remove(&process.session_id);
+            }
+        }
+        process.suppress_exit();
+        match process.stop(Instant::now() + PROCESS_STOP_TIMEOUT) {
+            Ok(()) => {
+                self.registry.lock().pending.remove(&process.runtime_id);
+                error
+            }
+            Err(stop_error) => ApiError::Internal(format!(
+                "{error}; failed to stop incompletely started LSP process: {stop_error}"
+            )),
+        }
+    }
 
+    pub fn send(&self, session_id: &str, message_json: &str) -> Result<(), String> {
+        let mut registry = self.registry.lock();
+        let live = registry
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("No active LSP session: {session_id}"))?;
         let payload = format!(
             "Content-Length: {}\r\n\r\n{}",
             message_json.len(),
             message_json
         );
-
         live.stdin
             .write_all(payload.as_bytes())
-            .map_err(|error| format!("Failed to write LSP message: {}", error))?;
+            .map_err(|error| format!("Failed to write LSP message: {error}"))?;
         live.stdin
             .flush()
-            .map_err(|error| format!("Failed to flush LSP stdin: {}", error))?;
-
+            .map_err(|error| format!("Failed to flush LSP stdin: {error}"))?;
         if live.trace != LspTraceLevel::Off {
-            let _ = (live.events)(LspEvent::Trace {
+            let _ = (live.process.events)(LspEvent::Trace {
                 session_id: session_id.to_string(),
                 direction: LspTransportTraceDirection::Outgoing,
                 payload: message_json.to_string(),
             });
         }
-
         Ok(())
     }
 
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
-        let live = self.sessions.lock().remove(session_id);
-        if let Some(live) = live {
-            live.terminate()
-                .map_err(|error| format!("Failed to kill LSP process: {}", error))?;
+        let processes = self.retire_matching(|process| process.session_id == session_id);
+        if processes.is_empty() {
+            return Err(format!("No active LSP session: {session_id}"));
+        }
+        self.stop_processes(processes, Instant::now() + PROCESS_STOP_TIMEOUT)
+    }
+
+    /// Called under Host's exclusive admission with the shared PTY/LSP deadline.
+    /// Removed and already-stopping sessions remain in the pending registry.
+    pub fn drain_roots(&self, roots: &[PathBuf], deadline: Instant) -> Result<(), String> {
+        let processes = self.retire_matching(|process| {
+            roots
+                .iter()
+                .any(|root| process.project_root.starts_with(root))
+        });
+        self.stop_processes(processes, deadline)
+    }
+
+    fn retire_matching(&self, matches: impl Fn(&LspProcess) -> bool) -> Vec<Arc<LspProcess>> {
+        let mut registry = self.registry.lock();
+        let processes: Vec<_> = registry
+            .pending
+            .values()
+            .filter(|process| matches(process))
+            .cloned()
+            .collect();
+        for process in &processes {
+            process.suppress_exit();
+            if registry
+                .sessions
+                .get(&process.session_id)
+                .is_some_and(|live| live.process.runtime_id == process.runtime_id)
+            {
+                registry.sessions.remove(&process.session_id);
+            }
+        }
+        processes
+    }
+
+    fn stop_processes(
+        &self,
+        processes: Vec<Arc<LspProcess>>,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut failures = Vec::new();
+        for process in processes {
+            match process.stop(deadline) {
+                Ok(()) => {
+                    self.registry.lock().pending.remove(&process.runtime_id);
+                }
+                Err(error) => failures.push(format!("{}: {error}", process.session_id)),
+            }
+        }
+        if failures.is_empty() {
             Ok(())
         } else {
-            Err(format!("No active LSP session: {}", session_id))
+            Err(format!(
+                "Failed to stop LSP processes: {}",
+                failures.join("; ")
+            ))
         }
     }
+
     pub fn kill_owner(&self, owner_id: &str) -> usize {
-        let live_sessions: Vec<(String, LiveLspSession)> = {
-            let mut sessions = self.sessions.lock();
-            let session_ids: Vec<String> = sessions
+        let live_sessions: Vec<_> = {
+            let mut registry = self.registry.lock();
+            let ids: Vec<_> = registry
+                .sessions
                 .iter()
                 .filter(|(_, live)| live.owner_id.as_deref() == Some(owner_id))
-                .map(|(session_id, _)| session_id.clone())
+                .map(|(id, _)| id.clone())
                 .collect();
-            session_ids
-                .into_iter()
-                .filter_map(|session_id| {
-                    sessions.remove(&session_id).map(|live| (session_id, live))
-                })
+            ids.into_iter()
+                .filter_map(|id| registry.sessions.remove(&id))
                 .collect()
         };
         let total = live_sessions.len();
-        for (session_id, live) in live_sessions {
-            if let Err(error) = live.terminate() {
-                warn!("Failed to kill LSP process {}: {}", session_id, error);
+        for live in live_sessions {
+            if let Err(error) = live.process.signal_kill() {
+                warn!(
+                    "Failed to kill LSP process {}: {error}",
+                    live.process.session_id
+                );
             }
         }
         total
     }
 
     pub fn kill_all(&self) -> usize {
-        let live_sessions: Vec<(String, LiveLspSession)> = self.sessions.lock().drain().collect();
+        let live_sessions: Vec<_> = self
+            .registry
+            .lock()
+            .sessions
+            .drain()
+            .map(|(_, live)| live)
+            .collect();
         let total = live_sessions.len();
-        for (session_id, live) in live_sessions {
-            if let Err(error) = live.terminate() {
-                warn!("Failed to kill LSP process {}: {}", session_id, error);
+        for live in live_sessions {
+            if let Err(error) = live.process.signal_kill() {
+                warn!(
+                    "Failed to kill LSP process {}: {error}",
+                    live.process.session_id
+                );
             }
         }
         total
     }
 
     pub fn is_alive(&self, session_id: &str) -> bool {
-        self.sessions.lock().contains_key(session_id)
+        self.registry.lock().sessions.contains_key(session_id)
     }
 
     fn spawn_stdout_thread(
         &self,
-        session_id: String,
-        runtime_id: String,
+        process: Arc<LspProcess>,
         stdout: ChildStdout,
-        child: Arc<Mutex<Child>>,
         trace: LspTraceLevel,
-        events: EventSink<LspEvent>,
-        shutdown: Arc<AtomicBool>,
-    ) {
-        std::thread::Builder::new()
-            .name(format!("lsp-stdout-{}", session_id))
+    ) -> io::Result<()> {
+        thread::Builder::new()
+            .name(format!("lsp-stdout-{}", process.session_id))
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
-                    if shutdown.load(Ordering::Relaxed) {
+                    if process.shutdown.load(Ordering::Relaxed) {
                         break;
                     }
                     match read_lsp_message(&mut reader) {
                         Ok(Some(message)) => {
                             if trace != LspTraceLevel::Off {
-                                let _ = (events)(LspEvent::Trace {
-                                    session_id: session_id.clone(),
+                                let _ = (process.events)(LspEvent::Trace {
+                                    session_id: process.session_id.clone(),
                                     direction: LspTransportTraceDirection::Incoming,
                                     payload: message.clone(),
                                 });
                             }
-                            let _ = (events)(LspEvent::Message {
-                                session_id: session_id.clone(),
+                            let _ = (process.events)(LspEvent::Message {
+                                session_id: process.session_id.clone(),
                                 payload_json: message,
                             });
                         }
                         Ok(None) => break,
                         Err(error) => {
-                            if !shutdown.load(Ordering::Relaxed) {
-                                let _ = (events)(LspEvent::Error {
-                                    session_id: session_id.clone(),
+                            if !process.shutdown.load(Ordering::Relaxed) {
+                                let _ = (process.events)(LspEvent::Error {
+                                    session_id: process.session_id.clone(),
                                     message: error,
                                 });
-                                if let Err(kill_error) = child.lock().kill() {
-                                    warn!(
-                                        "Failed to kill LSP process {} after framing error: {}",
-                                        session_id, kill_error
-                                    );
+                                if let Err(error) = process.stop(Instant::now() + PROCESS_STOP_TIMEOUT) {
+                                    warn!("Failed to stop LSP process {} after framing error: {error}", process.session_id);
                                 }
                             }
                             break;
                         }
                     }
                 }
-                info!(
-                    "LSP stdout thread finished for {} ({})",
-                    session_id, runtime_id
-                );
+                info!("LSP stdout thread finished for {} ({})", process.session_id, process.runtime_id);
             })
-            .expect("failed to spawn LSP stdout thread");
+            .map(|_| ())
     }
 
     fn spawn_stderr_thread(
         &self,
-        session_id: String,
-        runtime_id: String,
+        process: Arc<LspProcess>,
         stderr: ChildStderr,
         trace: LspTraceLevel,
-        events: EventSink<LspEvent>,
-        shutdown: Arc<AtomicBool>,
-    ) {
-        std::thread::Builder::new()
-            .name(format!("lsp-stderr-{}", session_id))
+    ) -> io::Result<()> {
+        thread::Builder::new()
+            .name(format!("lsp-stderr-{}", process.session_id))
             .spawn(move || {
                 let mut reader = BufReader::new(stderr);
                 let mut line = String::new();
@@ -322,91 +492,91 @@ impl LspService {
                                 continue;
                             }
                             if trace != LspTraceLevel::Off {
-                                let _ = (events)(LspEvent::Trace {
-                                    session_id: session_id.clone(),
+                                let _ = (process.events)(LspEvent::Trace {
+                                    session_id: process.session_id.clone(),
                                     direction: LspTransportTraceDirection::Stderr,
                                     payload: trimmed.clone(),
                                 });
                             }
                             if trace == LspTraceLevel::Verbose {
-                                info!("LSP stderr {}: {}", session_id, trimmed);
+                                info!("LSP stderr {}: {trimmed}", process.session_id);
                             }
                         }
                         Err(error) => {
-                            if !shutdown.load(Ordering::Relaxed) {
-                                let _ = (events)(LspEvent::Error {
-                                    session_id: session_id.clone(),
-                                    message: format!("Failed reading LSP stderr: {}", error),
+                            if !process.shutdown.load(Ordering::Relaxed) {
+                                let _ = (process.events)(LspEvent::Error {
+                                    session_id: process.session_id.clone(),
+                                    message: format!("Failed reading LSP stderr: {error}"),
                                 });
                             }
                             break;
                         }
                     }
-                    if shutdown.load(Ordering::Relaxed) {
+                    if process.shutdown.load(Ordering::Relaxed) {
                         break;
                     }
                 }
                 info!(
                     "LSP stderr thread finished for {} ({})",
-                    session_id, runtime_id
+                    process.session_id, process.runtime_id
                 );
             })
-            .expect("failed to spawn LSP stderr thread");
+            .map(|_| ())
     }
 
-    fn spawn_wait_thread(
-        &self,
-        session_id: String,
-        runtime_id: String,
-        child: Arc<Mutex<Child>>,
-        events: EventSink<LspEvent>,
-        shutdown: Arc<AtomicBool>,
-        finalized: Arc<AtomicBool>,
-    ) {
-        let sessions = Arc::clone(&self.sessions);
-        std::thread::Builder::new()
-            .name(format!("lsp-wait-{}", session_id))
+    fn spawn_wait_thread(&self, process: Arc<LspProcess>) -> io::Result<()> {
+        let registry = Arc::clone(&self.registry);
+        thread::Builder::new()
+            .name(format!("lsp-wait-{}", process.session_id))
             .spawn(move || {
-                let exit_code = loop {
-                    match child.lock().try_wait() {
-                        Ok(Some(status)) => break status.code(),
-                        Ok(None) => {
-                            thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(error) => {
-                            if !shutdown.load(Ordering::Relaxed) {
-                                let _ = (events)(LspEvent::Error {
-                                    session_id: session_id.clone(),
-                                    message: format!("Failed waiting for LSP process: {}", error),
-                                });
-                            }
-                            break None;
-                        }
+                let result = loop {
+                    process.poll_exit();
+                    if let Some(result) = process.exit.result() {
+                        break result;
                     }
+                    thread::sleep(Duration::from_millis(50));
                 };
-
+                // The independent OS acknowledgement is already published,
+                // before registry removal, reader shutdown or event suppression.
                 {
-                    let mut sessions = sessions.lock();
-                    let remove_current = sessions
-                        .get(&session_id)
-                        .map(|live| live.runtime_id == runtime_id)
-                        .unwrap_or(false);
-                    if remove_current {
-                        sessions.remove(&session_id);
+                    let mut registry = registry.lock();
+                    if registry
+                        .sessions
+                        .get(&process.session_id)
+                        .is_some_and(|live| live.process.runtime_id == process.runtime_id)
+                    {
+                        registry.sessions.remove(&process.session_id);
                     }
                 }
-
-                if finalized.swap(true, Ordering::AcqRel) {
-                    return;
+                let wait_succeeded = result.is_ok();
+                if !process.finalized.swap(true, Ordering::AcqRel) {
+                    process.shutdown.store(true, Ordering::Relaxed);
+                    let code = match result {
+                        Ok(code) => code,
+                        Err(error) => {
+                            let _ = (process.events)(LspEvent::Error {
+                                session_id: process.session_id.clone(),
+                                message: error,
+                            });
+                            None
+                        }
+                    };
+                    let _ = (process.events)(LspEvent::Exit {
+                        session_id: process.session_id.clone(),
+                        code,
+                    });
                 }
-
-                shutdown.store(true, Ordering::Relaxed);
-                let _ = (events)(LspEvent::Exit {
-                    session_id,
-                    code: exit_code,
-                });
+                if wait_succeeded {
+                    // A descendant can outlive the leader and retain its pipes.
+                    // Retire the numeric group as soon as its last member exits,
+                    // even when no subsequent stop/drain is requested.
+                    while !process.fully_exited() {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    registry.lock().pending.remove(&process.runtime_id);
+                }
             })
-            .expect("failed to spawn LSP wait thread");
+            .map(|_| ())
     }
 }
 
@@ -646,5 +816,293 @@ mod tests {
         assert_eq!(resolved, path.to_string_lossy());
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    mod processes {
+        use super::*;
+
+        struct ProcessTest {
+            service: LspService,
+            root: PathBuf,
+        }
+
+        impl ProcessTest {
+            fn new() -> Self {
+                let root =
+                    std::env::temp_dir().join(format!("sworm-lsp-exit-{}", uuid::Uuid::new_v4()));
+                fs::create_dir_all(&root).unwrap();
+                Self {
+                    service: LspService::new(),
+                    root: root.canonicalize().unwrap(),
+                }
+            }
+
+            fn folder(&self, name: &str) -> PathBuf {
+                let folder = self.root.join(name);
+                fs::create_dir_all(&folder).unwrap();
+                folder
+            }
+
+            fn spawn(&self, id: &str, project: &Path, cwd: &Path, script: &str) -> Arc<LspProcess> {
+                self.service
+                    .spawn(
+                        id.to_owned(),
+                        project,
+                        Some("test-owner".to_owned()),
+                        LspTraceLevel::Off,
+                        ResolvedLspCommand {
+                            program: which::which("sh").unwrap().to_string_lossy().into_owned(),
+                            args: vec!["-c".to_owned(), script.to_owned()],
+                            cwd: cwd.to_string_lossy().into_owned(),
+                            env: std::env::vars().collect(),
+                        },
+                        Arc::new(|_| Ok(())),
+                    )
+                    .unwrap();
+                let process = Arc::clone(&self.service.registry.lock().sessions[id].process);
+                wait_until(|| cwd.join("ready").exists());
+                process
+            }
+        }
+
+        impl Drop for ProcessTest {
+            fn drop(&mut self) {
+                let _ = self.service.drain_roots(
+                    std::slice::from_ref(&self.root),
+                    Instant::now() + PROCESS_STOP_TIMEOUT,
+                );
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+
+        fn wait_until(mut condition: impl FnMut() -> bool) {
+            let deadline = Instant::now() + PROCESS_STOP_TIMEOUT;
+            while !condition() {
+                assert!(
+                    Instant::now() < deadline,
+                    "LSP process did not reach expected state"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        const SLEEP: &str = "printf ready > ready; exec sleep 30";
+        const DESCENDANT: &str =
+            "trap '' TERM; sleep 30 & printf '%s' \"$!\" > descendant; printf ready > ready; wait";
+
+        #[test]
+        fn strict_stop_reaps_leader_and_terminates_descendants() {
+            let test = ProcessTest::new();
+            let project = test.folder("project");
+            let process = test.spawn("strict", &project, &project, DESCENDANT);
+            let group = process.pid as libc::pid_t;
+            assert_eq!(unsafe { libc::getpgid(group) }, group);
+            assert_ne!(group, unsafe { libc::getpgrp() });
+            let descendant = fs::read_to_string(project.join("descendant"))
+                .unwrap()
+                .parse::<libc::pid_t>()
+                .unwrap();
+            assert_eq!(unsafe { libc::kill(descendant, 0) }, 0);
+
+            let started = Instant::now();
+            test.service.kill("strict").unwrap();
+            assert!(started.elapsed() < PROCESS_STOP_TIMEOUT);
+            assert!(matches!(process.exit.result(), Some(Ok(_))));
+            assert!(groups_terminated(&[group]).unwrap());
+            assert!(!test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&process.runtime_id));
+            assert!(project.is_dir());
+        }
+
+        #[test]
+        fn drain_uses_canonical_invoking_project_not_server_cwd() {
+            let test = ProcessTest::new();
+            let target = test.folder("target");
+            let other = test.folder("target-sibling");
+            let alias = test.root.join("target-alias");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            let affected = test.spawn("affected", &alias, &other, SLEEP);
+            let unaffected = test.spawn("unaffected", &other, &target, SLEEP);
+            assert_eq!(affected.project_root, target);
+
+            test.service
+                .drain_roots(
+                    std::slice::from_ref(&target),
+                    Instant::now() + PROCESS_STOP_TIMEOUT,
+                )
+                .unwrap();
+            assert!(matches!(affected.exit.result(), Some(Ok(_))));
+            assert!(unaffected.exit.result().is_none());
+            assert!(test.service.is_alive("unaffected"));
+        }
+
+        #[test]
+        fn removed_incarnation_drain_keeps_replacement_project_alive() {
+            let test = ProcessTest::new();
+            let target = test.folder("target");
+            let other = test.folder("other");
+            let removed = test.spawn("same-id", &target, &target, DESCENDANT);
+            let group = removed.pid as libc::pid_t;
+            assert_eq!(test.service.kill_owner("test-owner"), 1);
+            assert!(!test.service.is_alive("same-id"));
+            wait_until(|| matches!(removed.exit.result(), Some(Ok(_))));
+            assert!(!groups_terminated(&[group]).unwrap());
+            assert!(test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&removed.runtime_id));
+            let replacement = test.spawn("same-id", &other, &other, SLEEP);
+
+            test.service
+                .drain_roots(
+                    std::slice::from_ref(&target),
+                    Instant::now() + PROCESS_STOP_TIMEOUT,
+                )
+                .unwrap();
+            assert!(groups_terminated(&[group]).unwrap());
+            assert!(!test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&removed.runtime_id));
+            assert!(replacement.exit.result().is_none());
+            assert!(test.service.is_alive("same-id"));
+        }
+
+        #[test]
+        fn reaped_group_is_retired_when_last_descendant_exits() {
+            let test = ProcessTest::new();
+            let project = test.folder("project");
+            let process = test.spawn("group", &project, &project, DESCENDANT);
+            let group = process.pid as libc::pid_t;
+            assert_ne!(group, unsafe { libc::getpgrp() });
+            assert_eq!(test.service.kill_owner("test-owner"), 1);
+            wait_until(|| matches!(process.exit.result(), Some(Ok(_))));
+            assert!(test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&process.runtime_id));
+            assert_eq!(unsafe { libc::kill(-group, libc::SIGKILL) }, 0);
+            wait_until(|| {
+                !test
+                    .service
+                    .registry
+                    .lock()
+                    .pending
+                    .contains_key(&process.runtime_id)
+            });
+            assert!(process.group.lock().is_none());
+        }
+
+        #[test]
+        fn expired_drain_retains_pending_child_for_strict_retry() {
+            let test = ProcessTest::new();
+            let project = test.folder("project");
+            let process = test.spawn("timeout", &project, &project, SLEEP);
+            let error = test
+                .service
+                .drain_roots(std::slice::from_ref(&project), Instant::now())
+                .unwrap_err();
+            assert!(error.contains("Timed out"));
+            assert!(project.is_dir());
+            assert!(!test.service.is_alive("timeout"));
+            assert!(process.exit.result().is_none());
+            assert!(test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&process.runtime_id));
+            assert_eq!(unsafe { libc::kill(process.pid as libc::pid_t, 0) }, 0);
+
+            test.service.kill("timeout").unwrap();
+            assert!(matches!(process.exit.result(), Some(Ok(_))));
+            assert!(!test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&process.runtime_id));
+        }
+
+        #[test]
+        fn actual_os_wait_failure_is_not_exit_proof_and_remains_pending() {
+            let test = ProcessTest::new();
+            let project = test.folder("project");
+            let child = Command::new(which::which("sh").unwrap())
+                .args(["-c", "exit 7"])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let (events, received) = std::sync::mpsc::channel();
+            let process = Arc::new(LspProcess {
+                session_id: "wait-failure".to_owned(),
+                runtime_id: uuid::Uuid::new_v4().to_string(),
+                project_root: project.clone(),
+                pid,
+                child: Mutex::new(child),
+                exit: ChildExit::default(),
+                shutdown: AtomicBool::new(false),
+                finalized: AtomicBool::new(false),
+                events: Arc::new(move |event| {
+                    events.send(event).map_err(|error| error.to_string())
+                }),
+                group: Mutex::new(Some(pid as libc::pid_t)),
+            });
+            test.service
+                .registry
+                .lock()
+                .pending
+                .insert(process.runtime_id.clone(), Arc::clone(&process));
+            // Reap the real child outside std::process::Child to exercise ECHILD,
+            // not a synthetic latch failure or a mocked process.
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) },
+                pid as libc::pid_t
+            );
+            test.service
+                .spawn_wait_thread(Arc::clone(&process))
+                .unwrap();
+            assert!(matches!(
+                received.recv_timeout(PROCESS_STOP_TIMEOUT).unwrap(),
+                LspEvent::Error { .. }
+            ));
+            assert!(matches!(
+                received.recv_timeout(PROCESS_STOP_TIMEOUT).unwrap(),
+                LspEvent::Exit { code: None, .. }
+            ));
+            assert!(matches!(process.exit.result(), Some(Err(_))));
+            assert!(test
+                .service
+                .kill("wait-failure")
+                .unwrap_err()
+                .contains("Failed waiting"));
+            assert!(test
+                .service
+                .drain_roots(
+                    std::slice::from_ref(&project),
+                    Instant::now() + PROCESS_STOP_TIMEOUT,
+                )
+                .is_err());
+            assert!(project.is_dir());
+            assert!(test
+                .service
+                .registry
+                .lock()
+                .pending
+                .contains_key(&process.runtime_id));
+        }
     }
 }

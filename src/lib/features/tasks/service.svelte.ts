@@ -14,6 +14,7 @@ import {
   addTaskTab,
   findTaskTabByTaskId,
   getActiveTab,
+  getTabs,
   resetTaskTabForRestart,
   setTaskTabStatus
 } from '$lib/features/workbench/state.svelte'
@@ -26,6 +27,13 @@ export async function stopTaskProcess(tab: TaskTab): Promise<void> {
   if (terminal) return terminal.stopProcess()
   await backend.tasks.stop(tab.runId)
   setTaskTabStatus(tab.id, 'exited', null)
+}
+
+/** Start a task without mounting its surface; resolves at PTY readiness, not exit. */
+export async function startTaskTab(tabId: TabId, clearBeforeStart = false): Promise<void> {
+  const tab = getTabs().find((tab) => tab.id === tabId)
+  if (!tab || tab.kind !== 'task') throw new Error('Task tab is no longer available')
+  await taskRegistry.getOrCreate(tab, clearBeforeStart).start()
 }
 
 // Tracks the most recently launched task per folder so "Re-run Last

@@ -23,6 +23,23 @@ use sworm_protocol::{
 };
 
 macro_rules! define_router_operation {
+    (#[route(path)] GitWorktreeList => $($row:tt)*) => {};
+    (#[route(path)] GitWorktreeDefaultPath => $($row:tt)*) => {};
+    (#[route(path)] GitWorktree => $($row:tt)*) => {};
+    (#[route(path)] GitListBranches => $($row:tt)*) => {};
+    (
+        #[route(path)]
+        GitGetBrief => $method:ident($path:ident: $path_type:ty $(,)?) -> $return_type:ty;
+    ) => {
+        pub async fn $method(&self, $path: $path_type) -> Result<$return_type, ApiError> {
+            if let Target::Remote { server, path } = Target::parse(&$path)? {
+                // Home probes recent/discovered repositories without opening them.
+                return self.call_reply(server, Request::GitGetBrief { path: path.to_owned() })
+                    .await?.$method().map_err(ApiError::from);
+            }
+            self.local(move |host| host.$method($path)).await
+        }
+    };
     (
         #[route(project_path)]
         FilesWatchDirs => $method:ident(
@@ -90,7 +107,6 @@ macro_rules! define_router_operation {
                 path: remote_path,
             } = Target::parse(&$path)?
             {
-                self.inner.remember_claim(server, remote_path, None, false);
                 let mut folder = self
                     .call_reply(
                         server,
@@ -864,6 +880,7 @@ impl WorkspaceRouter {
             .call_reply_for(server, Some(&workbench), request)
             .await?;
         let result = decode(reply).map_err(ApiError::from)?;
+        let _admission = Arc::clone(&self.inner.host.admission).read_owned().await;
         self.inner.remote_runs.adopt(
             Arc::downgrade(&self.inner),
             &self.inner.host,

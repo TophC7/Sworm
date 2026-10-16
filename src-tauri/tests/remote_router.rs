@@ -292,10 +292,12 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     .await;
     started?;
     assert!(matches!(
-        router.remote_runs_release(
-            "lease-window",
-            &["foreign-release-run".into(), "leased-run".into()]
-        ),
+        router
+            .remote_runs_release(
+                "lease-window",
+                &["foreign-release-run".into(), "leased-run".into()]
+            )
+            .await,
         Err(ApiError::Pty(_))
     ));
     assert!(
@@ -318,14 +320,16 @@ async fn desktop_remote_router_loopback() -> anyhow::Result<()> {
     router
         .workbench_close("loop", "foreign-workbench".into())
         .await?;
-    router.remote_runs_release(
-        "lease-window",
-        &[
-            "dormant-run".into(),
-            "leased-run".into(),
-            "leased-run".into(),
-        ],
-    )?;
+    router
+        .remote_runs_release(
+            "lease-window",
+            &[
+                "dormant-run".into(),
+                "leased-run".into(),
+                "leased-run".into(),
+            ],
+        )
+        .await?;
     assert!(
         router
             .workbench_list("loop")

@@ -198,7 +198,13 @@ async fn supervise(
     }
     // Registry transitions started by any socket or RPC finish before the Host stops.
     context.workbenches.shutdown().await;
-    if let Err(error) = tokio::task::spawn_blocking(move || host.shutdown()).await {
+    let admission = Arc::clone(&host.admission).write_owned().await;
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        host.shutdown()
+    })
+    .await
+    {
         tracing::error!(%error, "host shutdown task failed");
     }
 }
@@ -396,8 +402,10 @@ pub(crate) async fn cleanup_session(
             result = result.and(Err(error));
         }
     }
+    let admission = Arc::clone(&host.admission).read_owned().await;
     let host = Arc::clone(host);
     if let Err(error) = tokio::task::spawn_blocking(move || {
+        let _admission = admission;
         host.file_watchers.release_subscriber(&subscriber_id);
     })
     .await
@@ -460,20 +468,23 @@ async fn process_stream(
             file_path,
             version,
         } => {
-            let response =
-                dispatch::claim_file_read(&host, &context, &session, &project_path).await;
-            if let Err(error) = response {
-                let unauthorized = matches!(error, WireError::Unauthorized { .. });
-                let frame = sworm_protocol::rpc::FileReadDown::Error { error };
-                let _ = timeout(STREAM_WRITE_TIMEOUT, write_frame(&mut send, &frame)).await;
-                let _ = send.finish();
-                if unauthorized {
-                    close_unauthorized(&connection, &mut send).await;
-                }
-                return;
-            }
+            let folder =
+                match dispatch::claim_file_read(&host, &context, &session, &project_path).await {
+                    Ok(folder) => folder,
+                    Err(error) => {
+                        let unauthorized = matches!(error, WireError::Unauthorized { .. });
+                        let frame = sworm_protocol::rpc::FileReadDown::Error { error };
+                        let _ = timeout(STREAM_WRITE_TIMEOUT, write_frame(&mut send, &frame)).await;
+                        let _ = send.finish();
+                        if unauthorized {
+                            close_unauthorized(&connection, &mut send).await;
+                        }
+                        return;
+                    }
+                };
             crate::file_stream::run(
                 host,
+                folder,
                 project_path,
                 file_path,
                 version,

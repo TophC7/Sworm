@@ -208,6 +208,7 @@ impl Host {
             .pty
             .spawn(
                 run_id.clone(),
+                folder,
                 &cli_cmd,
                 &arg_refs,
                 Some(&cwd),

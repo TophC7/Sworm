@@ -47,7 +47,14 @@
     workbenchTitle,
     type ServerState
   } from './places.svelte'
-  import { localHostLabel, closeBrowser, getBrowserRequest, goToFolder, goToWorkbench } from './state.svelte'
+  import {
+    localHostLabel,
+    closeBrowser,
+    completeFolderSelection,
+    getBrowserRequest,
+    goToFolder,
+    goToWorkbench
+  } from './state.svelte'
 
   type Location = { key: string; label: string; detail: string; section: string } & (
     | { kind: 'folder'; path: string }
@@ -64,6 +71,8 @@
   const folderLoad = createTrackedAsyncLoad<string | null>()
   const previewLoad = createTrackedAsyncLoad<string | null>()
   let request = $derived(getBrowserRequest())
+  let selection = $derived(request?.kind === 'select-folder' ? request : null)
+  let replaceTabId = $derived(request?.kind === 'select-folder' ? undefined : request?.replaceTabId)
   let open = $derived(request !== null)
   let input = $state<HTMLInputElement | null>(null)
   let list = $state<HTMLDivElement | null>(null)
@@ -81,12 +90,16 @@
   let previewPath = $state<string | null>(null)
   let previewError = $state<string | null>(null)
   let enteringServer = $state<string | null>(null)
+  let choosingFolder = $state(false)
+  let systemPickerOpen = $state(false)
   let navigation = 0
   let pointerPosition: { x: number; y: number } | null = null
 
   let currentFolder = $derived(getActiveFolderPath())
   let currentServer = $derived(
-    splitRemotePath((editOrigin ? editOrigin.path : path) ?? currentFolder ?? '')?.server ?? null
+    selection
+      ? selection.server
+      : (splitRemotePath((editOrigin ? editOrigin.path : path) ?? currentFolder ?? '')?.server ?? null)
   )
   let editing = $derived(editOrigin !== null)
   let parsed = $derived(editing ? parseLocation(search) : null)
@@ -105,45 +118,57 @@
     }
   }
 
-  let locations = $derived.by<Location[]>(() => [
-    ...(currentFolder ? [folderLocation(currentFolder, 'Current')] : []),
-    ...getRecentFolders()
-      .filter(({ path: recent }) => recent !== currentFolder)
-      .slice(0, term ? undefined : 8)
-      .map(({ path: recent }) => folderLocation(recent, 'Recent')),
-    ...getWorkbenchSections().flatMap(({ server, workbenches }) =>
-      workbenches.map((workbench): Location => ({
-        key: `workbench:${server ?? ''}:${workbench.id}`,
-        kind: 'workbench',
-        section: 'Workbenches',
-        label: workbenchTitle(workbench),
-        detail: workbenchDetail(workbench, server),
-        workbench,
-        server
-      }))
-    ),
-    {
-      key: 'server:',
-      kind: 'server',
-      section: 'Servers',
-      label: localHostLabel(),
-      detail: 'Working directory',
-      server: null,
-      state: 'connected'
-    },
-    ...getServers().map(({ name, state, lastError }): Location => ({
-      key: `server:${name}`,
-      kind: 'server',
-      section: 'Servers',
-      label: name,
-      detail: lastError ?? state.charAt(0).toUpperCase() + state.slice(1),
-      server: name,
-      state
-    })),
-    ...(platform.native
-      ? [{ key: 'manage', kind: 'manage', section: 'Servers', label: 'Pair or Manage Servers…', detail: '' } as const]
-      : [])
-  ])
+  let locations = $derived.by<Location[]>(() =>
+    selection
+      ? []
+      : [
+          ...(currentFolder ? [folderLocation(currentFolder, 'Current')] : []),
+          ...getRecentFolders()
+            .filter(({ path: recent }) => recent !== currentFolder)
+            .slice(0, term ? undefined : 8)
+            .map(({ path: recent }) => folderLocation(recent, 'Recent')),
+          ...getWorkbenchSections().flatMap(({ server, workbenches }) =>
+            workbenches.map((workbench): Location => ({
+              key: `workbench:${server ?? ''}:${workbench.id}`,
+              kind: 'workbench',
+              section: 'Workbenches',
+              label: workbenchTitle(workbench),
+              detail: workbenchDetail(workbench, server),
+              workbench,
+              server
+            }))
+          ),
+          {
+            key: 'server:',
+            kind: 'server',
+            section: 'Servers',
+            label: localHostLabel(),
+            detail: 'Working directory',
+            server: null,
+            state: 'connected'
+          },
+          ...getServers().map(({ name, state, lastError }): Location => ({
+            key: `server:${name}`,
+            kind: 'server',
+            section: 'Servers',
+            label: name,
+            detail: lastError ?? state.charAt(0).toUpperCase() + state.slice(1),
+            server: name,
+            state
+          })),
+          ...(platform.native
+            ? [
+                {
+                  key: 'manage',
+                  kind: 'manage',
+                  section: 'Servers',
+                  label: 'Pair or Manage Servers…',
+                  detail: ''
+                } as const
+              ]
+            : [])
+        ]
+  )
   let rows = $derived.by<Location[]>(() => {
     const source =
       path === null
@@ -152,6 +177,7 @@
           ? entries.filter((entry) => entry.is_dir).map((entry) => folderLocation(entry.path, 'Folders'))
           : []
     return source.filter((row) => {
+      if (row.kind === 'folder' && !isPinnedHost(row.path)) return false
       if (editing && parsed?.servers && row.kind !== 'server') return false
       return !term || (path === null ? `${row.label} ${row.detail}` : row.label).toLowerCase().includes(term)
     })
@@ -169,6 +195,7 @@
   }
 
   function showLocations(servers = false): void {
+    if (selection) return
     const server = currentServer
     navigation++
     enteringServer = null
@@ -181,16 +208,66 @@
     scrollSelection()
   }
 
-  function browse(folderPath: string, selection: string | null = null): void {
+  function isPinnedHost(folderPath: string): boolean {
+    return !selection || (splitRemotePath(folderPath)?.server ?? null) === selection.server
+  }
+
+  function browse(folderPath: string, selectedFolderKey: string | null = null): void {
+    if (!isPinnedHost(folderPath)) {
+      pathError = 'Select a folder on the initiating host.'
+      return
+    }
     navigation++
     enteringServer = null
     path = folderPath
-    selectedKey = selection
+    selectedKey = selectedFolderKey
     search = ''
     editOrigin = null
     pathError = null
     if (basename(folderPath).startsWith('.')) showHidden = true
     focusSearch()
+  }
+
+  async function completeFolder(folderPath: string): Promise<void> {
+    const opening = request
+    if (!opening || choosingFolder || systemPickerOpen) return
+    if (opening.kind !== 'select-folder') {
+      await goToFolder(folderPath, opening.replaceTabId)
+      return
+    }
+    choosingFolder = true
+    pathError = null
+    try {
+      await completeFolderSelection(folderPath, opening)
+    } catch (error) {
+      if (opening === request) pathError = getErrorMessage(error)
+    } finally {
+      if (opening === request) choosingFolder = false
+    }
+  }
+
+  async function pickFolder(): Promise<void> {
+    const opening = request
+    const native = platform.native
+    if (!opening || !native || currentServer !== null || choosingFolder || systemPickerOpen) return
+    if (opening.kind !== 'select-folder') {
+      closeBrowser()
+      await openFolderPicker(opening.replaceTabId)
+      return
+    }
+    systemPickerOpen = true
+    pathError = null
+    try {
+      const chosen = await native.dialogs.selectDirectory()
+      if (opening !== request) return
+      systemPickerOpen = false
+      if (chosen) await completeFolder(chosen)
+      else closeBrowser()
+    } catch (error) {
+      if (opening === request) pathError = getErrorMessage(error)
+    } finally {
+      if (opening === request) systemPickerOpen = false
+    }
   }
 
   function parentOf(folderPath: string): string {
@@ -205,6 +282,7 @@
   }
 
   async function enterServer(server: string | null): Promise<void> {
+    if (selection) return
     const generation = ++navigation
     const opening = request
     enteringServer = server ?? localHostLabel()
@@ -220,16 +298,17 @@
   }
 
   function activate(row: Location, drill = false): void {
+    if (selection && row.kind !== 'folder') return
     switch (row.kind) {
       case 'folder':
         if (drill) browse(row.path)
-        else void goToFolder(row.path, request?.replaceTabId)
+        else void completeFolder(row.path)
         break
       case 'server':
         void enterServer(row.server)
         break
       case 'workbench':
-        if (!drill) void goToWorkbench(row.workbench, row.server, false, request?.replaceTabId)
+        if (!drill) void goToWorkbench(row.workbench, row.server, false, replaceTabId)
         break
       case 'manage':
         if (!drill) {
@@ -260,7 +339,7 @@
 
   function parseLocation(value: string): { servers: boolean; dir: string | null; leaf: string } | null {
     const hostDraft = /^sworm:\/\/([^/]*)$/.exec(value)
-    if (hostDraft) return { servers: true, dir: null, leaf: hostDraft[1] }
+    if (hostDraft) return selection ? null : { servers: true, dir: null, leaf: hostDraft[1] }
     if (value === '~' || value.startsWith('~/')) {
       const home = homes.get(currentServer ?? '')
       if (!home) return null
@@ -271,6 +350,7 @@
     if (!local.startsWith('/')) return null
     const slash = local.lastIndexOf('/')
     const server = remote?.server ?? currentServer
+    if (selection && server !== selection.server) return null
     const prefix = server ? `sworm://${server}` : ''
     return {
       servers: false,
@@ -344,9 +424,11 @@
 
   function submitLocation(): void {
     if (!parsed) {
-      pathError = 'Enter an absolute path, ~, or sworm://server/path.'
+      pathError = selection
+        ? 'Enter an absolute path or ~ on the initiating host.'
+        : 'Enter an absolute path, ~, or sworm://server/path.'
     } else if (!parsed.servers && !parsed.leaf && path) {
-      if (entriesPath === path) void goToFolder(path, request?.replaceTabId)
+      if (entriesPath === path) void completeFolder(path)
       else pathError = folderError ?? 'Still loading this folder.'
     } else if (selected) {
       activate(selected)
@@ -370,9 +452,10 @@
     } else if (key === 'Enter') {
       event.preventDefault()
       event.stopPropagation()
-      if (event.ctrlKey && path) void goToFolder(path, request?.replaceTabId)
+      if (event.ctrlKey && path) void completeFolder(path)
       else if (editing) submitLocation()
       else if (selected) activate(selected)
+      else if (selection && path) void completeFolder(path)
     } else if (key === 'Escape' && editing) {
       event.preventDefault()
       event.stopPropagation()
@@ -410,20 +493,24 @@
     if (moved) selectedKey = row.key
   }
 
-
   $effect(() => {
     const opening = request
     untrack(() => {
       navigation++
+      choosingFolder = false
+      systemPickerOpen = false
       if (!opening) return
-      showLocations()
-      if (opening.server !== undefined) void enterServer(opening.server)
-      else if (opening.path) browse(opening.path)
+      if (opening.kind === 'select-folder') browse(opening.path)
+      else {
+        showLocations()
+        if (opening.server !== undefined) void enterServer(opening.server)
+        else if (opening.path) browse(opening.path)
+      }
     })
   })
 
   $effect(() => {
-    if (open) return watchPlaces()
+    if (open && !selection) return watchPlaces()
   })
 
   $effect(() => {
@@ -438,6 +525,7 @@
       try {
         const resolved = await backend.folders.resolve(target)
         if (!isCurrent()) return
+        if (!isPinnedHost(resolved.path)) throw new Error('Select a folder on the initiating host.')
         if (resolved.path !== target) {
           path = resolved.path
           return
@@ -483,205 +571,223 @@
   {:else}<SettingsIcon />{/if}
 {/snippet}
 
-<PaletteDialog
-  {open}
-  onOpenChange={(value) => {
-    if (!value) closeBrowser()
-  }}
-  label="Open Folder"
-  onkeydown={handleKey}
-  onOpenAutoFocus={(event) => {
-    event.preventDefault()
-    focusSearch()
-  }}
->
-  <PaletteSearch>
-    {#snippet children(inputClass)}
-      <input
-        bind:this={input}
-        bind:value={search}
-        class={cn(inputClass, editing && 'font-mono')}
-        role="combobox"
-        aria-label={editing ? 'Location' : path ? 'Filter folders or enter a path' : 'Search locations or enter a path'}
-        aria-expanded={true}
-        aria-controls={`${id}-locations`}
-        aria-activedescendant={selected ? `${id}-row-${rows.indexOf(selected)}` : undefined}
-        aria-autocomplete="list"
-        aria-invalid={pathError !== null}
-        placeholder={editing
-          ? 'Enter a path…'
-          : path
-            ? 'Filter folders or enter a path…'
-            : 'Search locations or enter a path…'}
-        spellcheck={false}
-        autocomplete="off"
-        oninput={handleInput}
-        onkeydown={handleSearchKey}
-      />
-    {/snippet}
-  </PaletteSearch>
+<!-- Mount after the initiating dialog so equal-z portals keep this palette on top. -->
+{#if open}
+  <PaletteDialog
+    {open}
+    onOpenChange={(value) => {
+      if (!value) closeBrowser()
+    }}
+    label={selection ? 'Select Folder' : 'Open Folder'}
+    onkeydown={handleKey}
+    onOpenAutoFocus={(event) => {
+      event.preventDefault()
+      focusSearch()
+    }}
+  >
+    <PaletteSearch>
+      {#snippet children(inputClass)}
+        <input
+          bind:this={input}
+          bind:value={search}
+          class={cn(inputClass, editing && 'font-mono')}
+          role="combobox"
+          aria-label={editing
+            ? 'Location'
+            : path
+              ? 'Filter folders or enter a path'
+              : 'Search locations or enter a path'}
+          aria-expanded={true}
+          aria-controls={`${id}-locations`}
+          aria-activedescendant={selected ? `${id}-row-${rows.indexOf(selected)}` : undefined}
+          aria-autocomplete="list"
+          aria-invalid={pathError !== null}
+          placeholder={editing
+            ? 'Enter a path…'
+            : path
+              ? 'Filter folders or enter a path…'
+              : 'Search locations or enter a path…'}
+          spellcheck={false}
+          autocomplete="off"
+          oninput={handleInput}
+          onkeydown={handleSearchKey}
+        />
+      {/snippet}
+    </PaletteSearch>
 
-  <div class="flex min-w-0 items-center gap-1 border-b border-edge bg-surface/60 px-2 py-1">
-    {#if path}
-      <IconButton size="md" tooltip="Locations" shortcut="Alt+Home" onclick={() => showLocations()}>
-        <ArrowLeft size={14} />
-      </IconButton>
-      <PathBar {path} onnavigate={browse} onhosts={() => showLocations(true)} />
-    {:else}
-      <span class="min-w-0 flex-1 px-1 text-xs text-muted">Locations</span>
-    {/if}
-    <Button variant="ghost" size="xs" onclick={() => showLocations(true)}><ServerIcon size={12} />Servers</Button>
-    {#if path}
-      <IconButton size="md" tooltip="Parent Folder" shortcut="Left" disabled={parentOf(path) === path} onclick={goUp}>
-        <ArrowUp size={14} />
-      </IconButton>
-      <IconButton size="md" tooltip="Edit Location" shortcut="Ctrl+L" onclick={() => void editLocation()}>
-        <FolderOpenIcon size={14} />
-      </IconButton>
-      <IconButton
-        size="md"
-        tooltip={showHidden ? 'Hide Hidden Folders' : 'Show Hidden Folders'}
-        active={showHidden}
-        onclick={() => {
-          showHidden = !showHidden
-        }}
-      >
-        {#if showHidden}<EyeOff size={14} />{:else}<Eye size={14} />{/if}
-      </IconButton>
-      <Button
-        variant="ghost"
-        size="xs"
-        onclick={() => path && void goToFolder(path, request?.replaceTabId)}
-        title="Open this folder (Ctrl+Enter)">Open Folder</Button
-      >
-    {/if}
-    {#if platform.native}
-      <IconButton
-        size="md"
-        tooltip="Open with System Dialog"
-        onclick={() => {
-          const tabId = request?.replaceTabId
-          closeBrowser()
-          void openFolderPicker(tabId)
-        }}
-      >
-        <FolderOpenIcon size={14} />
-      </IconButton>
-    {/if}
-  </div>
-
-  {#if pathError || enteringServer}
-    <div class="px-3 py-2 text-sm {pathError ? 'text-danger' : 'text-muted'}" role="status">
-      {pathError ?? `Opening ${enteringServer}…`}
-    </div>
-  {/if}
-  <div class={cn('grid min-h-0', path && 'grid-cols-2')}>
-    <div
-      bind:this={list}
-      id={`${id}-locations`}
-      role="listbox"
-      aria-label={path ? 'Folders' : 'Locations'}
-      aria-busy={folderLoad.loading || enteringServer !== null}
-      class="max-h-[50vh] min-h-0 [scroll-padding-block:0.5rem] overflow-y-auto p-1"
-    >
-      {#each rows as row, index (row.key)}
-        {#if index === 0 || rows[index - 1].section !== row.section}
-          {#if index > 0}<div class="-mx-1 my-1 h-px bg-edge"></div>{/if}
-          <div class={commandGroupHeadingVariants()}>{row.section}</div>
+    <div class="flex min-w-0 items-center gap-1 border-b border-edge bg-surface/60 px-2 py-1">
+      {#if path}
+        {#if !selection}
+          <IconButton size="md" tooltip="Locations" shortcut="Alt+Home" onclick={() => showLocations()}>
+            <ArrowLeft size={14} />
+          </IconButton>
         {/if}
-        <button
-          type="button"
-          role="option"
-          id={`${id}-row-${index}`}
-          tabindex="-1"
-          aria-selected={selected?.key === row.key}
-          data-selected={selected?.key === row.key ? '' : undefined}
-          class={cn(commandItemVariants(), 'w-full min-w-0 text-left focus-visible:shadow-focus-ring')}
-          onpointermove={(event) => pointerSelect(event, row)}
-          onmousedown={(event) => event.preventDefault()}
-          onclick={() => activate(row, row.kind === 'folder')}
+        <PathBar {path} onnavigate={browse} onhosts={() => showLocations(true)} hostPinned={selection !== null} />
+      {:else}
+        <span class="min-w-0 flex-1 px-1 text-xs text-muted">Locations</span>
+      {/if}
+      {#if !selection}
+        <Button variant="ghost" size="xs" onclick={() => showLocations(true)}><ServerIcon size={12} />Servers</Button>
+      {/if}
+      {#if path}
+        <IconButton size="md" tooltip="Parent Folder" shortcut="Left" disabled={parentOf(path) === path} onclick={goUp}>
+          <ArrowUp size={14} />
+        </IconButton>
+        <IconButton size="md" tooltip="Edit Location" shortcut="Ctrl+L" onclick={() => void editLocation()}>
+          <FolderOpenIcon size={14} />
+        </IconButton>
+        <IconButton
+          size="md"
+          tooltip={showHidden ? 'Hide Hidden Folders' : 'Show Hidden Folders'}
+          active={showHidden}
+          onclick={() => {
+            showHidden = !showHidden
+          }}
         >
-          {@render locationIcon(row)}
-          <span class="min-w-0 truncate">{row.label}</span>
-          {#if row.kind === 'server' && row.server}
-            <span class="size-2 shrink-0 rounded-full {remoteDotClass(row.state)}" aria-label={row.state}></span>
-          {/if}
-          {#if !path && row.detail}<span class="ml-auto min-w-0 truncate text-xs text-subtle" title={row.detail}
-              >{row.detail}</span
-            >{/if}
-          {#if row.kind === 'folder' || row.kind === 'server'}<ChevronRight class={path ? 'ml-auto' : ''} />{/if}
-        </button>
-      {:else}
-        <div class="px-2 py-6 text-center text-sm text-muted" role="status">
-          {#if folderError}<span class="text-danger">{folderError}</span>
-          {:else if folderLoad.loading}Loading…
-          {:else if term}No matching {path ? 'folders' : 'locations'}.
-          {:else}No folders.{/if}
-        </div>
-      {/each}
-    </div>
-    {#if path}
-      <section
-        class="max-h-[50vh] min-h-0 overflow-y-auto border-l border-edge bg-surface p-1"
-        aria-label="Folder contents"
-      >
-        <div class={cn(commandGroupHeadingVariants(), 'truncate font-mono')}>
-          {selected?.kind === 'folder' ? `${selected.label}/` : 'Folder contents'}
-        </div>
-        {#if previewError}<p class="px-2 py-2 text-sm text-danger">{previewError}</p>
-        {:else if previewLoad.loading}<p class="px-2 py-2 text-sm text-muted">Loading…</p>
-        {:else if visiblePreview.length === 0}<p class="px-2 py-2 text-sm text-subtle">
-            {selectedPath ? 'Empty folder.' : 'Select a folder.'}
-          </p>
-        {:else}
-          {#each visiblePreview as entry (entry.path)}
-            {#if entry.is_dir}
-              <button
-                type="button"
-                tabindex="-1"
-                class={cn(
-                  commandItemVariants(),
-                  'w-full min-w-0 text-left hover:bg-overlay focus-visible:shadow-focus-ring'
-                )}
-                onclick={() => browse(entry.path)}
-              >
-                <FileIcon filename={entry.name} folder size={16} /><span class="truncate">{entry.name}</span
-                ><ChevronRight class="ml-auto" />
-              </button>
-            {:else}
-              <div class="flex min-w-0 items-center gap-2 px-2 py-1.5 text-sm text-muted">
-                <FileIcon filename={entry.name} size={16} /><span class="truncate">{entry.name}</span>
-              </div>
-            {/if}
-          {/each}
-        {/if}
-      </section>
-    {/if}
-  </div>
-  <PaletteFooter>
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <span class="flex items-center gap-1.5"
-        ><Kbd><ArrowUp size={12} /></Kbd><Kbd><ArrowDown size={12} /></Kbd>navigate</span
-      >
-      <span class="flex items-center gap-1.5"><Kbd>Enter</Kbd>{selected?.kind === 'server' ? 'browse' : 'open'}</span>
-      {#if editing}
-        <span class="flex items-center gap-1.5"><Kbd>Tab</Kbd>complete</span>
-      {:else}
-        {#if selected?.kind === 'folder'}
-          <span class="flex items-center gap-1.5"
-            ><Kbd
-              >{#if search}Alt+{/if}<ArrowRight size={12} /></Kbd
-            >browse</span
-          >
-        {/if}
-        {#if path}<span class="flex items-center gap-1.5"
-            ><Kbd
-              >{#if search}Alt+{/if}<ArrowLeft size={12} /></Kbd
-            >parent</span
-          >{/if}
-        <span class="flex items-center gap-1.5"><Kbd>Ctrl+L</Kbd>path</span>
+          {#if showHidden}<EyeOff size={14} />{:else}<Eye size={14} />{/if}
+        </IconButton>
+        <Button
+          variant={selection ? 'accent' : 'ghost'}
+          size="xs"
+          disabled={choosingFolder || systemPickerOpen}
+          onclick={() => path && void completeFolder(path)}
+          title={selection ? 'Select this folder (Ctrl+Enter)' : 'Open this folder (Ctrl+Enter)'}
+          >{selection ? 'Select Folder' : 'Open Folder'}</Button
+        >
+      {/if}
+      {#if platform.native && currentServer === null}
+        <IconButton
+          size="md"
+          tooltip={selection ? 'Select with System Dialog' : 'Open with System Dialog'}
+          disabled={choosingFolder || systemPickerOpen}
+          onclick={() => void pickFolder()}
+        >
+          <FolderOpenIcon size={14} />
+        </IconButton>
       {/if}
     </div>
-    <span class="flex shrink-0 items-center gap-1.5"><Kbd>Esc</Kbd>{editing ? 'cancel' : 'close'}</span>
-  </PaletteFooter>
-</PaletteDialog>
+
+    {#if pathError || enteringServer}
+      <div class="px-3 py-2 text-sm {pathError ? 'text-danger' : 'text-muted'}" role="status">
+        {pathError ?? `Opening ${enteringServer}…`}
+      </div>
+    {/if}
+    <div class={cn('grid min-h-0', path && 'grid-cols-2')}>
+      <div
+        bind:this={list}
+        id={`${id}-locations`}
+        role="listbox"
+        aria-label={path ? 'Folders' : 'Locations'}
+        aria-busy={folderLoad.loading || enteringServer !== null || choosingFolder || systemPickerOpen}
+        class="max-h-[50vh] min-h-0 [scroll-padding-block:0.5rem] overflow-y-auto p-1"
+      >
+        {#each rows as row, index (row.key)}
+          {#if index === 0 || rows[index - 1].section !== row.section}
+            {#if index > 0}<div class="-mx-1 my-1 h-px bg-edge"></div>{/if}
+            <div class={commandGroupHeadingVariants()}>{row.section}</div>
+          {/if}
+          <button
+            type="button"
+            role="option"
+            id={`${id}-row-${index}`}
+            tabindex="-1"
+            aria-selected={selected?.key === row.key}
+            data-selected={selected?.key === row.key ? '' : undefined}
+            class={cn(commandItemVariants(), 'w-full min-w-0 text-left focus-visible:shadow-focus-ring')}
+            onpointermove={(event) => pointerSelect(event, row)}
+            onmousedown={(event) => event.preventDefault()}
+            onclick={() => {
+              if (selection && row.kind === 'folder') selectedKey = row.key
+              else activate(row, row.kind === 'folder')
+            }}
+            ondblclick={() => {
+              if (selection && row.kind === 'folder') void completeFolder(row.path)
+            }}
+          >
+            {@render locationIcon(row)}
+            <span class="min-w-0 truncate">{row.label}</span>
+            {#if row.kind === 'server' && row.server}
+              <span class="size-2 shrink-0 rounded-full {remoteDotClass(row.state)}" aria-label={row.state}></span>
+            {/if}
+            {#if !path && row.detail}<span class="ml-auto min-w-0 truncate text-xs text-subtle" title={row.detail}
+                >{row.detail}</span
+              >{/if}
+            {#if row.kind === 'folder' || row.kind === 'server'}<ChevronRight class={path ? 'ml-auto' : ''} />{/if}
+          </button>
+        {:else}
+          <div class="px-2 py-6 text-center text-sm text-muted" role="status">
+            {#if folderError}<span class="text-danger">{folderError}</span>
+            {:else if folderLoad.loading}Loading…
+            {:else if term}No matching {path ? 'folders' : 'locations'}.
+            {:else}No folders.{/if}
+          </div>
+        {/each}
+      </div>
+      {#if path}
+        <section
+          class="max-h-[50vh] min-h-0 overflow-y-auto border-l border-edge bg-surface p-1"
+          aria-label="Folder contents"
+        >
+          <div class={cn(commandGroupHeadingVariants(), 'truncate font-mono')}>
+            {selected?.kind === 'folder' ? `${selected.label}/` : 'Folder contents'}
+          </div>
+          {#if previewError}<p class="px-2 py-2 text-sm text-danger">{previewError}</p>
+          {:else if previewLoad.loading}<p class="px-2 py-2 text-sm text-muted">Loading…</p>
+          {:else if visiblePreview.length === 0}<p class="px-2 py-2 text-sm text-subtle">
+              {selectedPath ? 'Empty folder.' : 'Select a folder.'}
+            </p>
+          {:else}
+            {#each visiblePreview as entry (entry.path)}
+              {#if entry.is_dir}
+                <button
+                  type="button"
+                  tabindex="-1"
+                  class={cn(
+                    commandItemVariants(),
+                    'w-full min-w-0 text-left hover:bg-overlay focus-visible:shadow-focus-ring'
+                  )}
+                  onclick={() => browse(entry.path)}
+                >
+                  <FileIcon filename={entry.name} folder size={16} /><span class="truncate">{entry.name}</span
+                  ><ChevronRight class="ml-auto" />
+                </button>
+              {:else}
+                <div class="flex min-w-0 items-center gap-2 px-2 py-1.5 text-sm text-muted">
+                  <FileIcon filename={entry.name} size={16} /><span class="truncate">{entry.name}</span>
+                </div>
+              {/if}
+            {/each}
+          {/if}
+        </section>
+      {/if}
+    </div>
+    <PaletteFooter>
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span class="flex items-center gap-1.5"
+          ><Kbd><ArrowUp size={12} /></Kbd><Kbd><ArrowDown size={12} /></Kbd>navigate</span
+        >
+        <span class="flex items-center gap-1.5"
+          ><Kbd>Enter</Kbd>{selection ? 'select' : selected?.kind === 'server' ? 'browse' : 'open'}</span
+        >
+        {#if editing}
+          <span class="flex items-center gap-1.5"><Kbd>Tab</Kbd>complete</span>
+        {:else}
+          {#if selected?.kind === 'folder'}
+            <span class="flex items-center gap-1.5"
+              ><Kbd
+                >{#if search}Alt+{/if}<ArrowRight size={12} /></Kbd
+              >browse</span
+            >
+          {/if}
+          {#if path}<span class="flex items-center gap-1.5"
+              ><Kbd
+                >{#if search}Alt+{/if}<ArrowLeft size={12} /></Kbd
+              >parent</span
+            >{/if}
+          <span class="flex items-center gap-1.5"><Kbd>Ctrl+L</Kbd>path</span>
+        {/if}
+      </div>
+      <span class="flex shrink-0 items-center gap-1.5"><Kbd>Esc</Kbd>{editing ? 'cancel' : 'close'}</span>
+    </PaletteFooter>
+  </PaletteDialog>
+{/if}

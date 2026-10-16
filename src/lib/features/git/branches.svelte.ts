@@ -7,9 +7,12 @@
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
 import { isGitError } from '$lib/features/git/errors'
+import { confirmAsync } from '$lib/features/confirm/service.svelte'
+import { openFolder } from '$lib/features/workbench/state.svelte'
+import { splitRemotePath } from '$lib/utils/paths'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { platform } from '$lib/platform'
-import type { BranchSummary, GitSummary } from '$lib/types/backend'
+import type { BranchSummary, GitSummary, GitWorktree } from '$lib/types/backend'
 
 // TYPES //
 
@@ -261,6 +264,57 @@ async function autoFetchOnce(folderPath: string) {
 // DIRTY CHECKOUT //
 
 /**
+ * Occupied checkout is handled by opening (or declining) its existing worktree, never stashing here.
+ * Inventory failures skip the offer; Git's own occupancy refusal still routes through handleOccupiedWorktreeError.
+ */
+export async function offerOccupiedWorktree(folderPath: string, branchName: string): Promise<boolean> {
+  let occupied: GitWorktree | undefined
+  try {
+    const inventory = await backend.git.listWorktrees(folderPath)
+    occupied = inventory.worktrees.find(
+      (worktree) =>
+        worktree.branch === branchName && !worktree.isCurrent && worktree.prunable === null && !worktree.bare
+    )
+  } catch (e) {
+    console.error(`Worktree inventory unavailable for ${folderPath}:`, e)
+    return false
+  }
+  if (!occupied) return false
+  const proceed = await confirmAsync({
+    title: 'Open Worktree?',
+    message: `The branch "${branchName}" is checked out in ${occupied.path}.\n\nOpen that worktree? Changes in this checkout will not be stashed or switched.`,
+    confirmLabel: 'Open Worktree'
+  })
+  if (proceed) await openFolder(occupied.path)
+  return true
+}
+
+/** A late occupancy race still offers the owning host's checkout and retains any existing stash. */
+export async function handleOccupiedWorktreeError(folderPath: string, error: unknown): Promise<boolean> {
+  if (!isGitError(error, 'branchInWorktree')) return false
+  let occupied: GitWorktree | undefined
+  try {
+    const inventory = await backend.git.listWorktrees(folderPath)
+    occupied = inventory.worktrees.find(
+      (worktree) =>
+        worktree.branch === error.branch && !worktree.isCurrent && worktree.prunable === null && !worktree.bare
+    )
+  } catch (e) {
+    console.error(`Worktree inventory unavailable for ${folderPath}:`, e)
+  }
+  const host = splitRemotePath(folderPath)
+  const occupiedPath =
+    occupied?.path ?? (host && !splitRemotePath(error.path) ? `sworm://${host.server}${error.path}` : error.path)
+  const proceed = await confirmAsync({
+    title: 'Open Worktree?',
+    message: `The branch "${error.branch}" is checked out in ${occupiedPath}.\n\nOpen that worktree? Any recovery stash already created is retained.`,
+    confirmLabel: 'Open Worktree'
+  })
+  if (proceed) await openFolder(occupiedPath)
+  return true
+}
+
+/**
  * Force-refresh the git summary, then return whether the working
  * tree (or index, or untracked set) holds any uncommitted state.
  * Callers should treat `true` as "must route through CheckoutDialog
@@ -303,6 +357,7 @@ async function guardedCheckout(
   try {
     await runGitAction(folderPath, checkout)
   } catch (e) {
+    if (await handleOccupiedWorktreeError(folderPath, e)) return
     if (isGitError(e, 'dirtyWorktree')) {
       // Joins the refresh runGitAction started, so the summary reflects the tree that blocked the switch.
       await refreshGit(folderPath)
@@ -314,13 +369,19 @@ async function guardedCheckout(
 }
 
 /** Switch to local branch `name`; see `guardedCheckout` for dirty-tree handling. */
-export function safeCheckout(folderPath: string, name: string): Promise<void> {
-  return guardedCheckout(folderPath, name, (path) => backend.git.branch(path, { kind: 'checkout', name }))
+export async function safeCheckout(folderPath: string, name: string): Promise<void> {
+  if (await offerOccupiedWorktree(folderPath, name)) return
+  await guardedCheckout(folderPath, name, (path) => backend.git.branch(path, { kind: 'checkout', name }))
 }
 
 /** Create `localName` tracking `remoteName` and switch to it; see `guardedCheckout`. */
-export function safeCheckoutRemoteAsLocal(folderPath: string, remoteName: string, localName: string): Promise<void> {
-  return guardedCheckout(folderPath, localName, (path) =>
+export async function safeCheckoutRemoteAsLocal(
+  folderPath: string,
+  remoteName: string,
+  localName: string
+): Promise<void> {
+  if (await offerOccupiedWorktree(folderPath, localName)) return
+  await guardedCheckout(folderPath, localName, (path) =>
     backend.git.branch(path, { kind: 'checkout_remote', remoteName, localName })
   )
 }

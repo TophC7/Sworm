@@ -72,17 +72,17 @@
   <ContextMenu.Content>
     {#if filePath && targetType === 'file'}
       <!-- ── File menu ── -->
-      <ContextMenu.Item onclick={onOpenChanges}>
+      <ContextMenu.Item onSelect={onOpenChanges}>
         <FileDiff size={14} />
         <span>Open Changes</span>
       </ContextMenu.Item>
       {#if canOpenFile}
-        <ContextMenu.Item onclick={onOpenFile}>
+        <ContextMenu.Item onSelect={onOpenFile}>
           <SquareArrowOutUpRight size={14} />
           <span>Open File</span>
         </ContextMenu.Item>
       {/if}
-      <ContextMenu.Item onclick={onOpenFileHead}>
+      <ContextMenu.Item onSelect={onOpenFileHead}>
         <Eye size={14} />
         <span>Open File (HEAD)</span>
       </ContextMenu.Item>
@@ -90,18 +90,18 @@
       <ContextMenu.Separator />
 
       {#if !isStaged}
-        <ContextMenu.Item destructive onclick={onDiscard}>
+        <ContextMenu.Item destructive onSelect={onDiscard}>
           <Trash2 size={14} />
           <span>Discard Changes</span>
         </ContextMenu.Item>
       {/if}
       {#if isStaged}
-        <ContextMenu.Item onclick={onUnstage}>
+        <ContextMenu.Item onSelect={onUnstage}>
           <MinusCircle size={14} />
           <span>Unstage Changes</span>
         </ContextMenu.Item>
       {:else}
-        <ContextMenu.Item onclick={onStage}>
+        <ContextMenu.Item onSelect={onStage}>
           <PlusCircle size={14} />
           <span>Stage Changes</span>
         </ContextMenu.Item>
@@ -110,73 +110,73 @@
       {#if canRevealInFileManager}
         <ContextMenu.Separator />
 
-        <ContextMenu.Item onclick={onRevealInFolder}>
+        <ContextMenu.Item onSelect={onRevealInFolder}>
           <FolderOpenIcon size={14} />
           <span>Reveal in File Manager</span>
         </ContextMenu.Item>
       {/if}
       <ContextMenu.Separator />
 
-      <ContextMenu.Item onclick={onCopyPath}>
+      <ContextMenu.Item onSelect={onCopyPath}>
         <ClipboardIcon size={14} />
         <span>Copy Path</span>
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={onCopyRelativePath}>
+      <ContextMenu.Item onSelect={onCopyRelativePath}>
         <ClipboardIcon size={14} />
         <span>Copy Relative Path</span>
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={onCopyPatch}>
+      <ContextMenu.Item onSelect={onCopyPatch}>
         <ClipboardIcon size={14} />
         <span>Copy Patch</span>
       </ContextMenu.Item>
     {:else if filePath && targetType === 'directory'}
       <!-- ── Folder menu ── -->
       {#if !isStaged}
-        <ContextMenu.Item destructive onclick={onDiscard}>
+        <ContextMenu.Item destructive onSelect={onDiscard}>
           <Trash2 size={14} />
           <span>Discard Changes</span>
         </ContextMenu.Item>
       {/if}
       {#if isStaged}
-        <ContextMenu.Item onclick={onUnstage}>
+        <ContextMenu.Item onSelect={onUnstage}>
           <MinusCircle size={14} />
           <span>Unstage Changes</span>
         </ContextMenu.Item>
       {:else}
-        <ContextMenu.Item onclick={onStage}>
+        <ContextMenu.Item onSelect={onStage}>
           <PlusCircle size={14} />
           <span>Stage Changes</span>
         </ContextMenu.Item>
       {/if}
-      <ContextMenu.Item onclick={onOpenChanges}>
+      <ContextMenu.Item onSelect={onOpenChanges}>
         <FileDiff size={14} />
         <span>Open Changes</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator />
 
-      <ContextMenu.Item onclick={onCopyFolderPatch}>
+      <ContextMenu.Item onSelect={onCopyFolderPatch}>
         <ClipboardIcon size={14} />
         <span>Copy Patch</span>
       </ContextMenu.Item>
     {:else}
       <!-- ── Empty space menu ── -->
-      <ContextMenu.Item onclick={onPush}>
+      <ContextMenu.Item onSelect={onPush}>
         <ArrowUp size={14} />
         <span>Push</span>
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={onPull}>
+      <ContextMenu.Item onSelect={onPull}>
         <ArrowDown size={14} />
         <span>Pull</span>
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={onFetch}>
+      <ContextMenu.Item onSelect={onFetch}>
         <RotateCw size={14} />
         <span>Fetch</span>
       </ContextMenu.Item>
 
       <ContextMenu.Separator />
 
-      <ContextMenu.Item onclick={onCopyFullPatch}>
+      <ContextMenu.Item onSelect={onCopyFullPatch}>
         <ClipboardIcon size={14} />
         <span>Copy Patch</span>
       </ContextMenu.Item>

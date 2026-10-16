@@ -121,6 +121,49 @@ Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command
 
 Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open. The browser's desktop system-dialog button uses the same captured temporary-tab replacement rule. The folder view keeps a contents preview and an Open Folder action (`Ctrl+Enter`) for its current directory.
 
+### Isolate work with Git worktrees
+
+Use the Git sidebar's **Worktrees** tab to create a checkout on a new branch, an available local branch, or a detached commit. The default destination is `<parent>/<repo>.worktrees/<branch>` with `/` replaced by `-`; collisions get a numeric suffix. Edit the destination or browse for another root. Sworm remembers that root per repository and host. Branch row menus also offer **Create Worktree** and **Open Worktree**; checking out an occupied branch offers to open its existing checkout instead of stashing current edits. Worktree features require Git 2.36 or newer; on older Git, branches still list and switch but worktree markers and proactive occupancy prompts are unavailable. Git's own occupied-branch refusal still offers to open the existing worktree.
+
+Copy local files from the invoking checkout with `.sworm/settings.jsonc`:
+
+```jsonc
+{
+  "git": {
+    "worktree_copy": {
+      ".env": true,
+      ".local": true,
+      ".local/private": false
+    }
+  }
+}
+```
+
+The default map is empty. Any matching `true` includes an untracked file, even when gitignored; any matching `false` vetoes it, including directory descendants. Tracked destination files win. Sworm never follows or copies symlinks. Linux uses reflinks when supported, otherwise an independent byte copy. An incomplete copy leaves the new checkout intact, reports warnings, and skips setup tasks.
+
+Tasks present in the destination `.sworm/tasks.jsonc` can run after creation:
+
+```jsonc
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "setup",
+      "label": "Set up worktree",
+      "command": "bun install",
+      "runOn": "worktreeCreated",
+      "confirm": true
+    }
+  ]
+}
+```
+
+Creation tasks start without visiting their tabs; existing confirmation, singleton, environment and working-directory rules still apply. Tasks without `runOn` remain manual.
+
+**Remove Worktree** checks locked tabs and unsaved edits, closes affected tabs, releases ownership and waits for Sworm-managed sessions, tasks and language servers to exit. Another window/client's ownership blocks removal. Dirty or ignored-only files require separate **Force Delete** consent; the branch remains. **Prune Worktrees** removes stale registrations, not working directories.
+
+**Migrate Changes to Main** requires a clean primary checkout, closes affected tabs/runs in both checkouts, and moves staged, unstaged and nonignored untracked changes while preserving staging. Ignored files and the source checkout stay behind. A uniquely named recovery stash remains even on success; remove it through Stashes when no longer needed. Apply failures leave primary conflicts visible and attempt source restoration only when source is still clean and its HEAD unchanged. Stop external terminals or daemonized commands yourself; Sworm can fence only processes it manages.
+
 ### Use your project's Nix environment
 
 Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate an environment from the status bar; once ready, it is used for new terminals, agent sessions, and runnable tasks. Without a ready Nix environment, sessions use the host environment.
@@ -148,7 +191,7 @@ Track issues with priorities, group them into epics, and see progress in the sid
 ## Worth knowing
 
 - **Active development, Linux-first.** Expect rough edges and changes as the project grows. I do daily-drive it however, so it's stable enough.
-- **Sessions in the same folder share its working tree.** Tabs do not create isolated worktrees.
+- **Sessions in the same folder share its working tree.** Tabs do not create isolated worktrees; create a separate worktree for independent edits.
 - **Your agent is still your agent.** Sworm runs the CLI itself; model information and other output inside its terminal come from that CLI.
 
 ## Development

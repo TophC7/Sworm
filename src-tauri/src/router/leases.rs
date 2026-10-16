@@ -276,6 +276,7 @@ impl WorkspaceRouter {
         {
             return Err(not_controller(&id));
         }
+        let _admission = Arc::clone(&self.inner.host.admission).read_owned().await;
         self.inner.remote_runs.transfer_workbench(
             &self.inner.host,
             source_owner,

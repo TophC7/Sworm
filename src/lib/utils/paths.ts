@@ -44,6 +44,16 @@ export function isEqualOrParent(parentPath: string, childPath: string): boolean 
   if (parent === '') return child.length > 0
   return child.startsWith(`${parent}/`)
 }
+/** Component-boundary containment on one host; remote and local paths never overlap. */
+export function isPathWithin(rootPath: string, candidatePath: string): boolean {
+  // Inputs are canonical Linux paths: backslashes and newlines are filename bytes, not separators.
+  const rootRemote = /^sworm:\/\/([^/]+)(\/[\s\S]*)?$/.exec(rootPath)
+  const candidateRemote = /^sworm:\/\/([^/]+)(\/[\s\S]*)?$/.exec(candidatePath)
+  if (rootRemote?.[1] !== candidateRemote?.[1]) return false
+  const root = (rootRemote ? rootRemote[2] || '/' : rootPath).replace(/\/+$/, '') || '/'
+  const candidate = (candidateRemote ? candidateRemote[2] || '/' : candidatePath).replace(/\/+$/, '') || '/'
+  return root === '/' ? candidate.startsWith('/') : candidate === root || candidate.startsWith(`${root}/`)
+}
 
 export function toProjectRelativePath(folderPath: string, absolutePath: string): string | null {
   const root = normalizeAbsolutePath(folderPath)

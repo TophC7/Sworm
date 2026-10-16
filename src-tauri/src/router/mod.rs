@@ -6,6 +6,7 @@ mod remote_lsp;
 mod remote_runs;
 pub mod remotes;
 mod target;
+mod worktrees;
 
 use crate::host_events::DesktopEvent;
 use file_streams::FileStreams;
@@ -111,7 +112,8 @@ impl WorkspaceRouter {
         if let Some(result) = self.inner.remote_lsp.send(&session_id, &message_json) {
             return result;
         }
-        self.inner.host.lsp_send(session_id, message_json)
+        self.local(move |host| host.lsp_send(session_id, message_json))
+            .await
     }
 
     pub fn server_for_run(&self, run_id: &str) -> Option<String> {
@@ -159,17 +161,68 @@ impl WorkspaceRouter {
         );
     }
 
-    /// Drop a folder's remote claim once its last owner released it, so a
-    /// reconnect stops re-subscribing watchers nothing is listening to.
+    /// Only an open tab declares durable ownership. Folder discovery and Home
+    /// metadata reads must never create reconnect declarations.
+    pub async fn claim_folder(&self, folder_path: String) -> Result<(), ApiError> {
+        let Target::Remote { server, path } = Target::parse(&folder_path)? else {
+            return Ok(());
+        };
+        let server = server.to_owned();
+        let path = Target::normalize_remote_path(path)?;
+        let slot = self.inner.slot(&server);
+        let router = self.clone();
+        tokio::spawn(async move {
+            let _restore = slot.claim_restore.lock().await;
+            router.inner.remember_claim(&server, &path, None, false);
+            router
+                .call_reply(&server, Request::FolderClaim { folder_path: path })
+                .await?
+                .folder_claim()
+                .map_err(ApiError::from)
+        })
+        .await?
+    }
+
+    /// Window teardown retains its nonblocking policy. Checked worktree closure
+    /// uses the awaited path below and propagates every daemon release failure.
     pub fn release_folder(&self, folder_path: &str) {
-        let Ok(Target::Remote { server, path }) = Target::parse(folder_path) else {
-            return;
+        let router = self.clone();
+        let folder_path = folder_path.to_owned();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = router.release_folder_strict(folder_path).await {
+                tracing::warn!(%error, "remote folder release failed");
+            }
+        });
+    }
+
+    pub async fn release_folder_strict(&self, folder_path: String) -> Result<(), ApiError> {
+        let Target::Remote { server, path } = Target::parse(&folder_path)? else {
+            return Ok(());
         };
-        let Some(slot) = self.inner.remotes.lock().get(server).cloned() else {
-            return;
+        let server = server.to_owned();
+        let path = Target::normalize_remote_path(path)?;
+        let slot = self.inner.remotes.lock().get(&server).cloned();
+        let Some(slot) = slot else {
+            return Ok(());
         };
-        slot.claims.lock().remove(path);
-        self.inner.stop_events_if_idle(server);
+        let router = self.clone();
+        tokio::spawn(async move {
+            let _restore = slot.claim_restore.lock().await;
+            slot.claims.lock().retain(|key, _| {
+                key != &path
+                    && Target::normalize_remote_path(key).ok().as_deref() != Some(path.as_str())
+            });
+            let client = router.inner.client(&server).await?;
+            client
+                .call(&Request::FolderRelease { folder_path: path })
+                .await
+                .map_err(|error| remote_error(&server, error))?
+                .folder_release()
+                .map_err(ApiError::from)?;
+            router.inner.stop_events_if_idle(&server);
+            Ok(())
+        })
+        .await?
     }
 
     async fn call_reply(&self, server: &str, request: Request) -> Result<Reply, ApiError> {
@@ -203,10 +256,20 @@ impl WorkspaceRouter {
         }
     }
 
-    pub fn remote_runs_release(&self, owner: &str, run_ids: &[String]) -> Result<(), ApiError> {
-        self.inner
-            .remote_runs
-            .release(&self.inner.host, owner, run_ids)
+    pub async fn remote_runs_release(
+        &self,
+        owner: &str,
+        run_ids: &[String],
+    ) -> Result<(), ApiError> {
+        let admission = Arc::clone(&self.inner.host.admission).read_owned().await;
+        let inner = Arc::clone(&self.inner);
+        let owner = owner.to_owned();
+        let run_ids = run_ids.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            inner.remote_runs.release(&inner.host, &owner, &run_ids)
+        })
+        .await?
     }
 
     /// A remote mutation runs inside the daemon's `Host`, whose `FileMoved`
@@ -235,8 +298,13 @@ impl RouterInner {
         &self,
         op: impl FnOnce(&Arc<Host>) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, ApiError> {
+        let admission = Arc::clone(&self.host.admission).read_owned().await;
         let host = Arc::clone(&self.host);
-        tokio::task::spawn_blocking(move || op(&host)).await?
+        tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            op(&host)
+        })
+        .await?
     }
 
     pub(crate) fn emit_run_status(&self, run_id: &str, state: &str) {

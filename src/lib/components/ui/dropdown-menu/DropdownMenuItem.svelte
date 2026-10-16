@@ -8,17 +8,14 @@
     class: className,
     inset,
     destructive = false,
-    disabled = false,
-    onclick,
     ...rest
-  }: DropdownMenuPrimitive.ItemProps & {
+  }: Omit<DropdownMenuPrimitive.ItemProps, 'onclick'> & {
     inset?: boolean
     destructive?: boolean
   } = $props()
 
-  // bits turns Enter/Space into a DOM click, so `onclick` also covers keyboard activation.
-  // bits only guards its own select handler; disabled rows keep pointer events for
-  // cursor-not-allowed, so the consumer's click is dropped here.
+  // Use onSelect: Bits checks disabled before the action, then closes the menu
+  // even when that action immediately makes the row busy or opens a dialog.
 </script>
 
 <DropdownMenuPrimitive.Item
@@ -26,8 +23,6 @@
   data-slot="dropdown-menu-item"
   data-inset={inset || undefined}
   data-destructive={destructive || undefined}
-  {disabled}
-  onclick={disabled ? undefined : onclick}
   class={cn(menuItemClass, className)}
   {...rest}
 />

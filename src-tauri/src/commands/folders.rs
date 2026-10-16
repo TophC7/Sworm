@@ -1,6 +1,5 @@
 use crate::app_state::AppState;
 use crate::router::Target;
-use crate::windows::release_folder_resources;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
@@ -43,10 +42,14 @@ pub async fn folder_claim(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    let _admission = std::sync::Arc::clone(&state.host.admission)
+        .read_owned()
+        .await;
     state
         .windows
-        .claim_folder(window.label(), folder_key(&folder_path)?);
-    Ok(())
+        .claim_folder(window.label(), folder_key(&folder_path)?)
+        .map_err(ApiError::InvalidArgument)?;
+    state.router.claim_folder(folder_path).await
 }
 
 /// Release this window's ownership of a folder. Per-window resources are
@@ -57,20 +60,31 @@ pub async fn folder_release(
     folder_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), ApiError> {
+    let admission = std::sync::Arc::clone(&state.host.admission)
+        .read_owned()
+        .await;
     // A previously canonical path remains the resource key if the folder was
     // deleted before its tab closed.
     let folder = folder_key(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path));
-    let is_last_owner = state.windows.release_folder(window.label(), &folder);
-    state
-        .host
-        .file_watchers
-        .release_subscriber_folder(window.label(), &folder);
+    let is_last_owner = state
+        .windows
+        .release_folder(window.label(), &folder)
+        .map_err(ApiError::InvalidArgument)?;
+    let app = window.app_handle().clone();
+    tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        let state = app.state::<AppState>();
+        state
+            .host
+            .file_watchers
+            .release_subscriber_folder(window.label(), &folder);
+        if is_last_owner {
+            state.host.release_folder(&folder);
+        }
+    })
+    .await?;
     if is_last_owner {
-        let app = window.app_handle().clone();
-        tokio::task::spawn_blocking(move || {
-            release_folder_resources(&app.state::<AppState>(), &folder);
-        })
-        .await?;
+        state.router.release_folder_strict(folder_path).await?;
     }
     Ok(())
 }

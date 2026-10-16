@@ -806,6 +806,36 @@ mod tests {
     }
 
     #[test]
+    fn worktree_copy_layers_preserve_overlapping_vetoes() {
+        let resolved = resolve(
+            loaded(
+                SettingsLayerKind::Global,
+                "global",
+                json!({
+                    "git": { "worktree_copy": { ".local": true, ".local/private": true, "**/*.env": true } }
+                }),
+            ),
+            Some(loaded(
+                SettingsLayerKind::Folder,
+                "folder",
+                json!({
+                    "git": { "worktree_copy": { ".local/private": false, ".env": true } }
+                }),
+            )),
+        );
+        assert_eq!(
+            resolved.settings.git.worktree_copy,
+            std::collections::BTreeMap::from([
+                (".local".to_owned(), true),
+                (".local/private".to_owned(), false),
+                ("**/*.env".to_owned(), true),
+                (".env".to_owned(), true),
+            ])
+        );
+        assert!(resolved.diagnostics.is_empty());
+    }
+
+    #[test]
     fn explorer_unknown_key_emits_diagnostic() {
         let resolved = resolve(
             loaded(

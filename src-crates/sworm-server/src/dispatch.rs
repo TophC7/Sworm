@@ -12,6 +12,7 @@ use std::{
 use sworm_core::services::folders::resolve_folder;
 use sworm_core::{errors::ApiError, Host};
 use sworm_protocol::{
+    git::{GitWorktreeCheckout, GitWorktreeList, GitWorktreeOp, GitWorktreeResult},
     rpc::{Reply, Request, Response, RunStatus, WireError, MAX_WHOLE_FILE_BYTES},
     session::SessionStartInfo,
 };
@@ -46,10 +47,11 @@ struct FolderState {
 
 // Shared guards cover resource publication; exclusive guards fence registration
 // and teardown. The registry and session locks never cover Host work.
-struct FolderOperation {
+pub(crate) struct FolderOperation {
     context: Arc<ServerContext>,
     folder: PathBuf,
     gate: Arc<RwLock<()>>,
+    _admission: OwnedRwLockReadGuard<()>,
     read: Option<OwnedRwLockReadGuard<()>>,
     write: Option<OwnedRwLockWriteGuard<()>>,
 }
@@ -142,12 +144,17 @@ impl ServerContext {
         }
     }
 
-    fn folder_operation(self: &Arc<Self>, folder: PathBuf) -> FolderOperation {
+    fn folder_operation(
+        self: &Arc<Self>,
+        folder: PathBuf,
+        admission: OwnedRwLockReadGuard<()>,
+    ) -> FolderOperation {
         let gate = Arc::clone(&self.folders.lock().entry(folder.clone()).or_default().gate);
         FolderOperation {
             context: Arc::clone(self),
             folder,
             gate,
+            _admission: admission,
             read: None,
             write: None,
         }
@@ -159,7 +166,8 @@ impl ServerContext {
         folder: PathBuf,
         subscriber: String,
     ) -> Result<(), WireError> {
-        let mut operation = self.folder_operation(folder);
+        let admission = Arc::clone(&host.admission).read_owned().await;
+        let mut operation = self.folder_operation(folder, admission);
         operation.write().await;
         operation.release(Arc::clone(host), subscriber).await
     }
@@ -230,15 +238,41 @@ impl ServerContext {
         run_ids: Vec<String>,
     ) -> Result<(), WireError> {
         for run_id in run_ids {
+            let admission = Arc::clone(&host.admission).read_owned().await;
             let _operation = self.run_operation(&run_id).await;
             let state_host = Arc::clone(host);
             let id = run_id.clone();
-            let live = tokio::task::spawn_blocking(move || state_host.pty.run_state(&id).is_some())
-                .await
-                .map_err(run_operation_join)?;
+            let live = tokio::task::spawn_blocking(move || {
+                let _admission = admission;
+                state_host.pty.run_state(&id).is_some()
+            })
+            .await
+            .map_err(run_operation_join)?;
             if !live {
                 self.invalidate_run(&run_id).await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Called under exclusive Host admission: no claim can be published between
+    /// this zero-owner check and process drain. The requesting connection counts
+    /// too, since multiple desktop windows can share its transport.
+    fn require_unowned_roots(&self, roots: &[String]) -> Result<(), WireError> {
+        let folders = self.folders.lock();
+        if let Some((folder, _)) = folders.iter().find(|(folder, state)| {
+            state.owners != 0
+                && roots.iter().any(|root| {
+                    let root = Path::new(root);
+                    folder.starts_with(root) || root.starts_with(folder)
+                })
+        }) {
+            return Err(WireError::InvalidArgument {
+                message: format!(
+                    "Worktree is still open at {}; close it in every other window/client before continuing",
+                    folder.display()
+                ),
+            });
         }
         Ok(())
     }
@@ -368,11 +402,16 @@ macro_rules! dispatch_operation {
     (#[route($route:ident)] FileWrite => $($rest:tt)*) => {};
     (#[route($route:ident)] FolderClaim => $($rest:tt)*) => {};
     (#[route($route:ident)] FolderRelease => $($rest:tt)*) => {};
+    (#[route($route:ident)] FolderResolve => $($rest:tt)*) => {};
     (#[route($route:ident)] FolderPathRoot => $($rest:tt)*) => {};
     (#[route($route:ident)] AppRuntimeInfo => $($rest:tt)*) => {};
     (#[route($route:ident)] FolderListEntries => $($rest:tt)*) => {};
     (#[route($route:ident)] FilesWatchDirs => $($rest:tt)*) => {};
     (#[route($route:ident)] GitWatch => $($rest:tt)*) => {};
+    (#[route($route:ident)] GitGetBrief => $($rest:tt)*) => {};
+    (#[route($route:ident)] GitWorktreeList => $($rest:tt)*) => {};
+    (#[route($route:ident)] GitWorktreeDefaultPath => $($rest:tt)*) => {};
+    (#[route($route:ident)] GitWorktree => $($rest:tt)*) => {};
     (#[route($route:ident)] SessionStart => $($rest:tt)*) => {};
     (#[route($route:ident)] TasksStart => $($rest:tt)*) => {};
     (#[route($route:ident)] LspStart => $($rest:tt)*) => {};
@@ -414,11 +453,14 @@ macro_rules! dispatch_operation {
         ) -> $return_type:ty;
     ) => {
         async fn $method(&self, $folder_path: $folder_path_type) -> Result<$return_type, WireError> {
-            let _folder = match $folder_path.as_deref() {
+            let folder = match $folder_path.as_deref() {
                 Some(folder) => Some(self.claim(folder, "folder_path").await?),
                 None => None,
             };
-            self.on_host(move |host| host.$method($folder_path)).await
+            match folder {
+                Some(folder) => self.on_host_admitted(folder, move |host| host.$method($folder_path)).await,
+                None => self.on_host(move |host| host.$method($folder_path)).await,
+            }
         }
     };
     (
@@ -438,8 +480,8 @@ macro_rules! dispatch_operation {
         ) -> $return_type:ty;
     ) => {
         async fn $method(&self, $($argument: $argument_type),*) -> Result<$return_type, WireError> {
-            let _folder = self.claim(&$route, stringify!($route)).await?;
-            self.on_host(move |host| host.$method($($argument),*)).await
+            let folder = self.claim(&$route, stringify!($route)).await?;
+            self.on_host_admitted(folder, move |host| host.$method($($argument),*)).await
         }
     };
 }
@@ -548,8 +590,16 @@ pub(crate) async fn authorize_run(
     if owner.is_none() {
         return Ok(());
     }
-    let _operation = context.run_operation(run_id).await;
-    check_run_owner(host, owner, run_id).await
+    let host = Arc::clone(host);
+    let context = Arc::clone(context);
+    let run_id = run_id.to_owned();
+    tokio::spawn(async move {
+        let _admission = Arc::clone(&host.admission).read_owned().await;
+        let _operation = context.run_operation(&run_id).await;
+        check_run_owner(&host, owner, &run_id).await
+    })
+    .await
+    .map_err(run_operation_join)?
 }
 
 /// The auth and folder claim a `FileRead` stream needs, without the stat a
@@ -559,7 +609,7 @@ pub(crate) async fn claim_file_read(
     context: &Arc<ServerContext>,
     session: &Mutex<Session>,
     project_path: &str,
-) -> Result<(), WireError> {
+) -> Result<FolderOperation, WireError> {
     let scope = {
         let session = session.lock().await;
         if !session.authorized {
@@ -575,7 +625,6 @@ pub(crate) async fn claim_file_read(
     }
     .claim(project_path, "project_path")
     .await
-    .map(drop)
 }
 
 impl DispatchRuntime<'_> {
@@ -583,31 +632,44 @@ impl DispatchRuntime<'_> {
         &self,
         op: impl FnOnce(&Arc<Host>) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, WireError> {
+        let admission = Arc::clone(&self.host.admission).read_owned().await;
         let host = Arc::clone(self.host);
-        Ok(tokio::task::spawn_blocking(move || op(&host))
-            .await
-            .map_err(ApiError::from)??)
+        Ok(tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            op(&host)
+        })
+        .await
+        .map_err(ApiError::from)??)
+    }
+
+    async fn on_host_admitted<T: Send + 'static>(
+        &self,
+        folder: FolderOperation,
+        op: impl FnOnce(&Arc<Host>) -> Result<T, ApiError> + Send + 'static,
+    ) -> Result<T, WireError> {
+        let host = Arc::clone(self.host);
+        Ok(tokio::task::spawn_blocking(move || {
+            let _folder = folder;
+            op(&host)
+        })
+        .await
+        .map_err(ApiError::from)??)
     }
 
     async fn claim(&self, path: &str, field: &str) -> Result<FolderOperation, WireError> {
         require_absolute(path, field)?;
-        let folder = self
-            .session
-            .lock()
-            .await
-            .folder_aliases
-            .get(Path::new(path))
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from(path));
-        self.claim_folder(path, folder).await
+        let admission = Arc::clone(&self.host.admission).read_owned().await;
+        let folder = resolve_folder(path).map_err(WireError::from)?;
+        self.claim_folder(path, folder, admission).await
     }
 
     async fn claim_folder(
         &self,
         path: &str,
         folder: PathBuf,
+        admission: OwnedRwLockReadGuard<()>,
     ) -> Result<FolderOperation, WireError> {
-        let mut operation = self.context.folder_operation(folder);
+        let mut operation = self.context.folder_operation(folder, admission);
         operation.read().await;
         if operation.registration_needed(self.host) {
             operation.write().await;
@@ -644,13 +706,12 @@ impl DispatchRuntime<'_> {
     }
 
     async fn folder_claim(&self, folder_path: String) -> Result<(), WireError> {
-        require_absolute(&folder_path, "folder_path")?;
-        let folder = resolve_folder(&folder_path).map_err(WireError::from)?;
-        self.claim_folder(&folder_path, folder).await.map(drop)
+        self.claim(&folder_path, "folder_path").await.map(drop)
     }
 
     async fn folder_release(&self, folder_path: String) -> Result<(), WireError> {
         require_absolute(&folder_path, "folder_path")?;
+        let admission = Arc::clone(&self.host.admission).read_owned().await;
         let recorded = self
             .session
             .lock()
@@ -661,7 +722,7 @@ impl DispatchRuntime<'_> {
         let folder = recorded.unwrap_or_else(|| {
             resolve_folder(&folder_path).unwrap_or_else(|_| PathBuf::from(&folder_path))
         });
-        let mut operation = self.context.folder_operation(folder);
+        let mut operation = self.context.folder_operation(folder, admission);
         operation.write().await;
         let subscriber = {
             let mut session = self.session.lock().await;
@@ -682,6 +743,15 @@ impl DispatchRuntime<'_> {
     ) -> Result<sworm_protocol::folder::PathRoot, WireError> {
         require_absolute(&path, "path")?;
         self.on_host(move |host| host.folder_path_root(path)).await
+    }
+
+    /// Resolving a browser/picker candidate is not an opened-folder claim.
+    async fn folder_resolve(
+        &self,
+        path: String,
+    ) -> Result<sworm_protocol::folder::FolderInfo, WireError> {
+        require_absolute(&path, "path")?;
+        self.on_host(move |host| host.folder_resolve(path)).await
     }
 
     async fn app_runtime_info(&self) -> Result<sworm_protocol::app::AppRuntimeInfo, WireError> {
@@ -710,8 +780,8 @@ impl DispatchRuntime<'_> {
                 ),
             });
         }
-        let _folder = self.claim(&project_path, "project_path").await?;
-        self.on_host(move |host| {
+        let folder = self.claim(&project_path, "project_path").await?;
+        self.on_host_admitted(folder, move |host| {
             host.file_write(project_path, file_path, content, expected_version)
         })
         .await
@@ -734,17 +804,84 @@ impl DispatchRuntime<'_> {
         project_path: String,
         dirs: Vec<String>,
     ) -> Result<(), WireError> {
-        let _folder = self.claim(&project_path, "project_path").await?;
+        let folder = self.claim(&project_path, "project_path").await?;
         let subscriber = self.session.lock().await.subscriber_id.clone();
-        self.on_host(move |host| host.files_watch_dirs(subscriber, project_path, dirs))
-            .await
+        self.on_host_admitted(folder, move |host| {
+            host.files_watch_dirs(subscriber, project_path, dirs)
+        })
+        .await
     }
 
     async fn git_watch(&self, project_path: String) -> Result<(), WireError> {
-        let _folder = self.claim(&project_path, "project_path").await?;
+        let folder = self.claim(&project_path, "project_path").await?;
         // The shared folder guard fences publication against release.
-        self.on_host(move |host| host.git_watch(project_path, |_| true))
+        self.on_host_admitted(folder, move |host| host.git_watch(project_path, |_| true))
             .await
+    }
+
+    /// Home probes recent/discovered repositories without opening their tabs.
+    async fn git_get_brief(
+        &self,
+        path: String,
+    ) -> Result<sworm_protocol::git::GitBrief, WireError> {
+        require_absolute(&path, "path")?;
+        self.on_host(move |host| host.git_get_brief(path)).await
+    }
+
+    async fn git_worktree_list(&self, path: String) -> Result<GitWorktreeList, WireError> {
+        require_absolute(&path, "path")?;
+        self.on_host(move |host| host.git_worktree_list(&path))
+            .await
+    }
+
+    async fn git_worktree_default_path(
+        &self,
+        path: String,
+        checkout: GitWorktreeCheckout,
+        root: Option<String>,
+    ) -> Result<String, WireError> {
+        require_absolute(&path, "path")?;
+        if let Some(root) = root.as_deref() {
+            require_absolute(root, "root")?;
+        }
+        self.on_host(move |host| host.git_worktree_default_path(&path, checkout, root))
+            .await
+    }
+
+    async fn git_worktree(
+        &self,
+        path: String,
+        op: GitWorktreeOp,
+    ) -> Result<GitWorktreeResult, WireError> {
+        require_absolute(&path, "path")?;
+        if !matches!(
+            &op,
+            GitWorktreeOp::Remove { .. } | GitWorktreeOp::Migrate { .. }
+        ) {
+            let folder = self.claim(&path, "path").await?;
+            return self
+                .on_host_admitted(folder, move |host| host.git_worktree(&path, op))
+                .await;
+        }
+        // Authorization/controller admission already happened at the transport.
+        // Never reclaim a folder the caller just released, or enter a shared
+        // helper while holding the fair lock's exclusive permit.
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let admission = Arc::clone(&host.admission).write_owned().await;
+            tokio::task::spawn_blocking(move || {
+                let _admission = admission;
+                let roots = host.git_worktree_affected_roots(&path, &op)?;
+                context.require_unowned_roots(&roots)?;
+                host.drain_worktree_roots(&roots)?;
+                host.git_worktree(&path, op).map_err(WireError::from)
+            })
+            .await
+            .map_err(run_operation_join)?
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn session_start(
@@ -834,6 +971,7 @@ impl DispatchRuntime<'_> {
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
+            let _admission = Arc::clone(&host.admission).read_owned().await;
             let _operation = context.run_operation(&run_id).await;
             check_run_owner(&host, owner, &run_id).await?;
             let id = run_id.clone();
@@ -851,6 +989,7 @@ impl DispatchRuntime<'_> {
         let host = Arc::clone(self.host);
         let context = Arc::clone(self.context);
         tokio::spawn(async move {
+            let _admission = Arc::clone(&host.admission).read_owned().await;
             let _operation = context.run_operation(&run_id).await;
             check_run_owner(&host, owner, &run_id).await?;
             let id = run_id.clone();
@@ -864,9 +1003,20 @@ impl DispatchRuntime<'_> {
     }
 
     async fn run_status(&self, run_id: String) -> Result<RunStatus, WireError> {
-        let _operation = self.context.run_operation(&run_id).await;
-        check_run_owner(self.host, self.run_owner(), &run_id).await?;
-        self.on_host(move |host| host.run_status(&run_id)).await
+        let owner = self.run_owner();
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _admission = Arc::clone(&host.admission).read_owned().await;
+            let _operation = context.run_operation(&run_id).await;
+            check_run_owner(&host, owner, &run_id).await?;
+            tokio::task::spawn_blocking(move || host.run_status(&run_id))
+                .await
+                .map_err(ApiError::from)?
+                .map_err(WireError::from)
+        })
+        .await
+        .map_err(run_operation_join)?
     }
     fn run_owner(&self) -> Option<String> {
         self.scope.run_owner().map(str::to_owned)
@@ -1193,7 +1343,7 @@ impl DispatchRuntime<'_> {
         server_definition_id: String,
         root_path: String,
     ) -> Result<(), WireError> {
-        let _folder = self.claim(&folder_path, "folder_path").await?;
+        let folder = self.claim(&folder_path, "folder_path").await?;
         require_absolute(&root_path, "root_path")?;
         // The session's stream owns the server's lifetime, so a start without
         // one would spawn a process nobody can reach or kill, and only the
@@ -1204,39 +1354,72 @@ impl DispatchRuntime<'_> {
                 message: format!("no LSP stream is open for session {session_id}"),
             }
         })?;
-        let id = session_id.clone();
-        self.on_host(move |host| {
-            host.lsp_start(
-                Some(owner),
-                id,
-                folder_path,
-                server_definition_id,
-                root_path,
-                lease.events,
-            )
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _folder = folder;
+            let _operation = Arc::clone(&lease.gate).lock_owned().await;
+            if !context.lsp.is_current(&session_id, lease.token) {
+                return Err(WireError::InvalidArgument {
+                    message: "LSP stream closed before its server started".to_owned(),
+                });
+            }
+            let id = session_id.clone();
+            let start_host = Arc::clone(&host);
+            tokio::task::spawn_blocking(move || {
+                start_host.lsp_start(
+                    Some(owner),
+                    id,
+                    folder_path,
+                    server_definition_id,
+                    root_path,
+                    lease.events,
+                )
+            })
+            .await
+            .map_err(ApiError::from)??;
+            // Admission covers publication and this orphan cleanup even when
+            // the RPC response was canceled while the child was spawning.
+            if !context.lsp.is_current(&session_id, lease.token) {
+                tokio::task::spawn_blocking(move || host.lsp_stop(session_id))
+                    .await
+                    .map_err(ApiError::from)??;
+                return Err(WireError::InvalidArgument {
+                    message: "LSP stream closed before its server started".to_owned(),
+                });
+            }
+            Ok(())
         })
-        .await?;
-        // The stream can close while the server is starting; a process whose
-        // lease is gone answers to nobody, so stop it instead of leaking it.
-        if !self.context.lsp.is_current(&session_id, lease.token) {
-            let _ = self.on_host(move |host| host.lsp_stop(session_id)).await;
-            return Err(WireError::InvalidArgument {
-                message: "LSP stream closed before its server started".to_owned(),
-            });
-        }
-        Ok(())
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn lsp_stop(&self, session_id: String) -> Result<(), WireError> {
         // The connection holding the session's stream lease is the only one
         // allowed to stop it; otherwise one desktop could kill another's server.
         let owner = self.session.lock().await.subscriber_id.clone();
-        if !self.context.lsp.owns(&session_id, &owner) {
-            return Err(WireError::InvalidArgument {
+        let lease = self.context.lsp.sink(&session_id, &owner).ok_or_else(|| {
+            WireError::InvalidArgument {
                 message: format!("no LSP stream is open for session {session_id}"),
-            });
-        }
-        self.on_host(move |host| host.lsp_stop(session_id)).await
+            }
+        })?;
+        let host = Arc::clone(self.host);
+        let context = Arc::clone(self.context);
+        tokio::spawn(async move {
+            let _admission = Arc::clone(&host.admission).read_owned().await;
+            let _operation = Arc::clone(&lease.gate).lock_owned().await;
+            if !context.lsp.is_current(&session_id, lease.token) {
+                return Err(WireError::InvalidArgument {
+                    message: format!("no LSP stream is open for session {session_id}"),
+                });
+            }
+            tokio::task::spawn_blocking(move || host.lsp_stop(session_id))
+                .await
+                .map_err(ApiError::from)??;
+            Ok(())
+        })
+        .await
+        .map_err(run_operation_join)?
     }
 
     async fn pair(&self, token: String, name: String) -> Result<(), WireError> {
@@ -1315,15 +1498,551 @@ pub(crate) fn unauthorized(message: &str) -> WireError {
 mod tests {
     use super::*;
     use crate::test_support::{isolated, pending};
+    use std::{fs, process::Command, time::Duration};
+
+    struct WorktreeFixture {
+        scratch: tempfile::TempDir,
+        host: Arc<Host>,
+        context: Arc<ServerContext>,
+        main: String,
+        linked: String,
+    }
+
+    impl WorktreeFixture {
+        fn new() -> Self {
+            let scratch = tempfile::tempdir().unwrap();
+            let main = scratch.path().join("main");
+            let linked = scratch.path().join("linked");
+            fs::create_dir(&main).unwrap();
+            let git = |args: &[&str]| {
+                let output = Command::new("git")
+                    .current_dir(&main)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q"]);
+            fs::write(main.join("tracked"), "initial\n").unwrap();
+            git(&["add", "tracked"]);
+            git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ]);
+            git(&[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ]);
+            let host = Arc::new(
+                Host::new(scratch.path().join("server.db"), Arc::new(|_| Ok(()))).unwrap(),
+            );
+            let (events, _) = tokio::sync::broadcast::channel(4);
+            let context = Arc::new(ServerContext::new(PathBuf::new(), None, events));
+            Self {
+                scratch,
+                host,
+                context,
+                main: main.to_str().unwrap().into(),
+                linked: linked.to_str().unwrap().into(),
+            }
+        }
+
+        fn runtime<'a>(&'a self, session: &'a Mutex<Session>) -> DispatchRuntime<'a> {
+            DispatchRuntime {
+                host: &self.host,
+                context: &self.context,
+                session,
+                scope: SessionScope::Quic,
+            }
+        }
+    }
+
+    impl Drop for WorktreeFixture {
+        fn drop(&mut self) {
+            self.host.shutdown();
+        }
+    }
+
+    #[test]
+    fn passive_home_and_picker_requests_do_not_own_but_explicit_claims_block_removal() {
+        if !isolated("dispatch::tests::passive_home_and_picker_requests_do_not_own_but_explicit_claims_block_removal") {
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let fixture = WorktreeFixture::new();
+                let observer = paired_session("home-and-picker");
+                let caller = paired_session("mutation");
+                let writer = Arc::clone(&fixture.host.admission).write_owned().await;
+                let mut brief = Box::pin(handle(
+                    &fixture.host,
+                    &fixture.context,
+                    &observer,
+                    Request::GitGetBrief {
+                        path: fixture.linked.clone(),
+                    },
+                ));
+                let mut resolve = Box::pin(handle(
+                    &fixture.host,
+                    &fixture.context,
+                    &observer,
+                    Request::FolderResolve {
+                        path: fixture.linked.clone(),
+                    },
+                ));
+                assert!(
+                    pending(&mut brief).await,
+                    "Home metadata bypassed exclusive admission"
+                );
+                assert!(
+                    pending(&mut resolve).await,
+                    "picker discovery bypassed exclusive admission"
+                );
+                drop(writer);
+                let (brief, resolve) = tokio::join!(brief, resolve);
+                assert!(matches!(brief.unwrap(), Reply::GitGetBrief(_)));
+                assert!(matches!(resolve.unwrap(), Reply::FolderResolve(_)));
+                let parent = fixture.scratch.path().to_str().unwrap().to_owned();
+                let op = GitWorktreeOp::Remove {
+                    worktree_path: fixture.linked.clone(),
+                    force: false,
+                };
+                for explicit_claim in [true, false] {
+                    for path in [&fixture.main, &fixture.linked] {
+                        assert!(matches!(
+                            handle(
+                                &fixture.host,
+                                &fixture.context,
+                                &observer,
+                                Request::GitGetBrief { path: path.clone() },
+                            )
+                            .await
+                            .unwrap(),
+                            Reply::GitGetBrief(_)
+                        ));
+                    }
+                    for path in ["/", parent.as_str(), fixture.linked.as_str()] {
+                        assert!(matches!(
+                            handle(
+                                &fixture.host,
+                                &fixture.context,
+                                &observer,
+                                Request::FolderResolve {
+                                    path: path.to_owned()
+                                },
+                            )
+                            .await
+                            .unwrap(),
+                            Reply::FolderResolve(_)
+                        ));
+                    }
+                    assert!(matches!(
+                        handle(
+                            &fixture.host,
+                            &fixture.context,
+                            &observer,
+                            Request::FolderListEntries {
+                                path: parent.clone(),
+                                show_hidden: false
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                        Reply::FolderListEntries(_)
+                    ));
+                    assert!(matches!(
+                        handle(
+                            &fixture.host,
+                            &fixture.context,
+                            &observer,
+                            Request::FolderPathRoot {
+                                path: fixture.linked.clone()
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                        Reply::FolderPathRoot(_)
+                    ));
+                    assert!(
+                        observer.lock().await.folders.is_empty(),
+                        "passive Home/picker requests claimed unopened folders"
+                    );
+                    assert!(
+                        fixture.context.folders.lock().is_empty(),
+                        "passive discovery left a transport owner"
+                    );
+                    if explicit_claim {
+                        handle(
+                            &fixture.host,
+                            &fixture.context,
+                            &observer,
+                            Request::FolderClaim {
+                                folder_path: fixture.linked.clone(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        assert!(matches!(handle(
+                            &fixture.host, &fixture.context, &caller,
+                            Request::GitWorktree { path: fixture.main.clone(), op: op.clone() },
+                        ).await, Err(WireError::InvalidArgument { message })
+                            if message.contains("window/client")));
+                        assert!(Path::new(&fixture.linked).is_dir());
+                        handle(
+                            &fixture.host,
+                            &fixture.context,
+                            &observer,
+                            Request::FolderRelease {
+                                folder_path: fixture.linked.clone(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    } else {
+                        assert!(matches!(
+                            handle(
+                                &fixture.host,
+                                &fixture.context,
+                                &caller,
+                                Request::GitWorktree {
+                                    path: fixture.main.clone(),
+                                    op: op.clone()
+                                },
+                            )
+                            .await
+                            .unwrap(),
+                            Reply::GitWorktree(GitWorktreeResult::Removed)
+                        ));
+                        assert!(!Path::new(&fixture.linked).exists());
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn admitted_blocking_work_outlives_response_and_does_not_reenter_reader() {
+        if !isolated(
+            "dispatch::tests::admitted_blocking_work_outlives_response_and_does_not_reenter_reader",
+        ) {
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let fixture = WorktreeFixture::new();
+                let session = Arc::new(paired_session("caller"));
+                let folder = fixture
+                    .runtime(&session)
+                    .claim(&fixture.main, "path")
+                    .await
+                    .unwrap();
+                let mut writer = Box::pin(Arc::clone(&fixture.host.admission).write_owned());
+                assert!(pending(&mut writer).await);
+                let (entered, started) = tokio::sync::oneshot::channel();
+                let (release, resume) = std::sync::mpsc::channel();
+                let host = Arc::clone(&fixture.host);
+                let context = Arc::clone(&fixture.context);
+                let caller = Arc::clone(&session);
+                let response = tokio::spawn(async move {
+                    let runtime = DispatchRuntime {
+                        host: &host,
+                        context: &context,
+                        session: &caller,
+                        scope: SessionScope::Quic,
+                    };
+                    runtime
+                        .on_host_admitted(folder, move |host| {
+                            let _ = entered.send(());
+                            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                            host.app_state_put("admission-result".into(), "true".into())
+                        })
+                        .await
+                });
+                tokio::time::timeout(Duration::from_secs(5), started)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                response.abort();
+                assert!(response.await.unwrap_err().is_cancelled());
+                assert!(
+                    pending(&mut writer).await,
+                    "canceled response released active blocking work"
+                );
+                release.send(()).unwrap();
+                let exclusive = tokio::time::timeout(Duration::from_secs(5), writer)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fixture
+                        .host
+                        .app_state_get("admission-result".into())
+                        .unwrap(),
+                    Some("true".into())
+                );
+                drop(exclusive);
+                fixture
+                    .runtime(&session)
+                    .folder_release(fixture.main.clone())
+                    .await
+                    .unwrap();
+            });
+    }
+
+    #[test]
+    fn descendant_owners_refuse_before_drain_and_disconnect_retains_tasks() {
+        if !isolated(
+            "dispatch::tests::descendant_owners_refuse_before_drain_and_disconnect_retains_tasks",
+        ) {
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2).enable_all().build().unwrap().block_on(async {
+                let fixture = WorktreeFixture::new();
+                let caller = Arc::new(paired_session("caller"));
+                let other = paired_session("other");
+                let linked = Path::new(&fixture.linked);
+                fs::create_dir_all(linked.join(".sworm")).unwrap();
+                fs::create_dir(linked.join("sub")).unwrap();
+                fs::write(linked.join(".sworm/tasks.jsonc"), r#"{"version":1,"tasks":[
+                    {"id":"long","label":"Long","command":"exec sh -c 'printf %s $$ > task.pid; exec sleep 60'"}
+                ]}"#).unwrap();
+                let runtime = fixture.runtime(&caller);
+                runtime.tasks_start("retained".into(), fixture.linked.clone(), "long".into(),
+                    None, 80, 24, false).await.unwrap();
+                let pid_path = linked.join("task.pid");
+                let pid = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Some(pid) = fs::read_to_string(&pid_path).ok()
+                            .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+                        {
+                            break pid;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+                fixture.runtime(&other).folder_claim(linked.join("sub").to_str().unwrap().into())
+                    .await.unwrap();
+                crate::server::cleanup_session(&fixture.host, &fixture.context, &caller)
+                    .await.unwrap();
+                assert_eq!(fixture.host.pty.run_state("retained"),
+                    Some(sworm_core::services::pty::PtyRunState::Live));
+                let op = GitWorktreeOp::Remove { worktree_path: fixture.linked.clone(), force: true };
+                let refused = runtime.git_worktree(fixture.main.clone(), op.clone()).await;
+                assert!(matches!(refused, Err(WireError::InvalidArgument { message })
+                    if message.contains("sub") && message.contains("window/client")));
+                assert!(linked.is_dir());
+                assert_eq!(fixture.host.pty.run_state("retained"),
+                    Some(sworm_core::services::pty::PtyRunState::Live),
+                    "ownership refusal killed another client's retained task");
+                assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "retained process was terminated");
+                let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+                assert_ne!(stat.rsplit_once(')').unwrap().1.split_whitespace().next(), Some("Z"));
+                fixture.runtime(&other).folder_release(linked.join("sub").to_str().unwrap().into())
+                    .await.unwrap();
+                // A failed start still leaves the actual folder claim to release;
+                // destructive admission never subtracts the requesting client.
+                assert!(matches!(runtime.tasks_start("missing".into(), fixture.linked.clone(),
+                    "absent".into(), None, 80, 24, false).await,
+                    Err(WireError::NotFound { .. })));
+                assert!(matches!(runtime.git_worktree(fixture.main.clone(), op.clone()).await,
+                    Err(WireError::InvalidArgument { .. })));
+                assert_eq!(fixture.host.pty.run_state("retained"),
+                    Some(sworm_core::services::pty::PtyRunState::Live));
+                runtime.folder_release(fixture.linked.clone()).await.unwrap();
+                assert_eq!(runtime.git_worktree_list(fixture.main.clone()).await.unwrap().worktrees.len(), 2);
+                assert!(fixture.context.folders.lock().is_empty(), "inventory reclaimed the route");
+                assert!(matches!(runtime.git_worktree(fixture.main.clone(), op).await.unwrap(),
+                    GitWorktreeResult::Removed));
+                assert!(!linked.exists());
+                assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "removal returned before process exit");
+                assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+                assert_ne!(fixture.host.pty.run_state("retained"),
+                    Some(sworm_core::services::pty::PtyRunState::Live));
+            });
+    }
+
+    struct ResumeGit {
+        fifo: Option<PathBuf>,
+        entered: PathBuf,
+    }
+
+    impl Drop for ResumeGit {
+        fn drop(&mut self) {
+            if let Some(fifo) = self.fifo.take().filter(|_| self.entered.exists()) {
+                let _ = fs::write(fifo, b"resume\n");
+            }
+        }
+    }
+
+    #[test]
+    fn destructive_writer_outlives_response_and_fences_claim_start_and_file_read() {
+        if !isolated("dispatch::tests::destructive_writer_outlives_response_and_fences_claim_start_and_file_read") {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let fixture = WorktreeFixture::new();
+                let session = Arc::new(paired_session("caller"));
+                let real_git = Command::new("sh")
+                    .args(["-c", "command -v git"])
+                    .output()
+                    .unwrap();
+                assert!(real_git.status.success());
+                let bin = fixture.scratch.path().join("bin");
+                fs::create_dir(&bin).unwrap();
+                let wrapper = bin.join("git");
+                fs::write(
+                    &wrapper,
+                    "#!/bin/sh\ncase \" $* \" in\n *\" worktree remove \"*)\n\
+                    printf ready > \"$SWORM_TEST_GIT_ENTERED\"\n\
+                    read -r resume < \"$SWORM_TEST_GIT_FIFO\"\n ;;\nesac\n\
+                    exec \"$SWORM_TEST_REAL_GIT\" \"$@\"\n",
+                )
+                .unwrap();
+                fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+                let fifo = fixture.scratch.path().join("resume.fifo");
+                assert!(Command::new("mkfifo")
+                    .arg(&fifo)
+                    .status()
+                    .unwrap()
+                    .success());
+                let entered = fixture.scratch.path().join("entered");
+                std::env::set_var(
+                    "SWORM_TEST_REAL_GIT",
+                    std::str::from_utf8(&real_git.stdout).unwrap().trim(),
+                );
+                std::env::set_var("SWORM_TEST_GIT_FIFO", &fifo);
+                std::env::set_var("SWORM_TEST_GIT_ENTERED", &entered);
+                std::env::set_var(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                );
+                let mut resume = ResumeGit {
+                    fifo: Some(fifo),
+                    entered: entered.clone(),
+                };
+                let host = Arc::clone(&fixture.host);
+                let context = Arc::clone(&fixture.context);
+                let caller = Arc::clone(&session);
+                let main = fixture.main.clone();
+                let worktree_path = fixture.linked.clone();
+                let response = tokio::spawn(async move {
+                    handle(
+                        &host,
+                        &context,
+                        &caller,
+                        Request::GitWorktree {
+                            path: main,
+                            op: GitWorktreeOp::Remove {
+                                worktree_path,
+                                force: false,
+                            },
+                        },
+                    )
+                    .await
+                });
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !entered.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                response.abort();
+                assert!(response.await.unwrap_err().is_cancelled());
+                assert!(Arc::clone(&fixture.host.admission)
+                    .try_read_owned()
+                    .is_err());
+                let runtime = fixture.runtime(&session);
+                let mut claim = Box::pin(runtime.folder_claim(fixture.linked.clone()));
+                let mut start = Box::pin(runtime.tasks_start(
+                    "late".into(),
+                    fixture.linked.clone(),
+                    "any".into(),
+                    None,
+                    80,
+                    24,
+                    false,
+                ));
+                let mut file = Box::pin(claim_file_read(
+                    &fixture.host,
+                    &fixture.context,
+                    &session,
+                    &fixture.linked,
+                ));
+                assert!(pending(&mut claim).await);
+                assert!(pending(&mut start).await);
+                assert!(pending(&mut file).await);
+                assert!(session.lock().await.folders.is_empty());
+                let fifo = resume.fifo.take().unwrap();
+                tokio::task::spawn_blocking(move || fs::write(fifo, b"resume\n"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                // Fair admission grants these queued readers before the next
+                // writer. Poll them too so they revalidate the removed root and
+                // release their permits instead of parking an unpolled grant.
+                let (claimed, started, read, exclusive) =
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        tokio::join!(
+                            claim,
+                            start,
+                            file,
+                            Arc::clone(&fixture.host.admission).write_owned(),
+                        )
+                    })
+                    .await
+                    .unwrap();
+                assert!(!Path::new(&fixture.linked).exists());
+                drop(exclusive);
+                assert!(matches!(claimed, Err(WireError::NotFound { .. })));
+                assert!(matches!(started, Err(WireError::NotFound { .. })));
+                assert!(matches!(read, Err(WireError::NotFound { .. })));
+                assert!(session.lock().await.folders.is_empty());
+                assert!(fixture.context.folders.lock().is_empty());
+            });
+    }
 
     #[tokio::test]
     async fn canceled_folder_waiter_releases_its_gate() {
         let (events, _) = tokio::sync::broadcast::channel(2);
         let context = Arc::new(ServerContext::new(PathBuf::new(), None, events));
-        let mut held = context.folder_operation(PathBuf::from("/same"));
+        let admission = Arc::new(RwLock::new(()));
+        let mut held = context.folder_operation(
+            PathBuf::from("/same"),
+            Arc::clone(&admission).read_owned().await,
+        );
         held.read().await;
         let mut waiting = Box::pin(async {
-            let mut operation = context.folder_operation(PathBuf::from("/same"));
+            let mut operation = context.folder_operation(
+                PathBuf::from("/same"),
+                Arc::clone(&admission).read_owned().await,
+            );
             operation.write().await;
             operation
         });
@@ -1873,6 +2592,19 @@ mod tests {
                     .unwrap();
                     assert!(matches!(resolved, Reply::FolderResolve(_)));
                 }
+                assert!(
+                    a.lock().await.folders.is_empty(),
+                    "discovery claimed an unopened folder"
+                );
+                assert_eq!(
+                    context
+                        .folders
+                        .lock()
+                        .get(&folder)
+                        .map(|state| state.owners),
+                    Some(1)
+                );
+                claim(&a, &path).await;
                 assert_eq!(a.lock().await.folders.len(), 1);
                 assert_eq!(
                     context
@@ -2035,10 +2767,25 @@ mod tests {
                     release(&b, &path).await;
                 }
 
-                // A failed first watch must retry when the directory appears.
+                // A project can disappear externally after admitted canonical
+                // resolution but before watcher publication. Retain that claim
+                // and retry its genuinely failed watch when the root reappears.
                 let delayed = scratch.path().join("delayed");
                 let delayed_path = delayed.to_string_lossy().into_owned();
-                drop(runtime.claim(&delayed_path, "folder_path").await.unwrap());
+                std::fs::create_dir(&delayed).unwrap();
+                let admission = Arc::clone(&host.admission).read_owned().await;
+                let resolved = resolve_folder(&delayed_path).unwrap();
+                std::fs::remove_dir(&delayed).unwrap();
+                drop(
+                    runtime
+                        .claim_folder(&delayed_path, resolved, admission)
+                        .await
+                        .unwrap(),
+                );
+                assert!(
+                    !host.settings_paths_watched(&delayed),
+                    "vanished root unexpectedly watched"
+                );
                 std::fs::create_dir_all(delayed.join(".sworm")).unwrap();
                 claim(&b, &delayed_path).await;
                 while events.try_recv().is_ok() {}

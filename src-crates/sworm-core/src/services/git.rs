@@ -14,6 +14,41 @@ use sworm_protocol::git::{
 };
 use tracing::warn;
 
+mod worktrees;
+
+/// Lightweight defense against arg-injection for branch / remote
+/// names. Rejects empties, leading `-` (would be parsed as a flag by
+/// the git CLI), embedded whitespace and control chars, the `..` / `@{`
+/// sequences, and the metacharacters `git check-ref-format` rejects.
+/// Frontend validation is more permissive (mirrors `check-ref-format`
+/// directly); this layer only stops the obvious shell-side hazards.
+pub(crate) fn validated_ref_name(name: &str) -> Result<(), ApiError> {
+    if name.is_empty() {
+        return Err(ApiError::InvalidArgument(
+            "Branch name is empty".to_string(),
+        ));
+    }
+    if name.starts_with('-') {
+        return Err(ApiError::InvalidArgument(
+            "Branch name cannot start with '-'".to_string(),
+        ));
+    }
+    if name.contains("..") || name.contains("@{") {
+        return Err(ApiError::InvalidArgument(format!(
+            "Invalid branch name: {}",
+            name
+        )));
+    }
+    for c in name.chars() {
+        if c.is_control() || c == ' ' || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\') {
+            return Err(ApiError::InvalidArgument(format!(
+                "Invalid branch name: {}",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
 /// Hard limit on file content sent over IPC to prevent OOM on large files.
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
@@ -114,6 +149,7 @@ fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
 pub struct GitService {
     summary_cache: Mutex<HashMap<PathBuf, SummarySlot>>,
     ahead_behind_cache: Mutex<HashMap<PathBuf, CachedAheadBehind>>,
+    worktree_locks: Mutex<HashMap<PathBuf, std::sync::Weak<Mutex<()>>>>,
 }
 
 impl GitService {
@@ -121,6 +157,7 @@ impl GitService {
         Self {
             summary_cache: Mutex::new(HashMap::new()),
             ahead_behind_cache: Mutex::new(HashMap::new()),
+            worktree_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1020,6 +1057,13 @@ impl GitService {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
 
+        let inventory = match self.list_worktrees(path) {
+            Ok(inventory) => Some(inventory),
+            Err(error) => {
+                tracing::warn!(folder = %path.display(), %error, "worktree inventory unavailable; branch list omits worktree paths");
+                None
+            }
+        };
         let text = String::from_utf8_lossy(&output.stdout);
         let mut out: Vec<BranchSummary> = Vec::new();
         for line in text.lines() {
@@ -1035,9 +1079,22 @@ impl GitService {
                     BranchKind::Remote => Some(row.name.clone()),
                 };
                 out.push(BranchSummary {
-                    name: row.name,
                     kind: row.kind,
                     is_current: matches!(row.kind, BranchKind::Local) && row.is_current,
+                    worktree_path: if matches!(row.kind, BranchKind::Local) {
+                        inventory.as_ref().and_then(|inventory| {
+                            inventory
+                                .worktrees
+                                .iter()
+                                .find(|worktree| {
+                                    worktree.branch.as_deref() == Some(row.name.as_str())
+                                })
+                                .map(|worktree| worktree.path.clone())
+                        })
+                    } else {
+                        None
+                    },
+                    name: row.name,
                     upstream,
                     ahead: row.ahead,
                     behind: row.behind,
@@ -2049,6 +2106,20 @@ pub(crate) fn git_output(folder: &Path, args: &[&str], action: &str) -> Result<V
     } else {
         Err(git_failure(action, &output))
     }
+}
+
+/// Exact single-line Git output: remove only its final LF and reject non-UTF-8.
+/// In particular, paths may contain leading/trailing whitespace and newlines.
+pub(crate) fn git_output_line(
+    folder: &Path,
+    args: &[&str],
+    action: &str,
+) -> Result<String, String> {
+    let mut bytes = git_output(folder, args, action)?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    String::from_utf8(bytes).map_err(|_| format!("Failed to {action}: Git output is not UTF-8"))
 }
 
 pub(crate) fn git_failure(action: &str, output: &std::process::Output) -> String {

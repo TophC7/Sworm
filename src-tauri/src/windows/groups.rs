@@ -121,7 +121,7 @@ impl WindowCoordinatorService {
         handoff: GroupHandoff,
     ) -> Result<(Arc<GroupTransfer>, oneshot::Receiver<Result<(), String>>), String> {
         let mut transfers = self.group_transfers.lock();
-        let records = self.records.lock();
+        let mut records = self.records.lock();
         if handoff.source_window == handoff.target_window {
             return Err("group transfer requires different windows".into());
         }
@@ -140,6 +140,16 @@ impl WindowCoordinatorService {
         }) {
             return Err("group transfer already in progress".into());
         }
+        let source = &records[&handoff.source_window];
+        let targets = source
+            .folder_claims
+            .iter()
+            .map(|folder| ClaimTarget::from_path(folder, true))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|target| target.server.as_deref() == Some(handoff.server.as_str()))
+            .collect();
+        records.insert_transfer_intent(&handoff.transfer_id, targets)?;
         let (transfer, result) = GroupTransfer::new(handoff);
         transfers.insert(transfer.handoff.transfer_id.clone(), transfer.clone());
         Ok((transfer, result))
@@ -238,14 +248,18 @@ impl WindowCoordinatorService {
                 active_tab_id.as_deref(),
                 &model_states,
             )?;
-            let records = self.records.lock();
-            let source = records.get(source).ok_or("source window closed")?;
+            let mut records = self.records.lock();
+            let source_record = records.get(source).ok_or("source window closed")?;
+            let mut targets = Vec::with_capacity(tabs.len());
             for tab in &tabs {
                 let folder = tab["folderPath"].as_str().expect("validated folder");
-                if !source.folder_claims.contains(Path::new(folder)) {
+                let target = ClaimTarget::parse(folder, true)?;
+                if !source_record.folder_claims.contains(&target.key()?) {
                     return Err("exported tab folder is not owned by source window".into());
                 }
+                targets.push(target);
             }
+            records.insert_transfer_intent(&handoff.transfer_id, targets)?;
             drop(records);
             let mut payload = serde_json::to_value(handoff).map_err(|error| error.to_string())?;
             payload["tabs"] = serde_json::to_value(&tabs).map_err(|error| error.to_string())?;
@@ -365,7 +379,7 @@ impl WindowCoordinatorService {
             }
             // Ownership cannot safely be restored. Tell source commit won so it
             // cannot resurrect stale control; requester still gets delivery failure.
-            self.commit_group_claims(handoff, tabs);
+            self.commit_group_claims(handoff, tabs)?;
             let _ = emit_group_event(
                 app,
                 &handoff.source_window,
@@ -377,7 +391,7 @@ impl WindowCoordinatorService {
             ));
             return self.finish_group(app, transfer, phase, Some(&attached), result);
         }
-        self.commit_group_claims(handoff, tabs);
+        self.commit_group_claims(handoff, tabs)?;
         let result = emit_group_event(
             app,
             &handoff.source_window,
@@ -388,14 +402,31 @@ impl WindowCoordinatorService {
         self.finish_group(app, transfer, phase, Some(&attached), result)
     }
 
-    fn commit_group_claims(&self, handoff: &GroupHandoff, tabs: &[serde_json::Value]) {
-        let mut records = self.records.lock();
-        let ids: HashSet<_> = tabs.iter().filter_map(|tab| tab["id"].as_str()).collect();
+    fn commit_group_claims(
+        &self,
+        handoff: &GroupHandoff,
+        tabs: &[serde_json::Value],
+    ) -> Result<(), String> {
         let folders: HashSet<_> = tabs
             .iter()
             .filter_map(|tab| tab["folderPath"].as_str())
-            .map(PathBuf::from)
-            .collect();
+            .map(|folder| ClaimTarget::parse(folder, true)?.key())
+            .collect::<Result<_, String>>()?;
+        let mut records = self.records.lock();
+        if !records.contains_key(&handoff.target_window) {
+            return Err("group target window closed".into());
+        }
+        for folder in &folders {
+            records.admit(&ClaimTarget::from_path(folder, true)?)?;
+        }
+        let ids: HashSet<_> = tabs.iter().filter_map(|tab| tab["id"].as_str()).collect();
+        if let Some(source) = records.get(&handoff.source_window) {
+            for (file, id) in &source.file_claims {
+                if ids.contains(id.as_str()) {
+                    records.admit(&ClaimTarget::from_path(file, false)?)?;
+                }
+            }
+        }
         let files = if let Some(source) = records.get_mut(&handoff.source_window) {
             source
                 .folder_claims
@@ -417,6 +448,7 @@ impl WindowCoordinatorService {
             target.folder_claims.extend(folders);
             target.file_claims.extend(files);
         }
+        Ok(())
     }
 
     fn finish_group<R: tauri::Runtime>(
@@ -430,6 +462,10 @@ impl WindowCoordinatorService {
         *phase = Phase::Finished;
         self.group_transfers
             .lock()
+            .remove(&transfer.handoff.transfer_id);
+        self.records
+            .lock()
+            .transfer_intents
             .remove(&transfer.handoff.transfer_id);
         let mut payload = serde_json::to_value(&transfer.handoff).expect("handoff serialization");
         payload["committed"] = serde_json::json!(attached.is_some());
@@ -882,5 +918,55 @@ mod tests {
         let mut malformed = tab;
         malformed["filePath"] = serde_json::json!(42);
         assert!(validate_metadata("dev", &[malformed], None, &[]).is_err());
+    }
+
+    #[test]
+    fn pending_group_handoff_keeps_roots_owned_after_both_windows_release() {
+        let service = coordinator();
+        let _transfer = service.insert_group(handoff("pending")).unwrap();
+        for window in ["source", "target"] {
+            service
+                .release_folder(window, Path::new("sworm://dev/repo"))
+                .unwrap();
+        }
+        assert!(service
+            .reserve_worktree_roots(&["sworm://dev/repo/child".into()])
+            .is_err());
+        assert!(service
+            .reserve_worktree_roots(&["sworm://other/repo/child".into()])
+            .is_ok());
+        assert!(service
+            .reserve_worktree_roots(&["sworm://dev/repo2".into()])
+            .is_ok());
+    }
+
+    #[test]
+    fn group_claim_commit_is_atomic_and_refuses_live_reservations() {
+        let service = coordinator();
+        let tabs = vec![serde_json::json!({
+            "id": "session", "folderPath": "sworm://dev/worktree/./child",
+        })];
+        let held = service
+            .reserve_worktree_roots(&["sworm://dev/worktree".into()])
+            .unwrap();
+        assert!(service
+            .commit_group_claims(&handoff("commit"), &tabs)
+            .is_err());
+        assert!(!service.records.lock()["target"]
+            .folder_claims
+            .contains(Path::new("sworm://dev/worktree/child")));
+        let unrelated = vec![serde_json::json!({
+            "id": "other", "folderPath": "sworm://dev/worktree2",
+        })];
+        service
+            .commit_group_claims(&handoff("unrelated"), &unrelated)
+            .unwrap();
+        drop(held);
+        service
+            .commit_group_claims(&handoff("commit"), &tabs)
+            .unwrap();
+        assert!(service.records.lock()["target"]
+            .folder_claims
+            .contains(Path::new("sworm://dev/worktree/child")));
     }
 }

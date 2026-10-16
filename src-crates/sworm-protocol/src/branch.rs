@@ -43,6 +43,8 @@ pub struct BranchSummary {
     /// Always exactly one local branch (or none, on detached HEAD)
     /// has this set.
     pub is_current: bool,
+    /// Checkout using this local branch, including the current/primary checkout.
+    pub worktree_path: Option<String>,
     pub upstream: Option<String>,
     pub ahead: i32,
     pub behind: i32,

@@ -759,7 +759,7 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
             file_path,
             version,
         } => {
-            if let Err(error) = dispatch::claim_file_read(
+            let folder = match dispatch::claim_file_read(
                 &state.host,
                 &state.context,
                 &control.session,
@@ -767,16 +767,20 @@ async fn stream_socket(mut socket: WebSocket, state: WebState, control: Arc<Cont
             )
             .await
             {
-                let _ = timeout(
-                    IO_TIMEOUT,
-                    writer.write_json(&FileReadDown::Error { error }),
-                )
-                .await;
-                let _ = timeout(IO_TIMEOUT, writer.finish()).await;
-                return;
-            }
+                Ok(folder) => folder,
+                Err(error) => {
+                    let _ = timeout(
+                        IO_TIMEOUT,
+                        writer.write_json(&FileReadDown::Error { error }),
+                    )
+                    .await;
+                    let _ = timeout(IO_TIMEOUT, writer.finish()).await;
+                    return;
+                }
+            };
             file_stream::run(
                 state.host,
+                folder,
                 project_path,
                 file_path,
                 version,

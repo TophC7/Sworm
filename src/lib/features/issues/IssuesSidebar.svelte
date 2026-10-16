@@ -433,27 +433,30 @@
         </Tooltip.Root>
       </ContextMenu.Trigger>
       <ContextMenu.Content>
-        <ContextMenu.Item onclick={() => void openEpicTab(folderPath, epic.id, epic.title)}>
+        <ContextMenu.Item onSelect={() => void openEpicTab(folderPath, epic.id, epic.title)}>
           <Layers size={14} />
           <span>Open epic</span>
         </ContextMenu.Item>
-        <ContextMenu.Item onclick={() => openCapture('issue', epic.id)}>
+        <ContextMenu.Item onSelect={() => openCapture('issue', epic.id)}>
           <Plus size={14} />
           <span>New issue in epic…</span>
         </ContextMenu.Item>
         <ContextMenu.Separator />
         {#if epic.status !== 'archived'}
-          <ContextMenu.Item onclick={() => void run('Archive epic failed', () => updateEpic(folderPath, epic.id, { status: 'archived' }))}>
+          <ContextMenu.Item
+            onSelect={() =>
+              void run('Archive epic failed', () => updateEpic(folderPath, epic.id, { status: 'archived' }))}
+          >
             <ArchiveIcon size={14} />
             <span>Archive epic</span>
           </ContextMenu.Item>
         {/if}
-        <ContextMenu.Item onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(epic.id))}>
+        <ContextMenu.Item onSelect={() => void run('Copy id failed', () => platform.clipboard.writeText(epic.id))}>
           <ClipboardIcon size={14} />
           <span>Copy id</span>
         </ContextMenu.Item>
         <ContextMenu.Separator />
-        <ContextMenu.Item destructive onclick={() => void confirmDeleteEpic(epic)}>
+        <ContextMenu.Item destructive onSelect={() => void confirmDeleteEpic(epic)}>
           <Trash2 size={14} />
           <span>Delete epic…</span>
         </ContextMenu.Item>
@@ -509,30 +512,32 @@
       </Tooltip.Root>
     </ContextMenu.Trigger>
     <ContextMenu.Content>
-      <ContextMenu.Item onclick={() => void openIssueTab(folderPath, issue.id, issue.title)}>
+      <ContextMenu.Item onSelect={() => void openIssueTab(folderPath, issue.id, issue.title)}>
         <CircleDot size={14} />
         <span>Open issue</span>
       </ContextMenu.Item>
-      <ContextMenu.Item onclick={() => void run('Claim failed', () => claimIssue(folderPath, issue.id))}>
+      <ContextMenu.Item onSelect={() => void run('Claim failed', () => claimIssue(folderPath, issue.id))}>
         <Check size={14} />
         <span>Claim</span>
       </ContextMenu.Item>
       <ContextMenu.Separator />
       {#each STATUS_MENU as [status, label] (status)}
         {#if issue.status !== status}
-          <ContextMenu.Item onclick={() => void run('Update status failed', () => updateIssue(folderPath, issue.id, { status }))}>
+          <ContextMenu.Item
+            onSelect={() => void run('Update status failed', () => updateIssue(folderPath, issue.id, { status }))}
+          >
             <span class="shrink-0 {statusGlyphTone(status)}">●</span>
             <span>{label}</span>
           </ContextMenu.Item>
         {/if}
       {/each}
       <ContextMenu.Separator />
-      <ContextMenu.Item onclick={() => void run('Copy id failed', () => platform.clipboard.writeText(issue.id))}>
+      <ContextMenu.Item onSelect={() => void run('Copy id failed', () => platform.clipboard.writeText(issue.id))}>
         <ClipboardIcon size={14} />
         <span>Copy id</span>
       </ContextMenu.Item>
       <ContextMenu.Separator />
-      <ContextMenu.Item destructive onclick={() => void confirmDeleteIssue(issue)}>
+      <ContextMenu.Item destructive onSelect={() => void confirmDeleteIssue(issue)}>
         <Trash2 size={14} />
         <span>Delete issue…</span>
       </ContextMenu.Item>

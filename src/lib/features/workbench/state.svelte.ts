@@ -48,8 +48,7 @@ import {
   revealTextTab,
   type TextRevealTarget
 } from '$lib/features/workbench/surfaces/text/service.svelte'
-import { basename, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
-
+import { basename, isPathWithin, resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
 // MODULE STATE //
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
@@ -86,6 +85,20 @@ function awaitFolderOps(): Promise<void> {
   return Promise.all(folderOps.values()).then(() => {})
 }
 
+/** Await queued claims/releases, repeat strict teardown, then durably save the closed tabs. */
+export async function releaseClosedWorktreeFolders(roots: string[], folderPaths: string[]): Promise<void> {
+  if (getTabs().some((tab) => roots.some((root) => isPathWithin(root, tab.folderPath)))) {
+    throw new Error('Worktree still has open tabs. Close them before continuing.')
+  }
+  // Earlier best-effort teardown is not proof; repeat it below and require that attempt to succeed.
+  await Promise.allSettled(folderPaths.map((folderPath) => folderOps.get(folderPath)))
+  await Promise.all(folderPaths.map((folderPath) => queueFolderOp(folderPath, () => releaseFolder(folderPath, true))))
+  persistWorkbench()
+  await flushWorkbench()
+  if (getTabs().some((tab) => roots.some((root) => isPathWithin(root, tab.folderPath)))) {
+    throw new Error('A worktree tab opened during shutdown. Close it before continuing.')
+  }
+}
 
 // Monotonic counter for "Untitled-N" labels on new untitled text tabs.
 let untitledCounter = 0
@@ -132,8 +145,7 @@ function findTab(tabId: TabId): Tab | undefined {
 function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist = true): void {
   const native = platform.native
   const previousFolders = new Set(workbench.tabs.map((tab) => tab.folderPath))
-  const tabs =
-    next.tabs && native ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
+  const tabs = next.tabs && native ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
   const nextFolders = new Set(tabs.map((tab) => tab.folderPath))
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
   workbench = { tabs: [...tabs], activeTabId }
@@ -261,7 +273,6 @@ export function getActiveSessionTabId(): TabId | null {
 export function hasClosedTabs(): boolean {
   return closedTabs.length > 0
 }
-
 
 /** Find an existing live task tab by its source task id (singleton rerun). */
 export function findTaskTabByTaskId(folderPath: string, taskId: string): TaskTab | null {
@@ -942,6 +953,14 @@ export function closeTab(tabId: TabId): void {
   }
   if (lastActiveByFolder.get(tab.folderPath) === tabId) lastActiveByFolder.delete(tab.folderPath)
   commit({ tabs, activeTabId })
+}
+
+/** A deleted checkout must never be resurrected through closed-tab history. */
+export function forgetClosedWorktreeTabs(rootPath: string): void {
+  closedTabs = closedTabs.filter((tab) => !isPathWithin(rootPath, tab.folderPath))
+  for (const folderPath of lastActiveByFolder.keys()) {
+    if (isPathWithin(rootPath, folderPath)) lastActiveByFolder.delete(folderPath)
+  }
 }
 
 /**

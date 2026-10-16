@@ -37,12 +37,15 @@ pub async fn remote_status(
 }
 
 #[tauri::command]
-pub fn remote_runs_release(
+pub async fn remote_runs_release(
     state: tauri::State<'_, AppState>,
     window: tauri::WebviewWindow,
     run_ids: Vec<String>,
 ) -> Result<(), ApiError> {
-    state.router.remote_runs_release(window.label(), &run_ids)
+    state
+        .router
+        .remote_runs_release(window.label(), &run_ids)
+        .await
 }
 
 #[tauri::command]

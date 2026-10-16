@@ -2,11 +2,11 @@
 //!
 //! Each open folder gets non-recursive watches for Git-aware directories
 //! across its repository worktree plus metadata watches for its per-worktree
-//! git dir and common refs. Ignored trees are pruned, except directories
-//! containing tracked files.
+//! git dir, common refs and shared worktree registrations. Ignored trees are
+//! pruned, except directories containing tracked files.
 
 use crate::events::{EventSink, HostEvent};
-use crate::services::git::{git_output, git_with_stdin, GitService};
+use crate::services::git::{git_output, git_output_line, git_with_stdin, GitService};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +105,10 @@ impl GitWatcherService {
         let watch = self.folders.lock().remove(folder);
         drop(watch);
     }
+
+    pub fn watched_folders(&self) -> Vec<PathBuf> {
+        self.folders.lock().keys().cloned().collect()
+    }
 }
 
 enum WorkerMessage {
@@ -146,11 +150,13 @@ fn start_folder_watch(
             .watch(dir, RecursiveMode::NonRecursive)
             .map_err(|error| format!("Failed to watch {}: {error}", dir.display()))?;
     }
-    let refs = common_dir.join("refs");
-    if refs.is_dir() {
-        watcher
-            .watch(&refs, RecursiveMode::Recursive)
-            .map_err(|error| format!("Failed to watch {}: {error}", refs.display()))?;
+    let metadata_trees = [common_dir.join("refs"), common_dir.join("worktrees")];
+    for dir in &metadata_trees {
+        if dir.is_dir() {
+            watcher
+                .watch(dir, RecursiveMode::Recursive)
+                .map_err(|error| format!("Failed to watch {}: {error}", dir.display()))?;
+        }
     }
 
     let folder = folder.to_path_buf();
@@ -167,7 +173,7 @@ fn start_folder_watch(
                 worktree_root,
                 git_dir,
                 common_dir,
-                refs,
+                metadata_trees,
                 &mut coverage,
                 sink,
                 &worker_health,
@@ -191,7 +197,7 @@ fn run_worker(
     worktree_root: PathBuf,
     git_dir: PathBuf,
     common_dir: PathBuf,
-    refs: PathBuf,
+    metadata_trees: [PathBuf; 2],
     coverage: &mut WorktreeCoverage,
     sink: EventSink<HostEvent>,
     healthy: &AtomicBool,
@@ -203,7 +209,7 @@ fn run_worker(
     let mut structural_change = false;
     let mut index_changed = false;
     let mut ignore_changed = false;
-    let mut refresh_refs = false;
+    let mut refresh_metadata = [false; 2];
 
     loop {
         if !healthy.load(Ordering::Acquire) {
@@ -255,7 +261,9 @@ fn run_worker(
                 structural_change |= changes_directory_structure(&coverage.dirs, &event);
                 index_changed |= changes_index(&git_dir, &event);
                 ignore_changed |= changes_ignore_rules(&worktree_root, &event);
-                refresh_refs |= changes_ref_coverage(&refs, &event);
+                for (dir, refresh) in metadata_trees.iter().zip(&mut refresh_metadata) {
+                    *refresh |= changes_metadata_coverage(dir, &event);
+                }
                 let now = Instant::now();
                 first_change.get_or_insert(now);
                 last_change = Some(now);
@@ -290,19 +298,22 @@ fn run_worker(
                     return;
                 }
             }
-            if refresh_refs {
-                let _ = watcher.unwatch(&refs);
-                if refs.is_dir() {
-                    if let Err(error) = watcher.watch(&refs, RecursiveMode::Recursive) {
-                        fail_worker(
-                            &git,
-                            &folder,
-                            &sink,
-                            healthy,
-                            format!("Failed to watch {}: {error}", refs.display()),
-                        );
-                        return;
+            for (dir, refresh) in metadata_trees.iter().zip(&mut refresh_metadata) {
+                if *refresh {
+                    let _ = watcher.unwatch(dir);
+                    if dir.is_dir() {
+                        if let Err(error) = watcher.watch(dir, RecursiveMode::Recursive) {
+                            fail_worker(
+                                &git,
+                                &folder,
+                                &sink,
+                                healthy,
+                                format!("Failed to watch {}: {error}", dir.display()),
+                            );
+                            return;
+                        }
                     }
+                    *refresh = false;
                 }
             }
             if worktree_changed {
@@ -316,7 +327,6 @@ fn run_worker(
             structural_change = false;
             index_changed = false;
             ignore_changed = false;
-            refresh_refs = false;
         }
     }
 
@@ -361,43 +371,24 @@ fn widest_scope(current: Option<GitChangeScope>, next: GitChangeScope) -> GitCha
 /// `(worktree_root, git_dir, common_dir)`; linked worktrees keep HEAD/index
 /// in the per-worktree git dir and refs plus packed-refs in the common dir.
 fn resolve_git_layout(folder: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let output = git_output(
-        folder,
-        &[
-            "rev-parse",
-            "--show-toplevel",
-            "--git-dir",
-            "--git-common-dir",
-        ],
-        "resolve repository metadata",
-    )?;
-    let stdout = String::from_utf8_lossy(&output);
-    let mut lines = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let worktree_root = lines
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "Git returned no worktree root".to_string())?;
-    let git_dir = lines
-        .next()
-        .map(|line| absolute(folder, line))
-        .ok_or_else(|| "Git returned no metadata directory".to_string())?;
-    let common_dir = lines
-        .next()
-        .map(|line| absolute(folder, line))
-        .unwrap_or_else(|| git_dir.clone());
-    Ok((worktree_root, git_dir, common_dir))
-}
-
-fn absolute(folder: &Path, path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        folder.join(path)
-    }
+    // Separate outputs preserve embedded newlines; Git's single trailing LF
+    // is removed by the shared helper without trimming path whitespace.
+    let resolve = |option| {
+        let path = PathBuf::from(git_output_line(
+            folder,
+            &["rev-parse", "--path-format=absolute", option],
+            "resolve repository metadata",
+        )?);
+        if !path.is_absolute() {
+            return Err(format!("Git returned a non-absolute path for {option}"));
+        }
+        Ok(path)
+    };
+    Ok((
+        resolve("--show-toplevel")?,
+        resolve("--git-dir")?,
+        resolve("--git-common-dir")?,
+    ))
 }
 
 /// Watched worktree directories plus a fingerprint of the tracked-file list
@@ -537,10 +528,12 @@ fn classify_event_paths(
     let mut scope = None;
     for path in &event.paths {
         if let Some(relative) = relative_git_path(git_dir, common_dir, path) {
-            if is_metadata_noise(&relative) {
+            if is_metadata_noise(relative)
+                || (!path.starts_with(git_dir) && is_primary_worktree_metadata(relative))
+            {
                 continue;
             }
-            let path_scope = if relative == "index" {
+            let path_scope = if relative == Path::new("index") {
                 GitChangeScope::Summary
             } else {
                 GitChangeScope::All
@@ -631,30 +624,72 @@ fn loses_metadata_root(git_dir: &Path, common_dir: &Path, event: &notify::Event)
         .any(|path| path == git_dir || path == common_dir)
 }
 
-fn changes_ref_coverage(refs: &Path, event: &notify::Event) -> bool {
+fn changes_metadata_coverage(root: &Path, event: &notify::Event) -> bool {
     matches!(
         &event.kind,
         EventKind::Create(_)
             | EventKind::Remove(_)
             | EventKind::Modify(notify::event::ModifyKind::Name(_))
-    ) && event.paths.iter().any(|path| path == refs)
-}
-fn relative_git_path(git_dir: &Path, common_dir: &Path, path: &Path) -> Option<String> {
-    let relative = path
-        .strip_prefix(git_dir)
-        .or_else(|_| path.strip_prefix(common_dir))
-        .ok()?;
-    Some(relative.to_string_lossy().replace('\\', "/"))
+    ) && event.paths.iter().any(|path| path == root)
 }
 
-fn is_metadata_noise(relative: &str) -> bool {
-    relative.ends_with(".lock")
-        || relative.starts_with(".watchman-cookie-")
-        || relative == "COMMIT_EDITMSG"
-        || relative == "objects"
-        || relative.starts_with("objects/")
-        || relative == "logs"
-        || relative.starts_with("logs/")
+fn relative_git_path<'a>(git_dir: &Path, common_dir: &Path, path: &'a Path) -> Option<&'a Path> {
+    path.strip_prefix(git_dir)
+        .or_else(|_| path.strip_prefix(common_dir))
+        .ok()
+}
+
+fn is_metadata_noise(relative: &Path) -> bool {
+    if let Ok(registration) = relative.strip_prefix("worktrees") {
+        let mut components = registration.components();
+        // The directory itself and each registration affect inventory. Below
+        // a sibling registration only these files change its displayed state.
+        components.next();
+        return match (components.next(), components.next()) {
+            (None, _) => false,
+            (Some(std::path::Component::Normal(name)), None) => {
+                name != "HEAD" && name != "gitdir" && name != "locked"
+            }
+            _ => true,
+        };
+    }
+    relative.file_name().is_some_and(|name| {
+        let name = name.as_encoded_bytes();
+        name.ends_with(b".lock") || name.starts_with(b".watchman-cookie-")
+    }) || relative == Path::new("COMMIT_EDITMSG")
+        || relative.starts_with("objects")
+        || relative.starts_with("logs")
+}
+
+/// A linked checkout sees the primary Git directory as common metadata, but
+/// its index and operation state belong to the primary checkout, not this one.
+fn is_primary_worktree_metadata(relative: &Path) -> bool {
+    relative.components().next().is_some_and(|component| {
+        matches!(
+            component.as_os_str().to_str(),
+            Some(
+                "index"
+                    | "ORIG_HEAD"
+                    | "MERGE_HEAD"
+                    | "MERGE_MSG"
+                    | "MERGE_MODE"
+                    | "AUTO_MERGE"
+                    | "REBASE_HEAD"
+                    | "CHERRY_PICK_HEAD"
+                    | "REVERT_HEAD"
+                    | "REVERT_MSG"
+                    | "SQUASH_MSG"
+                    | "rebase-merge"
+                    | "rebase-apply"
+                    | "sequencer"
+            )
+        ) || component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| name.starts_with("BISECT_"))
+    }) || relative.starts_with("refs/bisect")
+        || relative.starts_with("refs/rewritten")
+        || relative.starts_with("refs/worktree")
 }
 
 #[cfg(test)]
@@ -686,15 +721,62 @@ mod tests {
         );
     }
 
-    fn recv_summary(receiver: &std::sync::mpsc::Receiver<HostEvent>) {
+    fn committed_repo(tag: &str) -> PathBuf {
+        let repo = temp_repo(tag);
+        std::fs::write(repo.join("tracked.txt"), "tracked\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        for message in ["first", "second"] {
+            git(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=Sworm Watcher",
+                    "-c",
+                    "user.email=watcher@example.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ],
+            );
+        }
+        repo
+    }
+
+    fn watch_repo(repo: &Path) -> (FolderWatch, mpsc::Receiver<HostEvent>) {
+        let (sender, receiver) = mpsc::channel();
+        let sink: EventSink<HostEvent> =
+            Arc::new(move |event| sender.send(event).map_err(|error| error.to_string()));
+        let watch =
+            start_folder_watch(Arc::new(GitService::new()), repo, sink).expect("start watcher");
+        (watch, receiver)
+    }
+
+    fn recv_scope(receiver: &mpsc::Receiver<HostEvent>, scope: GitChangeScope) -> GitChangedEvent {
         let HostEvent::GitChanged(event) = receiver
             .recv_timeout(Duration::from_secs(3))
             .expect("receive git change")
         else {
             panic!("received non-Git host event");
         };
-        assert_eq!(event.scope, GitChangeScope::Summary);
+        assert_eq!(event.scope, scope);
         assert_eq!(event.error, None);
+        event
+    }
+
+    fn recv_summary(receiver: &mpsc::Receiver<HostEvent>) {
+        recv_scope(receiver, GitChangeScope::Summary);
+    }
+
+    fn assert_quiet(receiver: &mpsc::Receiver<HostEvent>) {
+        assert!(
+            matches!(
+                receiver.recv_timeout(MAX_FLUSH_DELAY + QUIET_DELAY),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "sibling index, log and operation churn must not emit a Git change"
+        );
     }
 
     #[test]
@@ -921,6 +1003,235 @@ mod tests {
     }
 
     #[test]
+    fn watcher_layout_preserves_whitespace_in_primary_and_linked_paths() {
+        let original = committed_repo("layout-whitespace");
+        let repo = original.with_extension(" primary\twith\nspace ");
+        let linked = original.with_extension(" linked\twith\nspace ");
+        std::fs::rename(&original, &repo).unwrap();
+        let selected = repo.join(" selected\twith\nspace ");
+        std::fs::create_dir(&selected).unwrap();
+        let expected_root = std::fs::canonicalize(&repo).unwrap();
+        let expected_common = std::fs::canonicalize(repo.join(".git")).unwrap();
+        assert_eq!(
+            resolve_git_layout(&selected).unwrap(),
+            (
+                expected_root,
+                expected_common.clone(),
+                expected_common.clone()
+            )
+        );
+        let (primary_watch, primary_events) = watch_repo(&selected);
+
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let event = recv_scope(&primary_events, GitChangeScope::All);
+        assert_eq!(event.folder_path, selected.to_str().unwrap());
+        let linked_selected = linked.join(" selected\twith\nspace ");
+        std::fs::create_dir(&linked_selected).unwrap();
+        let (root, git_dir, common_dir) = resolve_git_layout(&linked_selected).unwrap();
+        assert_eq!(root, std::fs::canonicalize(&linked).unwrap());
+        assert_eq!(common_dir, expected_common);
+        assert!(git_dir.starts_with(common_dir.join("worktrees")));
+        assert!(git_dir.join("HEAD").is_file());
+        let (linked_watch, linked_events) = watch_repo(&linked_selected);
+
+        git(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+        recv_scope(&primary_events, GitChangeScope::All);
+        recv_scope(&linked_events, GitChangeScope::All);
+        std::fs::write(linked.join("tracked.txt"), "linked edit\n").unwrap();
+        let event = recv_scope(&linked_events, GitChangeScope::Summary);
+        assert_eq!(event.folder_path, linked_selected.to_str().unwrap());
+        assert_quiet(&primary_events);
+
+        drop(primary_watch);
+        drop(linked_watch);
+        std::fs::remove_dir_all(linked).ok();
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_layout_rejects_non_utf8_repository_paths() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let original = temp_repo("layout-non-utf8");
+        let mut bytes = original.as_os_str().as_bytes().to_vec();
+        bytes.push(0xff);
+        let repo = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        std::fs::rename(&original, &repo).unwrap();
+        let error = resolve_git_layout(&repo).unwrap_err();
+        assert!(
+            error.contains("UTF-8"),
+            "must reject, not repair a path: {error}"
+        );
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn primary_watcher_tracks_external_worktrees_and_recreated_registration_root() {
+        let repo = committed_repo("shared-worktrees");
+        let linked = repo.with_extension("linked");
+        let moved = repo.with_extension("moved");
+        let registrations = repo.join(".git/worktrees");
+        assert!(!registrations.exists());
+        let (watch, receiver) = watch_repo(&repo);
+
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let event = recv_scope(&receiver, GitChangeScope::All);
+        assert_eq!(event.folder_path, repo.to_str().unwrap());
+
+        // Detached HEAD changes do not update shared branch refs. They must
+        // reach a watcher with only the primary checkout open.
+        git(&linked, &["checkout", "-q", "--detach", "HEAD~1"]);
+        recv_scope(&receiver, GitChangeScope::All);
+
+        std::fs::rename(&linked, &moved).unwrap();
+        git(&repo, &["worktree", "repair", moved.to_str().unwrap()]);
+        recv_scope(&receiver, GitChangeScope::All);
+
+        git(
+            &repo,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "keep offline",
+                moved.to_str().unwrap(),
+            ],
+        );
+        recv_scope(&receiver, GitChangeScope::All);
+        git(&repo, &["worktree", "unlock", moved.to_str().unwrap()]);
+        recv_scope(&receiver, GitChangeScope::All);
+        git(&repo, &["worktree", "remove", moved.to_str().unwrap()]);
+        if registrations.exists() {
+            std::fs::remove_dir(&registrations).unwrap();
+        }
+        recv_scope(&receiver, GitChangeScope::All);
+        assert!(!registrations.exists());
+
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        recv_scope(&receiver, GitChangeScope::All);
+        git(&linked, &["checkout", "-q", "--detach", "HEAD~1"]);
+        recv_scope(&receiver, GitChangeScope::All);
+
+        std::fs::remove_dir_all(&linked).unwrap();
+        git(&repo, &["worktree", "prune", "--expire=now"]);
+        recv_scope(&receiver, GitChangeScope::All);
+        assert!(watch.is_healthy(), "registration loss must rearm, not stop");
+
+        drop(watch);
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn shared_metadata_ignores_sibling_churn_but_keeps_own_and_primary_head_events() {
+        let repo = committed_repo("shared-noise");
+        let linked = repo.with_extension("linked");
+        let sibling = repo.with_extension("sibling");
+        for path in [&linked, &sibling] {
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    path.to_str().unwrap(),
+                    "HEAD",
+                ],
+            );
+        }
+        let (_, primary_git, _) = resolve_git_layout(&repo).unwrap();
+        let (_, own_git, _) = resolve_git_layout(&linked).unwrap();
+        let (_, sibling_git, _) = resolve_git_layout(&sibling).unwrap();
+        let (primary_watch, primary_events) = watch_repo(&repo);
+        let (linked_watch, linked_events) = watch_repo(&linked);
+
+        for file in ["index", "logs/HEAD"] {
+            let path = sibling_git.join(file);
+            std::fs::write(&path, std::fs::read(&path).unwrap()).unwrap();
+        }
+        std::fs::write(sibling_git.join("HEAD.lock"), "transient").unwrap();
+        std::fs::remove_file(sibling_git.join("HEAD.lock")).unwrap();
+        std::fs::write(sibling_git.join("MERGE_HEAD"), "operation").unwrap();
+        std::fs::create_dir(sibling_git.join("rebase-merge")).unwrap();
+        std::fs::write(sibling_git.join("rebase-merge/head-name"), "operation").unwrap();
+        assert_quiet(&primary_events);
+        assert_quiet(&linked_events);
+
+        let index = primary_git.join("index");
+        std::fs::write(&index, std::fs::read(&index).unwrap()).unwrap();
+        recv_summary(&primary_events);
+        assert_quiet(&linked_events);
+        std::fs::write(primary_git.join("MERGE_HEAD"), "operation").unwrap();
+        recv_scope(&primary_events, GitChangeScope::All);
+        assert_quiet(&linked_events);
+        std::fs::remove_file(primary_git.join("MERGE_HEAD")).unwrap();
+        recv_scope(&primary_events, GitChangeScope::All);
+        assert_quiet(&linked_events);
+        git(
+            &repo,
+            &["update-ref", "refs/rewritten/watcher-test", "HEAD"],
+        );
+        recv_scope(&primary_events, GitChangeScope::All);
+        assert_quiet(&linked_events);
+
+        let index = own_git.join("index");
+        std::fs::write(&index, std::fs::read(&index).unwrap()).unwrap();
+        recv_summary(&linked_events);
+        assert_quiet(&primary_events);
+        std::fs::write(own_git.join("MERGE_HEAD"), "operation").unwrap();
+        recv_scope(&linked_events, GitChangeScope::All);
+        assert_quiet(&primary_events);
+        git(
+            &linked,
+            &["update-ref", "refs/rewritten/watcher-test", "HEAD"],
+        );
+        recv_scope(&linked_events, GitChangeScope::All);
+        assert_quiet(&primary_events);
+
+        let head = sibling_git.join("HEAD");
+        std::fs::write(&head, std::fs::read(&head).unwrap()).unwrap();
+        recv_scope(&primary_events, GitChangeScope::All);
+        recv_scope(&linked_events, GitChangeScope::All);
+        git(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+        recv_scope(&primary_events, GitChangeScope::All);
+        recv_scope(&linked_events, GitChangeScope::All);
+        assert!(primary_watch.is_healthy());
+        assert!(linked_watch.is_healthy());
+
+        drop(primary_watch);
+        drop(linked_watch);
+        std::fs::remove_dir_all(linked).ok();
+        std::fs::remove_dir_all(sibling).ok();
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
     fn metadata_scope_handles_linked_worktree_layout() {
         let git_dir = Path::new("/repo/.git/worktrees/linked");
         let common_dir = Path::new("/repo/.git");
@@ -930,13 +1241,12 @@ mod tests {
                 git_dir,
                 common_dir,
                 Path::new("/repo/.git/worktrees/linked/index")
-            )
-            .as_deref(),
-            Some("index")
+            ),
+            Some(Path::new("index"))
         );
         assert_eq!(
-            relative_git_path(git_dir, common_dir, Path::new("/repo/.git/packed-refs")).as_deref(),
-            Some("packed-refs")
+            relative_git_path(git_dir, common_dir, Path::new("/repo/.git/packed-refs")),
+            Some(Path::new("packed-refs"))
         );
     }
 

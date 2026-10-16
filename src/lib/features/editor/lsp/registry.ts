@@ -98,6 +98,8 @@ class LspRegistry {
   private knownFolders = new Set<string>()
   /** Teardown in flight per instance key, awaited by the next start for that key. */
   private stopsByKey = new Map<string, Promise<void>>()
+  /** Includes removed instances until their host acknowledges process exit. */
+  private stoppingInstances = new Set<ServerInstance>()
   private editorOpenerRegistered = false
 
   async ensureMonaco(monaco: Monaco): Promise<void> {
@@ -204,11 +206,15 @@ class LspRegistry {
   }
 
   /** Forget the folder and stop its servers; called when the workbench releases the folder. */
-  async releaseFolder(folderPath: string): Promise<void> {
+  async releaseFolder(folderPath: string, strict = false): Promise<void> {
     this.knownFolders.delete(folderPath)
     this.serverEntriesByFolder.delete(folderPath)
-    const instances = [...this.serverInstances.values()].filter((instance) => instance.folderPath === folderPath)
-    await Promise.all(instances.map((instance) => this.stopInstance(instance)))
+    const instances = new Set(
+      [...this.serverInstances.values(), ...this.stoppingInstances].filter(
+        (instance) => instance.folderPath === folderPath
+      )
+    )
+    await Promise.all([...instances].map((instance) => this.stopInstance(instance, strict)))
   }
 
   async restartServerDefinition(serverDefinitionId: string, isActive: () => boolean): Promise<void> {
@@ -516,12 +522,19 @@ class LspRegistry {
     }
   }
 
-  private stopInstance(instance: ServerInstance): Promise<void> {
+  private stopInstance(instance: ServerInstance, strict = false): Promise<void> {
     this.cancelIdleStop(instance)
     // Only give up the key while this instance still holds it: a late exit event
     // or idle timer must never unregister the instance that replaced it.
     if (this.serverInstances.get(instance.key) === instance) this.serverInstances.delete(instance.key)
-    if (instance.stopPromise) return instance.stopPromise
+    if (instance.stopPromise) {
+      return strict
+        ? instance.stopPromise
+        : instance.stopPromise.catch((error) => {
+            console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)
+          })
+    }
+    this.stoppingInstances.add(instance)
 
     const stop = (async () => {
       const stream = instance.stream
@@ -536,22 +549,29 @@ class LspRegistry {
         document.diagnosticsByServer.delete(instance.key)
         this.applyDiagnostics(document)
       }
-      try {
-        await stream?.ready.catch(() => {})
-        await backend.lsp.stop(instance.sessionId)
-      } catch (error) {
-        console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)
-      }
+      await stream?.ready.catch(() => {})
+      await backend.lsp.stop(instance.sessionId)
+      this.stoppingInstances.delete(instance)
     })()
     instance.stopPromise = stop
 
     // The session id outlives the instance, so the next start for this key waits
     // here for the backend to release the lease.
     this.stopsByKey.set(instance.key, stop)
-    void stop.finally(() => {
-      if (this.stopsByKey.get(instance.key) === stop) this.stopsByKey.delete(instance.key)
-    })
-    return stop
+    void stop.then(
+      () => {
+        if (this.stopsByKey.get(instance.key) === stop) this.stopsByKey.delete(instance.key)
+      },
+      () => {
+        // Keep the instance reachable for a strict retry after an exit/stop failure.
+        instance.stopPromise = null
+      }
+    )
+    return strict
+      ? stop
+      : stop.catch((error) => {
+          console.warn(`Failed to stop LSP server ${instance.sessionId}`, error)
+        })
   }
 
   private async attachMatchingServers(
@@ -569,7 +589,11 @@ class LspRegistry {
       .filter(({ entry }) => entryFilter(entry))
       .filter(({ entry }) => entry.config.enabled)
       .filter(({ entry }) =>
-        lspSelectorsMatch(entry.server.document_selectors, document.model.getLanguageId(), basename(document.model.uri.path))
+        lspSelectorsMatch(
+          entry.server.document_selectors,
+          document.model.getLanguageId(),
+          basename(document.model.uri.path)
+        )
       )
 
     const instances: ServerInstance[] = []
@@ -973,8 +997,8 @@ export function refreshAllLspFolderEnvironments() {
   return registry.refreshAllFolders()
 }
 
-export function releaseLspFolder(folderPath: string) {
-  return registry.releaseFolder(folderPath)
+export function releaseLspFolder(folderPath: string, strict = false) {
+  return registry.releaseFolder(folderPath, strict)
 }
 
 export function formatDocumentWithLsp(model: MonacoModel) {

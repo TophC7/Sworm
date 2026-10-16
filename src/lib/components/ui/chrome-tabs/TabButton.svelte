@@ -14,6 +14,7 @@
     color,
     leading,
     onClose,
+    onauxclick,
     class: className,
     children,
     ...rest
@@ -31,6 +32,9 @@
     event.stopPropagation()
     if (onClose) void onClose(event)
   }
+
+  // Keep the native listener bound when locking removes the consumer callback:
+  // optional spread handlers can leave Svelte's cached listener calling undefined.
 </script>
 
 <button
@@ -41,6 +45,7 @@
   )}
   role="tab"
   aria-selected={active}
+  onauxclick={(event) => onauxclick?.(event)}
   {...rest}
 >
   {#if active}

@@ -162,6 +162,7 @@ async fn remote_spawns_leases_and_uris_stay_on_daemon() -> anyhow::Result<()> {
         lease_receives_registry_events_without_folder_claims(&fixture).await?;
         local_leases_follow_authority_and_transfer_identity(&fixture).await?;
         independent_servers_do_not_share_transition_gates(&fixture).await?;
+        passive_discovery_does_not_claim_remote_worktrees(&fixture).await?;
         remote_spawn_arms_and_workspace_uris(&fixture).await?;
         remote_file_rename_emits_desktop_file_moved(&fixture).await?;
         remote_paste_stays_on_source_host(&fixture).await?;
@@ -172,6 +173,86 @@ async fn remote_spawns_leases_and_uris_stay_on_daemon() -> anyhow::Result<()> {
     .await;
     fixture.shutdown().await;
     suite.unwrap_or_else(|_| panic!("the routing suite did not finish within {SUITE_TIMEOUT:?}"))
+}
+
+async fn passive_discovery_does_not_claim_remote_worktrees(
+    fixture: &Fixture,
+) -> anyhow::Result<()> {
+    use sworm_protocol::git::{GitWorktreeOp, GitWorktreeResult};
+    let workspace = fixture.workspace("passive-discovery")?;
+    for args in [
+        &["add", "hello.txt"][..],
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ][..],
+    ] {
+        assert!(std::process::Command::new("git")
+            .current_dir(&workspace.path)
+            .args(args)
+            .status()?
+            .success());
+    }
+    let linked = fixture.root.path().join("passive-discovery-linked");
+    assert!(std::process::Command::new("git")
+        .current_dir(&workspace.path)
+        .args(["worktree", "add", "--quiet", "--detach"])
+        .arg(&linked)
+        .arg("HEAD")
+        .status()?
+        .success());
+    let remote_linked = Target::remote_uri("loop", linked.to_str().unwrap());
+    let router = &workspace.router;
+    let probe = async {
+        router.git_get_brief(workspace.remote.clone()).await?;
+        router.git_get_brief(remote_linked.clone()).await?;
+        router.folder_resolve(remote_linked.clone()).await?;
+        router.folder_resolve("sworm://loop/".into()).await?;
+        router
+            .folder_list_entries(
+                Target::remote_uri("loop", fixture.root.path().to_str().unwrap()),
+                false,
+            )
+            .await?;
+        router.folder_path_root(remote_linked.clone()).await?;
+        anyhow::Ok(())
+    };
+    probe.await?;
+    let client = fixture.client().await?;
+    let request = || Request::GitWorktree {
+        path: workspace.path.to_str().unwrap().into(),
+        op: GitWorktreeOp::Remove {
+            worktree_path: linked.to_str().unwrap().into(),
+            force: false,
+        },
+    };
+    // A real tab declaration remains ownership even though passive Home and
+    // picker queries on another connection must not retain any claims.
+    router.claim_folder(remote_linked.clone()).await?;
+    assert!(matches!(
+        client.call(&request()).await,
+        Err(sworm_remote::RemoteError::Wire(
+            sworm_protocol::rpc::WireError::InvalidArgument { .. }
+        ))
+    ));
+    router.release_folder_strict(remote_linked.clone()).await?;
+    assert!(router.close_remote_for_test("loop").await);
+    router.git_get_brief(remote_linked.clone()).await?;
+    router.folder_resolve(remote_linked).await?;
+    assert!(matches!(
+        client
+            .call_as(&request(), sworm_protocol::rpc::Reply::git_worktree)
+            .await?,
+        GitWorktreeResult::Removed
+    ));
+    assert!(!linked.exists());
+    Ok(())
 }
 
 async fn local_leases_follow_authority_and_transfer_identity(
@@ -270,6 +351,7 @@ async fn local_leases_follow_authority_and_transfer_identity(
         .unwrap();
     assert!(router
         .remote_runs_release("source", &["transferred-proxy".into()])
+        .await
         .is_err());
     assert!(!workspace
         .host

@@ -414,6 +414,21 @@ macro_rules! sworm_rpc_ops {
                 path: String,
             ) -> Vec<$crate::branch::BranchSummary>;
             #[route(path)]
+            GitWorktreeList => git_worktree_list(
+                path: String,
+            ) -> $crate::git::GitWorktreeList;
+            #[route(path)]
+            GitWorktreeDefaultPath => git_worktree_default_path(
+                path: String,
+                checkout: $crate::git::GitWorktreeCheckout,
+                root: Option<String>,
+            ) -> String;
+            #[route(path)]
+            GitWorktree => git_worktree(
+                path: String,
+                op: $crate::git::GitWorktreeOp,
+            ) -> $crate::git::GitWorktreeResult;
+            #[route(path)]
             GitDiffBranchAgainstHead => git_diff_branch_against_head(
                 path: String,
                 branch: String,
