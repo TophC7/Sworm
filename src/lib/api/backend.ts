@@ -33,6 +33,7 @@ import type {
   GitPathsOp,
   GitChangedEvent,
   GitQuickDiffData,
+  GitRemote,
   GitRemoteOp,
   GitSequencerAction,
   GitStashOp,
@@ -323,6 +324,9 @@ export const backend = {
 
     listBranches(path: string): Promise<BranchSummary[]> {
       return invoke<BranchSummary[]>('git_list_branches', { path })
+    },
+    listRemotes(path: string): Promise<GitRemote[]> {
+      return invoke<GitRemote[]>('git_list_remotes', { path })
     },
     getBranchCommits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
       return invoke<GraphCommit[]>('git_get_branch_commits', { path, branch, limit })

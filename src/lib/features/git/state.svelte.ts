@@ -101,6 +101,7 @@ function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolea
     a.untracked_count !== b.untracked_count ||
     a.upstream !== b.upstream ||
     a.detached !== b.detached ||
+    a.unborn !== b.unborn ||
     a.message_template !== b.message_template ||
     a.conflicts.length !== b.conflicts.length ||
     JSON.stringify(a.operation) !== JSON.stringify(b.operation) ||

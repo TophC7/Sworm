@@ -414,6 +414,10 @@ macro_rules! sworm_rpc_ops {
                 path: String,
             ) -> Vec<$crate::branch::BranchSummary>;
             #[route(path)]
+            GitListRemotes => git_list_remotes(
+                path: String,
+            ) -> Vec<$crate::git::GitRemote>;
+            #[route(path)]
             GitWorktreeList => git_worktree_list(
                 path: String,
             ) -> $crate::git::GitWorktreeList;

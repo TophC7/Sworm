@@ -490,6 +490,7 @@ export interface GitSummary {
   untracked_count: number
   upstream: string | null
   detached: boolean
+  unborn: boolean
   operation: GitOperation | null
   conflicts: GitConflict[]
   message_template: string | null
@@ -531,6 +532,13 @@ export interface GitCommitOptions {
   all: boolean
   signOff: boolean
   noVerify: boolean
+}
+
+export interface GitRemote {
+  name: string
+  fetchUrl: string | null
+  pushUrl: string | null
+  pushDefault: boolean
 }
 
 export type GitRemoteOp =

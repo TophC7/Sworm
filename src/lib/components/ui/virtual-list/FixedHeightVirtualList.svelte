@@ -31,6 +31,8 @@
     Pass when item identity is stable across reorders so Svelte can
     reuse DOM nodes and per-row state instead of rekeying by index.
   @param class Tailwind / utility classes merged onto the wrapper.
+  @method scrollToIndex(index) Scroll an off-screen row into the centre of
+    the nearest scrollable ancestor, leaving visible rows in place.
 -->
 
 <script lang="ts" module>
@@ -74,6 +76,22 @@
   // Viewport top relative to the list; negative while the list starts below it.
   let viewportTop = $state(0)
   let viewportHeight = $state(0)
+
+  /** Scroll the nearest scroll parent so row `index` is visible, centring it when it was off-screen. */
+  export function scrollToIndex(index: number): void {
+    const parent = scrollParent
+    const anchor = anchorEl
+    if (!parent || !anchor) return
+    const top =
+      anchor.getBoundingClientRect().top -
+      parent.getBoundingClientRect().top -
+      parent.clientTop +
+      parent.scrollTop +
+      index * rowHeight
+    if (top < parent.scrollTop || top + rowHeight > parent.scrollTop + parent.clientHeight) {
+      parent.scrollTop = top - (parent.clientHeight - rowHeight) / 2
+    }
+  }
 
   $effect(() => {
     const anchor = anchorEl

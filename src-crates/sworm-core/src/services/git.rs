@@ -9,8 +9,8 @@ use sworm_protocol::branch::BranchCommitRef;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
     CommitDetail, GitBrief, GitChange, GitCommitOptions, GitConflict, GitConflictKind,
-    GitConflictSide, GitOperation, GitOperationKind, GitQuickDiffData, GitSequencerAction,
-    GitStashScope, GitSummary, GraphCommit, StashEntry,
+    GitConflictSide, GitOperation, GitOperationKind, GitQuickDiffData, GitRemote,
+    GitSequencerAction, GitStashScope, GitSummary, GraphCommit, StashEntry,
 };
 use tracing::warn;
 
@@ -299,6 +299,7 @@ impl GitService {
         let WorkingStatus {
             branch,
             detached,
+            unborn,
             upstream,
             changes,
             conflicts,
@@ -324,6 +325,7 @@ impl GitService {
             untracked_count,
             upstream,
             detached,
+            unborn,
             operation,
             conflicts,
             message_template,
@@ -413,6 +415,7 @@ impl GitService {
         Ok(WorkingStatus {
             branch: status.branch,
             detached: status.detached,
+            unborn: status.unborn,
             upstream: status.upstream,
             changes,
             conflicts,
@@ -778,10 +781,20 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output).trim().to_string())
     }
 
-    /// Soft-reset the last commit, preserving changes as staged, and
-    /// return the message that was on that commit so the UI can restore
-    /// it into the commit textarea for easy editing or re-use.
+    /// Undo the last commit, preserving changes as staged, and return its
+    /// message for the commit textarea. A root commit on a branch leaves it
+    /// unborn with everything staged. Paused operations and detached root
+    /// commits are rejected.
     pub fn undo_last_commit(&self, path: &Path) -> Result<String, ApiError> {
+        if read_operation(path, &resolve_git_dir(path)).is_some() {
+            return Err(ApiError::InvalidArgument(
+                "Finish the paused Git operation before undoing the last commit".to_string(),
+            ));
+        }
+        let head = git_output(path, &["rev-parse", "--verify", "HEAD"], "resolve HEAD")
+            .map_err(ApiError::Internal)?;
+        let head = String::from_utf8_lossy(&head).trim().to_string();
+
         // Snapshot the message BEFORE resetting. `%B` is the full raw
         // body (subject + body), which matches what the user originally
         // typed into the textarea. `trim_end` removes both `\n` and
@@ -789,7 +802,7 @@ impl GitService {
         // CRLF-flavoured repos.
         let message = match git_output(
             path,
-            &["log", "-1", "--format=%B", "HEAD"],
+            &["log", "-1", "--format=%B", &head],
             "read last commit message",
         ) {
             Ok(output) => String::from_utf8_lossy(&output).trim_end().to_string(),
@@ -799,7 +812,26 @@ impl GitService {
             }
         };
 
-        self.run_mutate(path, &["reset", "--soft", "HEAD~1"])?;
+        let commit = git_output(path, &["cat-file", "commit", &head], "read last commit")
+            .map_err(ApiError::Internal)?;
+        // The raw object keeps its parent headers even when a shallow clone hides the parent,
+        // so only a true root commit reaches the ref deletion below.
+        let has_parent = String::from_utf8_lossy(&commit)
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .any(|line| line.starts_with("parent "));
+        if has_parent {
+            self.run_mutate(path, &["reset", "--soft", "HEAD~1"])?;
+        } else {
+            let branch = self.current_branch(path).ok_or_else(|| {
+                ApiError::InvalidArgument(
+                    "Cannot undo a root commit on a detached HEAD".to_string(),
+                )
+            })?;
+            let ref_name = format!("refs/heads/{branch}");
+            // Root commit: drop the branch ref; the index keeps the files staged, matching the soft reset.
+            self.run_mutate(path, &["update-ref", "-d", &ref_name, &head])?;
+        }
         Ok(message)
     }
 
@@ -1103,6 +1135,46 @@ impl GitService {
             }
         }
         Ok(out)
+    }
+
+    /// Configured remotes with their URLs, in `git remote` order.
+    pub fn list_remotes(&self, path: &Path) -> Result<Vec<GitRemote>, ApiError> {
+        let (output, push_default) = std::thread::scope(|scope| {
+            let push_default =
+                scope.spawn(|| git_line(path, &["config", "--get", "remote.pushDefault"]));
+            let output = git_output(path, &["remote", "-v"], "list remotes");
+            (output, push_default.join().unwrap_or_default())
+        });
+        let output = output.map_err(ApiError::Internal)?;
+        let text = String::from_utf8_lossy(&output);
+        let mut remotes: Vec<GitRemote> = Vec::new();
+        for line in text.lines() {
+            let Some((name, rest)) = line.split_once('\t') else {
+                continue;
+            };
+            let Some((url, kind)) = rest.rsplit_once(' ') else {
+                continue;
+            };
+            let index = match remotes.iter().position(|remote| remote.name == name) {
+                Some(index) => index,
+                None => {
+                    remotes.push(GitRemote {
+                        name: name.to_string(),
+                        fetch_url: None,
+                        push_url: None,
+                        push_default: push_default.as_deref() == Some(name),
+                    });
+                    remotes.len() - 1
+                }
+            };
+            let remote = &mut remotes[index];
+            match kind {
+                "(fetch)" if remote.fetch_url.is_none() => remote.fetch_url = Some(url.to_string()),
+                "(push)" if remote.push_url.is_none() => remote.push_url = Some(url.to_string()),
+                _ => {}
+            }
+        }
+        Ok(remotes)
     }
 
     /// Return true when the index, worktree, or untracked set has changes.
@@ -1580,6 +1652,7 @@ impl GitService {
 struct WorkingStatus {
     branch: Option<String>,
     detached: bool,
+    unborn: bool,
     upstream: Option<String>,
     changes: Vec<GitChange>,
     conflicts: Vec<GitConflict>,
@@ -1590,6 +1663,7 @@ struct StatusV2 {
     branch: Option<String>,
     upstream: Option<String>,
     detached: bool,
+    unborn: bool,
     ahead: Option<u32>,
     behind: Option<u32>,
     records: Vec<StatusRecord>,
@@ -1634,6 +1708,8 @@ fn status_records(path: &Path, ahead_behind: bool) -> Result<Option<StatusV2>, S
                 if let Some(head) = record.strip_prefix("# branch.head ") {
                     status.detached = head == "(detached)";
                     status.branch = (!status.detached).then(|| head.to_string());
+                } else if record == "# branch.oid (initial)" {
+                    status.unborn = true;
                 } else if let Some(upstream) = record.strip_prefix("# branch.upstream ") {
                     status.upstream = Some(upstream.to_string());
                 } else if let Some(ab) = record.strip_prefix("# branch.ab ") {
@@ -2781,6 +2857,97 @@ mod tests {
         git(&dir, &["add", "a.txt"]);
         git(&dir, &["commit", "-q", "-m", "init"]);
         dir
+    }
+
+    #[test]
+    fn undo_root_commit_leaves_unborn_branch_with_staged_files() {
+        let repo = temp_repo("undo-root");
+        let service = GitService::new();
+        assert!(!service.get_summary(&repo).unwrap().unborn);
+
+        assert_eq!(service.undo_last_commit(&repo).unwrap(), "init");
+        let head = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(!head.status.success());
+        let summary = service.get_summary(&repo).unwrap();
+        assert!(summary.unborn);
+        assert_eq!(summary.branch.as_deref(), Some("main"));
+        assert!(summary
+            .changes
+            .iter()
+            .any(|change| change.path == "a.txt" && change.staged));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn undo_in_shallow_clone_keeps_branch() {
+        let source = temp_repo("undo-shallow-src");
+        std::fs::write(source.join("a.txt"), "two\n").unwrap();
+        git(&source, &["commit", "-qam", "two"]);
+        let clone =
+            std::env::temp_dir().join(format!("sworm-undo-shallow-{}", uuid::Uuid::new_v4()));
+        git(
+            &source,
+            &[
+                "clone",
+                "-q",
+                "--depth",
+                "1",
+                &format!("file://{}", source.display()),
+                clone.to_str().unwrap(),
+            ],
+        );
+        let before = git_line(&clone, &["rev-parse", "refs/heads/main"]);
+        assert!(GitService::new().undo_last_commit(&clone).is_err());
+        assert_eq!(git_line(&clone, &["rev-parse", "refs/heads/main"]), before);
+        std::fs::remove_dir_all(clone).unwrap();
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn undo_rejects_paused_operation() {
+        let repo = temp_repo("undo-paused");
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+        git(&repo, &["commit", "-qam", "two"]);
+        let svc = GitService::new();
+        let oid = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        std::fs::write(repo.join(".git/MERGE_HEAD"), &oid).unwrap();
+        assert!(matches!(
+            svc.undo_last_commit(&repo),
+            Err(ApiError::InvalidArgument(_))
+        ));
+        assert_eq!(
+            git_line(&repo, &["rev-parse", "HEAD"]).as_deref(),
+            Some(oid.as_str())
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn list_remotes_reports_urls_and_push_default() {
+        let repo = temp_repo("list-remotes");
+        git(&repo, &["remote", "add", "origin", "/tmp/a.git"]);
+        git(&repo, &["remote", "add", "upstream", "/tmp/b.git"]);
+        git(
+            &repo,
+            &["remote", "set-url", "--push", "origin", "/tmp/c.git"],
+        );
+        git(&repo, &["config", "remote.pushDefault", "upstream"]);
+
+        let remotes = GitService::new().list_remotes(&repo).unwrap();
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].fetch_url.as_deref(), Some("/tmp/a.git"));
+        assert_eq!(remotes[0].push_url.as_deref(), Some("/tmp/c.git"));
+        assert!(!remotes[0].push_default);
+        assert_eq!(remotes[1].name, "upstream");
+        assert_eq!(remotes[1].fetch_url.as_deref(), Some("/tmp/b.git"));
+        assert_eq!(remotes[1].push_url.as_deref(), Some("/tmp/b.git"));
+        assert!(remotes[1].push_default);
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]

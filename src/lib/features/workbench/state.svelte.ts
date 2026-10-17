@@ -52,6 +52,7 @@ import { basename, isPathWithin, resolveProjectFile, splitRemotePath } from '$li
 
 // MODULE STATE //
 let workbench = $state<Workbench>({ tabs: [], activeTabId: null })
+let activationSeq = $state(0)
 
 // LIFO stack of recently closed tabs for Ctrl+Shift+T. In-memory only: a
 // fresh launch has nothing to reopen beyond what restore hydrates.
@@ -148,6 +149,7 @@ function commit(next: { tabs?: Tab[]; activeTabId?: TabId | null } = {}, persist
   const tabs = next.tabs && native ? compactGroupTabs(next.tabs) : (next.tabs ?? workbench.tabs)
   const nextFolders = new Set(tabs.map((tab) => tab.folderPath))
   const activeTabId = next.activeTabId === undefined ? workbench.activeTabId : next.activeTabId
+  if (activeTabId !== workbench.activeTabId) activationSeq += 1
   workbench = { tabs: [...tabs], activeTabId }
   const active = activeTabId ? tabs.find((t) => t.id === activeTabId) : undefined
   if (active) lastActiveByFolder.set(active.folderPath, active.id)
@@ -234,12 +236,23 @@ function pushClosedTab(snapshot: PersistedTab): void {
 }
 
 // READS //
+/** Bumps whenever the active tab changes; one-shot UI requests compare against it. */
+export function getActivationSeq(): number {
+  return activationSeq
+}
+
 export function getTabs(): Tab[] {
   return workbench.tabs
 }
 
 export function getActiveTab(): Tab | null {
   return workbench.activeTabId ? (findTab(workbench.activeTabId) ?? null) : null
+}
+
+/** File path of the active tab when it is a text editor. */
+export function getActiveTextFilePath(): string | null {
+  const tab = getActiveTab()
+  return tab?.kind === 'text' ? tab.filePath : null
 }
 
 /** Preview replacement must never discard edits or overwrite a locked/promoted tab. */

@@ -26,12 +26,25 @@ pub struct GitSummary {
     pub upstream: Option<String>,
     /// HEAD is not on a branch (detached checkout, or mid-rebase).
     pub detached: bool,
+    /// HEAD's branch has no commits yet (`# branch.oid (initial)`).
+    pub unborn: bool,
     /// Paused merge/rebase/cherry-pick/revert, if any.
     pub operation: Option<GitOperation>,
     /// Unmerged paths with git's conflict kind.
     pub conflicts: Vec<GitConflict>,
     /// `MERGE_MSG`, else `SQUASH_MSG`, without `#` comment lines; None when absent or empty.
     pub message_template: Option<String>,
+}
+
+/// A configured remote from `git remote -v`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemote {
+    pub name: String,
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+    /// Named by `remote.pushDefault`.
+    pub push_default: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

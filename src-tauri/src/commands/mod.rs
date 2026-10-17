@@ -198,6 +198,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         nix_lint,
         provider_list_for_folder,
         // File commands
+        app::file_reveal,
         file_read,
         file_stat,
         file_write,
@@ -235,6 +236,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         git_clone_in_place,
         // Git branch commands
         git_list_branches,
+        git_list_remotes,
         git_diff_branch_against_head,
         git_branch,
         git_sequencer,

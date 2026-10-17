@@ -15,7 +15,7 @@ const code = compiled.replace(/(['"])(svelte\/[^'"]+)\1/g, (_match, _quote, spec
   JSON.stringify(import.meta.resolve(specifier))
 )
 // Static import cannot execute runes; load the runtime-compiled module instead.
-const { confirmAsync, getPendingConfirm, resolvePendingConfirm } = (await import(
+const { confirmAsync, getPendingRequest, resolvePendingConfirm } = (await import(
   `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 )) as typeof ConfirmService
 
@@ -31,42 +31,54 @@ test('confirmation queue fences stale callbacks, busy repeats, cancellation, and
     }
   })
   const second = confirmAsync({ title: 'Second', message: 'Second' })
-  const firstId = getPendingConfirm()!.id
-  assert.equal(getPendingConfirm()!.busy, false)
+  const firstId = getPendingRequest()!.id
+  assert.equal(getPendingRequest()!.busy, false)
   await resolvePendingConfirm(firstId + 1, false)
-  assert.equal(getPendingConfirm()!.id, firstId)
+  assert.equal(getPendingRequest()!.id, firstId)
 
   const completing = resolvePendingConfirm(firstId, true)
-  assert.equal(getPendingConfirm()!.busy, true)
+  assert.equal(getPendingRequest()!.busy, true)
   await resolvePendingConfirm(firstId, true)
   await resolvePendingConfirm(firstId, false)
   assert.equal(runs, 1)
-  assert.equal(getPendingConfirm()!.id, firstId)
+  assert.equal(getPendingRequest()!.id, firstId)
   gate.resolve()
   await completing
   assert.equal(await first, true)
 
-  const secondId = getPendingConfirm()!.id
+  const secondId = getPendingRequest()!.id
   await resolvePendingConfirm(firstId, false)
-  assert.equal(getPendingConfirm()!.id, secondId)
+  assert.equal(getPendingRequest()!.id, secondId)
   await resolvePendingConfirm(secondId, true)
   assert.equal(await second, true)
 
-  const cancelled = confirmAsync({ title: 'Cancel', message: 'Cancel', run: async () => { runs++ } })
-  await resolvePendingConfirm(getPendingConfirm()!.id, false)
+  const cancelled = confirmAsync({
+    title: 'Cancel',
+    message: 'Cancel',
+    run: async () => {
+      runs++
+    }
+  })
+  await resolvePendingConfirm(getPendingRequest()!.id, false)
   assert.equal(await cancelled, false)
   assert.equal(runs, 1)
 
   const failure = new Error('Delete failed')
-  const failed = confirmAsync({ title: 'Fail', message: 'Fail', run: async () => { throw failure } })
+  const failed = confirmAsync({
+    title: 'Fail',
+    message: 'Fail',
+    run: async () => {
+      throw failure
+    }
+  })
   const rejection = assert.rejects(failed, (error) => error === failure)
   const afterFailure = confirmAsync({ title: 'After', message: 'After' })
-  const failedId = getPendingConfirm()!.id
+  const failedId = getPendingRequest()!.id
   await resolvePendingConfirm(failedId, true)
   await rejection
   await resolvePendingConfirm(failedId, false)
-  assert.notEqual(getPendingConfirm()!.id, failedId)
-  await resolvePendingConfirm(getPendingConfirm()!.id, false)
+  assert.notEqual(getPendingRequest()!.id, failedId)
+  await resolvePendingConfirm(getPendingRequest()!.id, false)
   assert.equal(await afterFailure, false)
-  assert.equal(getPendingConfirm(), null)
+  assert.equal(getPendingRequest(), null)
 })

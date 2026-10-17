@@ -3,7 +3,7 @@
   import { FixedHeightVirtualList } from '$lib/components/ui/virtual-list'
   import { TreeIndentGuides, treeIndent } from '$lib/components/ui/tree-indent'
   import { flattenVisibleTree, type FileTreeNode, type FlatTreeRow } from '$lib/utils/fileTree'
-  import type { Snippet } from 'svelte'
+  import { tick, untrack, type Snippet } from 'svelte'
 
   type NodeAttachment = (element: HTMLElement) => void | (() => void)
   const noopAttachment: NodeAttachment = () => () => {}
@@ -19,6 +19,7 @@
     nodes,
     isCollapsed,
     isActive,
+    scrollRequest,
     isDimmed,
     hasDirChanges,
     onToggleDir,
@@ -34,6 +35,8 @@
     nodes: FileTreeNode<T>[]
     isCollapsed: (node: FileTreeNode<T>) => boolean
     isActive?: (path: string) => boolean
+    /** Scroll to this row each time a new request object arrives. */
+    scrollRequest?: { path: string; seq: number } | null
     /**
      * Optional predicate driving the tree-filter "dim" effect. Returns
      * true for rows that should fade out because they don't match the
@@ -58,6 +61,26 @@
   // virtualized renderer can position rows by index. Re-runs on
   // collapse/expand, which is O(n) and only fires on user interaction.
   let rows = $derived<FlatTreeRow<T>[]>(flattenVisibleTree(nodes, isCollapsed))
+  let list: { scrollToIndex(index: number): void } | undefined = $state()
+
+  $effect(() => {
+    const request = scrollRequest
+    const target = list
+    if (!request || !target) return
+    let cancelled = false
+    // Wait for the new list's mount effect and spacer layout, not later row
+    // changes: expanding an unrelated directory must never repeat a reveal.
+    void tick().then(() => {
+      if (cancelled) return
+      untrack(() => {
+        const index = rows.findIndex((row) => row.node.path === request.path)
+        if (index >= 0) target.scrollToIndex(index)
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  })
 </script>
 
 {#snippet directoryRow(node: FileTreeNode<T>, depth: number)}
@@ -149,4 +172,10 @@
   {/if}
 {/snippet}
 
-<FixedHeightVirtualList items={rows} rowHeight={ROW_HEIGHT_PX} row={renderRow} key={(row) => row.node.path} />
+<FixedHeightVirtualList
+  bind:this={list}
+  items={rows}
+  rowHeight={ROW_HEIGHT_PX}
+  row={renderRow}
+  key={(row) => row.node.path}
+/>

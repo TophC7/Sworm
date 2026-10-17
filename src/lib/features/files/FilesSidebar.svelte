@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { Eye, EyeOff } from '$lib/icons/lucideExports'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
   import { buildTreeFilter } from '$lib/utils/fileTreeFilter'
@@ -28,10 +28,12 @@
     dimmedPathsFor,
     ensureFileTreeListeners,
     expandDir,
+    getExplorerReveal,
     getFolderTree,
     invalidateDirs,
     isExpanded,
     loadDir,
+    nextRevealSeq,
     nodesFor,
     revealPath,
     setShowHidden,
@@ -40,7 +42,12 @@
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
   import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { getActiveTab, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
+  import {
+    getActivationSeq,
+    getActiveTabId,
+    getActiveTextFilePath,
+    promoteTabWhenReady
+  } from '$lib/features/workbench/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import type { DragPayload } from '$lib/features/dnd/payload'
@@ -338,20 +345,39 @@
   }
 
   // Active file from the global active editor tab.
-  let activeTab = $derived(getActiveTab())
-  let activeFilePath = $derived(activeTab?.kind === 'text' ? activeTab.filePath : null)
+  let activeFilePath = $derived(getActiveTextFilePath())
+  let activeTabId = $derived(getActiveTabId())
+  let reveal = $derived.by(() => {
+    const request = getExplorerReveal(folderPath)
+    return request && request.activation === getActivationSeq() ? request : null
+  })
+  let activeScroll = $state<{ path: string; seq: number } | null>(null)
 
-  // Reveal the active file by loading and expanding its ancestors. Depends on
-  // the root listing so that on mount we reveal AFTER the root's
-  // first load — otherwise the user opens a tab from (say) the git diff
-  // sidebar, switches back to Files, and finds the tree collapsed despite a
-  // file being focused. Expanding is idempotent; user-collapsed dirs only
+  // Reveal and scroll to the active file by loading and expanding its
+  // ancestors. Depends on the root listing so that on mount we reveal AFTER
+  // the root's first load — otherwise the user opens a tab from (say) the git
+  // diff sidebar, switches back to Files, and finds the tree collapsed despite
+  // a file being focused. Expanding is idempotent; user-collapsed dirs only
   // re-expand when the active path itself changes, mirroring VS Code's
   // "reveal in explorer".
   $effect(() => {
     tree.children.has('')
+    const folder = folderPath
     const path = activeFilePath
-    if (path) void revealPath(folderPath, path)
+    const tabId = activeTabId
+    let cancelled = false
+    activeScroll = null
+    if (path) {
+      void untrack(() => revealPath(folder, path)).then(() => {
+        // A slow directory read must not reveal the old tab in a new folder.
+        if (!cancelled && folderPath === folder && getActiveTabId() === tabId && activeFilePath === path) {
+          activeScroll = { path, seq: nextRevealSeq() }
+        }
+      })
+    }
+    return () => {
+      cancelled = true
+    }
   })
 
   // Path -> status letter lookup from git state (prefer unstaged over staged)
@@ -600,7 +626,8 @@
               if (filterActive) return !treeFilter.shouldExpand(node)
               return !isExpanded(folderPath, node.path)
             }}
-            isActive={(path) => path === activeFilePath}
+            isActive={(path) => path === (reveal?.path ?? activeFilePath)}
+            scrollRequest={reveal ?? activeScroll}
             isDimmed={filterActive ? (node) => !treeFilter.isMatch(node) : (node) => dimmedPaths.has(node.path)}
             hasDirChanges={(path) => dirsWithChanges.has(path)}
             onToggleDir={(path) => toggleDir(folderPath, path)}
@@ -667,4 +694,3 @@
   onConfirm={confirmRename}
   onCancel={() => (renameFilePath = null)}
 />
-

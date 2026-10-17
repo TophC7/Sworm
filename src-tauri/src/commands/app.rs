@@ -3,6 +3,7 @@ use crate::router::Target;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
 use sworm_core::errors::ApiError;
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Serialize)]
 pub struct ClipboardFiles {
@@ -21,6 +22,19 @@ pub async fn app_runtime_info(
         .router
         .app_runtime_info(package.name.clone(), package.version.to_string())
         .await
+}
+
+#[tauri::command]
+pub async fn file_reveal(app: tauri::AppHandle, path: String) -> Result<(), ApiError> {
+    crate::router::reject_remote("file_reveal", &path)?;
+    // The Linux opener uses blocking zbus, which enters its own Tokio runtime.
+    // Keep it off async workers to avoid a nested-runtime panic.
+    tokio::task::spawn_blocking(move || {
+        app.opener()
+            .reveal_item_in_dir(path)
+            .map_err(|error| ApiError::Internal(error.to_string()))
+    })
+    .await?
 }
 
 /// Everything a URI path may not carry literally. `/` stays a separator, and

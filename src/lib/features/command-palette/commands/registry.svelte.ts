@@ -54,11 +54,7 @@ import {
 import { getGitSummary } from '$lib/features/git/state.svelte'
 import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
-import {
-  getActiveFolderPath,
-  getActiveTab,
-  hasClosedTabs
-} from '$lib/features/workbench/state.svelte'
+import { getActiveFolderPath, getActiveTab, hasClosedTabs } from '$lib/features/workbench/state.svelte'
 import {
   ArrowDownToLineIcon,
   ArrowUpFromLineIcon,
@@ -509,7 +505,8 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       dangerous: true,
       visible: () => {
         const folderPath = getActiveFolderPath()
-        return folderPath !== null && !!getGitSummary(folderPath)?.branch
+        const summary = folderPath !== null ? getGitSummary(folderPath) : null
+        return !!summary?.is_repo && !summary.unborn && summary.operation === null
       },
       run: undoLastCommitActiveFolder
     }),

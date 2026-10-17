@@ -15,6 +15,7 @@ import { markProjectFilesStale } from '$lib/features/files/projectFiles.svelte'
 // Linux drops.
 
 export type ExplorerNode = FileTreeNode<{ path: string }>
+export type ExplorerReveal = { path: string; seq: number; activation: number }
 
 export type FolderTree = {
   /** Directory path ('' = project root) -> its listing. */
@@ -28,6 +29,16 @@ export type FolderTree = {
 const WATCH_SYNC_DELAY_MS = 100
 
 const folders = new SvelteMap<string, FolderTree>()
+const reveals = new SvelteMap<string, ExplorerReveal>()
+let revealSeq = 0
+
+export function nextRevealSeq(): number {
+  return ++revealSeq
+}
+
+export function getExplorerReveal(folderPath: string): ExplorerReveal | null {
+  return reveals.get(folderPath) ?? null
+}
 const inflight = new Map<string, Promise<void>>()
 const watchTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** Last directory set handed to the backend watcher, per folder. */
@@ -188,6 +199,12 @@ export async function revealPath(folderPath: string, filePath: string): Promise<
   }
 }
 
+/** Expand to path, then highlight and scroll to it until the active tab next changes. */
+export async function revealInExplorer(folderPath: string, path: string, activation: number): Promise<void> {
+  await revealPath(folderPath, path)
+  reveals.set(folderPath, { path, seq: nextRevealSeq(), activation })
+}
+
 export function setShowHidden(folderPath: string, showHidden: boolean): void {
   const tree = folderTreeFor(folderPath)
   if (tree.showHidden === showHidden) return
@@ -238,6 +255,7 @@ export function releaseFileTree(folderPath: string): void {
   watchedSignatures.delete(folderPath)
   extraWatchDirs.delete(folderPath)
   folders.delete(folderPath)
+  reveals.delete(folderPath)
 }
 
 /**

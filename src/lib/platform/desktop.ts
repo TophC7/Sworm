@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { save } from '@tauri-apps/plugin-dialog'
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { openDesktopPtyStream } from '$lib/api/transport.desktop'
 import { resolveProjectFile } from '$lib/utils/paths'
 import type {
@@ -76,7 +76,7 @@ const native: NativePlatform = {
     saveAs: (options) => save(options)
   },
   files: {
-    reveal: (path) => revealItemInDir(path),
+    reveal: (path) => invoke<void>('file_reveal', { path }),
     openInTerminal: (path) => invoke<void>('folder_open_in_terminal', { path }),
     clipboardCopyFiles: (paths, op) => invoke<void>('clipboard_copy_files', { paths, op }),
     clipboardReadFiles: () => invoke<{ op: 'copy' | 'cut'; paths: string[] } | null>('clipboard_read_files'),

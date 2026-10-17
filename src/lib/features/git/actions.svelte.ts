@@ -1,6 +1,8 @@
 import { backend } from '$lib/api/backend'
 import { revealGitChanges } from '$lib/features/app-shell/sidebar/state.svelte'
-import { confirmAsync } from '$lib/features/confirm/service.svelte'
+import { confirmAsync, pickAsync, promptAsync } from '$lib/features/confirm/service.svelte'
+import { getCommitState, setCommitDraft, setSkipHooks } from '$lib/features/git/commit.svelte'
+import type { PostCommit } from '$lib/features/git/commitButton'
 import { isGitError } from '$lib/features/git/errors'
 import { discardAll, getGitSummary, runGitAction, stageAll, unstageAll } from '$lib/features/git/state.svelte'
 import { runNotifiedTask, type RunNotifiedTaskOptions } from '$lib/features/notifications/runNotifiedTask'
@@ -15,13 +17,7 @@ import {
   getTabs,
   openFolder
 } from '$lib/features/workbench/state.svelte'
-import type {
-  GitCommitOptions,
-  GitConflictSide,
-  GitStashScope,
-  GitWorktreeCheckout,
-  GitWorktreeResult
-} from '$lib/types/backend'
+import type { GitConflictSide, GitStashScope, GitWorktreeCheckout, GitWorktreeResult } from '$lib/types/backend'
 import { getErrorMessage } from '$lib/utils/client-error'
 import { isPathWithin } from '$lib/utils/paths'
 
@@ -225,11 +221,35 @@ export function fetchFolder(folderPath: string, remote: string | null = null): P
   )
 }
 
-export function publishBranch(
+export async function publishBranch(
   folderPath: string,
   branch: string | null = null,
   remote: string | null = null
 ): Promise<void | undefined> {
+  if (remote === null) {
+    const remotes = await backend.git.listRemotes(folderPath).catch((e) => {
+      notify.error('Publish failed', getErrorMessage(e))
+      return null
+    })
+    if (remotes === null) return
+    if (remotes.length > 1) {
+      const name = branch ?? getGitSummary(folderPath)?.branch ?? ''
+      const ordered = remotes.sort(
+        (a, b) =>
+          Number(b.pushDefault) - Number(a.pushDefault) || Number(b.name === 'origin') - Number(a.name === 'origin')
+      )
+      remote = await pickAsync({
+        title: 'Publish Branch',
+        message: `Pick a remote to publish the branch "${name}" to:`,
+        options: ordered.map((r) => ({
+          value: r.name,
+          label: r.name,
+          description: r.pushUrl ?? r.fetchUrl ?? undefined
+        }))
+      })
+      if (remote === null) return
+    }
+  }
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.publish, () =>
     runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'publish', branch, remote }))
   )
@@ -241,31 +261,59 @@ export function syncFolder(folderPath: string, rebase = false): Promise<void | u
   )
 }
 
-export async function commitFolder(
-  folderPath: string,
-  message: string,
-  options: Partial<GitCommitOptions> = {},
-  after: 'push' | 'sync' | null = null
-): Promise<string | undefined> {
+export type CommitVariant = { kind: 'commit'; post: PostCommit } | { kind: 'amend' } | { kind: 'all' }
+
+/** Commit the folder's draft with its Sign Off / Skip Hooks flags; offers to stage everything when nothing is staged. */
+export async function commitFolder(folderPath: string, variant: CommitVariant): Promise<void> {
+  const summary = getGitSummary(folderPath)
+  const state = getCommitState(folderPath)
+  if (!summary) return
+  // Capture the exact draft with its message before any prompt lets the user edit it.
+  const submitted = state.draft
+  const message = submitted.trim()
+  if (variant.kind !== 'amend' && !message) return
+  let all = variant.kind === 'all'
+  if (variant.kind === 'commit' && summary.staged_count === 0) {
+    if (summary.changes.length === 0) return
+    const proceed = await confirmAsync({
+      title: 'Stage All and Commit?',
+      message:
+        'There are no staged changes to commit. Would you like to stage all your changes and commit them directly?',
+      confirmLabel: 'Stage All & Commit'
+    })
+    if (!proceed) return
+    all = true
+  }
   const hash = await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.commit, () =>
-    runGitAction(folderPath, (path) => backend.git.commit(path, message, options))
+    runGitAction(folderPath, (path) =>
+      backend.git.commit(path, message, {
+        amend: variant.kind === 'amend',
+        all,
+        signOff: state.signOff,
+        noVerify: state.skipHooks
+      })
+    )
   )
-  if (hash && after === 'push') await pushFolder(folderPath)
-  if (hash && after === 'sync') await syncFolder(folderPath)
-  return hash
+  if (!hash) return
+  if (getCommitState(folderPath).draft === submitted) setCommitDraft(folderPath, '')
+  setSkipHooks(folderPath, false)
+  if (variant.kind === 'commit' && variant.post === 'push') await pushFolder(folderPath)
+  else if (variant.kind === 'commit' && variant.post === 'sync') await syncFolder(folderPath)
 }
 
 export async function undoLastCommit(folderPath: string): Promise<string | undefined> {
   const proceed = await confirmAsync({
     title: 'Undo Last Commit?',
-    message: 'This will soft-reset to HEAD~1. Your changes will be preserved as staged files.',
+    message: 'This removes the last commit. Its changes stay staged and its message returns to the commit box.',
     confirmLabel: 'Undo Commit',
     cancelLabel: 'Cancel'
   })
   if (!proceed) return undefined
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.undoLastCommit, () =>
+  const message = await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.undoLastCommit, () =>
     runGitAction(folderPath, (path) => backend.git.undoLastCommit(path))
   )
+  if (typeof message === 'string' && message.length > 0) setCommitDraft(folderPath, message)
+  return message
 }
 
 export function stageAllFolder(folderPath: string): Promise<boolean | undefined> {
@@ -288,6 +336,26 @@ export function stashFolder(
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.stash, () =>
     runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'push', message, scope }))
   )
+}
+
+/** VS Code stash flow: optional message prompt, then push; cancel aborts. */
+export async function promptStash(folderPath: string, scope: GitStashScope): Promise<void> {
+  const title =
+    scope.kind === 'all'
+      ? scope.includeUntracked
+        ? 'Stash (Include Untracked)'
+        : 'Stash'
+      : scope.kind === 'staged'
+        ? 'Stash Staged'
+        : 'Stash Changes'
+  const answer = await promptAsync({
+    title,
+    message: 'Optionally provide a stash message.',
+    placeholder: 'Stash message',
+    confirmLabel: 'Stash'
+  })
+  if (answer === null) return
+  await stashFolder(folderPath, scope, answer.trim() || null)
 }
 
 export async function applyStash(folderPath: string, index: number): Promise<boolean> {
@@ -318,6 +386,19 @@ export async function popStash(folderPath: string, index: number): Promise<boole
       () => runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'pop', index })).then(() => true)
     )) === true
   )
+}
+
+export async function popLatestStash(folderPath: string): Promise<void> {
+  const count = await backend.git.stashCount(folderPath).catch((e) => {
+    notify.error('Pop stash failed', getErrorMessage(e))
+    return null
+  })
+  if (count === null) return
+  if (count === 0) {
+    notify.info('No stashes', 'There are no stashes in the repository.')
+    return
+  }
+  await popStash(folderPath, 0)
 }
 
 export async function dropStash(folderPath: string, index: number): Promise<boolean> {

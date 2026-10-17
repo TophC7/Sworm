@@ -188,6 +188,13 @@ export async function openTextSnapshot(
   refLabel: string,
   options: OpenTextOptions = {}
 ): Promise<TabId> {
+  if (gitRef === 'HEAD') {
+    // Pin the tab's identity and persisted revision before HEAD can move.
+    // The blob endpoint deliberately accepts only hashes or stash refs.
+    const [head] = await backend.git.getBranchCommits(folderPath, 'HEAD', 1)
+    if (!head) throw new Error('Could not resolve HEAD')
+    gitRef = head.hash
+  }
   const existing = getTabs().find((tab) => isSnapshotTextTab(tab, folderPath, filePath, gitRef))
   if (existing) setActiveTab(existing.id)
   const tabId = existing?.id ?? addReadonlyTextTab(folderPath, filePath, gitRef, refLabel, options.temporary ?? true)

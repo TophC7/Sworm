@@ -8,8 +8,8 @@ use sworm_protocol::branch::BranchSummary;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
     CommitDetail, DiffFileContent, GitBranchOp, GitBrief, GitChangeScope, GitChangedEvent,
-    GitCommitOptions, GitConflictsOp, GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemoteOp,
-    GitSequencerAction, GitStashOp, GitSummary, GitWorktreeCheckout, GitWorktreeList,
+    GitCommitOptions, GitConflictsOp, GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemote,
+    GitRemoteOp, GitSequencerAction, GitStashOp, GitSummary, GitWorktreeCheckout, GitWorktreeList,
     GitWorktreeOp, GitWorktreeResult, GraphCommit, StashEntry,
 };
 
@@ -294,8 +294,8 @@ impl Host {
         self.git.commit(Path::new(&path), trimmed, &options)
     }
 
-    /// Undo the last commit (soft reset to HEAD~1). Returns the commit
-    /// message so the frontend can restore it into the commit textarea.
+    /// Undo the last commit, keeping its changes staged (an unborn branch for
+    /// a root commit). Returns the message for the commit textarea.
     pub fn git_undo_last_commit(&self, path: String) -> Result<String, ApiError> {
         self.git.undo_last_commit(Path::new(&path))
     }
@@ -396,6 +396,11 @@ impl Host {
         self.git
             .list_branches(Path::new(&path))
             .map_err(ApiError::Internal)
+    }
+
+    /// Configured remotes with fetch/push URLs.
+    pub fn git_list_remotes(&self, path: String) -> Result<Vec<GitRemote>, ApiError> {
+        self.git.list_remotes(Path::new(&path))
     }
 
     /// File metadata for `branch...HEAD` compare.
