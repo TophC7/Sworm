@@ -1359,27 +1359,35 @@ impl GitService {
     }
 
     pub fn merged_branches(&self, path: &Path) -> Result<Vec<String>, ApiError> {
-        let candidates = git_output(
-            path,
-            &[
-                "for-each-ref",
-                "--merged=HEAD",
-                "--format=%(refname:short)%00%(HEAD)%00%(worktreepath)",
-                "refs/heads",
-            ],
-            "list merged branches",
-        )
-        .map_err(ApiError::Internal)?;
-        let defaults = git_output(
-            path,
-            &[
-                "for-each-ref",
-                "--format=%(symref:lstrip=3)",
-                "refs/remotes",
-            ],
-            "list remote default branches",
-        )
-        .map_err(ApiError::Internal)?;
+        let (candidates, defaults) = std::thread::scope(|scope| {
+            let defaults = scope.spawn(|| {
+                git_output(
+                    path,
+                    &[
+                        "for-each-ref",
+                        "--format=%(symref:lstrip=3)",
+                        "refs/remotes",
+                    ],
+                    "list remote default branches",
+                )
+            });
+            let candidates = git_output(
+                path,
+                &[
+                    "for-each-ref",
+                    "--merged=HEAD",
+                    "--format=%(refname:short)%00%(HEAD)%00%(worktreepath)%00%(upstream:track,nobracket)",
+                    "refs/heads",
+                ],
+                "list merged branches",
+            );
+            let defaults = defaults
+                .join()
+                .unwrap_or_else(|_| Err("list remote default branches panicked".to_string()));
+            (candidates, defaults)
+        });
+        let candidates = candidates.map_err(ApiError::Internal)?;
+        let defaults = defaults.map_err(ApiError::Internal)?;
         let defaults = String::from_utf8_lossy(&defaults);
         let defaults: HashSet<&str> = defaults.lines().filter(|name| !name.is_empty()).collect();
         let mut names: Vec<String> = String::from_utf8_lossy(&candidates)
@@ -1389,6 +1397,10 @@ impl GitService {
                 let name = fields.next()?;
                 let head = fields.next()?;
                 let worktree = fields.next()?;
+                let track = fields.next()?;
+                if parse_tracking_counts(track).0 > 0 {
+                    return None;
+                }
                 (head != "*"
                     && worktree.is_empty()
                     && !matches!(name, "main" | "master")
@@ -4143,6 +4155,13 @@ mod tests {
         git(&repo, &["branch", "master"]);
         git(&repo, &["push", "-q", "origin", "release"]);
         git(&repo, &["remote", "set-head", "origin", "release"]);
+        git(&repo, &["switch", "-q", "-c", "pushed"]);
+        git(&repo, &["push", "-q", "-u", "origin", "pushed"]);
+        std::fs::write(repo.join("pushed.txt"), "pushed\n").unwrap();
+        git(&repo, &["add", "pushed.txt"]);
+        git(&repo, &["commit", "-q", "-m", "pushed"]);
+        git(&repo, &["switch", "-q", "feature"]);
+        git(&repo, &["merge", "-q", "--ff-only", "pushed"]);
         assert_eq!(service.merged_branches(&repo).unwrap(), vec!["done"]);
         git(&repo, &["worktree", "remove", worktree.to_str().unwrap()]);
         std::fs::remove_dir_all(repo).unwrap();

@@ -631,7 +631,7 @@
   {@const branchAge = timeAgo(branch.tip.date)}
   {@const color = branchColor(branch)}
   {@const isExpanded = expandedBranch === branch.name}
-  {@const hasRemoteActions = branch.kind === 'local' || (!branch.isCurrent && branch.behind > 0 && !!branch.upstream)}
+  {@const hasRemoteActions = branch.kind === 'local'}
   <ContextMenu.Root>
     <ContextMenu.Trigger class="contents">
       <div
@@ -814,7 +814,7 @@
             <span>Publish Branch</span>
           </ContextMenu.Item>
         {/if}
-        {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
+        {#if branch.kind === 'local' && !branch.isCurrent && branch.behind > 0 && branch.upstream}
           <ContextMenu.Item onSelect={() => void fastForwardBranch(folderPath, branch.name)}>
             <ArrowDownToLineIcon size={14} />
             <span>Fast-Forward</span>

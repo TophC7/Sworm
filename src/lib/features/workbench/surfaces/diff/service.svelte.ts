@@ -1,7 +1,9 @@
 import { backend } from '$lib/api/backend'
+import { notify } from '$lib/features/notifications/state.svelte'
 import type { DiffTab, TabId } from '$lib/features/workbench/model'
 import { addChangesTab, addCommitTab, addRangeTab, addStashTab } from '$lib/features/workbench/state.svelte'
 import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
+import { getErrorMessage } from '$lib/utils/client-error'
 
 export interface OpenDiffOptions {
   temporary?: boolean
@@ -43,23 +45,28 @@ export async function openRangeDiff(
   base: { rev: string; label: string },
   target: { rev: string; label: string } | null,
   options: OpenDiffOptions = {}
-): Promise<TabId> {
-  const hashes = await Promise.all(
-    [base.rev, ...(target ? [target.rev] : [])].map(async (rev) => {
-      if (/^[0-9a-f]{40}$/i.test(rev)) return rev
-      const hash = (await backend.git.getBranchCommits(folderPath, rev, 1))[0]?.hash
-      if (!hash) throw new Error(`Could not resolve ${rev}`)
-      return hash
-    })
-  )
-  return addRangeTab(
-    folderPath,
-    hashes[0],
-    base.label,
-    target ? hashes[1] : null,
-    target?.label ?? 'Working Tree',
-    options.temporary ?? true
-  )
+): Promise<TabId | null> {
+  try {
+    const hashes = await Promise.all(
+      [base.rev, ...(target ? [target.rev] : [])].map(async (rev) => {
+        if (/^[0-9a-f]{40}$/i.test(rev)) return rev
+        const hash = (await backend.git.getBranchCommits(folderPath, rev, 1))[0]?.hash
+        if (!hash) throw new Error(`Could not resolve ${rev}`)
+        return hash
+      })
+    )
+    return addRangeTab(
+      folderPath,
+      hashes[0],
+      base.label,
+      target ? hashes[1] : null,
+      target?.label ?? 'Working Tree',
+      options.temporary ?? true
+    )
+  } catch (error) {
+    notify.error('Compare failed', getErrorMessage(error))
+    return null
+  }
 }
 
 export function openCommitSnapshot(folderPath: string, filePath: string, commitHash: string): Promise<TabId> {

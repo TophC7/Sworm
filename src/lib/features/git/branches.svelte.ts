@@ -6,7 +6,7 @@
 
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
-import { isGitError } from '$lib/features/git/errors'
+import { isGitError, type GitError } from '$lib/features/git/errors'
 import { confirmAsync, pickAsync, type PickOption } from '$lib/features/confirm/service.svelte'
 import { openFolder } from '$lib/features/workbench/state.svelte'
 import { splitRemotePath } from '$lib/utils/paths'
@@ -266,6 +266,14 @@ async function autoFetchOnce(folderPath: string) {
 
 // DIRTY CHECKOUT //
 
+/** The live linked checkout holding `branchName`, other than this one. Throws when the inventory is unavailable. */
+async function findOccupyingWorktree(folderPath: string, branchName: string): Promise<GitWorktree | undefined> {
+  const inventory = await backend.git.listWorktrees(folderPath)
+  return inventory.worktrees.find(
+    (worktree) => worktree.branch === branchName && !worktree.isCurrent && worktree.prunable === null && !worktree.bare
+  )
+}
+
 /**
  * Occupied checkout is handled by opening (or declining) its existing worktree, never stashing here.
  * Inventory failures skip the offer; Git's own occupancy refusal still routes through handleOccupiedWorktreeError.
@@ -273,11 +281,7 @@ async function autoFetchOnce(folderPath: string) {
 export async function offerOccupiedWorktree(folderPath: string, branchName: string): Promise<boolean> {
   let occupied: GitWorktree | undefined
   try {
-    const inventory = await backend.git.listWorktrees(folderPath)
-    occupied = inventory.worktrees.find(
-      (worktree) =>
-        worktree.branch === branchName && !worktree.isCurrent && worktree.prunable === null && !worktree.bare
-    )
+    occupied = await findOccupyingWorktree(folderPath, branchName)
   } catch (e) {
     console.error(`Worktree inventory unavailable for ${folderPath}:`, e)
     return false
@@ -297,11 +301,7 @@ export async function handleOccupiedWorktreeError(folderPath: string, error: unk
   if (!isGitError(error, 'branchInWorktree')) return false
   let occupied: GitWorktree | undefined
   try {
-    const inventory = await backend.git.listWorktrees(folderPath)
-    occupied = inventory.worktrees.find(
-      (worktree) =>
-        worktree.branch === error.branch && !worktree.isCurrent && worktree.prunable === null && !worktree.bare
-    )
+    occupied = await findOccupyingWorktree(folderPath, error.branch)
   } catch (e) {
     console.error(`Worktree inventory unavailable for ${folderPath}:`, e)
   }
@@ -373,6 +373,18 @@ export async function checkoutRef(folderPath: string, target: CheckoutTarget): P
       confirmLabel: 'Stash & Checkout',
       run: () =>
         runGitAction(folderPath, async (path) => {
+          if (localName !== null) {
+            const occupied = await findOccupyingWorktree(folderPath, localName).catch(() => undefined)
+            if (occupied) {
+              const error: GitError = {
+                kind: 'branchInWorktree',
+                branch: localName,
+                path: occupied.path,
+                message: `Branch '${localName}' is checked out in the worktree at ${occupied.path}`
+              }
+              throw error
+            }
+          }
           await backend.git.stash(path, {
             kind: 'push',
             message: `auto-stash before switch to ${label}`,
@@ -391,7 +403,14 @@ export async function checkoutRef(folderPath: string, target: CheckoutTarget): P
 }
 
 export async function checkoutTo(folderPath: string): Promise<void> {
-  await loadFor(folderPath, { autoFetch: false })
+  const [, tags] = await Promise.all([
+    loadFor(folderPath, { autoFetch: false }),
+    backend.git.listTags(folderPath).catch((error) => {
+      notify.error('Checkout failed', getErrorMessage(error))
+      return null
+    })
+  ])
+  if (!tags) return
   const list = byFolder.get(folderPath)?.list ?? []
   const options: PickOption[] = [
     ...list.filter((branch) => branch.kind === 'local' && !branch.isCurrent),
@@ -401,19 +420,13 @@ export async function checkoutTo(folderPath: string): Promise<void> {
     label: branch.name,
     description: `${branch.kind === 'local' ? 'Branch' : 'Remote Branch'} · ${branch.tip.shortHash}`
   }))
-  try {
-    const tags = await backend.git.listTags(folderPath)
-    options.push(
-      ...tags.map((tag) => ({
-        value: `tag:${tag.name}`,
-        label: tag.name,
-        description: `Tag · ${tag.shortHash}`
-      }))
-    )
-  } catch (error) {
-    notify.error('Checkout failed', getErrorMessage(error))
-    return
-  }
+  options.push(
+    ...tags.map((tag) => ({
+      value: `tag:${tag.name}`,
+      label: tag.name,
+      description: `Tag · ${tag.shortHash}`
+    }))
+  )
   const value = await pickAsync({
     title: 'Checkout to',
     filterPlaceholder: 'Select a ref to checkout',
