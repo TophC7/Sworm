@@ -16,6 +16,7 @@
 
 import { backend } from '$lib/api/backend'
 import { withTrashFallback } from '$lib/features/files/trash'
+import { syncCommitTemplate } from '$lib/features/git/commit.svelte'
 import { withConflictMarkerConfirm } from '$lib/features/git/errors'
 import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/summaryPatches'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
@@ -183,6 +184,7 @@ async function refreshGitNow(folderPath: string): Promise<void> {
     rt.lastApplied = seq
     const patch: Partial<RepoState> = { readError: null }
     if (!summariesEqual(getGitSummary(folderPath), summary)) patch.summary = summary
+    syncCommitTemplate(folderPath, summary)
     // Non-repositories have nothing to watch; never report that expected state
     // as degraded freshness.
     if (!summary.is_repo) patch.watchError = null

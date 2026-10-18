@@ -9,12 +9,13 @@ import { getActivationSeq } from '$lib/features/workbench/state.svelte'
 import { openHeadSnapshot } from '$lib/features/workbench/surfaces/diff/service.svelte'
 import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { platform } from '$lib/platform'
-import type { GitChange } from '$lib/types/backend'
+import type { GitChange, GitConflict } from '$lib/types/backend'
 import { getErrorMessage } from '$lib/utils/client-error'
 import { resolveProjectFile, splitRemotePath } from '$lib/utils/paths'
 
-export type GitTreeSection = 'staged' | 'changes'
+export type GitTreeSection = 'staged' | 'changes' | 'merge'
 export type GitTreeMenuTarget =
+  | { kind: 'conflict'; conflict: GitConflict }
   | { kind: 'file'; section: GitTreeSection; change: GitChange }
   | { kind: 'folder'; section: GitTreeSection; path: string; files: string[] }
   | { kind: 'section'; section: GitTreeSection; files: string[] }
@@ -73,6 +74,7 @@ export async function confirmDiscardAll(folderPath: string): Promise<void> {
 
 export function describeTarget(target: GitTreeMenuTarget): string {
   if (target.kind === 'file') return target.change.path
+  if (target.kind === 'conflict') return target.conflict.path
   const count = `${target.files.length} file${target.files.length === 1 ? '' : 's'}`
   return target.kind === 'folder' ? `${count} under ${target.path}` : count
 }
@@ -98,12 +100,20 @@ export async function copyFullPatch(folderPath: string): Promise<void> {
 }
 
 export async function copyPath(folderPath: string, path: string): Promise<void> {
-  const absPath = resolveProjectFile(folderPath, path)
-  await platform.clipboard.writeText(splitRemotePath(absPath)?.path ?? absPath)
+  try {
+    const absPath = resolveProjectFile(folderPath, path)
+    await platform.clipboard.writeText(splitRemotePath(absPath)?.path ?? absPath)
+  } catch (error) {
+    notify.error('Copy path failed', getErrorMessage(error))
+  }
 }
 
 export async function copyRelativePath(path: string): Promise<void> {
-  await platform.clipboard.writeText(path)
+  try {
+    await platform.clipboard.writeText(path)
+  } catch (error) {
+    notify.error('Copy relative path failed', getErrorMessage(error))
+  }
 }
 
 export function canRevealInFileManager(folderPath: string): boolean {
@@ -113,13 +123,19 @@ export function canRevealInFileManager(folderPath: string): boolean {
 export async function revealInFileManager(folderPath: string, path: string): Promise<void> {
   const native = platform.native
   if (splitRemotePath(folderPath) || !native) return
-  await native.files.reveal(resolveProjectFile(folderPath, path))
+  try {
+    await native.files.reveal(resolveProjectFile(folderPath, path))
+  } catch (error) {
+    notify.error('Reveal file failed', getErrorMessage(error))
+  }
 }
 
 export function revealInExplorerView(folderPath: string, path: string): void {
   setSidebarCollapsed(false)
   setSidebarView('files')
-  void revealInExplorer(folderPath, path, getActivationSeq())
+  void revealInExplorer(folderPath, path, getActivationSeq()).catch((error) =>
+    notify.error('Reveal in Explorer failed', getErrorMessage(error))
+  )
 }
 
 export async function openActualFile(folderPath: string, path: string): Promise<void> {

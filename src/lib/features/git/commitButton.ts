@@ -1,14 +1,20 @@
 import type { GitSummary } from '$lib/types/backend'
+import { describeOperation } from './operation'
 
 export type PostCommit = 'none' | 'push' | 'sync'
 export type PrimaryAction =
   | { kind: 'commit'; post: PostCommit; enabled: boolean }
+  | { kind: 'continue'; title: string; enabled: boolean }
   | { kind: 'publish'; branch: string }
   | { kind: 'sync'; ahead: number; behind: number }
 
-/** VS Code action-button order: commit (changes) → publish (no upstream) → sync (ahead/behind) → disabled commit. */
+/** Paused sequences take priority; otherwise commit → publish → sync → disabled commit. */
 export function resolvePrimaryAction(summary: GitSummary, message: string, postCommit: PostCommit): PrimaryAction {
-  const onBranch = summary.branch !== null && !summary.detached && summary.operation === null
+  if (summary.operation !== null) {
+    const display = describeOperation(summary.operation)
+    return { kind: 'continue', title: `Continue ${display.title}`, enabled: summary.conflicts.length === 0 }
+  }
+  const onBranch = summary.branch !== null && !summary.detached
   const commit: PrimaryAction = {
     kind: 'commit',
     post: onBranch ? postCommit : 'none',

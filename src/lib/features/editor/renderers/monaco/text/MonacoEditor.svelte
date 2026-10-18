@@ -13,10 +13,8 @@
     attachGitHunkReview,
     type GitHunkReviewHandle
   } from '$lib/features/editor/renderers/monaco/text/gitHunkReview'
-  import {
-    acquireTextModel,
-    type TextModelHandle
-  } from '$lib/features/editor/renderers/monaco/text/modelCache'
+  import { attachGitConflictReview } from '$lib/features/editor/renderers/monaco/text/gitConflictReview'
+  import { acquireTextModel, type TextModelHandle } from '$lib/features/editor/renderers/monaco/text/modelCache'
   import { attachLspModel, detachLspModel } from '$lib/features/editor/lsp/registry'
   import {
     registerMountedTextSurface,
@@ -67,6 +65,7 @@
   let indentRainbow:
     import('$lib/features/editor/renderers/monaco/text/indentRainbow.svelte').IndentRainbowHandle | null = null
   let gitHunkReview: GitHunkReviewHandle | null = null
+  let gitConflictReview: { dispose(): void } | null = null
   // Tracks the last value reported via onchange so the sync $effect
   // can distinguish editor-originated changes from external reloads.
   let lastReportedValue = ''
@@ -225,6 +224,8 @@
       disposed = true
       disposeReady?.()
       if (editor) {
+        gitConflictReview?.dispose()
+        gitConflictReview = null
         onTextEditorDestroy(editor)
         gitHunkReview?.dispose()
         gitHunkReview = null
@@ -278,6 +279,15 @@
 
   $effect(() => {
     editor?.updateOptions({ wordWrap: wordWrap && !largeFile ? 'on' : 'off' })
+  })
+  $effect(() => {
+    if (!editor || !monaco || !model || readonly || locked || largeFile) return
+    const review = attachGitConflictReview({ monaco, editor, model })
+    gitConflictReview = review
+    return () => {
+      review.dispose()
+      if (gitConflictReview === review) gitConflictReview = null
+    }
   })
 
   $effect(() => {

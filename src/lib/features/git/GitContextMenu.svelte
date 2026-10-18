@@ -1,15 +1,18 @@
 <script lang="ts">
+  import { backend } from '$lib/api/backend'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import {
     fetchFolder,
     forcePushWithLease,
     ignoreFiles,
+    markResolved,
     popLatestStash,
     promptStash,
     publishBranch,
     pullFolder,
     pushFolder,
     stageAllFolder,
+    takeConflictSide,
     syncFolder,
     undoLastCommit,
     unstageAllFolder
@@ -37,6 +40,7 @@
     ArrowDownUpIcon,
     ArrowUp,
     ClipboardIcon,
+    Check,
     CloudUploadIcon,
     Eye,
     EyeOff,
@@ -70,15 +74,48 @@
     children: Snippet
   } = $props()
 
-  let staged = $derived(target?.section === 'staged')
+  let staged = $derived(target !== null && target.kind !== 'conflict' && target.section === 'staged')
   let remoteOk = $derived(canRevealInFileManager(folderPath))
   let trackedFiles = $derived.by(() => {
-    if (!target || target.kind === 'file') return []
+    if (!target || target.kind === 'file' || target.kind === 'conflict') return []
     const tracked = new Set(
       summary.changes.filter((change) => !change.staged && change.status !== '?').map((change) => change.path)
     )
     return target.files.filter((path) => tracked.has(path))
   })
+
+  let resolving = $state(false)
+  let extantConflictPath = $state<string | null>(null)
+
+  $effect(() => {
+    const conflict = target?.kind === 'conflict' ? target.conflict : null
+    const folder = folderPath
+    extantConflictPath = null
+    if (!conflict || conflict.kind === 'both_deleted') return
+    let cancelled = false
+    void backend.files.stat(folder, conflict.path).then(
+      (stat) => {
+        if (!cancelled && stat.regular) extantConflictPath = conflict.path
+      },
+      () => {
+        // Missing files and inaccessible paths cannot be revealed.
+      }
+    )
+    return () => {
+      cancelled = true
+    }
+  })
+
+  async function resolveConflicts(files: string[], side?: 'ours' | 'theirs') {
+    if (resolving) return
+    resolving = true
+    try {
+      if (side) await takeConflictSide(folderPath, files, side)
+      else await markResolved(folderPath, files)
+    } finally {
+      resolving = false
+    }
+  }
 </script>
 
 {#snippet revealEntries(path: string)}
@@ -111,13 +148,76 @@
   {/if}
 {/snippet}
 
+{#snippet conflictSideEntries(files: string[], all = false)}
+  <ContextMenu.Item disabled={resolving} onSelect={() => void resolveConflicts(files, 'ours')}>
+    <ArrowUp size={14} />
+    <span>Take Current Version{all ? ' (All)' : ''}</span>
+  </ContextMenu.Item>
+  <ContextMenu.Item disabled={resolving} onSelect={() => void resolveConflicts(files, 'theirs')}>
+    <ArrowDown size={14} />
+    <span>Take Incoming Version{all ? ' (All)' : ''}</span>
+  </ContextMenu.Item>
+{/snippet}
+
 <ContextMenu.Root>
   <ContextMenu.Trigger class="flex flex-1 flex-col" oncontextmenucapture={onResetTarget}>
     {@render children()}
   </ContextMenu.Trigger>
 
   <ContextMenu.Content>
-    {#if target?.kind === 'file'}
+    {#if target?.kind === 'conflict'}
+      {@const conflict = target.conflict}
+      {@const path = conflict.path}
+      {#if conflict.kind !== 'both_deleted'}
+        <ContextMenu.Item onSelect={() => openActualFile(folderPath, path)}>
+          <SquareArrowOutUpRight size={14} />
+          <span>Open File</span>
+        </ContextMenu.Item>
+      {/if}
+      <ContextMenu.Item disabled={resolving} onSelect={() => void resolveConflicts([path])}>
+        <Check size={14} />
+        <span>Mark Resolved</span>
+      </ContextMenu.Item>
+      <ContextMenu.Separator />
+      {@render conflictSideEntries([path])}
+      {#if extantConflictPath === path}
+        <ContextMenu.Separator />
+        {@render revealEntries(path)}
+      {/if}
+      <ContextMenu.Separator />
+      {@render copyEntries(path, [path], false)}
+    {:else if target?.kind === 'folder' && target.section === 'merge'}
+      {@const folder = target}
+      <ContextMenu.Item disabled={resolving} onSelect={() => void resolveConflicts(folder.files)}>
+        <Check size={14} />
+        <span>Mark Resolved</span>
+      </ContextMenu.Item>
+      <ContextMenu.Separator />
+      {@render conflictSideEntries(folder.files)}
+      <ContextMenu.Separator />
+      <ContextMenu.Item onSelect={() => revealInExplorerView(folderPath, folder.path)}>
+        <ListTreeIcon size={14} />
+        <span>Reveal in Explorer</span>
+      </ContextMenu.Item>
+      <ContextMenu.Separator />
+      <ContextMenu.Item onSelect={() => copyPath(folderPath, folder.path)}>
+        <ClipboardIcon size={14} />
+        <span>Copy Path</span>
+      </ContextMenu.Item>
+    {:else if target?.kind === 'section' && target.section === 'merge'}
+      {@const section = target}
+      <ContextMenu.Item disabled={resolving} onSelect={() => void resolveConflicts(section.files)}>
+        <Check size={14} />
+        <span>Mark All Resolved</span>
+      </ContextMenu.Item>
+      <ContextMenu.Separator />
+      {@render conflictSideEntries(section.files, true)}
+      <ContextMenu.Separator />
+      <ContextMenu.Item onSelect={() => copyRelativePath(section.files.join('\n'))}>
+        <ClipboardIcon size={14} />
+        <span>Copy Relative Path</span>
+      </ContextMenu.Item>
+    {:else if target?.kind === 'file'}
       {@const change = target.change}
       {@const path = change.path}
       <ContextMenu.Item onSelect={() => openWorkingTreeDiff(folderPath, staged, path, path, { temporary: false })}>

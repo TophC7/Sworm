@@ -382,3 +382,33 @@
   .action-label.codicon-discard:hover {
   color: var(--color-danger-bright);
 }
+
+/* ── Monaco merge-conflict review ──────────────────────────────────── */
+
+.monaco-editor .sworm-conflict-header-current {
+  @apply border-t border-success bg-success/22;
+}
+
+.monaco-editor .sworm-conflict-body-current {
+  @apply bg-success/8;
+}
+
+.monaco-editor .sworm-conflict-body-common {
+  @apply bg-muted/8;
+}
+
+.monaco-editor .sworm-conflict-splitter {
+  @apply border-t border-edge-strong;
+}
+
+.monaco-editor .sworm-conflict-header-incoming {
+  @apply border-b border-accent bg-accent/22;
+}
+
+.monaco-editor .sworm-conflict-body-incoming {
+  @apply bg-accent/8;
+}
+
+.monaco-editor .sworm-conflict-label {
+  @apply pl-2 font-mono text-xs text-muted/70 select-none;
+}

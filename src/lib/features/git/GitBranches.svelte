@@ -12,8 +12,7 @@
 
 <script lang="ts">
   import { backend } from '$lib/api/backend'
-  import { Button, IconButton, iconButtonVariants } from '$lib/components/ui/button'
-  import * as Alert from '$lib/components/ui/alert'
+  import { IconButton, iconButtonVariants } from '$lib/components/ui/button'
   import * as ContextMenu from '$lib/components/ui/context-menu'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import * as Tooltip from '$lib/components/ui/tooltip'
@@ -21,18 +20,8 @@
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
-  import { getGitSummary } from '$lib/features/git/state.svelte'
   import { openFolder } from '$lib/features/workbench/state.svelte'
-  import {
-    abortOperation,
-    continueOperation,
-    fastForwardBranch,
-    fetchFolder,
-    pullFolder,
-    pushFolder,
-    rebaseOnto,
-    skipOperation
-  } from '$lib/features/git/actions.svelte'
+  import { fastForwardBranch, fetchFolder, pullFolder, pushFolder, rebaseOnto } from '$lib/features/git/actions.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { groupBySlash, type BranchTreeNode } from '$lib/utils/git/branchHierarchy'
   import { basename } from '$lib/utils/paths'
@@ -49,7 +38,6 @@
   import MergeConfirmDialog from '$lib/features/git/dialogs/MergeConfirmDialog.svelte'
   import CompareBranchModal from '$lib/features/git/dialogs/CompareBranchModal.svelte'
   import {
-    AlertTriangle,
     ArrowDown01Icon,
     ArrowDownAZIcon,
     ArrowUpFromLineIcon,
@@ -88,7 +76,6 @@
 
   let entry = $derived(branches.byFolder.get(folderPath))
   let prefs = $derived(entry?.prefs)
-  const operation = $derived(getGitSummary(folderPath)?.operation ?? null)
 
   let search = $state('')
   let searchInputEl = $state<HTMLInputElement | null>(null)
@@ -467,29 +454,6 @@
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto">
-    {#if operation}
-      <Alert.Root variant="warning" layout="banner">
-        <AlertTriangle size={13} class="shrink-0" />
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="flex-1">
-              {{
-                merge: 'Merging in progress.',
-                rebase: 'Rebasing in progress.',
-                cherry_pick: 'Cherry-picking in progress.',
-                revert: 'Reverting in progress.'
-              }[operation.kind]}
-            </span>
-            <Button size="xs" variant="ghost" onclick={() => void continueOperation(folderPath)}>Continue</Button>
-            {#if operation.kind !== 'merge'}
-              <Button size="xs" variant="ghost" onclick={() => void skipOperation(folderPath)}>Skip</Button>
-            {/if}
-            <Button size="xs" variant="destructive" onclick={() => void abortOperation(folderPath)}>Abort</Button>
-          </div>
-        </div>
-      </Alert.Root>
-    {/if}
-
     {#if !entry}
       <div class="px-2.5 py-2 text-sm text-subtle">Loading branches…</div>
     {:else if entry.list.length === 0}

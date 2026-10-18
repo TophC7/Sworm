@@ -1,5 +1,6 @@
 import { backend } from '$lib/api/backend'
 import type { PostCommit } from '$lib/features/git/commitButton'
+import type { GitSummary } from '$lib/types/backend'
 import { SvelteMap } from 'svelte/reactivity'
 
 export interface CommitState {
@@ -14,12 +15,14 @@ const DEFAULT_STATE: CommitState = { draft: '', postCommit: 'none', signOff: fal
 const states = new SvelteMap<string, CommitState>()
 const prefsLoaded = new Set<string>()
 const prefsTouched = new Set<string>()
+const appliedTemplates = new Map<string, string>()
 
 /** Folder teardown; post-commit and sign-off preferences reload from app state. */
 export function releaseCommitFolder(folderPath: string): void {
   states.delete(folderPath)
   prefsLoaded.delete(folderPath)
   prefsTouched.delete(folderPath)
+  appliedTemplates.delete(folderPath)
 }
 
 function stateFor(folderPath: string): CommitState {
@@ -37,6 +40,28 @@ export function getCommitState(folderPath: string): CommitState {
 
 export function setCommitDraft(folderPath: string, draft: string): void {
   stateFor(folderPath).draft = draft
+}
+
+/** Replace only an untouched template; drafts edited by the user remain theirs. */
+export function syncCommitTemplate(folderPath: string, summary: GitSummary): void {
+  const active = summary.message_template ?? summary.operation?.commit?.subject ?? null
+  const state = getCommitState(folderPath)
+  const previous = appliedTemplates.get(folderPath) ?? null
+  if (active !== null) {
+    if (state.draft === '' || state.draft === previous) {
+      setCommitDraft(folderPath, active)
+      appliedTemplates.set(folderPath, active)
+    }
+  } else {
+    if (previous !== null && state.draft === previous) setCommitDraft(folderPath, '')
+    appliedTemplates.delete(folderPath)
+  }
+}
+
+/** Let Git retain its prepared message unless the user supplied a different one. */
+export function getEditedCommitMessage(folderPath: string): string | null {
+  const draft = getCommitState(folderPath).draft.trim()
+  return draft && draft !== appliedTemplates.get(folderPath)?.trim() ? draft : null
 }
 
 export function setSkipHooks(folderPath: string, value: boolean): void {

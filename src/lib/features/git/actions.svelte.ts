@@ -1,10 +1,24 @@
 import { backend } from '$lib/api/backend'
 import { revealGitChanges } from '$lib/features/app-shell/sidebar/state.svelte'
 import { confirmAsync, pickAsync, promptAsync } from '$lib/features/confirm/service.svelte'
-import { getCommitState, setCommitDraft, setSkipHooks } from '$lib/features/git/commit.svelte'
+import {
+  getCommitState,
+  getEditedCommitMessage,
+  setCommitDraft,
+  setSkipHooks,
+  syncCommitTemplate
+} from '$lib/features/git/commit.svelte'
 import type { PostCommit } from '$lib/features/git/commitButton'
 import { isGitError } from '$lib/features/git/errors'
-import { discardAll, getGitSummary, runGitAction, stageAll, unstageAll } from '$lib/features/git/state.svelte'
+import { describeOperation } from '$lib/features/git/operation'
+import {
+  discardAll,
+  getGitSummary,
+  runGitAction,
+  stageAll,
+  stageFiles,
+  unstageAll
+} from '$lib/features/git/state.svelte'
 import { runNotifiedTask, type RunNotifiedTaskOptions } from '$lib/features/notifications/runNotifiedTask'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { forgetRecentWorktree } from '$lib/features/folders/state.svelte'
@@ -17,9 +31,17 @@ import {
   getTabs,
   openFolder
 } from '$lib/features/workbench/state.svelte'
-import type { GitConflictSide, GitStashScope, GitWorktreeCheckout, GitWorktreeResult } from '$lib/types/backend'
+import type {
+  GitConflict,
+  GitConflictSide,
+  GitSequencerAction,
+  GitStashScope,
+  GitWorktreeCheckout,
+  GitWorktreeResult
+} from '$lib/types/backend'
 import { getErrorMessage } from '$lib/utils/client-error'
-import { isPathWithin } from '$lib/utils/paths'
+import { basename, isPathWithin } from '$lib/utils/paths'
+import { SvelteSet } from 'svelte/reactivity'
 
 const GIT_ACTION_NOTIFICATIONS = {
   pull: {
@@ -468,31 +490,76 @@ export function unsetUpstream(folderPath: string, branch: string): Promise<void 
   )
 }
 
-export function continueOperation(
-  folderPath: string,
-  message: string | null = null
-): Promise<void | undefined> | undefined {
-  const kind = getGitSummary(folderPath)?.operation?.kind
-  if (!kind) return
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.continueOperation(kind.replace('_', '-')), () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'continue', message }))
-  )
+const pendingOperations = new SvelteSet<string>()
+
+export function isOperationPending(folderPath: string): boolean {
+  return pendingOperations.has(folderPath)
 }
 
-export function skipOperation(folderPath: string): Promise<void | undefined> | undefined {
-  const kind = getGitSummary(folderPath)?.operation?.kind
-  if (!kind) return
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.skipOperation, () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'skip' }))
-  )
+async function runSequencerAction(folderPath: string, action: GitSequencerAction): Promise<boolean> {
+  const operation = getGitSummary(folderPath)?.operation
+  if (!operation || pendingOperations.has(folderPath)) return false
+  const display = describeOperation(operation)
+  if (action.kind === 'skip' && !display.canSkip) return false
+  // Rebase must retain Git's prepared message and original author together.
+  if (operation.kind === 'rebase' && action.kind === 'continue') action = { kind: 'continue', message: null }
+  const notification =
+    action.kind === 'continue'
+      ? GIT_ACTION_NOTIFICATIONS.continueOperation(display.noun)
+      : action.kind === 'abort'
+        ? GIT_ACTION_NOTIFICATIONS.abortOperation(display.noun)
+        : GIT_ACTION_NOTIFICATIONS.skipOperation
+  pendingOperations.add(folderPath)
+  try {
+    const succeeded =
+      (await runNotifiedGitAction(folderPath, notification, async () => {
+        // A failed continue/skip can have consumed a commit before the next conflict.
+        // Await its refresh too, then rethrow through the normal notification path.
+        const failure = await runGitAction(folderPath, (path) =>
+          backend.git.sequencer(path, operation.kind, action).then(
+            () => null,
+            (error: unknown) => ({ error })
+          )
+        )
+        if (failure) throw failure.error
+        return true
+      })) === true
+    const current = getGitSummary(folderPath)?.operation
+    return (
+      succeeded ||
+      (current !== undefined &&
+        (current === null ||
+          current.kind !== operation.kind ||
+          current.target !== operation.target ||
+          current.headName !== operation.headName ||
+          current.commit?.hash !== operation.commit?.hash ||
+          current.step !== operation.step))
+    )
+  } finally {
+    pendingOperations.delete(folderPath)
+  }
 }
 
-export function abortOperation(folderPath: string): Promise<void | undefined> | undefined {
-  const kind = getGitSummary(folderPath)?.operation?.kind
-  if (!kind) return
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.abortOperation(kind.replace('_', '-')), () =>
-    runGitAction(folderPath, (path) => backend.git.sequencer(path, kind, { kind: 'abort' }))
-  )
+export async function continueOperation(folderPath: string, message: string | null = null): Promise<void> {
+  const state = getCommitState(folderPath)
+  const submitted = state.draft
+  const consumed = await runSequencerAction(folderPath, {
+    kind: 'continue',
+    message: message ?? getEditedCommitMessage(folderPath)
+  })
+  if (!consumed || getCommitState(folderPath) !== state || state.draft !== submitted) return
+  setCommitDraft(folderPath, '')
+  // The refresh may have advanced to another paused commit with the same message.
+  const summary = getGitSummary(folderPath)
+  if (summary) syncCommitTemplate(folderPath, summary)
+}
+
+export async function skipOperation(folderPath: string): Promise<void> {
+  await runSequencerAction(folderPath, { kind: 'skip' })
+}
+
+export async function abortOperation(folderPath: string): Promise<void> {
+  await runSequencerAction(folderPath, { kind: 'abort' })
 }
 
 export function takeConflictSide(
@@ -505,10 +572,58 @@ export function takeConflictSide(
   )
 }
 
-export function deleteConflicted(folderPath: string, files: string[]): Promise<void | undefined> {
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteConflicted, () =>
-    runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files }))
+export async function deleteConflicted(folderPath: string, files: string[]): Promise<boolean> {
+  return (
+    (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteConflicted, () =>
+      runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files })).then(() => true)
+    )) === true
   )
+}
+
+async function resolveDeletionConflict(folderPath: string, conflict: GitConflict): Promise<boolean> {
+  const deletedByThem = conflict.kind === 'deleted_by_them'
+  const choice = await pickAsync({
+    title: 'Resolve Deletion Conflict',
+    message: `File "${basename(conflict.path)}" was ${deletedByThem ? 'deleted by them and modified by us' : 'deleted by us and modified by them'}.\n\nWhat would you like to do?`,
+    options: [
+      { value: 'keep', label: deletedByThem ? 'Keep Our Version' : 'Keep Their Version' },
+      { value: 'delete', label: 'Delete File' }
+    ]
+  })
+  if (choice === null) return false
+  return choice === 'keep' ? stageFiles(folderPath, [conflict.path]) : deleteConflicted(folderPath, [conflict.path])
+}
+
+export async function markResolved(folderPath: string, files: string[]): Promise<void> {
+  const summary = getGitSummary(folderPath)
+  if (!summary) return
+  const paths = new Set(files)
+  const conflicts = summary.conflicts.filter((conflict) => paths.has(conflict.path))
+  if (conflicts.length === 0) return
+  const resolved = await runNotifiedGitAction(
+    folderPath,
+    {
+      loading: GIT_ACTION_NOTIFICATIONS.takeConflictSide.loading,
+      error: GIT_ACTION_NOTIFICATIONS.takeConflictSide.error
+    },
+    async () => {
+      const deleted: string[] = []
+      const staged: string[] = []
+      for (const conflict of conflicts) {
+        if (conflict.kind === 'deleted_by_us' || conflict.kind === 'deleted_by_them') {
+          if (!(await resolveDeletionConflict(folderPath, conflict))) return false
+        } else if (conflict.kind === 'both_deleted') {
+          deleted.push(conflict.path)
+        } else {
+          staged.push(conflict.path)
+        }
+      }
+      if (deleted.length > 0 && !(await deleteConflicted(folderPath, deleted))) return false
+      if (staged.length > 0 && !(await stageFiles(folderPath, staged))) return false
+      return true
+    }
+  )
+  if (resolved) notify.success('Conflicts resolved')
 }
 
 export async function pullActiveFolder(): Promise<void> {

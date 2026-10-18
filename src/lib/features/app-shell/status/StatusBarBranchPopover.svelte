@@ -8,10 +8,11 @@
   import { SearchInput } from '$lib/components/ui/input'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { revealGitBranches } from '$lib/features/app-shell/sidebar/state.svelte'
-  import { GitBranchIcon } from '$lib/icons/lucideExports'
+  import { GitBranchIcon, GitMergeIcon } from '$lib/icons/lucideExports'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
+  import { describeOperation } from '$lib/features/git/operation'
   import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
   import type { BranchSummary, GitSummary } from '$lib/types/backend'
   import { timeAgo } from '$lib/utils/date'
@@ -21,6 +22,13 @@
   let { folderPath }: { folderPath: string } = $props()
 
   let gitSummary = $derived(getGitSummary(folderPath))
+  const operation = $derived(gitSummary?.operation ?? null)
+  const operationDisplay = $derived(operation ? describeOperation(operation) : null)
+  const branchLabel = $derived.by(() => {
+    if (!gitSummary) return ''
+    const name = gitSummary.branch ?? operation?.headName ?? 'HEAD'
+    return operationDisplay ? `${name} ${operationDisplay.chipSuffix}` : name
+  })
   let branchDirty = $derived((gitSummary?.changes.length ?? 0) > 0)
   let branchStatus = $derived(
     branchDirty
@@ -114,14 +122,21 @@
   }
 </script>
 
-{#if gitSummary?.branch}
+{#if gitSummary?.branch || gitSummary?.operation}
   <DropdownMenu.Root bind:open>
     <DropdownMenu.Trigger
-      class={statusChipVariants({ tone: branchDirty ? 'warning' : 'success', class: 'font-mono' })}
-      title={branchStatus}
+      class={statusChipVariants({
+        tone: operation || branchDirty ? 'warning' : 'success',
+        class: 'font-mono'
+      })}
+      title={operationDisplay?.headline ?? branchStatus}
     >
-      <GitBranchIcon size={10} />
-      {gitSummary.branch}
+      {#if operation}
+        <GitMergeIcon size={10} class="text-warning" />
+      {:else}
+        <GitBranchIcon size={10} />
+      {/if}
+      {branchLabel}
       <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} twoColor />
     </DropdownMenu.Trigger>
 

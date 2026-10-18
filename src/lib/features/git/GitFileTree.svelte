@@ -3,11 +3,13 @@
   import FileTreeItems from '$lib/components/file-tree/FileTreeItems.svelte'
   import GitContextMenu from '$lib/features/git/GitContextMenu.svelte'
   import GitCommitArea from '$lib/features/git/GitCommitArea.svelte'
+  import GitOperationStrip from '$lib/features/git/GitOperationStrip.svelte'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import DropOverlay from '$lib/features/dnd/DropOverlay.svelte'
   import { gitChangeDragSource, gitDropZone, isGitDropZoneActive } from '$lib/features/dnd/adapters/git.svelte'
   import { IconButton } from '$lib/components/ui/button'
   import {
+    Check,
     FileDiff,
     MinusCircle,
     PackageIcon,
@@ -17,7 +19,7 @@
     Undo2Icon
   } from '$lib/icons/lucideExports'
   import { stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
-  import { stageAllFolder, stashFolder, unstageAllFolder } from '$lib/features/git/actions.svelte'
+  import { markResolved, stageAllFolder, stashFolder, unstageAllFolder } from '$lib/features/git/actions.svelte'
   import {
     confirmDiscardAll,
     confirmDiscardPaths,
@@ -26,8 +28,9 @@
     type GitTreeMenuTarget
   } from '$lib/features/git/treeActions'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
+  import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
-  import type { GitChange, GitSummary } from '$lib/types/backend'
+  import type { GitChange, GitConflict, GitSummary } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
@@ -47,6 +50,7 @@
 
   let menuTarget = $state<GitTreeMenuTarget | null>(null)
   let pendingOpenedTab = $state<Promise<TabId> | null>(null)
+  let resolving = $state(false)
 
   const gitSourceAttachmentCache = new Map<string, ReturnType<typeof gitChangeDragSource>>()
   const gitZoneAttachmentCache = new Map<string, ReturnType<typeof gitDropZone>>()
@@ -61,19 +65,26 @@
     else collapsedDirs.add(key)
   }
 
-  let stagedFiles = $derived(summary.changes.filter((c) => c.staged))
-  let unstagedFiles = $derived(summary.changes.filter((c) => !c.staged))
+  const conflictPaths = $derived(new Set(summary.conflicts.map((conflict) => conflict.path)))
+  let stagedFiles = $derived(summary.changes.filter((change) => change.staged && !conflictPaths.has(change.path)))
+  let unstagedFiles = $derived(summary.changes.filter((change) => !change.staged && !conflictPaths.has(change.path)))
 
   let stagedTree = $derived(buildFileTree(stagedFiles))
   let unstagedTree = $derived(buildFileTree(unstagedFiles))
-  let hasChanges = $derived(stagedTree.length > 0 || unstagedTree.length > 0)
+  let conflictsTree = $derived(buildFileTree<GitConflict>(summary.conflicts))
+  let hasChanges = $derived(summary.conflicts.length > 0 || stagedTree.length > 0 || unstagedTree.length > 0)
 
   function handleContextMenu(_e: MouseEvent, node: FileTreeNode<GitChange>, staged: boolean) {
     const section = staged ? 'staged' : 'changes'
     if (node.type === 'file' && node.change) {
       menuTarget = { kind: 'file', section, change: node.change }
     } else if (node.type === 'directory') {
-      menuTarget = { kind: 'folder', section, path: node.path, files: getFilesUnderPath(node.path, staged) }
+      menuTarget = {
+        kind: 'folder',
+        section,
+        path: node.path,
+        files: getFilesUnderPath(node.path, staged ? stagedFiles : unstagedFiles)
+      }
     }
   }
 
@@ -81,9 +92,40 @@
     menuTarget = null
   }
 
-  function getFilesUnderPath(dirPath: string, staged: boolean): string[] {
-    const changes = staged ? stagedFiles : unstagedFiles
-    return changes.filter((c) => c.path.startsWith(dirPath + '/')).map((c) => c.path)
+  function getFilesUnderPath(dirPath: string, files: { path: string }[]): string[] {
+    return files.filter((file) => file.path.startsWith(dirPath + '/')).map((file) => file.path)
+  }
+
+  function handleConflictContextMenu(_event: MouseEvent, node: FileTreeNode<GitConflict>) {
+    if (node.type === 'file' && node.change) {
+      menuTarget = { kind: 'conflict', conflict: node.change }
+    } else if (node.type === 'directory') {
+      menuTarget = {
+        kind: 'folder',
+        section: 'merge',
+        path: node.path,
+        files: getFilesUnderPath(node.path, summary.conflicts)
+      }
+    }
+  }
+
+  async function resolveConflicts(files: string[]) {
+    if (resolving) return
+    resolving = true
+    try {
+      await markResolved(folderPath, files)
+    } finally {
+      resolving = false
+    }
+  }
+
+  function openConflict(node: FileTreeNode<GitConflict>) {
+    if (!node.change || node.change.kind === 'both_deleted') {
+      pendingOpenedTab = null
+      return
+    }
+    pendingOpenedTab = openTextFile(folderPath, node.change.path, { temporary: true })
+    void pendingOpenedTab.catch((error) => notify.error('Open file failed', getErrorMessage(error)))
   }
 
   function makeTreeTarget(node: FileTreeNode<GitChange>): GitTreeTarget {
@@ -99,12 +141,14 @@
 
   function getActionFiles(target: GitTreeTarget, action: GitTreeActionKind): string[] {
     if (target.type === 'file') return [target.path]
-    return getFilesUnderPath(target.path, action === 'unstage')
+    return getFilesUnderPath(target.path, action === 'unstage' ? stagedFiles : unstagedFiles)
   }
 
   function gitSourceAttachment(node: FileTreeNode<GitChange>, staged: boolean) {
     const hasChanges =
-      node.type === 'file' ? node.change !== undefined : getFilesUnderPath(node.path, staged).length > 0
+      node.type === 'file'
+        ? node.change !== undefined
+        : getFilesUnderPath(node.path, staged ? stagedFiles : unstagedFiles).length > 0
     if (!hasChanges) return null
     const key = `${folderPath}:${staged ? 'staged' : 'unstaged'}:${node.type}:${node.path}`
     const cached = gitSourceAttachmentCache.get(key)
@@ -116,7 +160,7 @@
           ? node.change
             ? [node.change]
             : []
-          : getFilesUnderPath(node.path, staged).map((path) => ({ path, staged }))
+          : getFilesUnderPath(node.path, staged ? stagedFiles : unstagedFiles).map((path) => ({ path, staged }))
     })
     gitSourceAttachmentCache.set(key, attachment)
     return attachment
@@ -152,6 +196,9 @@
 
 <div class="flex min-h-full flex-col text-base">
   <GitCommitArea {summary} {folderPath} />
+  {#if summary.operation}
+    <GitOperationStrip {folderPath} operation={summary.operation} />
+  {/if}
 
   {#snippet fileTrailing(node: FileTreeNode<GitChange>)}
     {#if node.change}
@@ -302,11 +349,77 @@
     {/if}
   {/snippet}
 
+  {#snippet mergeGroup()}
+    <div class="py-1">
+      <div
+        role="group"
+        aria-label="Merge Changes"
+        class="group/hdr relative flex items-center px-2.5 py-1"
+        oncontextmenu={() =>
+          (menuTarget = {
+            kind: 'section',
+            section: 'merge',
+            files: summary.conflicts.map((conflict) => conflict.path)
+          })}
+      >
+        <span class="text-xs font-medium tracking-wide text-muted uppercase">
+          Merge Changes ({summary.conflicts.length})
+        </span>
+        <div
+          class="ml-auto flex items-center gap-0.5 opacity-0 group-hover/hdr:opacity-100 group-has-[:focus-visible]/hdr:opacity-100"
+        >
+          <IconButton
+            tooltip="Mark all as resolved"
+            disabled={resolving}
+            onclick={() => void resolveConflicts(summary.conflicts.map((conflict) => conflict.path))}
+          >
+            <Check size={13} />
+          </IconButton>
+        </div>
+      </div>
+      {#snippet conflictTrailing(node: FileTreeNode<GitConflict>)}
+        {#if node.change}
+          <GitStatusBadge status={node.change.kind} />
+        {/if}
+      {/snippet}
+      {#snippet conflictActions(node: FileTreeNode<GitConflict>)}
+        <IconButton
+          tooltip={node.type === 'directory' ? 'Mark folder resolved' : 'Mark resolved'}
+          disabled={resolving}
+          onclick={() =>
+            void resolveConflicts(node.change ? [node.change.path] : getFilesUnderPath(node.path, summary.conflicts))}
+        >
+          <PlusCircle size={13} />
+        </IconButton>
+        {#if node.change && node.change.kind !== 'both_deleted'}
+          <IconButton tooltip="Open actual file" onclick={() => void openActualFile(folderPath, node.path)}>
+            <SquareArrowOutUpRight size={13} />
+          </IconButton>
+        {/if}
+      {/snippet}
+      <FileTreeItems
+        nodes={conflictsTree}
+        isCollapsed={(node) => collapsedDirs.has(getDirKey('merge', node.path))}
+        onToggleDir={(path) => toggleDir('merge', path)}
+        onFileClick={openConflict}
+        onFileDblClick={(node) => {
+          if (node.change?.kind !== 'both_deleted') promoteTabWhenReady(pendingOpenedTab)
+        }}
+        onFileContextMenu={handleConflictContextMenu}
+        fileTrailing={conflictTrailing}
+        rowActions={conflictActions}
+      />
+    </div>
+  {/snippet}
+
   <GitContextMenu {folderPath} {summary} target={menuTarget} onResetTarget={resetContextTarget}>
     {#if !hasChanges}
       <div class="px-2.5 py-2 text-sm text-subtle">No changes.</div>
     {/if}
 
+    {#if summary.conflicts.length > 0}
+      {@render mergeGroup()}
+    {/if}
     {@render fileGroup('Staged', stagedTree, 'staged', true, stagedFiles.length)}
     {@render fileGroup('Changes', unstagedTree, 'unstaged', false, unstagedFiles.length)}
   </GitContextMenu>
