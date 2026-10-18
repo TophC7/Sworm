@@ -195,10 +195,7 @@
       <ContextMenu.Separator />
       {@render conflictSideEntries(folder.files)}
       <ContextMenu.Separator />
-      <ContextMenu.Item onSelect={() => revealInExplorerView(folderPath, folder.path)}>
-        <ListTreeIcon size={14} />
-        <span>Reveal in Explorer</span>
-      </ContextMenu.Item>
+      {@render revealEntries(folder.path)}
       <ContextMenu.Separator />
       <ContextMenu.Item onSelect={() => copyPath(folderPath, folder.path)}>
         <ClipboardIcon size={14} />

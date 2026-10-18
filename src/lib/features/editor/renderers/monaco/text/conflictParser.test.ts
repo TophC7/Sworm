@@ -31,16 +31,13 @@ function resolveText(source: string, resolution: ConflictResolution, all = false
 }
 
 describe('parseConflictBlocks', () => {
-  test('parses two-way multiline markers and branch labels', () => {
+  test('parses two-way multiline markers', () => {
     assert.deepEqual(parseConflictBlocks(twoWay.split('\n')), [
       {
         startLine: 1,
-        startHeader: 'HEAD',
         commonLine: null,
-        commonHeader: null,
         splitterLine: 4,
-        endLine: 7,
-        endHeader: 'feature'
+        endLine: 7
       }
     ])
   })
@@ -49,12 +46,9 @@ describe('parseConflictBlocks', () => {
     assert.deepEqual(parseConflictBlocks(threeWay.split('\n')), [
       {
         startLine: 1,
-        startHeader: 'current branch',
         commonLine: 3,
-        commonHeader: 'common ancestor',
         splitterLine: 6,
-        endLine: 8,
-        endHeader: 'incoming branch'
+        endLine: 8
       }
     ])
   })
@@ -64,21 +58,15 @@ describe('parseConflictBlocks', () => {
     assert.deepEqual(parseConflictBlocks(source.split('\n')), [
       {
         startLine: 1,
-        startHeader: '',
         commonLine: null,
-        commonHeader: null,
         splitterLine: 2,
-        endLine: 3,
-        endHeader: ''
+        endLine: 3
       },
       {
         startLine: 4,
-        startHeader: 'ours',
         commonLine: null,
-        commonHeader: null,
         splitterLine: 6,
-        endLine: 8,
-        endHeader: 'theirs'
+        endLine: 8
       }
     ])
   })
@@ -90,12 +78,9 @@ describe('parseConflictBlocks', () => {
     assert.deepEqual(blocks, [
       {
         startLine: 1,
-        startHeader: 'HEAD',
         commonLine: 3,
-        commonHeader: 'base',
         splitterLine: 5,
-        endLine: 7,
-        endHeader: 'topic'
+        endLine: 7
       }
     ])
   })
@@ -130,7 +115,7 @@ describe('parseConflictBlocks', () => {
       const blocks = parseConflictBlocks(lines)
       assert.equal(blocks.length, 1)
       assert.equal(blocks[0].startLine, prefix.split('\n').length + 1)
-      assert.equal(blocks[0].endHeader, 'feature')
+      assert.equal(blocks[0].endLine, lines.length)
     })
   }
 

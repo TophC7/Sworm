@@ -102,14 +102,6 @@ Browse files, edit code, and review changes before committing:
 - Markdown editing with a live preview styled to match GitHub as closely as possible.
 - A file tree with filtering, Git markers, and drag-and-drop.
 
-Paused merges, rebases, cherry-picks, and reverts appear in the Changes pane with an operation strip and a **Continue** button, enabled once conflicts are resolved. **Skip** skips the current commit during a rebase, cherry-pick, or revert; merges have no Skip. **Abort runs immediately, without confirmation.**
-
-Conflicted files appear under **Merge Changes**. File, folder, and group menus offer **Take Current Version** and **Take Incoming Version**: these replace whole files and automatically stage the result. **Mark Resolved** stages your resolution; deletion conflicts ask whether to keep the surviving version or delete the file, and staging files that still contain conflict markers requires confirmation.
-
-Inside Monaco, **Accept Current Change**, **Accept Incoming Change**, and **Accept Both Changes** resolve individual marked blocks as undoable, unsaved edits—not whole-file replacements. **Save, then stage or Mark Resolved** before continuing. Editor commands include **Next Conflict**, **Previous Conflict**, and actions to accept all current, incoming, or both changes in the file.
-
-The status-bar branch chip shows the active operation even while HEAD is detached. During a rebase, the original commit message is displayed read-only and Continue passes no replacement message, leaving Git to preserve the original author and message. For merges, cherry-picks, and reverts, prepared messages fill the commit box without overwriting user edits; Continue uses Git's prepared message unless you supply a nonempty edited message.
-
 <details>
 <summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>
 

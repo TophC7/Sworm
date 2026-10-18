@@ -5,22 +5,15 @@ const END_MARKER = '>>>>>>>'
 
 export interface ConflictBlock {
   startLine: number
-  startHeader: string
   commonLine: number | null
-  commonHeader: string | null
   splitterLine: number
   endLine: number
-  endHeader: string
 }
 
 export type ConflictResolution = 'current' | 'incoming' | 'both'
 
-function markerHeader(line: string, marker: string): string | null {
-  if (line === marker) return ''
-  if (line.startsWith(`${marker} `) || line.startsWith(`${marker}\t`)) {
-    return line.slice(marker.length).trim()
-  }
-  return null
+function isMarker(line: string, marker: string): boolean {
+  return line === marker || line.startsWith(`${marker} `) || line.startsWith(`${marker}\t`)
 }
 
 export function parseConflictBlocks(lines: string[]): ConflictBlock[] {
@@ -30,29 +23,16 @@ export function parseConflictBlocks(lines: string[]): ConflictBlock[] {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index].replace(/\r$/, '')
     const lineNumber = index + 1
-    const startHeader = markerHeader(line, START_MARKER)
-    if (startHeader !== null) {
+    if (isMarker(line, START_MARKER)) {
       // A fresh start recovers from an incomplete or malformed preceding block.
-      pending = {
-        startLine: lineNumber,
-        startHeader,
-        commonLine: null,
-        commonHeader: null,
-        splitterLine: 0,
-        endLine: 0,
-        endHeader: ''
-      }
+      pending = { startLine: lineNumber, commonLine: null, splitterLine: 0, endLine: 0 }
       continue
     }
     if (!pending) continue
 
-    const commonHeader = markerHeader(line, COMMON_MARKER)
-    if (commonHeader !== null) {
+    if (isMarker(line, COMMON_MARKER)) {
       if (pending.commonLine !== null || pending.splitterLine !== 0) pending = null
-      else {
-        pending.commonLine = lineNumber
-        pending.commonHeader = commonHeader
-      }
+      else pending.commonLine = lineNumber
       continue
     }
     if (line === SPLIT_MARKER) {
@@ -60,10 +40,9 @@ export function parseConflictBlocks(lines: string[]): ConflictBlock[] {
       else pending.splitterLine = lineNumber
       continue
     }
-    const endHeader = markerHeader(line, END_MARKER)
-    if (endHeader !== null) {
+    if (isMarker(line, END_MARKER)) {
       if (pending.splitterLine !== 0) {
-        blocks.push({ ...pending, endLine: lineNumber, endHeader })
+        blocks.push({ ...pending, endLine: lineNumber })
       }
       pending = null
     }

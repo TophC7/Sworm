@@ -10,7 +10,7 @@ import {
 } from '$lib/features/git/commit.svelte'
 import type { PostCommit } from '$lib/features/git/commitButton'
 import { isGitError } from '$lib/features/git/errors'
-import { describeOperation } from '$lib/features/git/operation'
+import { describeOperation, type OperationDisplay } from '$lib/features/git/operation'
 import {
   discardAll,
   getGitSummary,
@@ -144,9 +144,9 @@ const GIT_ACTION_NOTIFICATIONS = {
     success: { title: 'Upstream unset' },
     error: { title: 'Unset upstream failed' }
   },
-  continueOperation: (noun: string) => ({
-    loading: { title: `Continuing ${noun}` },
-    success: { title: `${noun[0].toUpperCase()}${noun.slice(1)} continued` },
+  continueOperation: (display: OperationDisplay) => ({
+    loading: { title: `Continuing ${display.noun}` },
+    success: { title: `${display.title} continued` },
     error: { title: 'Continue failed' }
   }),
   skipOperation: {
@@ -154,20 +154,15 @@ const GIT_ACTION_NOTIFICATIONS = {
     success: { title: 'Commit skipped' },
     error: { title: 'Skip failed' }
   },
-  abortOperation: (noun: string) => ({
-    loading: { title: `Aborting ${noun}` },
-    success: { title: `${noun[0].toUpperCase()}${noun.slice(1)} aborted` },
+  abortOperation: (display: OperationDisplay) => ({
+    loading: { title: `Aborting ${display.noun}` },
+    success: { title: `${display.title} aborted` },
     error: { title: 'Abort failed' }
   }),
   takeConflictSide: {
     loading: { title: 'Resolving conflicts' },
     success: { title: 'Conflicts resolved' },
     error: { title: 'Resolve failed' }
-  },
-  deleteConflicted: {
-    loading: { title: 'Deleting files' },
-    success: { title: 'Files deleted' },
-    error: { title: 'Delete failed' }
   }
 }
 
@@ -338,8 +333,15 @@ export async function undoLastCommit(folderPath: string): Promise<string | undef
   return message
 }
 
-export function stageAllFolder(folderPath: string): Promise<boolean | undefined> {
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.stageAll, () => stageAll(folderPath))
+export async function stageAllFolder(folderPath: string): Promise<boolean | undefined> {
+  const conflicts = getGitSummary(folderPath)?.conflicts ?? []
+  // VS Code parity: Stage All includes Merge Changes, but only through the same
+  // deletion choices and marker confirmation as Mark Resolved.
+  const plan = conflicts.length > 0 ? await planConflictResolution(conflicts) : null
+  if (conflicts.length > 0 && !plan) return false
+  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.stageAll, async () =>
+    plan && !(await applyConflictPlan(folderPath, plan)) ? false : stageAll(folderPath)
+  )
 }
 
 export function unstageAllFolder(folderPath: string): Promise<void | undefined> {
@@ -501,13 +503,11 @@ async function runSequencerAction(folderPath: string, action: GitSequencerAction
   if (!operation || pendingOperations.has(folderPath)) return false
   const display = describeOperation(operation)
   if (action.kind === 'skip' && !display.canSkip) return false
-  // Rebase must retain Git's prepared message and original author together.
-  if (operation.kind === 'rebase' && action.kind === 'continue') action = { kind: 'continue', message: null }
   const notification =
     action.kind === 'continue'
-      ? GIT_ACTION_NOTIFICATIONS.continueOperation(display.noun)
+      ? GIT_ACTION_NOTIFICATIONS.continueOperation(display)
       : action.kind === 'abort'
-        ? GIT_ACTION_NOTIFICATIONS.abortOperation(display.noun)
+        ? GIT_ACTION_NOTIFICATIONS.abortOperation(display)
         : GIT_ACTION_NOTIFICATIONS.skipOperation
   pendingOperations.add(folderPath)
   try {
@@ -540,12 +540,18 @@ async function runSequencerAction(folderPath: string, action: GitSequencerAction
   }
 }
 
-export async function continueOperation(folderPath: string, message: string | null = null): Promise<void> {
+export async function continueOperation(folderPath: string): Promise<void> {
+  // Rebase must keep Git's prepared message and original author together, so the
+  // hidden draft is never submitted and therefore never consumed.
+  if (getGitSummary(folderPath)?.operation?.kind === 'rebase') {
+    await runSequencerAction(folderPath, { kind: 'continue', message: null })
+    return
+  }
   const state = getCommitState(folderPath)
   const submitted = state.draft
   const consumed = await runSequencerAction(folderPath, {
     kind: 'continue',
-    message: message ?? getEditedCommitMessage(folderPath)
+    message: getEditedCommitMessage(folderPath)
   })
   if (!consumed || getCommitState(folderPath) !== state || state.draft !== submitted) return
   setCommitDraft(folderPath, '')
@@ -572,26 +578,44 @@ export function takeConflictSide(
   )
 }
 
-export async function deleteConflicted(folderPath: string, files: string[]): Promise<boolean> {
-  return (
-    (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteConflicted, () =>
-      runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files })).then(() => true)
-    )) === true
-  )
+interface ConflictPlan {
+  staged: string[]
+  deleted: string[]
 }
 
-async function resolveDeletionConflict(folderPath: string, conflict: GitConflict): Promise<boolean> {
-  const deletedByThem = conflict.kind === 'deleted_by_them'
-  const choice = await pickAsync({
-    title: 'Resolve Deletion Conflict',
-    message: `File "${basename(conflict.path)}" was ${deletedByThem ? 'deleted by them and modified by us' : 'deleted by us and modified by them'}.\n\nWhat would you like to do?`,
-    options: [
-      { value: 'keep', label: deletedByThem ? 'Keep Our Version' : 'Keep Their Version' },
-      { value: 'delete', label: 'Delete File' }
-    ]
-  })
-  if (choice === null) return false
-  return choice === 'keep' ? stageFiles(folderPath, [conflict.path]) : deleteConflicted(folderPath, [conflict.path])
+/** Every question is answered before any mutation, so cancelling leaves the index untouched. */
+async function planConflictResolution(conflicts: GitConflict[]): Promise<ConflictPlan | null> {
+  const plan: ConflictPlan = { staged: [], deleted: [] }
+  for (const conflict of conflicts) {
+    if (conflict.kind === 'deleted_by_us' || conflict.kind === 'deleted_by_them') {
+      const deletedByThem = conflict.kind === 'deleted_by_them'
+      const choice = await pickAsync({
+        title: 'Resolve Deletion Conflict',
+        message: `File "${basename(conflict.path)}" was ${deletedByThem ? 'deleted by them and modified by us' : 'deleted by us and modified by them'}.\n\nWhat would you like to do?`,
+        options: [
+          { value: 'keep', label: deletedByThem ? 'Keep Our Version' : 'Keep Their Version' },
+          { value: 'delete', label: 'Delete File' }
+        ]
+      })
+      if (choice === null) return null
+      if (choice === 'keep') plan.staged.push(conflict.path)
+      else plan.deleted.push(conflict.path)
+    } else if (conflict.kind === 'both_deleted') {
+      plan.deleted.push(conflict.path)
+    } else {
+      plan.staged.push(conflict.path)
+    }
+  }
+  return plan
+}
+
+/** Stage before deleting: only staging can still be cancelled (marker confirm). */
+async function applyConflictPlan(folderPath: string, plan: ConflictPlan): Promise<boolean> {
+  if (plan.staged.length > 0 && !(await stageFiles(folderPath, plan.staged))) return false
+  if (plan.deleted.length > 0) {
+    await runGitAction(folderPath, (path) => backend.git.conflicts(path, { kind: 'delete', files: plan.deleted }))
+  }
+  return true
 }
 
 export async function markResolved(folderPath: string, files: string[]): Promise<void> {
@@ -600,28 +624,15 @@ export async function markResolved(folderPath: string, files: string[]): Promise
   const paths = new Set(files)
   const conflicts = summary.conflicts.filter((conflict) => paths.has(conflict.path))
   if (conflicts.length === 0) return
+  const plan = await planConflictResolution(conflicts)
+  if (plan === null) return
   const resolved = await runNotifiedGitAction(
     folderPath,
     {
       loading: GIT_ACTION_NOTIFICATIONS.takeConflictSide.loading,
       error: GIT_ACTION_NOTIFICATIONS.takeConflictSide.error
     },
-    async () => {
-      const deleted: string[] = []
-      const staged: string[] = []
-      for (const conflict of conflicts) {
-        if (conflict.kind === 'deleted_by_us' || conflict.kind === 'deleted_by_them') {
-          if (!(await resolveDeletionConflict(folderPath, conflict))) return false
-        } else if (conflict.kind === 'both_deleted') {
-          deleted.push(conflict.path)
-        } else {
-          staged.push(conflict.path)
-        }
-      }
-      if (deleted.length > 0 && !(await deleteConflicted(folderPath, deleted))) return false
-      if (staged.length > 0 && !(await stageFiles(folderPath, staged))) return false
-      return true
-    }
+    () => applyConflictPlan(folderPath, plan)
   )
   if (resolved) notify.success('Conflicts resolved')
 }

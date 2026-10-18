@@ -19,8 +19,8 @@ type CodeEditor = MonacoAPI.editor.IStandaloneCodeEditor
 type TextModel = MonacoAPI.editor.ITextModel
 type Disposable = MonacoAPI.IDisposable
 
-type Attachment = { editor: CodeEditor }
-const trackedModels = new Map<TextModel, Set<Attachment>>()
+const trackedModels = new Map<TextModel, Set<CodeEditor>>()
+const parsedBlocks = new WeakMap<TextModel, { version: number; blocks: readonly ConflictBlock[] }>()
 let lensChanges: MonacoAPI.Emitter<MonacoAPI.languages.CodeLensProvider> | null = null
 let lensProvider: MonacoAPI.languages.CodeLensProvider | null = null
 
@@ -30,16 +30,31 @@ const resolutions = [
   { resolution: 'both', command: 'sworm.conflict.acceptBoth', title: 'Accept Both Changes' }
 ] as const
 
+/** Decorations, CodeLens, navigation, and commands share one parse per model version. */
+function conflictBlocks(model: TextModel): readonly ConflictBlock[] {
+  const version = model.getVersionId()
+  const cached = parsedBlocks.get(model)
+  if (cached?.version === version) return cached.blocks
+  const blocks = parseConflictBlocks(model.getLinesContent())
+  parsedBlocks.set(model, { version, blocks })
+  return blocks
+}
+
 function canEdit(monaco: Monaco, model: TextModel): boolean {
   const attachments = trackedModels.get(model)
   if (!attachments || model.isDisposed()) return false
-  for (const { editor } of attachments) {
+  for (const editor of attachments) {
     if (editor.getModel() === model && !editor.getOption(monaco.editor.EditorOption.readOnly)) return true
   }
   return false
 }
 
-function applyResolutions(monaco: Monaco, model: TextModel, blocks: ConflictBlock[], resolution: ConflictResolution) {
+function applyResolutions(
+  monaco: Monaco,
+  model: TextModel,
+  blocks: readonly ConflictBlock[],
+  resolution: ConflictResolution
+) {
   if (!canEdit(monaco, model) || blocks.length === 0) return
   const lines = model.getLinesContent()
   const edits = blocks.map((block) => ({
@@ -59,7 +74,7 @@ function ensureProvider(monaco: Monaco) {
     provideCodeLenses(model) {
       if (!canEdit(monaco, model)) return { lenses: [], dispose() {} }
       const version = model.getVersionId()
-      const lenses = parseConflictBlocks(model.getLinesContent()).flatMap((block) =>
+      const lenses = conflictBlocks(model).flatMap((block) =>
         resolutions.map(({ command, title }) => ({
           range: new monaco.Range(block.startLine, 1, block.startLine, 1),
           command: {
@@ -80,7 +95,7 @@ function ensureProvider(monaco: Monaco) {
       // An index can now identify a different block after an earlier resolution.
       // Reject stale lenses rather than ever resolving the wrong live conflict.
       if (model.getVersionId() !== version) return
-      const blocks = parseConflictBlocks(model.getLinesContent())
+      const blocks = conflictBlocks(model)
       const block = blocks.find((candidate) => candidate.startLine === startLine)
       if (block) applyResolutions(monaco, model, [block], resolution)
     })
@@ -97,9 +112,8 @@ export function attachGitConflictReview({
   model: TextModel
 }): Disposable {
   ensureProvider(monaco)
-  const attachment = { editor }
-  const attachments = trackedModels.get(model) ?? new Set<Attachment>()
-  attachments.add(attachment)
+  const attachments = trackedModels.get(model) ?? new Set<CodeEditor>()
+  attachments.add(editor)
   trackedModels.set(model, attachments)
 
   const collection = editor.createDecorationsCollection()
@@ -119,7 +133,7 @@ export function attachGitConflictReview({
 
   function update() {
     const editable = editor.getModel() === model && !editor.getOption(monaco.editor.EditorOption.readOnly)
-    const blocks = editable ? parseConflictBlocks(model.getLinesContent()) : []
+    const blocks = editable ? conflictBlocks(model) : []
     const decorations: MonacoAPI.editor.IModelDeltaDecoration[] = []
     function decorate(start: number, end: number, className: string, label?: string) {
       if (start > end) return
@@ -153,7 +167,7 @@ export function attachGitConflictReview({
   }
 
   function navigate(direction: 'next' | 'previous') {
-    const blocks = parseConflictBlocks(model.getLinesContent())
+    const blocks = conflictBlocks(model)
     if (blocks.length === 0) return
     const line = editor.getPosition()?.lineNumber ?? 1
     if (blocks.length === 1 && line >= blocks[0].startLine && line <= blocks[0].endLine) {
@@ -189,7 +203,7 @@ export function attachGitConflictReview({
         precondition: 'swormHasMergeConflicts && !editorReadonly',
         run: () => {
           if (editor.getModel() !== model || editor.getOption(monaco.editor.EditorOption.readOnly)) return
-          applyResolutions(monaco, model, parseConflictBlocks(model.getLinesContent()), resolution)
+          applyResolutions(monaco, model, conflictBlocks(model), resolution)
         }
       })
     )
@@ -211,7 +225,7 @@ export function attachGitConflictReview({
       for (const disposable of disposables) disposable.dispose()
       collection.clear()
       hasConflicts.reset()
-      attachments.delete(attachment)
+      attachments.delete(editor)
       if (attachments.size === 0) trackedModels.delete(model)
       if (lensProvider) lensChanges?.fire(lensProvider)
       refreshActions()

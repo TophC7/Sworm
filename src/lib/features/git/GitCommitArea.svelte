@@ -164,10 +164,12 @@
         </DropdownMenu.Trigger>
         <DropdownMenu.Content>
           {#if display}
-            <DropdownMenu.Item disabled={busy || action.kind !== 'continue' || !action.enabled} onSelect={runPrimary}>
-              <Check size={14} />
-              Continue {display.title}
-            </DropdownMenu.Item>
+            {#if action.kind === 'continue'}
+              <DropdownMenu.Item disabled={busy || !action.enabled} onSelect={runPrimary}>
+                <Check size={14} />
+                {action.title}
+              </DropdownMenu.Item>
+            {/if}
             {#if display.canSkip}
               <DropdownMenu.Item disabled={busy} onSelect={() => run(() => skipOperation(folderPath))}>
                 Skip Commit
