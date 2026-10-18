@@ -1,4 +1,4 @@
-import type { GitConflictKind, GitStatusKind } from '$lib/types/backend'
+import type { GitChange, GitConflictKind, GitStatusKind, GitSummary } from '$lib/types/backend'
 
 interface GitStatusMeta {
   color: string
@@ -47,4 +47,26 @@ export function gitStatusMeta(status: string): GitStatusMeta {
     default:
       return { color: 'text-muted', letter: status, label: 'Changed' }
   }
+}
+
+/** Source Control state at or under one explorer path, split like the Staged/Changes sections. */
+export interface PathGitState {
+  /** Staged paths at or under the target; conflicted paths excluded (they belong to Merge Changes). */
+  staged: string[]
+  /** Unstaged and untracked paths at or under the target; conflicted paths excluded. */
+  unstaged: string[]
+  /** The target has non-conflicted changes and every one is M or D, so it exists at HEAD. */
+  inHead: boolean
+}
+
+/** Null when nothing at or under `path` is changed or conflicted. */
+export function pathGitState(summary: GitSummary, path: string, type: 'file' | 'directory'): PathGitState | null {
+  const within = (p: string) => (type === 'file' ? p === path : p.startsWith(path + '/'))
+  const conflicted = new Set(summary.conflicts.map((c) => c.path))
+  const changes: GitChange[] = summary.changes.filter((c) => within(c.path) && !conflicted.has(c.path))
+  if (changes.length === 0 && !summary.conflicts.some((c) => within(c.path))) return null
+  const staged = changes.filter((c) => c.staged).map((c) => c.path)
+  const unstaged = changes.filter((c) => !c.staged).map((c) => c.path)
+  const inHead = changes.length > 0 && changes.every((c) => c.status === 'M' || c.status === 'D')
+  return { staged, unstaged, inHead }
 }

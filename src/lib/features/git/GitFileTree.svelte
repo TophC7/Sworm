@@ -23,17 +23,20 @@
   import {
     confirmDiscardAll,
     confirmDiscardPaths,
+    describeFolder,
     openActualFile,
     runPathsAction,
     type GitTreeMenuTarget
   } from '$lib/features/git/treeActions'
+  import { getGitTreeReveal } from '$lib/features/git/treeReveal.svelte'
   import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { openTextFile } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
+  import { getActivationSeq, promoteTabWhenReady } from '$lib/features/workbench/state.svelte'
   import type { GitChange, GitConflict, GitSummary } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
+  import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
 
   let { summary, folderPath }: { summary: GitSummary; folderPath: string } = $props()
@@ -68,6 +71,32 @@
   const conflictPaths = $derived(new Set(summary.conflicts.map((conflict) => conflict.path)))
   let stagedFiles = $derived(summary.changes.filter((change) => change.staged && !conflictPaths.has(change.path)))
   let unstagedFiles = $derived(summary.changes.filter((change) => !change.staged && !conflictPaths.has(change.path)))
+
+  const reveal = $derived.by(() => {
+    const r = getGitTreeReveal(folderPath)
+    return r && r.activation === getActivationSeq() ? r : null
+  })
+  const revealSection = $derived.by<'merge' | 'unstaged' | 'staged' | null>(() => {
+    if (!reveal) return null
+    const path = reveal.path
+    const within = (p: string) => p === path || p.startsWith(path + '/')
+    if (summary.conflicts.some((c) => within(c.path))) return 'merge'
+    if (unstagedFiles.some((c) => within(c.path))) return 'unstaged'
+    if (stagedFiles.some((c) => within(c.path))) return 'staged'
+    return null
+  })
+
+  $effect(() => {
+    const request = reveal
+    const section = revealSection
+    if (!request || !section) return
+    untrack(() => {
+      const parts = request.path.split('/')
+      for (let i = 1; i < parts.length; i++) {
+        collapsedDirs.delete(getDirKey(section, parts.slice(0, i).join('/')))
+      }
+    })
+  })
 
   let stagedTree = $derived(buildFileTree(stagedFiles))
   let unstagedTree = $derived(buildFileTree(unstagedFiles))
@@ -133,10 +162,6 @@
       path: node.change?.path ?? node.path,
       type: node.type
     }
-  }
-
-  function describeFileCount(count: number): string {
-    return `${count} file${count === 1 ? '' : 's'}`
   }
 
   function getActionFiles(target: GitTreeTarget, action: GitTreeActionKind): string[] {
@@ -230,8 +255,7 @@
           {@const target = makeTreeTarget(node)}
           {@const action = isStaged ? 'unstage' : 'stage'}
           {@const files = getActionFiles(target, action)}
-          {@const description =
-            target.type === 'file' ? target.path : `${describeFileCount(files.length)} under ${target.path}`}
+          {@const description = target.type === 'file' ? target.path : describeFolder(target.path, files.length)}
           {#if !isStaged}
             <IconButton
               tooltip="Revert changes"
@@ -320,6 +344,8 @@
           <FileTreeItems
             nodes={tree}
             isCollapsed={(node) => collapsedDirs.has(getDirKey(keySuffix, node.path))}
+            isActive={(path) => revealSection === keySuffix && path === reveal?.path}
+            scrollRequest={revealSection === keySuffix ? reveal : null}
             onToggleDir={(path) => toggleDir(keySuffix, path)}
             onFileClick={(node) => {
               if (!node.change) return
@@ -400,6 +426,8 @@
       <FileTreeItems
         nodes={conflictsTree}
         isCollapsed={(node) => collapsedDirs.has(getDirKey('merge', node.path))}
+        isActive={(path) => revealSection === 'merge' && path === reveal?.path}
+        scrollRequest={revealSection === 'merge' ? reveal : null}
         onToggleDir={(path) => toggleDir('merge', path)}
         onFileClick={openConflict}
         onFileDblClick={(node) => {

@@ -1,9 +1,32 @@
 <script lang="ts">
   import * as ContextMenu from '$lib/components/ui/context-menu'
+  import { ignoreFiles } from '$lib/features/git/actions.svelte'
+  import type { PathGitState } from '$lib/features/git/gitStatus'
+  import {
+    confirmDiscardPaths,
+    describeFolder,
+    openHeadFile,
+    revealInSourceControl,
+    runPathsAction
+  } from '$lib/features/git/treeActions'
+  import type { CompareFileSide } from '$lib/features/workbench/model'
+  import {
+    canCompareWithSelected,
+    compareWithClipboard,
+    compareWithSelected,
+    selectForCompare
+  } from '$lib/features/workbench/surfaces/diff/compare.svelte'
+  import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import {
     FolderOpenIcon,
     FileCodeIcon,
     FileDiff,
+    Eye,
+    EyeOff,
+    PlusCircle,
+    MinusCircle,
+    GitBranchIcon,
+    GitCompareIcon,
     ScissorsIcon,
     CopyIcon,
     ClipboardIcon,
@@ -16,14 +39,15 @@
   import type { Snippet } from 'svelte'
 
   let {
+    folderPath,
     filePath,
     targetType,
+    git,
     children,
     canRevealInFileManager,
     canNativeFileClipboard,
     onRevealInFolder,
     onOpenInEditor,
-    onOpenDiff,
     onCut,
     onCopy,
     onPaste,
@@ -37,14 +61,15 @@
     onCopyFolderPath,
     onResetTarget
   }: {
+    folderPath: string
     filePath: string | null
     targetType: 'file' | 'directory' | null
+    git: PathGitState | null
     children: Snippet
     canRevealInFileManager: boolean
     canNativeFileClipboard: boolean
     onRevealInFolder: () => void
     onOpenInEditor: () => void
-    onOpenDiff: () => void
     onCut: () => void
     onCopy: () => void
     onPaste: () => void
@@ -58,6 +83,11 @@
     onCopyFolderPath: () => void
     onResetTarget: () => void
   } = $props()
+
+  const file = $derived<CompareFileSide | null>(
+    filePath && targetType === 'file' ? { kind: 'file', folderPath, path: filePath } : null
+  )
+  const changed = $derived(!!git && git.staged.length + git.unstaged.length > 0)
 </script>
 
 <ContextMenu.Root>
@@ -68,6 +98,8 @@
 
   <ContextMenu.Content>
     {#if filePath}
+      {@const path = filePath}
+      {@const describe = (files: string[]) => (targetType === 'file' ? path : describeFolder(path, files.length))}
       <!-- ── File/folder-targeted menu ── -->
       {#if canRevealInFileManager}
         <ContextMenu.Item onSelect={onRevealInFolder}>
@@ -86,13 +118,93 @@
           <span>Open in Editor</span>
         </ContextMenu.Item>
 
-        <ContextMenu.Item onSelect={onOpenDiff}>
-          <FileDiff size={14} />
-          <span>Open Diff</span>
+        {#if git && changed}
+          {@const state = git}
+          <ContextMenu.Item
+            onSelect={() =>
+              openWorkingTreeDiff(folderPath, state.unstaged.length === 0, path, path, { temporary: false })}
+          >
+            <FileDiff size={14} />
+            <span>Open Changes</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if git?.inHead}
+          <ContextMenu.Item onSelect={() => openHeadFile(folderPath, path)}>
+            <Eye size={14} />
+            <span>Open File (HEAD)</span>
+          </ContextMenu.Item>
+        {/if}
+      {/if}
+
+      {#if git}
+        {@const state = git}
+        {#if canRevealInFileManager || targetType === 'file'}
+          <ContextMenu.Separator />
+        {/if}
+        {#if targetType === 'directory' && changed}
+          <ContextMenu.Item
+            onSelect={() =>
+              openWorkingTreeDiff(folderPath, state.unstaged.length === 0, path, null, { temporary: false })}
+          >
+            <FileDiff size={14} />
+            <span>Open Changes</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if state.unstaged.length > 0}
+          <ContextMenu.Item
+            onSelect={() => runPathsAction(folderPath, 'stage', state.unstaged, describe(state.unstaged))}
+          >
+            <PlusCircle size={14} />
+            <span>Stage Changes</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if state.staged.length > 0}
+          <ContextMenu.Item
+            onSelect={() => runPathsAction(folderPath, 'unstage', state.staged, describe(state.staged))}
+          >
+            <MinusCircle size={14} />
+            <span>Unstage Changes</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if state.unstaged.length > 0}
+          <ContextMenu.Item
+            destructive
+            onSelect={() => confirmDiscardPaths(folderPath, state.unstaged, describe(state.unstaged))}
+          >
+            <Trash2 size={14} />
+            <span>Discard Changes</span>
+          </ContextMenu.Item>
+          <ContextMenu.Item onSelect={() => ignoreFiles(folderPath, [path])}>
+            <EyeOff size={14} />
+            <span>Add to .gitignore</span>
+          </ContextMenu.Item>
+        {/if}
+        <ContextMenu.Item onSelect={() => revealInSourceControl(folderPath, path)}>
+          <GitBranchIcon size={14} />
+          <span>Reveal in Source Control</span>
         </ContextMenu.Item>
       {/if}
 
-      {#if (canRevealInFileManager || targetType === 'file') && canNativeFileClipboard}
+      {#if file}
+        {@const compareFile = file}
+        <ContextMenu.Separator />
+        <ContextMenu.Item onSelect={() => selectForCompare(compareFile)}>
+          <GitCompareIcon size={14} />
+          <span>Select for Compare</span>
+        </ContextMenu.Item>
+        {#if canCompareWithSelected(compareFile)}
+          <ContextMenu.Item onSelect={() => compareWithSelected(compareFile)}>
+            <GitCompareIcon size={14} />
+            <span>Compare with Selected</span>
+          </ContextMenu.Item>
+        {/if}
+        <ContextMenu.Item onSelect={() => void compareWithClipboard(compareFile)}>
+          <ClipboardPasteIcon size={14} />
+          <span>Compare with Clipboard</span>
+        </ContextMenu.Item>
+      {/if}
+
+      {#if (canRevealInFileManager || targetType === 'file' || git !== null) && canNativeFileClipboard}
         <ContextMenu.Separator />
       {/if}
 

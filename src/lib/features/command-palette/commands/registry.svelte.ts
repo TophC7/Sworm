@@ -49,10 +49,17 @@ import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
 import { getActiveFolderPath, getActiveTab, hasClosedTabs } from '$lib/features/workbench/state.svelte'
 import {
+  activeCompareFile,
+  compareFileWith,
+  compareWithClipboard
+} from '$lib/features/workbench/surfaces/diff/compare.svelte'
+import {
   BellIcon,
+  ClipboardPasteIcon,
   CompassIcon,
   FilePlusCornerIcon,
   FolderOpenIcon,
+  GitCompareIcon,
   PaintbrushIcon,
   PanelLeftIcon,
   Play,
@@ -346,6 +353,30 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       terminalPolicy: 'skip-shell-keeps-modals',
       visible: activeFolderVisible,
       run: showFiles
+    }),
+    appCommand({
+      id: 'compare-active-file-with',
+      label: 'Compare Active File With…',
+      group: 'File',
+      icon: GitCompareIcon,
+      keywords: ['compare', 'diff', 'file', 'with', 'active'],
+      visible: () => activeCompareFile() !== null,
+      run: () => {
+        const file = activeCompareFile()
+        if (file) return compareFileWith(file)
+      }
+    }),
+    appCommand({
+      id: 'compare-active-file-with-clipboard',
+      label: 'Compare Active File with Clipboard',
+      group: 'File',
+      icon: ClipboardPasteIcon,
+      keywords: ['compare', 'diff', 'clipboard', 'paste', 'file', 'active'],
+      visible: () => activeCompareFile() !== null,
+      run: () => {
+        const file = activeCompareFile()
+        if (file) return compareWithClipboard(file)
+      }
     }),
     appCommand({
       id: 'tasks.show',

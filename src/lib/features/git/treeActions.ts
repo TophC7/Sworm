@@ -1,9 +1,10 @@
 import { backend } from '$lib/api/backend'
-import { setSidebarCollapsed, setSidebarView } from '$lib/features/app-shell/sidebar/state.svelte'
+import { revealGitChanges, setSidebarCollapsed, setSidebarView } from '$lib/features/app-shell/sidebar/state.svelte'
 import { confirmAsync } from '$lib/features/confirm/service.svelte'
 import { revealInExplorer } from '$lib/features/files/explorer.svelte'
 import { discardAllFolder } from '$lib/features/git/actions.svelte'
 import { discardFiles, stageFiles, unstageFiles } from '$lib/features/git/state.svelte'
+import { requestGitTreeReveal } from '$lib/features/git/treeReveal.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
 import { getActivationSeq } from '$lib/features/workbench/state.svelte'
 import { openHeadSnapshot } from '$lib/features/workbench/surfaces/diff/service.svelte'
@@ -72,11 +73,15 @@ export async function confirmDiscardAll(folderPath: string): Promise<void> {
   await discardAllFolder(folderPath)
 }
 
+export function describeFolder(path: string, count: number): string {
+  return `${count} file${count === 1 ? '' : 's'} under ${path}`
+}
+
 export function describeTarget(target: GitTreeMenuTarget): string {
   if (target.kind === 'file') return target.change.path
   if (target.kind === 'conflict') return target.conflict.path
-  const count = `${target.files.length} file${target.files.length === 1 ? '' : 's'}`
-  return target.kind === 'folder' ? `${count} under ${target.path}` : count
+  if (target.kind === 'folder') return describeFolder(target.path, target.files.length)
+  return `${target.files.length} file${target.files.length === 1 ? '' : 's'}`
 }
 
 export async function copyPatch(folderPath: string, files: string[], staged: boolean, label: string): Promise<void> {
@@ -138,6 +143,11 @@ export function revealInExplorerView(folderPath: string, path: string): void {
   )
 }
 
+export function revealInSourceControl(folderPath: string, path: string): void {
+  revealGitChanges()
+  requestGitTreeReveal(folderPath, path, getActivationSeq())
+}
+
 export async function openActualFile(folderPath: string, path: string): Promise<void> {
   try {
     await openTextFile(folderPath, path, { temporary: false })
@@ -152,8 +162,4 @@ export async function openHeadFile(folderPath: string, path: string): Promise<vo
   } catch (e) {
     notify.error('Open file (HEAD) failed', getErrorMessage(e))
   }
-}
-
-export function canOpenHead(change: GitChange): boolean {
-  return change.status === 'M' || change.status === 'D'
 }

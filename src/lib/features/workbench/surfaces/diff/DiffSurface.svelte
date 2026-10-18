@@ -3,6 +3,7 @@
   import CommitDiffView from '$lib/features/workbench/surfaces/diff/CommitDiffView.svelte'
   import StashDiffView from '$lib/features/workbench/surfaces/diff/StashDiffView.svelte'
   import RangeDiffView from '$lib/features/workbench/surfaces/diff/RangeDiffView.svelte'
+  import CompareDiffView from '$lib/features/workbench/surfaces/diff/CompareDiffView.svelte'
   import type { DiffTab } from '$lib/features/workbench/model'
 
   let {
@@ -35,4 +36,6 @@
     targetLabel={tab.source.targetLabel}
     initialFile={tab.initialFile}
   />
+{:else if tab?.source.kind === 'compare'}
+  <CompareDiffView left={tab.source.left} right={tab.source.right} />
 {/if}

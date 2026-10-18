@@ -7,19 +7,21 @@
   import { HistoryIcon, PencilIcon } from '$lib/icons/lucideExports'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import { cn } from '$lib/utils/cn'
-  import {
-    getAppCommandGroups,
-    getEditorCommandGroups
-  } from '$lib/features/command-palette/commands/registry.svelte'
+  import { getAppCommandGroups, getEditorCommandGroups } from '$lib/features/command-palette/commands/registry.svelte'
   import { getTaskPaletteGroups } from '$lib/features/command-palette/commands/tasks.svelte'
-  import type { Command as CommandType, CommandGroup as CommandGroupType } from '$lib/features/command-palette/commands/types'
+  import type {
+    Command as CommandType,
+    CommandGroup as CommandGroupType
+  } from '$lib/features/command-palette/commands/types'
   import { getFilePaletteGroups } from '$lib/features/command-palette/commands/files.svelte'
   import { refreshPlaces } from '$lib/features/browser/places.svelte'
   import { getRecentCommandIds, recordRecentCommand } from '$lib/features/command-palette/commands/recents.svelte'
   import {
     consumePendingInitialSearch,
+    getPaletteFilePick,
     isCommandPaletteOpen,
-    setCommandPaletteOpen
+    setCommandPaletteOpen,
+    settlePaletteFilePick
   } from '$lib/features/command-palette/state.svelte'
   import { ensureProjectFiles } from '$lib/features/files/projectFiles.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
@@ -70,15 +72,21 @@
     default: 'Type a command...'
   }
 
-  let paletteMode = $derived<PaletteMode>(PREFIX_MODES[search[0] as PrefixChar] ?? 'default')
+  const filePick = $derived(getPaletteFilePick())
+  let paletteMode = $derived<PaletteMode>(filePick ? 'files' : (PREFIX_MODES[search[0] as PrefixChar] ?? 'default'))
   let isPrefixedMode = $derived(paletteMode !== 'default')
-  let filterQuery = $derived(isPrefixedMode ? search.slice(1).trim() : search.trim())
+  let filterQuery = $derived(filePick ? search.trim() : isPrefixedMode ? search.slice(1).trim() : search.trim())
 
   let appGroups = $derived(getAppCommandGroups())
   let editorGroups = $derived(getEditorCommandGroups())
   let taskGroups = $derived(getTaskPaletteGroups())
   let activeFolderPath = $derived(getActiveFolderPath())
-  let fileGroups = $derived(paletteMode === 'files' ? getFilePaletteGroups(activeFolderPath, filterQuery) : [])
+  const fileFolderPath = $derived(filePick?.folderPath ?? activeFolderPath)
+  let fileGroups = $derived(
+    paletteMode === 'files'
+      ? getFilePaletteGroups(fileFolderPath, filterQuery, filePick ? settlePaletteFilePick : undefined)
+      : []
+  )
 
   $effect(() => {
     if (!open) return
@@ -88,8 +96,8 @@
   // Files mode reads from a per-folder cache; warm it on entry so the
   // first keystroke after typing `/` already sees results.
   $effect(() => {
-    if (paletteMode !== 'files' || !activeFolderPath) return
-    void ensureProjectFiles(activeFolderPath)
+    if (paletteMode !== 'files' || !fileFolderPath) return
+    void ensureProjectFiles(fileFolderPath)
   })
   let scheduledRun = 0
   const COMMAND_NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'])
@@ -108,25 +116,23 @@
   // Only surfaced in app mode, and only when search is empty. Filtering
   // should hit the real groups so every match is discoverable without
   // duplicates across Recent + its source section.
-  let recentGroup = $derived.by<CommandGroupType | null>(
-    () => {
-      if (isPrefixedMode) return null
-      const ids = getRecentCommandIds()
-      if (ids.length === 0) return null
-      const byId = new Map<string, CommandType>()
-      for (const g of appGroups) {
-        for (const cmd of g.commands) byId.set(cmd.id, cmd)
-      }
-      const recents: CommandType[] = []
-      for (const id of ids) {
-        const cmd = byId.get(id)
-        if (!cmd) continue
-        recents.push({ ...cmd, id: `recent:${cmd.id}`, icon: cmd.icon ?? HistoryIcon })
-      }
-      if (recents.length === 0) return null
-      return { heading: 'Recent', commands: recents }
+  let recentGroup = $derived.by<CommandGroupType | null>(() => {
+    if (isPrefixedMode) return null
+    const ids = getRecentCommandIds()
+    if (ids.length === 0) return null
+    const byId = new Map<string, CommandType>()
+    for (const g of appGroups) {
+      for (const cmd of g.commands) byId.set(cmd.id, cmd)
     }
-  )
+    const recents: CommandType[] = []
+    for (const id of ids) {
+      const cmd = byId.get(id)
+      if (!cmd) continue
+      recents.push({ ...cmd, id: `recent:${cmd.id}`, icon: cmd.icon ?? HistoryIcon })
+    }
+    if (recents.length === 0) return null
+    return { heading: 'Recent', commands: recents }
+  })
 
   let activeGroups = $derived.by(() => {
     // Files mode is pre-filtered by getFilePaletteGroups (the source
@@ -134,12 +140,7 @@
     // work). Skip the substring filter that the other modes use.
     if (paletteMode === 'files') return fileGroups
 
-    const source =
-      paletteMode === 'editor'
-        ? editorGroups
-        : paletteMode === 'task'
-          ? taskGroups
-          : appGroups
+    const source = paletteMode === 'editor' ? editorGroups : paletteMode === 'task' ? taskGroups : appGroups
     const withRecents = recentGroup && !filterQuery ? [recentGroup, ...source] : source
     if (!filterQuery) return withRecents
 
@@ -169,6 +170,12 @@
   })
 
   function run(cmd: CommandType) {
+    if (filePick) {
+      cmd.onSelect()
+      setCommandPaletteOpen(false)
+      search = ''
+      return
+    }
     // Task entries and editor-mode entries are excluded from Recent:
     // task lists already live behind `!`, and editor commands are
     // context-specific so a stale recent could fire in the wrong tab.
@@ -289,7 +296,11 @@
     onpointerleavecapture={handleCommandPointerLeave}
     class="min-h-0 overflow-visible rounded-none"
   >
-    <Command.Input aria-label="Search commands" placeholder={MODE_PLACEHOLDERS[paletteMode]} bind:value={search} />
+    <Command.Input
+      aria-label="Search commands"
+      placeholder={filePick?.placeholder ?? MODE_PLACEHOLDERS[paletteMode]}
+      bind:value={search}
+    />
     <Command.List bind:ref={commandListNode} class="max-h-[50vh] [scroll-padding-block:0.5rem]">
       <Command.Empty />
 

@@ -1,7 +1,14 @@
 import { closeTransientModals, registerModal } from '$lib/utils/modalRegistry.svelte'
 
+export interface PaletteFilePick {
+  folderPath: string
+  placeholder: string
+  resolve: (path: string | null) => void
+}
+
 let commandPaletteOpen = $state(false)
 let pendingInitialSearch: string | null = null
+let filePick = $state.raw<PaletteFilePick | null>(null)
 
 export function isCommandPaletteOpen(): boolean {
   return commandPaletteOpen
@@ -10,10 +17,30 @@ export function isCommandPaletteOpen(): boolean {
 export function setCommandPaletteOpen(open: boolean) {
   if (open && !commandPaletteOpen) closeTransientModals()
   commandPaletteOpen = open
+  if (!open) settlePaletteFilePick(null)
 }
 
 export function toggleCommandPalette() {
   setCommandPaletteOpen(!commandPaletteOpen)
+}
+
+export function getPaletteFilePick(): PaletteFilePick | null {
+  return filePick
+}
+
+/** Opens the palette's file list for one choice; resolves null if it closes without one. */
+export function pickFileAsync(folderPath: string, placeholder: string): Promise<string | null> {
+  settlePaletteFilePick(null)
+  const { promise, resolve } = Promise.withResolvers<string | null>()
+  filePick = { folderPath, placeholder, resolve }
+  openCommandPaletteWithSearch('')
+  return promise
+}
+
+export function settlePaletteFilePick(path: string | null): void {
+  const pick = filePick
+  filePick = null
+  pick?.resolve(path)
 }
 
 /**

@@ -15,6 +15,9 @@ import { getErrorMessage } from '$lib/utils/client-error'
 import * as sessionRegistry from '$lib/features/sessions/terminal/sessionRegistry'
 import * as taskRegistry from '$lib/features/tasks/taskRegistry'
 import type {
+  CompareDiffSource,
+  CompareFileSide,
+  CompareSide,
   DiffSource,
   DiffTab,
   EpicTab,
@@ -30,7 +33,7 @@ import type {
   TextTab,
   Workbench
 } from '$lib/features/workbench/model'
-import { canLockTab, tabServer } from '$lib/features/workbench/model'
+import { canLockTab, compareSidesEqual, tabServer } from '$lib/features/workbench/model'
 import { flushActiveGroups, getGroupRefs, isTabInert, restoreGroups, syncGroups } from './groups.svelte'
 import {
   loadPersistedWorkbench,
@@ -129,6 +132,8 @@ function diffSourcesEqual(a: DiffSource, b: DiffSource): boolean {
       return b.kind === 'stash' && a.stashIndex === b.stashIndex
     case 'range':
       return b.kind === 'range' && a.base === b.base && a.target === b.target
+    case 'compare':
+      return b.kind === 'compare' && compareSidesEqual(a.left, b.left) && compareSidesEqual(a.right, b.right)
     default: {
       const _exhaustive: never = a
       return _exhaustive
@@ -838,6 +843,31 @@ export function addRangeTab(
   )
 }
 
+/** Compare tabs are always persistent; a clipboard compare for the same file reuses its tab with the new text. */
+export function addCompareTab(left: CompareSide, right: CompareFileSide): TabId {
+  const source: CompareDiffSource = { kind: 'compare', left, right }
+  const match = (t: Tab) =>
+    t.kind === 'diff' &&
+    t.source.kind === 'compare' &&
+    compareSidesEqual(t.source.right, right) &&
+    (left.kind === 'clipboard' ? t.source.left.kind === 'clipboard' : compareSidesEqual(t.source.left, left))
+  return addContentTab(
+    'diff',
+    (id): DiffTab => ({
+      kind: 'diff',
+      id,
+      folderPath: right.folderPath,
+      source,
+      initialFile: null,
+      temporary: false,
+      locked: false
+    }),
+    false,
+    match,
+    (t) => (t.kind === 'diff' ? { ...t, source } : t)
+  )
+}
+
 export function addTextTab(folderPath: string, filePath: string, temporary = true, tabId?: TabId): TabId {
   return addContentTab(
     'text',
@@ -1064,6 +1094,8 @@ export async function reopenLastClosedTab(): Promise<TabId | null> {
               head.source.targetLabel,
               false
             )
+          case 'compare':
+            return addCompareTab(head.source.left, head.source.right)
           default: {
             const _exhaustive: never = head.source
             return _exhaustive

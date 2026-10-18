@@ -43,6 +43,14 @@
     setActiveTab,
     toggleTabLocked
   } from '$lib/features/workbench/state.svelte'
+  import {
+    canCompareWithSelected,
+    compareFileOf,
+    compareFileWith,
+    compareWithClipboard,
+    compareWithSelected,
+    selectForCompare
+  } from '$lib/features/workbench/surfaces/diff/compare.svelte'
   import { DND_MIME } from '$lib/features/dnd/payload'
   import { groupDragSource, tabDragSource } from '$lib/features/dnd/adapters/tab-strip'
   import { LocalTransfer } from '$lib/features/dnd/transfer.svelte'
@@ -352,6 +360,18 @@
         <ContextMenu.Item onSelect={() => void (taskRunning ? handleTaskStop(tab) : handleTaskRestart(tab))}>
           {taskRunning ? 'Stop' : 'Restart'}
         </ContextMenu.Item>
+      {/if}
+      {@const compareFile = compareFileOf(tab)}
+      {#if compareFile}
+        <ContextMenu.Item onSelect={() => selectForCompare(compareFile)}>Select for Compare</ContextMenu.Item>
+        {#if canCompareWithSelected(compareFile)}
+          <ContextMenu.Item onSelect={() => compareWithSelected(compareFile)}>Compare with Selected</ContextMenu.Item>
+        {/if}
+        <ContextMenu.Item onSelect={() => void compareFileWith(compareFile)}>Compare With…</ContextMenu.Item>
+        <ContextMenu.Item onSelect={() => void compareWithClipboard(compareFile)}>
+          Compare with Clipboard
+        </ContextMenu.Item>
+        <ContextMenu.Separator />
       {/if}
       {#if canLockTab(tab)}
         <!-- Lock only makes sense on content tabs where accidental input

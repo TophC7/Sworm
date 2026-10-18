@@ -15,6 +15,7 @@
   import { backend } from '$lib/api/backend'
   import { platform } from '$lib/platform'
   import { getGitSummary } from '$lib/features/git/state.svelte'
+  import { pathGitState } from '$lib/features/git/gitStatus'
   import GitStatusBadge from '$lib/features/git/GitStatusBadge.svelte'
   import {
     ensureProjectFiles,
@@ -39,7 +40,6 @@
     setShowHidden,
     toggleDir
   } from '$lib/features/files/explorer.svelte'
-  import { openWorkingTreeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import type { TabId } from '$lib/features/workbench/model'
   import { deleteTextPath, openTextFile, renameTextPath } from '$lib/features/workbench/surfaces/text/service.svelte'
   import {
@@ -382,6 +382,11 @@
 
   // Path -> status letter lookup from git state (prefer unstaged over staged)
   let gitSummary = $derived(getGitSummary(folderPath))
+  const contextGit = $derived(
+    gitSummary?.is_repo && contextFilePath && contextTargetType
+      ? pathGitState(gitSummary, contextFilePath, contextTargetType)
+      : null
+  )
   let gitStatusMap = $derived.by(() => {
     const map = new Map<string, string>()
     if (!gitSummary?.changes) return map
@@ -431,11 +436,6 @@
   function handleOpenInEditor() {
     if (!contextFilePath) return
     openTextFile(folderPath, contextFilePath)
-  }
-
-  function handleOpenDiff() {
-    if (!contextFilePath) return
-    openWorkingTreeDiff(folderPath, false, contextFilePath, contextFilePath, { temporary: false })
   }
 
   async function writeFileClipboard(op: 'copy' | 'cut') {
@@ -593,13 +593,14 @@
       {@attach rootDndAttachment()}
     >
       <FileContextMenu
+        {folderPath}
         filePath={contextFilePath}
         targetType={contextTargetType}
+        git={contextGit}
         canRevealInFileManager={!remoteFolder && platform.native !== null}
         canNativeFileClipboard={platform.native !== null && !remoteFolder}
         onRevealInFolder={handleRevealInFolder}
         onOpenInEditor={handleOpenInEditor}
-        onOpenDiff={handleOpenDiff}
         onCut={handleCut}
         onCopy={handleCopy}
         onPaste={handlePaste}

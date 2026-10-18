@@ -87,11 +87,14 @@
   {@const sourceAttachment = dndSourceAttachment?.(node) ?? null}
   {@const targetAttachment = dndDirectoryAttachment?.(node) ?? null}
   {@const dropActive = dndIsDropActive?.(node.path) ?? false}
+  {@const active = isActive?.(node.path) ?? false}
   {@const dimmed = isDimmed?.(node) ?? false}
   <div
     class="group/tree-row relative flex w-full items-center text-sm transition-opacity {dropActive
       ? 'bg-accent/15 text-bright'
-      : 'text-muted hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
+      : active
+        ? 'bg-accent/10 text-bright'
+        : 'text-muted hover:bg-surface'} {dimmed ? 'opacity-30' : ''}"
     style:height="{ROW_HEIGHT_PX}px"
     role="presentation"
     {@attach targetAttachment ?? noopAttachment}

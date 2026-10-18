@@ -92,9 +92,13 @@ function rankPaths(paths: string[], query: string): ScoredPath[] {
  * Build the palette groups shown when `/` mode is active. Returns one
  * "Files" group with up to MAX_RESULTS entries. Selecting an entry
  * opens the file as a non-temporary text tab, jumping to the parsed
- * line if a `:line` suffix was present.
+ * line if a `:line` suffix was present, or passes its path to onPick.
  */
-export function getFilePaletteGroups(folderPath: string | null, rawQuery: string): CommandGroup[] {
+export function getFilePaletteGroups(
+  folderPath: string | null,
+  rawQuery: string,
+  onPick?: (path: string) => void
+): CommandGroup[] {
   if (!folderPath) return []
 
   const paths = getProjectFilePaths(folderPath)
@@ -112,12 +116,14 @@ export function getFilePaletteGroups(folderPath: string | null, rawQuery: string
       subtitle: dir || undefined,
       lucideIcon: 'file',
       keywords: [path],
-      onSelect: () => {
-        void openTextFile(folderPath, path, {
-          temporary: false,
-          reveal: line !== null ? { kind: 'position', lineNumber: line, column: 1 } : undefined
-        })
-      }
+      onSelect: onPick
+        ? () => onPick(path)
+        : () => {
+            void openTextFile(folderPath, path, {
+              temporary: false,
+              reveal: line !== null ? { kind: 'position', lineNumber: line, column: 1 } : undefined
+            })
+          }
     }
     return entry
   })

@@ -59,10 +59,39 @@ export interface RangeDiffSource {
   targetLabel: string
 }
 
-export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource | RangeDiffSource
+export interface CompareFileSide {
+  kind: 'file'
+  folderPath: string
+  path: string
+}
+
+export interface CompareClipboardSide {
+  kind: 'clipboard'
+  content: string
+}
+
+export type CompareSide = CompareFileSide | CompareClipboardSide
+
+export interface CompareDiffSource {
+  kind: 'compare'
+  left: CompareSide
+  right: CompareFileSide
+}
+
+export function compareSidesEqual(a: CompareSide, b: CompareSide): boolean {
+  return a.kind === 'file'
+    ? b.kind === 'file' && a.folderPath === b.folderPath && a.path === b.path
+    : b.kind === 'clipboard' && a.content === b.content
+}
+
+export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource | RangeDiffSource | CompareDiffSource
 
 export type PersistedDiffSource =
-  { kind: 'working'; staged: boolean; scopePath?: string | null } | CommitDiffSource | StashDiffSource | RangeDiffSource
+  | { kind: 'working'; staged: boolean; scopePath?: string | null }
+  | CommitDiffSource
+  | StashDiffSource
+  | RangeDiffSource
+  | CompareDiffSource
 
 export interface DiffTab extends TabBase {
   kind: 'diff'

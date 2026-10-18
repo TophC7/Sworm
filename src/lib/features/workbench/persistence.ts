@@ -49,6 +49,8 @@ export function tabToPersisted(tab: Tab): PersistedTab | null {
         locked: tab.locked
       }
     case 'diff':
+      // Clipboard text stays out of storage and reopen history, like untitled buffers.
+      if (tab.source.kind === 'compare' && tab.source.left.kind === 'clipboard') return null
       return {
         kind: 'diff',
         folderPath: tab.folderPath,
@@ -197,6 +199,9 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
             target: persisted.source.target,
             targetLabel: persisted.source.targetLabel
           }
+          break
+        case 'compare':
+          source = { kind: 'compare', left: persisted.source.left, right: persisted.source.right }
           break
       }
       return {

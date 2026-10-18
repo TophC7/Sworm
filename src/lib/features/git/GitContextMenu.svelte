@@ -17,8 +17,8 @@
     undoLastCommit,
     unstageAllFolder
   } from '$lib/features/git/actions.svelte'
+  import { pathGitState } from './gitStatus'
   import {
-    canOpenHead,
     canRevealInFileManager,
     confirmDiscardAll,
     confirmDiscardPaths,
@@ -227,7 +227,7 @@
           <span>Open File</span>
         </ContextMenu.Item>
       {/if}
-      {#if canOpenHead(change)}
+      {#if pathGitState(summary, path, 'file')?.inHead}
         <ContextMenu.Item onSelect={() => openHeadFile(folderPath, path)}>
           <Eye size={14} />
           <span>Open File (HEAD)</span>

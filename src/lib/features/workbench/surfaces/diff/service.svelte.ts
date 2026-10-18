@@ -1,9 +1,16 @@
 import { backend } from '$lib/api/backend'
 import { notify } from '$lib/features/notifications/state.svelte'
-import type { DiffTab, TabId } from '$lib/features/workbench/model'
-import { addChangesTab, addCommitTab, addRangeTab, addStashTab } from '$lib/features/workbench/state.svelte'
+import type { CompareFileSide, CompareSide, DiffTab, TabId } from '$lib/features/workbench/model'
+import {
+  addChangesTab,
+  addCommitTab,
+  addCompareTab,
+  addRangeTab,
+  addStashTab
+} from '$lib/features/workbench/state.svelte'
 import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
+import { basename } from '$lib/utils/paths'
 
 export interface OpenDiffOptions {
   temporary?: boolean
@@ -69,6 +76,14 @@ export async function openRangeDiff(
   }
 }
 
+export function openCompareDiff(left: CompareSide, right: CompareFileSide): TabId {
+  return addCompareTab(left, right)
+}
+
+export function compareSideLabel(side: CompareSide): string {
+  return side.kind === 'clipboard' ? 'Clipboard' : basename(side.path)
+}
+
 export function openCommitSnapshot(folderPath: string, filePath: string, commitHash: string): Promise<TabId> {
   const short = commitHash.slice(0, 7)
   return openTextSnapshot(folderPath, filePath, commitHash, short)
@@ -97,6 +112,8 @@ export function getDiffTabTitle(tab: DiffTab): string {
       return `stash@{${tab.source.stashIndex}}`
     case 'range':
       return `${tab.source.baseLabel} ↔ ${tab.source.targetLabel}`
+    case 'compare':
+      return `${compareSideLabel(tab.source.left)} ↔ ${compareSideLabel(tab.source.right)}`
     default: {
       const _exhaustive: never = tab.source
       return _exhaustive
