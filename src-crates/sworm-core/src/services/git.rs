@@ -1213,7 +1213,7 @@ impl GitService {
             &[
                 "for-each-ref",
                 "--sort=-creatordate",
-                "--format=%(refname:short)%00%(objecttype)%00%(objectname)%00%(objectname:short)%00%(*objectname)%00%(*objectname:short)%00%(creatordate:iso8601-strict)%00%(contents:subject)",
+                "--format=%(refname:lstrip=2)%00%(objecttype)%00%(objectname)%00%(objectname:short)%00%(*objectname)%00%(*objectname:short)%00%(creatordate:iso8601-strict)%00%(contents:subject)",
                 "refs/tags",
             ],
             "list tags",
@@ -3213,6 +3213,30 @@ mod tests {
         assert_eq!(remotes[1].push_url.as_deref(), Some("/tmp/b.git"));
         assert!(remotes[1].push_default);
         std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn list_tags_preserves_literal_names_when_branch_and_tag_collide() {
+        let repo = temp_repo("list-tags-collision");
+        let tag_target = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        git(&repo, &["tag", "dup"]);
+        git(
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "branch tip"],
+        );
+        git(&repo, &["branch", "dup"]);
+        let branch_target = git_line(&repo, &["rev-parse", "refs/heads/dup"]).unwrap();
+        git(&repo, &["tag", "tags/dup"]);
+
+        let tags = GitService::new().list_tags(&repo).unwrap();
+        std::fs::remove_dir_all(repo).unwrap();
+
+        assert_ne!(tag_target, branch_target);
+        assert_eq!(tags.len(), 2);
+        let tag = tags.iter().find(|tag| tag.name == "dup").unwrap();
+        assert_eq!(tag.hash, tag_target);
+        let nested = tags.iter().find(|tag| tag.name == "tags/dup").unwrap();
+        assert_eq!(nested.hash, branch_target);
     }
 
     #[test]

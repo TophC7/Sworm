@@ -340,7 +340,7 @@ export function getGitCommandDefinitions(): AppCommandDefinition[] {
           errorTitle: 'Checkout failed',
           includeCurrent: true
         })
-        if (ref) await branches.checkoutRef(folderPath, { kind: 'detached', rev: ref.name, label: ref.name })
+        if (ref) await branches.checkoutRef(folderPath, { kind: 'detached', rev: ref.rev, label: ref.rev })
       }
     }),
     gitCommand({
@@ -364,7 +364,7 @@ export function getGitCommandDefinitions(): AppCommandDefinition[] {
           errorTitle: 'Create branch failed',
           includeCurrent: true
         })
-        if (ref) openGitDialog({ kind: 'create_branch', folderPath, base: ref.name })
+        if (ref) openGitDialog({ kind: 'create_branch', folderPath, base: ref.rev })
       }
     }),
     gitCommand({
@@ -408,7 +408,7 @@ export function getGitCommandDefinitions(): AppCommandDefinition[] {
           placeholder: `Select a branch or tag to merge into ${summary.branch}`,
           errorTitle: 'Merge failed'
         })
-        if (ref) openGitDialog({ kind: 'merge', folderPath, source: ref.name, current: summary.branch! })
+        if (ref) openGitDialog({ kind: 'merge', folderPath, source: ref.rev, current: summary.branch! })
       }
     }),
     gitCommand({
@@ -424,7 +424,7 @@ export function getGitCommandDefinitions(): AppCommandDefinition[] {
           errorTitle: 'Rebase failed',
           tags: false
         })
-        if (ref) await actions.rebaseCurrentOnto(folderPath, ref.name)
+        if (ref) await actions.rebaseCurrentOnto(folderPath, ref.rev)
       }
     }),
     gitCommand({

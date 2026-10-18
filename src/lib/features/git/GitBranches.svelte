@@ -247,7 +247,7 @@
   let currentName = $derived(entry?.list.find((b) => b.isCurrent)?.name ?? '')
 
   function openCreateDialog(base?: string) {
-    openGitDialog({ kind: 'create_branch', folderPath, base: base ?? currentName ?? 'HEAD' })
+    openGitDialog({ kind: 'create_branch', folderPath, base: base ?? (currentName || 'HEAD') })
   }
 
   function openCreateWorktreeDialog(branch: BranchSummary) {

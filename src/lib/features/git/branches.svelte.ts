@@ -402,9 +402,10 @@ export async function checkoutRef(folderPath: string, target: CheckoutTarget): P
   }
 }
 
-export type RefPick = { kind: 'branch' | 'remote' | 'tag'; name: string }
+/** `rev` is what git should resolve: `name`, or the fully qualified ref when a ref of another kind shares the name (git resolves bare names tag-first). */
+export type RefPick = { kind: 'branch' | 'remote' | 'tag'; name: string; rev: string }
 
-/** Filterable picker over local branches, remote branches and tags; a tag-list failure notifies `errorTitle`. */
+/** Filterable picker over local branches, remote branches and tags; a tag-list failure notifies `errorTitle` only when tags are included. */
 export async function pickRef(
   folderPath: string,
   options: {
@@ -417,17 +418,27 @@ export async function pickRef(
   }
 ): Promise<RefPick | null> {
   const { includeCurrent = false, remotes = true, tags: includeTags = true } = options
-  const [, tags] = await Promise.all([
+  const [, tagList] = await Promise.all([
     loadFor(folderPath, { autoFetch: false }),
-    includeTags
-      ? backend.git.listTags(folderPath).catch((error) => {
-          notify.error(options.errorTitle, getErrorMessage(error))
-          return null
-        })
-      : []
+    backend.git.listTags(folderPath).catch((error) => {
+      if (includeTags) {
+        notify.error(options.errorTitle, getErrorMessage(error))
+        return null
+      }
+      return []
+    })
   ])
-  if (!tags) return null
+  if (!tagList) return null
   const list = byFolder.get(folderPath)?.list ?? []
+  const kindsByName = new Map<string, Set<RefPick['kind']>>()
+  for (const branch of list) {
+    const kind = branch.kind === 'local' ? 'branch' : 'remote'
+    kindsByName.set(branch.name, (kindsByName.get(branch.name) ?? new Set()).add(kind))
+  }
+  for (const tag of tagList) {
+    kindsByName.set(tag.name, (kindsByName.get(tag.name) ?? new Set()).add('tag'))
+  }
+  const collides = (name: string) => (kindsByName.get(name)?.size ?? 0) > 1
   const picks: PickOption[] = [
     ...list.filter((branch) => branch.kind === 'local' && (includeCurrent || !branch.isCurrent)),
     ...list.filter((branch) => remotes && branch.kind === 'remote')
@@ -436,13 +447,15 @@ export async function pickRef(
     label: branch.name,
     description: `${branch.kind === 'local' ? 'Branch' : 'Remote Branch'} · ${branch.tip.shortHash}`
   }))
-  picks.push(
-    ...tags.map((tag) => ({
-      value: `tag:${tag.name}`,
-      label: tag.name,
-      description: `Tag · ${tag.shortHash}`
-    }))
-  )
+  if (includeTags) {
+    picks.push(
+      ...tagList.map((tag) => ({
+        value: `tag:${tag.name}`,
+        label: tag.name,
+        description: `Tag · ${tag.shortHash}`
+      }))
+    )
+  }
   const value = await pickAsync({
     title: options.title,
     filterPlaceholder: options.placeholder,
@@ -450,7 +463,11 @@ export async function pickRef(
   })
   if (value === null) return null
   const separator = value.indexOf(':')
-  return { kind: value.slice(0, separator) as RefPick['kind'], name: value.slice(separator + 1) }
+  const kind = value.slice(0, separator) as RefPick['kind']
+  const name = value.slice(separator + 1)
+  const qualified =
+    kind === 'branch' ? `refs/heads/${name}` : kind === 'remote' ? `refs/remotes/${name}` : `refs/tags/${name}`
+  return { kind, name, rev: collides(name) ? qualified : name }
 }
 
 export async function checkoutTo(folderPath: string): Promise<void> {
@@ -460,12 +477,12 @@ export async function checkoutTo(folderPath: string): Promise<void> {
     errorTitle: 'Checkout failed'
   })
   if (!ref) return
-  const { kind, name } = ref
+  const { kind, name, rev } = ref
   const target: CheckoutTarget =
     kind === 'branch'
       ? { kind: 'branch', name }
       : kind === 'remote'
-        ? { kind: 'remote', remoteName: name, localName: localNameForRemoteRef(name) }
-        : { kind: 'detached', rev: name, label: name }
+        ? { kind: 'remote', remoteName: rev, localName: localNameForRemoteRef(name) }
+        : { kind: 'detached', rev, label: rev }
   await checkoutRef(folderPath, target)
 }
