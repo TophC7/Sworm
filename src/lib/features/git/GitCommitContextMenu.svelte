@@ -11,8 +11,7 @@
     revertCommit
   } from '$lib/features/git/actions.svelte'
   import { checkoutRef } from '$lib/features/git/branches.svelte'
-  import CreateBranchDialog from '$lib/features/git/dialogs/CreateBranchDialog.svelte'
-  import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
+  import { openGitDialog } from './dialogs/host.svelte'
   import { localNameForRemoteRef } from '$lib/features/git/gitRefs'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import { openCommitDiff, openRangeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
@@ -36,8 +35,6 @@
   let paused = $derived(getGitSummary(folderPath)?.operation != null)
   let checkoutRefs = $derived(commit.refs.filter((ref) => ref.kind !== 'branch' || !ref.current))
   let tagRefs = $derived(commit.refs.filter((ref) => ref.kind === 'tag'))
-  let createBranchOpen = $state(false)
-  let createWorktreeOpen = $state(false)
 
   function checkout(ref: GitRef) {
     void checkoutRef(
@@ -105,7 +102,7 @@
       <span>Checkout (Detached)</span>
     </ContextMenu.Item>
     <ContextMenu.Separator />
-    <ContextMenu.Item onSelect={() => (createBranchOpen = true)}>
+    <ContextMenu.Item onSelect={() => openGitDialog({ kind: 'create_branch', folderPath, base: commit.short_hash })}>
       <GitBranchIcon size={14} />
       <span>Create Branch…</span>
     </ContextMenu.Item>
@@ -113,7 +110,14 @@
       <TagIcon size={14} />
       <span>Create Tag…</span>
     </ContextMenu.Item>
-    <ContextMenu.Item onSelect={() => (createWorktreeOpen = true)}>
+    <ContextMenu.Item
+      onSelect={() =>
+        openGitDialog({
+          kind: 'create_worktree',
+          folderPath,
+          checkout: { kind: 'new_branch', name: '', base: commit.hash }
+        })}
+    >
       <FolderOpenIcon size={14} />
       <span>Create Worktree…</span>
     </ContextMenu.Item>
@@ -194,14 +198,3 @@
     </ContextMenu.Item>
   </ContextMenu.Content>
 </ContextMenu.Root>
-
-{#if createBranchOpen}
-  <CreateBranchDialog bind:open={createBranchOpen} {folderPath} defaultBase={commit.short_hash} />
-{/if}
-{#if createWorktreeOpen}
-  <CreateWorktreeDialog
-    bind:open={createWorktreeOpen}
-    {folderPath}
-    initialCheckout={{ kind: 'new_branch', name: '', base: commit.hash }}
-  />
-{/if}

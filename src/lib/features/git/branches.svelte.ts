@@ -402,25 +402,41 @@ export async function checkoutRef(folderPath: string, target: CheckoutTarget): P
   }
 }
 
-export async function checkoutTo(folderPath: string): Promise<void> {
+export type RefPick = { kind: 'branch' | 'remote' | 'tag'; name: string }
+
+/** Filterable picker over local branches, remote branches and tags; a tag-list failure notifies `errorTitle`. */
+export async function pickRef(
+  folderPath: string,
+  options: {
+    title: string
+    placeholder: string
+    errorTitle: string
+    includeCurrent?: boolean
+    remotes?: boolean
+    tags?: boolean
+  }
+): Promise<RefPick | null> {
+  const { includeCurrent = false, remotes = true, tags: includeTags = true } = options
   const [, tags] = await Promise.all([
     loadFor(folderPath, { autoFetch: false }),
-    backend.git.listTags(folderPath).catch((error) => {
-      notify.error('Checkout failed', getErrorMessage(error))
-      return null
-    })
+    includeTags
+      ? backend.git.listTags(folderPath).catch((error) => {
+          notify.error(options.errorTitle, getErrorMessage(error))
+          return null
+        })
+      : []
   ])
-  if (!tags) return
+  if (!tags) return null
   const list = byFolder.get(folderPath)?.list ?? []
-  const options: PickOption[] = [
-    ...list.filter((branch) => branch.kind === 'local' && !branch.isCurrent),
-    ...list.filter((branch) => branch.kind === 'remote')
+  const picks: PickOption[] = [
+    ...list.filter((branch) => branch.kind === 'local' && (includeCurrent || !branch.isCurrent)),
+    ...list.filter((branch) => remotes && branch.kind === 'remote')
   ].map((branch) => ({
     value: `${branch.kind === 'local' ? 'branch' : 'remote'}:${branch.name}`,
     label: branch.name,
     description: `${branch.kind === 'local' ? 'Branch' : 'Remote Branch'} · ${branch.tip.shortHash}`
   }))
-  options.push(
+  picks.push(
     ...tags.map((tag) => ({
       value: `tag:${tag.name}`,
       label: tag.name,
@@ -428,14 +444,23 @@ export async function checkoutTo(folderPath: string): Promise<void> {
     }))
   )
   const value = await pickAsync({
-    title: 'Checkout to',
-    filterPlaceholder: 'Select a ref to checkout',
-    options
+    title: options.title,
+    filterPlaceholder: options.placeholder,
+    options: picks
   })
-  if (value === null) return
+  if (value === null) return null
   const separator = value.indexOf(':')
-  const kind = value.slice(0, separator)
-  const name = value.slice(separator + 1)
+  return { kind: value.slice(0, separator) as RefPick['kind'], name: value.slice(separator + 1) }
+}
+
+export async function checkoutTo(folderPath: string): Promise<void> {
+  const ref = await pickRef(folderPath, {
+    title: 'Checkout to',
+    placeholder: 'Select a ref to checkout',
+    errorTitle: 'Checkout failed'
+  })
+  if (!ref) return
+  const { kind, name } = ref
   const target: CheckoutTarget =
     kind === 'branch'
       ? { kind: 'branch', name }

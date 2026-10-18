@@ -6,7 +6,7 @@
   import { sidebarRowVariants } from '$lib/components/ui/sidebar-row'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { migrateWorktreeChanges, pruneWorktrees, removeWorktree } from '$lib/features/git/actions.svelte'
-  import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
+  import { openGitDialog } from './dialogs/host.svelte'
   import * as worktrees from '$lib/features/git/worktrees.svelte'
   import { openFolder } from '$lib/features/workbench/state.svelte'
   import {
@@ -28,7 +28,6 @@
   let { folderPath }: { folderPath: string } = $props()
 
   let entry = $derived(worktrees.byFolder.get(folderPath))
-  let createOpen = $state(false)
   let busy = $state(false)
   let actionError = $state<{ path: string; message: string } | null>(null)
   let error = $derived(actionError?.path === folderPath ? actionError.message : (entry?.error ?? null))
@@ -63,7 +62,12 @@
 
 <div data-slot="git-worktrees" class="flex h-full min-h-0 flex-col overflow-hidden text-base">
   <div class="flex shrink-0 items-center gap-1.5 border-b border-edge px-2 py-1.5">
-    <Button size="sm" variant="ghost" disabled={busy} onclick={() => (createOpen = true)}>
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={busy}
+      onclick={() => openGitDialog({ kind: 'create_worktree', folderPath })}
+    >
       <Plus size={14} />
       Create
     </Button>
@@ -201,7 +205,3 @@
     {/if}
   </div>
 </div>
-
-{#if createOpen}
-  <CreateWorktreeDialog bind:open={createOpen} {folderPath} />
-{/if}

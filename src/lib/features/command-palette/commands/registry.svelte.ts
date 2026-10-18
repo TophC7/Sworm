@@ -1,5 +1,6 @@
 import type { Component } from 'svelte'
 import type { Command, CommandGroup } from './types'
+import { getGitCommandDefinitions } from './git.svelte'
 import { getTextEditorActions } from '$lib/features/editor/renderers/monaco/text/actions.svelte'
 import { platform } from '$lib/platform'
 import {
@@ -44,20 +45,10 @@ import {
   moveServerWorkbenchToNewWindow,
   removeServerWorkbenchFromWindow
 } from '$lib/features/app-actions/actions.svelte'
-import {
-  fetchActiveFolder,
-  forcePushActiveFolder,
-  pullActiveFolder,
-  pushActiveFolder,
-  undoLastCommitActiveFolder
-} from '$lib/features/git/actions.svelte'
-import { getGitSummary } from '$lib/features/git/state.svelte'
 import { getTasksReactive } from '$lib/features/tasks/state.svelte'
 import { getLastTaskId } from '$lib/features/tasks/service.svelte'
 import { getActiveFolderPath, getActiveTab, hasClosedTabs } from '$lib/features/workbench/state.svelte'
 import {
-  ArrowDownToLineIcon,
-  ArrowUpFromLineIcon,
   BellIcon,
   CompassIcon,
   FilePlusCornerIcon,
@@ -70,7 +61,6 @@ import {
   RotateCw,
   SearchIcon,
   SettingsIcon,
-  ShieldAlertIcon,
   SquareArrowOutUpRight,
   TerminalIcon,
   ServerIcon,
@@ -459,57 +449,7 @@ export function getAppCommandDefinitions(): AppCommandDefinition[] {
       terminalPolicy: 'skip-shell-keeps-modals',
       run: zoomReset
     }),
-    appCommand({
-      id: 'git-pull',
-      label: 'Pull',
-      group: 'Git',
-      icon: ArrowDownToLineIcon,
-      keywords: ['git', 'pull', 'download', 'sync'],
-      visible: activeFolderVisible,
-      run: pullActiveFolder
-    }),
-    appCommand({
-      id: 'git-push',
-      label: 'Push',
-      group: 'Git',
-      icon: ArrowUpFromLineIcon,
-      keywords: ['git', 'push', 'upload', 'sync'],
-      visible: activeFolderVisible,
-      run: pushActiveFolder
-    }),
-    appCommand({
-      id: 'git-fetch',
-      label: 'Fetch',
-      group: 'Git',
-      icon: RefreshCwIcon,
-      keywords: ['git', 'fetch', 'remote', 'update'],
-      visible: activeFolderVisible,
-      run: fetchActiveFolder
-    }),
-    appCommand({
-      id: 'git-force-push',
-      label: 'Force Push (with lease)',
-      group: 'Git',
-      icon: ShieldAlertIcon,
-      keywords: ['git', 'force', 'push', 'lease'],
-      dangerous: true,
-      visible: activeFolderVisible,
-      run: forcePushActiveFolder
-    }),
-    appCommand({
-      id: 'git-undo-last-commit',
-      label: 'Undo Last Commit',
-      group: 'Git',
-      icon: Undo2Icon,
-      keywords: ['git', 'undo', 'reset', 'revert', 'commit'],
-      dangerous: true,
-      visible: () => {
-        const folderPath = getActiveFolderPath()
-        const summary = folderPath !== null ? getGitSummary(folderPath) : null
-        return !!summary?.is_repo && !summary.unborn && summary.operation === null
-      },
-      run: undoLastCommitActiveFolder
-    }),
+    ...getGitCommandDefinitions(),
     appCommand({
       id: 'open-notifications',
       label: () => (isNotificationCenterOpen() ? 'Hide Notifications' : 'Open Notifications'),

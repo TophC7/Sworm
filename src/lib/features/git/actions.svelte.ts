@@ -4,6 +4,7 @@ import { confirmAsync, pickAsync, promptAsync } from '$lib/features/confirm/serv
 import {
   getCommitState,
   getEditedCommitMessage,
+  loadCommitPrefs,
   setCommitDraft,
   setSkipHooks,
   syncCommitTemplate
@@ -575,6 +576,30 @@ export function syncFolder(folderPath: string, rebase = false): Promise<void | u
 
 export type CommitVariant = { kind: 'commit'; post: PostCommit } | { kind: 'amend' } | { kind: 'all' }
 
+/** Palette commit: uses the draft, prompting for a message when it is empty (amend keeps the previous message). */
+export async function commitWithPrompt(folderPath: string, variant: CommitVariant): Promise<void> {
+  await loadCommitPrefs(folderPath)
+  if (variant.kind !== 'amend' && !getCommitState(folderPath).draft.trim()) {
+    const title =
+      variant.kind === 'all'
+        ? 'Commit All'
+        : variant.post === 'push'
+          ? 'Commit & Push'
+          : variant.post === 'sync'
+            ? 'Commit & Sync'
+            : 'Commit'
+    const answer = await promptAsync({
+      title,
+      message: 'Enter a commit message.',
+      placeholder: 'Commit message',
+      confirmLabel: title
+    })
+    if (!answer?.trim()) return
+    setCommitDraft(folderPath, answer)
+  }
+  await commitFolder(folderPath, variant)
+}
+
 /** Commit the folder's draft with its Sign Off / Skip Hooks flags; offers to stage everything when nothing is staged. */
 export async function commitFolder(folderPath: string, variant: CommitVariant): Promise<void> {
   const summary = getGitSummary(folderPath)
@@ -707,17 +732,25 @@ export async function popStash(folderPath: string, index: number): Promise<boole
   )
 }
 
-export async function popLatestStash(folderPath: string): Promise<void> {
+async function hasStashes(folderPath: string, errorTitle: string): Promise<boolean> {
   const count = await backend.git.stashCount(folderPath).catch((e) => {
-    notify.error('Pop stash failed', getErrorMessage(e))
+    notify.error(errorTitle, getErrorMessage(e))
     return null
   })
-  if (count === null) return
+  if (count === null) return false
   if (count === 0) {
     notify.info('No stashes', 'There are no stashes in the repository.')
-    return
+    return false
   }
-  await popStash(folderPath, 0)
+  return true
+}
+
+export async function popLatestStash(folderPath: string): Promise<void> {
+  if (await hasStashes(folderPath, 'Pop stash failed')) await popStash(folderPath, 0)
+}
+
+export async function applyLatestStash(folderPath: string): Promise<void> {
+  if (await hasStashes(folderPath, 'Apply stash failed')) await applyStash(folderPath, 0)
 }
 
 export async function dropStash(folderPath: string, index: number): Promise<boolean> {
@@ -792,8 +825,16 @@ export function fastForwardBranch(folderPath: string, name: string): Promise<voi
   )
 }
 
-export function rebaseOnto(folderPath: string, target: string): Promise<void | undefined> {
-  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.rebase, () =>
+/** Confirms, then rebases the current branch onto `target`. */
+export async function rebaseCurrentOnto(folderPath: string, target: string): Promise<void> {
+  const current = getGitSummary(folderPath)?.branch ?? 'HEAD'
+  const proceed = await confirmAsync({
+    title: `Rebase ${current} onto ${target}?`,
+    message: `Replays your ${current} commits on top of ${target}. Rebasing rewrites history.`,
+    confirmLabel: 'Rebase'
+  })
+  if (!proceed) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.rebase, () =>
     runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'rebase', target }))
   )
 }
@@ -947,33 +988,6 @@ export async function markResolved(folderPath: string, files: string[]): Promise
     () => applyConflictPlan(folderPath, plan)
   )
   if (resolved) notify.success('Conflicts resolved')
-}
-
-export async function pullActiveFolder(): Promise<void> {
-  const folderPath = getActiveFolderPath()
-  if (folderPath) await pullFolder(folderPath)
-}
-
-export async function pushActiveFolder(): Promise<void> {
-  const folderPath = getActiveFolderPath()
-  if (folderPath) await pushFolder(folderPath)
-}
-
-export async function fetchActiveFolder(): Promise<void> {
-  const folderPath = getActiveFolderPath()
-  if (folderPath) await fetchFolder(folderPath)
-}
-
-export async function forcePushActiveFolder(): Promise<void> {
-  const folderPath = getActiveFolderPath()
-  if (!folderPath) return
-  await forcePushWithLease(folderPath)
-}
-
-export async function undoLastCommitActiveFolder(): Promise<void> {
-  const folderPath = getActiveFolderPath()
-  if (!folderPath) return
-  await undoLastCommit(folderPath)
 }
 
 /** Add is never retried: a lost response may already have created this checkout. */

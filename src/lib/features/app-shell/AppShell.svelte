@@ -8,6 +8,7 @@
   import { refreshNixForFolder } from '$lib/features/settings/state/nix.svelte'
   import CommandCenter from '$lib/features/command-palette/CommandCenter.svelte'
   import ConfirmHost from '$lib/features/confirm/ConfirmHost.svelte'
+  import GitDialogHost from '$lib/features/git/dialogs/GitDialogHost.svelte'
   import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import NotificationsSurface from '$lib/features/notifications/NotificationsSurface.svelte'
   import Browser from '$lib/features/browser/Browser.svelte'
@@ -155,5 +156,6 @@
   <SettingsDialog open={isSettingsOpen()} onClose={() => setSettingsOpen(false)} />
   <NotificationsSurface />
   <Browser />
+  <GitDialogHost />
   <ConfirmHost />
 </Tooltip.Provider>

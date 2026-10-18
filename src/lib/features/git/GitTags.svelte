@@ -6,8 +6,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { copyToClipboard, createTag, deleteRemoteTag, deleteTag, pushTag } from '$lib/features/git/actions.svelte'
   import { checkoutRef } from '$lib/features/git/branches.svelte'
-  import CreateBranchDialog from '$lib/features/git/dialogs/CreateBranchDialog.svelte'
-  import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
+  import { openGitDialog } from './dialogs/host.svelte'
   import { getGitSummary, getTags, loadTags } from '$lib/features/git/state.svelte'
   import { openCommitDiff, openRangeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import {
@@ -27,10 +26,6 @@
 
   let tags = $derived(getTags(folderPath))
   let summary = $derived(getGitSummary(folderPath))
-  let createBranchOpen = $state(false)
-  let createBranchBase = $state('')
-  let createWorktreeOpen = $state(false)
-  let createWorktreeBase = $state('')
 
   $effect(() => {
     void loadTags(folderPath)
@@ -103,20 +98,17 @@
                 <span>Checkout (Detached)</span>
               </ContextMenu.Item>
               <ContextMenu.Separator />
-              <ContextMenu.Item
-                onSelect={() => {
-                  createBranchBase = tag.name
-                  createBranchOpen = true
-                }}
-              >
+              <ContextMenu.Item onSelect={() => openGitDialog({ kind: 'create_branch', folderPath, base: tag.name })}>
                 <GitBranchIcon size={14} />
                 <span>Create Branch…</span>
               </ContextMenu.Item>
               <ContextMenu.Item
-                onSelect={() => {
-                  createWorktreeBase = tag.name
-                  createWorktreeOpen = true
-                }}
+                onSelect={() =>
+                  openGitDialog({
+                    kind: 'create_worktree',
+                    folderPath,
+                    checkout: { kind: 'new_branch', name: '', base: tag.name }
+                  })}
               >
                 <FolderOpenIcon size={14} />
                 <span>Create Worktree…</span>
@@ -164,15 +156,3 @@
     {/if}
   </div>
 </div>
-
-{#if createBranchOpen}
-  <CreateBranchDialog bind:open={createBranchOpen} {folderPath} defaultBase={createBranchBase} />
-{/if}
-
-{#if createWorktreeOpen}
-  <CreateWorktreeDialog
-    bind:open={createWorktreeOpen}
-    {folderPath}
-    initialCheckout={{ kind: 'new_branch', name: '', base: createWorktreeBase }}
-  />
-{/if}

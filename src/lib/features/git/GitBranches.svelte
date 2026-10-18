@@ -17,7 +17,6 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { SearchInput } from '$lib/components/ui/input'
-  import { confirmAsync } from '$lib/features/confirm/service.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { openFolder } from '$lib/features/workbench/state.svelte'
@@ -32,7 +31,7 @@
     publishBranch,
     pullFolder,
     pushFolder,
-    rebaseOnto,
+    rebaseCurrentOnto,
     removeRemote,
     renameRemote,
     setRemoteUrl,
@@ -46,12 +45,7 @@
   import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
   import { GRAPH_COLORS } from '$lib/features/git/graph'
   import { getGitBranchesFocusRequest } from '$lib/features/app-shell/sidebar/state.svelte'
-  import CreateBranchDialog from '$lib/features/git/dialogs/CreateBranchDialog.svelte'
-  import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
-  import RenameBranchDialog from '$lib/features/git/dialogs/RenameBranchDialog.svelte'
-  import DeleteBranchDialog from '$lib/features/git/dialogs/DeleteBranchDialog.svelte'
-  import SetUpstreamDialog from '$lib/features/git/dialogs/SetUpstreamDialog.svelte'
-  import MergeConfirmDialog from '$lib/features/git/dialogs/MergeConfirmDialog.svelte'
+  import { openGitDialog } from './dialogs/host.svelte'
   import {
     ArrowDown01Icon,
     ArrowDownAZIcon,
@@ -96,25 +90,6 @@
 
   let search = $state('')
   let searchInputEl = $state<HTMLInputElement | null>(null)
-
-  let createOpen = $state(false)
-  let createBase = $state<string>('')
-
-  let createWorktreeOpen = $state(false)
-  let worktreeCheckout = $state<GitWorktreeCheckout>({ kind: 'new_branch', name: '', base: 'HEAD' })
-
-  let renameOpen = $state(false)
-  let renameTarget = $state<string>('')
-
-  let deleteOpen = $state(false)
-  let deleteBranch = $state<BranchSummary | null>(null)
-
-  let upstreamOpen = $state(false)
-  let upstreamTarget = $state<string>('')
-  let upstreamInitial = $state<string>('')
-
-  let mergeOpen = $state(false)
-  let mergeSource = $state<string>('')
 
   type BranchHistoryEntry = {
     commits: GraphCommit[]
@@ -272,51 +247,33 @@
   let currentName = $derived(entry?.list.find((b) => b.isCurrent)?.name ?? '')
 
   function openCreateDialog(base?: string) {
-    createBase = base ?? currentName ?? 'HEAD'
-    createOpen = true
+    openGitDialog({ kind: 'create_branch', folderPath, base: base ?? currentName ?? 'HEAD' })
   }
 
   function openCreateWorktreeDialog(branch: BranchSummary) {
-    worktreeCheckout =
+    const checkout: GitWorktreeCheckout =
       branch.kind === 'local' && !branch.isCurrent && branch.worktreePath === null
         ? { kind: 'existing_branch', name: branch.name }
         : { kind: 'new_branch', name: '', base: branch.name }
-    createWorktreeOpen = true
+    openGitDialog({ kind: 'create_worktree', folderPath, checkout })
   }
 
   function openRenameDialog(branch: BranchSummary) {
-    renameTarget = branch.name
-    renameOpen = true
+    openGitDialog({ kind: 'rename_branch', folderPath, branch: branch.name })
   }
 
   function openDeleteDialog(branch: BranchSummary) {
-    deleteBranch = branch
-    deleteOpen = true
+    openGitDialog({ kind: 'delete_branch', folderPath, branch })
   }
 
   function openUpstreamDialog(branch: BranchSummary) {
-    upstreamTarget = branch.name
     const suggestions = entry?.list.filter((b) => b.kind === 'remote').map((b) => b.name) ?? []
-    upstreamInitial = suggestions.find((s) => s.endsWith(`/${branch.name}`)) ?? suggestions[0] ?? ''
-    upstreamOpen = true
+    const initialUpstream = suggestions.find((s) => s.endsWith(`/${branch.name}`)) ?? suggestions[0] ?? ''
+    openGitDialog({ kind: 'set_upstream', folderPath, branch: branch.name, initialUpstream })
   }
 
   function openMergeDialog(branch: BranchSummary) {
-    mergeSource = branch.name
-    mergeOpen = true
-  }
-
-  async function openRebaseDialog(branch: BranchSummary) {
-    const target = branch.name
-    const current = currentName
-    const proceed = await confirmAsync({
-      title: `Rebase ${current} onto ${target}?`,
-      message: `Replays your ${current} commits on top of ${target}. Rebasing rewrites history.`,
-      confirmLabel: 'Rebase'
-    })
-    if (!proceed) return
-
-    await rebaseOnto(folderPath, target)
+    openGitDialog({ kind: 'merge', folderPath, source: branch.name, current: currentName })
   }
 
   function compareWithHead(branch: BranchSummary) {
@@ -749,7 +706,7 @@
           <GitMergeIcon size={14} />
           <span>Merge into Current…</span>
         </ContextMenu.Item>
-        <ContextMenu.Item onSelect={() => void openRebaseDialog(branch)}>
+        <ContextMenu.Item onSelect={() => void rebaseCurrentOnto(folderPath, branch.name)}>
           <GitPullRequestIcon size={14} />
           <span>Rebase Current onto This…</span>
         </ContextMenu.Item>
@@ -851,32 +808,3 @@
     {@render branchHistory(branch, depth)}
   {/if}
 {/snippet}
-
-{#if createOpen}
-  <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {folderPath} />
-{/if}
-
-{#if createWorktreeOpen}
-  <CreateWorktreeDialog bind:open={createWorktreeOpen} initialCheckout={worktreeCheckout} {folderPath} />
-{/if}
-
-{#if renameOpen}
-  <RenameBranchDialog bind:open={renameOpen} oldName={renameTarget} {folderPath} />
-{/if}
-
-{#if deleteOpen && deleteBranch}
-  <DeleteBranchDialog bind:open={deleteOpen} branch={deleteBranch} {folderPath} />
-{/if}
-
-{#if upstreamOpen}
-  <SetUpstreamDialog
-    bind:open={upstreamOpen}
-    branchName={upstreamTarget}
-    initialUpstream={upstreamInitial}
-    {folderPath}
-  />
-{/if}
-
-{#if mergeOpen}
-  <MergeConfirmDialog bind:open={mergeOpen} source={mergeSource} current={currentName} {folderPath} />
-{/if}

@@ -8,9 +8,31 @@
   import { SearchInput } from '$lib/components/ui/input'
   import { statusChipVariants } from '$lib/components/ui/status-chip'
   import { revealGitBranches } from '$lib/features/app-shell/sidebar/state.svelte'
-  import { GitBranchIcon, GitMergeIcon } from '$lib/icons/lucideExports'
+  import {
+    ArrowDownToLineIcon,
+    ArrowRight,
+    ArrowUpFromLineIcon,
+    Check,
+    CloudUploadIcon,
+    GitBranchIcon,
+    GitCommitIcon,
+    GitMergeIcon,
+    MoreHorizontalIcon,
+    RefreshCwIcon,
+    RotateCw,
+    ShieldAlertIcon
+  } from '$lib/icons/lucideExports'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import * as branches from '$lib/features/git/branches.svelte'
+  import {
+    fetchFolder,
+    forcePushWithLease,
+    publishBranch,
+    pullFolder,
+    pushFolder,
+    syncFolder
+  } from '$lib/features/git/actions.svelte'
+  import { remoteActionState } from '$lib/features/git/commitButton'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import { describeOperation } from '$lib/features/git/operation'
   import type { BranchSummary } from '$lib/types/backend'
@@ -21,9 +43,17 @@
   let gitSummary = $derived(getGitSummary(folderPath))
   const operation = $derived(gitSummary?.operation ?? null)
   const operationDisplay = $derived(operation ? describeOperation(operation) : null)
+  const remote = $derived(gitSummary ? remoteActionState(gitSummary) : { tracking: false, publishable: false })
+  const shortHead = $derived(gitSummary?.head?.slice(0, 7) ?? 'HEAD')
+  const headName = $derived(gitSummary?.branch ?? operation?.headName ?? null)
+  const headerNote = $derived(
+    operationDisplay?.headline ??
+      (gitSummary?.unborn ? 'No commits yet' : headName && !gitSummary?.upstream ? 'No upstream' : null)
+  )
+  const actionItemClass = 'flex-1 justify-center gap-1 px-1.5'
   const branchLabel = $derived.by(() => {
     if (!gitSummary) return ''
-    const name = gitSummary.branch ?? operation?.headName ?? 'HEAD'
+    const name = gitSummary.branch ?? operation?.headName ?? shortHead
     return operationDisplay ? `${name} ${operationDisplay.chipSuffix}` : name
   })
   let branchDirty = $derived((gitSummary?.changes.length ?? 0) > 0)
@@ -101,7 +131,7 @@
   }
 </script>
 
-{#if gitSummary?.branch || gitSummary?.operation}
+{#if gitSummary?.branch || gitSummary?.operation || gitSummary?.detached}
   <DropdownMenu.Root bind:open>
     <DropdownMenu.Trigger
       class={statusChipVariants({
@@ -112,6 +142,8 @@
     >
       {#if operation}
         <GitMergeIcon size={10} class="text-warning" />
+      {:else if gitSummary.detached}
+        <GitCommitIcon size={10} />
       {:else}
         <GitBranchIcon size={10} />
       {/if}
@@ -119,7 +151,94 @@
       <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} twoColor />
     </DropdownMenu.Trigger>
 
-    <DropdownMenu.Content class="w-72 p-0" sideOffset={8} align="start">
+    <DropdownMenu.Content class="w-80 p-0" sideOffset={8} align="start">
+      <div class="border-b border-edge px-3 py-2">
+        <div class="flex min-w-0 items-center gap-1.5 font-mono text-sm">
+          {#if headName}
+            <GitBranchIcon size={12} />
+            <span class="truncate text-fg">{headName}</span>
+            {#if gitSummary.upstream}
+              <ArrowRight size={11} class="text-subtle" />
+              <span class="truncate text-muted">{gitSummary.upstream}</span>
+              <span class="ms-auto">
+                <AheadBehindBadge ahead={gitSummary.ahead ?? 0} behind={gitSummary.behind ?? 0} twoColor />
+              </span>
+            {/if}
+          {:else}
+            <GitCommitIcon size={12} />
+            <span class="truncate text-fg">Detached at {shortHead}</span>
+          {/if}
+        </div>
+        {#if headerNote}
+          <div class={operationDisplay ? 'text-xs text-warning' : 'text-xs text-subtle'}>{headerNote}</div>
+        {/if}
+      </div>
+
+      <div class="flex items-center gap-0.5 border-b border-edge p-1">
+        <DropdownMenu.Item
+          class={actionItemClass}
+          disabled={!remote.tracking}
+          onSelect={() => void syncFolder(folderPath)}
+        >
+          <RefreshCwIcon size={12} />
+          Sync
+        </DropdownMenu.Item>
+        <DropdownMenu.Item
+          class={actionItemClass}
+          disabled={!remote.tracking}
+          onSelect={() => void pullFolder(folderPath)}
+        >
+          <ArrowDownToLineIcon size={12} />
+          Pull
+        </DropdownMenu.Item>
+        {#if remote.publishable}
+          <DropdownMenu.Item
+            class={actionItemClass}
+            onSelect={() => void publishBranch(folderPath, gitSummary?.branch ?? null)}
+          >
+            <CloudUploadIcon size={12} />
+            Publish
+          </DropdownMenu.Item>
+        {:else}
+          <DropdownMenu.Item
+            class={actionItemClass}
+            disabled={!remote.tracking}
+            onSelect={() => void pushFolder(folderPath)}
+          >
+            <ArrowUpFromLineIcon size={12} />
+            Push
+          </DropdownMenu.Item>
+        {/if}
+        <DropdownMenu.Item class={actionItemClass} onSelect={() => void fetchFolder(folderPath)}>
+          <RotateCw size={12} />
+          Fetch
+        </DropdownMenu.Item>
+        <DropdownMenu.Sub>
+          <DropdownMenu.SubTrigger class="px-2" aria-label="More Actions" disabled={!remote.tracking}>
+            <MoreHorizontalIcon size={12} />
+          </DropdownMenu.SubTrigger>
+          <DropdownMenu.SubContent>
+            <DropdownMenu.Item disabled={!remote.tracking} onSelect={() => void pullFolder(folderPath, true)}>
+              <ArrowDownToLineIcon size={12} />
+              Pull (Rebase)
+            </DropdownMenu.Item>
+            <DropdownMenu.Item disabled={!remote.tracking} onSelect={() => void syncFolder(folderPath, true)}>
+              <RefreshCwIcon size={12} />
+              Sync (Rebase)
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item
+              destructive
+              disabled={!remote.tracking}
+              onSelect={() => void forcePushWithLease(folderPath)}
+            >
+              <ShieldAlertIcon size={12} />
+              Force Push (with lease)
+            </DropdownMenu.Item>
+          </DropdownMenu.SubContent>
+        </DropdownMenu.Sub>
+      </div>
+
       <div class="border-b border-edge p-2">
         <SearchInput bind:value={search} placeholder="Switch to branch…" class="text-sm" spellcheck={false} autofocus />
       </div>
@@ -142,8 +261,12 @@
       </div>
 
       <div class="border-t border-edge p-1">
+        <DropdownMenu.Item class="px-2 py-1 text-muted" onSelect={() => void branches.checkoutTo(folderPath)}>
+          <Check size={12} />
+          Checkout to…
+        </DropdownMenu.Item>
         <DropdownMenu.Item class="px-2 py-1 text-muted" onSelect={viewAllBranches}>
-          View all branches…
+          View All Branches…
         </DropdownMenu.Item>
       </div>
     </DropdownMenu.Content>

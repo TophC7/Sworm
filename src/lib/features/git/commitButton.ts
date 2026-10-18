@@ -8,6 +8,12 @@ export type PrimaryAction =
   | { kind: 'publish'; branch: string }
   | { kind: 'sync'; ahead: number; behind: number }
 
+/** Remote mutations need a born, attached branch outside a paused operation; Fetch is always allowed. */
+export function remoteActionState(summary: GitSummary): { tracking: boolean; publishable: boolean } {
+  const ready = summary.branch !== null && !summary.detached && !summary.unborn && summary.operation === null
+  return { tracking: ready && summary.upstream !== null, publishable: ready && summary.upstream === null }
+}
+
 /** Paused sequences take priority; otherwise commit → publish → sync → disabled commit. */
 export function resolvePrimaryAction(summary: GitSummary, message: string, postCommit: PostCommit): PrimaryAction {
   if (summary.operation !== null) {
@@ -21,11 +27,10 @@ export function resolvePrimaryAction(summary: GitSummary, message: string, postC
     enabled: summary.changes.length > 0 && message.trim().length > 0
   }
   if (summary.changes.length > 0) return commit
-  if (onBranch && !summary.unborn) {
-    if (!summary.upstream) return { kind: 'publish', branch: summary.branch! }
-    const ahead = summary.ahead ?? 0
-    const behind = summary.behind ?? 0
-    if (ahead > 0 || behind > 0) return { kind: 'sync', ahead, behind }
-  }
+  const remote = remoteActionState(summary)
+  if (remote.publishable) return { kind: 'publish', branch: summary.branch! }
+  const ahead = summary.ahead ?? 0
+  const behind = summary.behind ?? 0
+  if (remote.tracking && (ahead > 0 || behind > 0)) return { kind: 'sync', ahead, behind }
   return { ...commit, enabled: false }
 }
