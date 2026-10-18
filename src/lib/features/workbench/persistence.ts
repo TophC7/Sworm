@@ -8,6 +8,7 @@ import { backend } from '$lib/api/backend'
 import { platform } from '$lib/platform'
 import {
   isProcessLive,
+  type DiffSource,
   type PersistedTab,
   type PersistedWorkbenchV4,
   type Tab,
@@ -162,35 +163,52 @@ export function persistedToTab(persisted: PersistedTab, id: string): Tab {
         gitRef: persisted.gitRef,
         refLabel: persisted.refLabel
       }
-    case 'diff':
+    case 'diff': {
+      let source: DiffSource
+      switch (persisted.source.kind) {
+        case 'working':
+          source = {
+            kind: 'working',
+            staged: persisted.source.staged,
+            scopePath: persisted.source.scopePath ?? null,
+            revealNonce: 0
+          }
+          break
+        case 'commit':
+          source = {
+            kind: 'commit',
+            commitHash: persisted.source.commitHash,
+            shortHash: persisted.source.shortHash,
+            message: persisted.source.message
+          }
+          break
+        case 'stash':
+          source = {
+            kind: 'stash',
+            stashIndex: persisted.source.stashIndex,
+            message: persisted.source.message
+          }
+          break
+        case 'range':
+          source = {
+            kind: 'range',
+            base: persisted.source.base,
+            baseLabel: persisted.source.baseLabel,
+            target: persisted.source.target,
+            targetLabel: persisted.source.targetLabel
+          }
+          break
+      }
       return {
         kind: 'diff',
         id,
         folderPath: persisted.folderPath,
-        source:
-          persisted.source.kind === 'working'
-            ? {
-                kind: 'working',
-                staged: persisted.source.staged,
-                scopePath: persisted.source.scopePath ?? null,
-                revealNonce: 0
-              }
-            : persisted.source.kind === 'commit'
-              ? {
-                  kind: 'commit',
-                  commitHash: persisted.source.commitHash,
-                  shortHash: persisted.source.shortHash,
-                  message: persisted.source.message
-                }
-              : {
-                  kind: 'stash',
-                  stashIndex: persisted.source.stashIndex,
-                  message: persisted.source.message
-                },
+        source,
         initialFile: persisted.initialFile,
         temporary: persisted.temporary,
         locked: persisted.locked
       }
+    }
     case 'new-tab':
       return { kind: 'new-tab', id, folderPath: persisted.folderPath, locked: persisted.locked, temporary: true }
     case 'issue':

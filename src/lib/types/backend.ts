@@ -491,6 +491,8 @@ export interface GitSummary {
   upstream: string | null
   detached: boolean
   unborn: boolean
+  /** HEAD commit hash; null when unborn. */
+  head: string | null
   operation: GitOperation | null
   conflicts: GitConflict[]
   message_template: string | null
@@ -540,6 +542,34 @@ export interface GitRemote {
   pushUrl: string | null
   pushDefault: boolean
 }
+
+export interface GitTag {
+  name: string
+  hash: string
+  shortHash: string
+  annotated: boolean
+  subject: string
+  date: string
+}
+
+export type GitTagOp =
+  | { kind: 'create'; name: string; rev: string; message: string | null }
+  | { kind: 'delete'; name: string }
+  | { kind: 'push'; remote: string; name: string | null }
+  | { kind: 'delete_remote'; remote: string; name: string }
+
+export type GitRemoteConfigOp =
+  | { kind: 'add'; name: string; url: string }
+  | { kind: 'remove'; name: string }
+  | { kind: 'rename'; oldName: string; newName: string }
+  | { kind: 'set_url'; name: string; url: string }
+
+export type GitResetMode = 'soft' | 'mixed' | 'hard'
+
+export type GitHistoryOp =
+  | { kind: 'cherry_pick'; rev: string }
+  | { kind: 'revert'; rev: string }
+  | { kind: 'reset'; rev: string; mode: GitResetMode }
 
 export type GitRemoteOp =
   | { kind: 'fetch'; remote: string | null }
@@ -623,6 +653,14 @@ export interface GitBrief {
   behind: number | null
 }
 
+export type GitRefKind = 'branch' | 'remote_branch' | 'tag'
+
+export interface GitRef {
+  kind: GitRefKind
+  name: string
+  current: boolean
+}
+
 export interface GraphCommit {
   hash: string
   short_hash: string
@@ -630,7 +668,7 @@ export interface GraphCommit {
   author: string
   date: string
   message: string
-  refs: string[]
+  refs: GitRef[]
 }
 
 export interface CommitDetail {
@@ -659,7 +697,10 @@ export type GitStatusKind =
   'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'unmerged' | 'unknown'
 
 export type DiffSource =
-  { kind: 'working'; staged: boolean } | { kind: 'commit'; hash: string } | { kind: 'stash'; index: number }
+  | { kind: 'working'; staged: boolean }
+  | { kind: 'commit'; hash: string }
+  | { kind: 'stash'; index: number }
+  | { kind: 'range'; base: string; target: string | null }
 
 export interface FileDiff {
   path: string

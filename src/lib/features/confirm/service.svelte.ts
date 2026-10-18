@@ -39,11 +39,12 @@ export interface PickOption {
   description?: string
 }
 
-/** Options render in order; the first takes initial focus. */
+/** Options render in order; focus starts on the filter when present, otherwise the first option. */
 export interface PickRequest {
   title: string
   message?: string
   options: PickOption[]
+  filterPlaceholder?: string
 }
 
 type PendingRequest = { id: number; busy: boolean } & (

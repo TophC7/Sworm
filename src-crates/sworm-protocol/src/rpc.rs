@@ -433,15 +433,26 @@ macro_rules! sworm_rpc_ops {
                 op: $crate::git::GitWorktreeOp,
             ) -> $crate::git::GitWorktreeResult;
             #[route(path)]
-            GitDiffBranchAgainstHead => git_diff_branch_against_head(
-                path: String,
-                branch: String,
-            ) -> Vec<$crate::file_diff::FileDiff>;
-            #[route(path)]
             GitBranch => git_branch(
                 path: String,
                 op: $crate::git::GitBranchOp,
             ) -> ();
+            #[route(path)]
+            GitListTags => git_list_tags(path: String) -> Vec<$crate::git::GitTag>;
+            #[route(path)]
+            GitTag => git_tag(path: String, op: $crate::git::GitTagOp) -> ();
+            #[route(path)]
+            GitRemoteConfig => git_remote_config(path: String, op: $crate::git::GitRemoteConfigOp) -> ();
+            #[route(path)]
+            GitHistory => git_history(path: String, op: $crate::git::GitHistoryOp) -> ();
+            #[route(path)]
+            GitDiffRange => git_diff_range(
+                path: String,
+                base: String,
+                target: Option<String>,
+            ) -> Vec<$crate::file_diff::FileDiff>;
+            #[route(path)]
+            GitMergedBranches => git_merged_branches(path: String) -> Vec<String>;
             #[route(path)]
             GitSequencer => git_sequencer(
                 path: String,

@@ -8,9 +8,10 @@ use sworm_protocol::branch::BranchSummary;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
     CommitDetail, DiffFileContent, GitBranchOp, GitBrief, GitChangeScope, GitChangedEvent,
-    GitCommitOptions, GitConflictsOp, GitOperationKind, GitPathsOp, GitQuickDiffData, GitRemote,
-    GitRemoteOp, GitSequencerAction, GitStashOp, GitSummary, GitWorktreeCheckout, GitWorktreeList,
-    GitWorktreeOp, GitWorktreeResult, GraphCommit, StashEntry,
+    GitCommitOptions, GitConflictsOp, GitHistoryOp, GitOperationKind, GitPathsOp, GitQuickDiffData,
+    GitRemote, GitRemoteConfigOp, GitRemoteOp, GitSequencerAction, GitStashOp, GitSummary, GitTag,
+    GitTagOp, GitWorktreeCheckout, GitWorktreeList, GitWorktreeOp, GitWorktreeResult, GraphCommit,
+    StashEntry,
 };
 
 /// Validate an upstream tracking ref in `<remote>/<branch>` form.
@@ -33,6 +34,17 @@ pub(crate) fn validated_git_ref(hash: &str) -> Result<(), ApiError> {
             hash
         )))
     }
+}
+
+pub(crate) fn validated_commitish(rev: &str) -> Result<(), ApiError> {
+    validated_git_ref(rev).or_else(|_| validated_ref_name(rev))
+}
+
+fn validated_remote_url(url: &str) -> Result<(), ApiError> {
+    if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
+        return Err(ApiError::InvalidArgument("Invalid remote URL".to_string()));
+    }
+    Ok(())
 }
 
 /// Accept hex commit hashes OR `stash@{N}` references.
@@ -153,7 +165,7 @@ impl Host {
         Ok(self.git.get_working_diff_index(Path::new(&path), staged))
     }
 
-    /// Load both sides of one working-tree, commit, or stash diff.
+    /// Load both sides of one working-tree, commit, stash, or range diff.
     ///
     /// Validates `file_path` and `old_path` stay within `path` before touching
     /// disk so a malicious or buggy frontend can't read arbitrary worktree
@@ -167,8 +179,15 @@ impl Host {
         old_path: Option<String>,
         status: GitStatus,
     ) -> Result<DiffFileContent, ApiError> {
-        if let DiffSource::Commit { hash } = &source {
-            validated_git_ref(hash)?;
+        match &source {
+            DiffSource::Commit { hash } => validated_git_ref(hash)?,
+            DiffSource::Range { base, target } => {
+                validated_git_ref(base)?;
+                if let Some(target) = target {
+                    validated_git_ref(target)?;
+                }
+            }
+            DiffSource::Working { .. } | DiffSource::Stash { .. } => {}
         }
         validated_project_file(&path, &file_path)?;
         if let Some(old) = &old_path {
@@ -403,14 +422,72 @@ impl Host {
         self.git.list_remotes(Path::new(&path))
     }
 
-    /// File metadata for `branch...HEAD` compare.
-    pub fn git_diff_branch_against_head(
+    pub fn git_list_tags(&self, path: String) -> Result<Vec<GitTag>, ApiError> {
+        self.git.list_tags(Path::new(&path))
+    }
+
+    pub fn git_tag(&self, path: String, op: GitTagOp) -> Result<(), ApiError> {
+        match &op {
+            GitTagOp::Create { name, rev, .. } => {
+                validated_ref_name(name)?;
+                validated_commitish(rev)?;
+            }
+            GitTagOp::Delete { name } => validated_ref_name(name)?,
+            GitTagOp::Push { remote, name } => {
+                validated_ref_name(remote)?;
+                if let Some(name) = name {
+                    validated_ref_name(name)?;
+                }
+            }
+            GitTagOp::DeleteRemote { remote, name } => {
+                validated_ref_name(remote)?;
+                validated_ref_name(name)?;
+            }
+        }
+        self.git.tag(Path::new(&path), op)
+    }
+
+    pub fn git_remote_config(&self, path: String, op: GitRemoteConfigOp) -> Result<(), ApiError> {
+        match &op {
+            GitRemoteConfigOp::Add { name, url } | GitRemoteConfigOp::SetUrl { name, url } => {
+                validated_ref_name(name)?;
+                validated_remote_url(url)?;
+            }
+            GitRemoteConfigOp::Remove { name } => validated_ref_name(name)?,
+            GitRemoteConfigOp::Rename { old_name, new_name } => {
+                validated_ref_name(old_name)?;
+                validated_ref_name(new_name)?;
+            }
+        }
+        self.git.remote_config(Path::new(&path), op)
+    }
+
+    pub fn git_history(&self, path: String, op: GitHistoryOp) -> Result<(), ApiError> {
+        match &op {
+            GitHistoryOp::CherryPick { rev }
+            | GitHistoryOp::Revert { rev }
+            | GitHistoryOp::Reset { rev, .. } => validated_commitish(rev)?,
+        }
+        self.git.history(Path::new(&path), op)
+    }
+
+    pub fn git_diff_range(
         &self,
         path: String,
-        branch: String,
+        base: String,
+        target: Option<String>,
     ) -> Result<Vec<FileDiff>, ApiError> {
-        validated_ref_name(&branch)?;
-        Ok(self.git.diff_branch_against_head(Path::new(&path), &branch))
+        validated_git_ref(&base)?;
+        if let Some(target) = &target {
+            validated_git_ref(target)?;
+        }
+        Ok(self
+            .git
+            .diff_range(Path::new(&path), &base, target.as_deref()))
+    }
+
+    pub fn git_merged_branches(&self, path: String) -> Result<Vec<String>, ApiError> {
+        self.git.merged_branches(Path::new(&path))
     }
 
     /// Switch branches or update their refs and tracking configuration.
@@ -418,9 +495,7 @@ impl Host {
         let repo = Path::new(&path);
         match &op {
             GitBranchOp::Checkout { name } => validated_ref_name(name)?,
-            GitBranchOp::CheckoutDetached { rev } => {
-                validated_git_ref(rev).or_else(|_| validated_ref_name(rev))?;
-            }
+            GitBranchOp::CheckoutDetached { rev } => validated_commitish(rev)?,
             GitBranchOp::CheckoutRemote {
                 remote_name,
                 local_name,

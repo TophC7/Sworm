@@ -1,5 +1,5 @@
 export type SidebarView = 'files' | 'git' | 'issues'
-export type GitSidebarTab = 'graph' | 'stashes' | 'branches' | 'worktrees'
+export type GitSidebarTab = 'graph' | 'stashes' | 'branches' | 'tags' | 'worktrees'
 
 let sidebarWidth = $state(280)
 let sidebarCollapsed = $state(false)

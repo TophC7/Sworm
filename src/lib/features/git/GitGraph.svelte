@@ -7,15 +7,24 @@
   import GitStashList from '$lib/features/git/GitStashList.svelte'
   import GitBranches from '$lib/features/git/GitBranches.svelte'
   import GitWorktrees from '$lib/features/git/GitWorktrees.svelte'
-  import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
+  import GitTags from '$lib/features/git/GitTags.svelte'
   import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { IconButton } from '$lib/components/ui/button'
-  import { GitBranchPlusIcon, GitGraphIcon, ListTreeIcon, LoaderCircle, PackageIcon } from '$lib/icons/lucideExports'
+  import { SidebarRow } from '$lib/components/ui/sidebar-row'
+  import {
+    GitBranchPlusIcon,
+    GitGraphIcon,
+    ListTreeIcon,
+    LoaderCircle,
+    MoreHorizontalIcon,
+    PackageIcon,
+    TagIcon
+  } from '$lib/icons/lucideExports'
   import { SvelteMap } from 'svelte/reactivity'
   import * as branches from '$lib/features/git/branches.svelte'
   import { getGitSidebarTab, setGitSidebarTab } from '$lib/features/app-shell/sidebar/state.svelte'
-  import { getGitGraph, getStashCount, loadGraph } from '$lib/features/git/state.svelte'
+  import { getGitGraph, getGraphHasMore, getStashCount, loadGraph, loadMoreGraph } from '$lib/features/git/state.svelte'
   import { untrack } from 'svelte'
 
   let { folderPath }: { folderPath: string } = $props()
@@ -26,6 +35,7 @@
   let renders = $derived(rows.map(computeRowRender))
   let stashCount = $derived(getStashCount(folderPath))
   let branchEntry = $derived(branches.byFolder.get(folderPath))
+  let loadingMore = $state(false)
 
   // Expanded commit state
   let expandedHash = $state<string | null>(null)
@@ -82,14 +92,23 @@
     expandedDetail = detail
   }
 
+  async function loadMore() {
+    if (loadingMore) return
+    loadingMore = true
+    try {
+      await loadMoreGraph(folderPath)
+    } finally {
+      loadingMore = false
+    }
+  }
+
   /** Map branch names to their graph lane colors (first occurrence wins). */
   let branchColorMap = $derived.by(() => {
     const map = new Map<string, string>()
     for (let i = 0; i < rows.length; i++) {
       const r = renders[i]
-      for (const rawRef of visibleRefs(rows[i].commit.refs)) {
-        const name = refLabel(rawRef)
-        if (!map.has(name)) map.set(name, r.circle.color)
+      for (const ref of rows[i].commit.refs) {
+        if (!map.has(ref.name)) map.set(ref.name, r.circle.color)
       }
     }
     return map
@@ -106,7 +125,9 @@
             ? `Stashes${stashCount > 0 ? ` (${stashCount})` : ''}`
             : activeTab === 'branches'
               ? 'Branches'
-              : 'Worktrees'}
+              : activeTab === 'tags'
+                ? 'Tags'
+                : 'Worktrees'}
       </span>
       {#if activeTab === 'branches' && branchEntry?.fetching}
         <LoaderCircle size={11} class="animate-spin text-muted" aria-label="Fetching branches" />
@@ -125,6 +146,9 @@
       </IconButton>
       <IconButton tooltip="Branches" active={activeTab === 'branches'} onclick={() => setGitSidebarTab('branches')}>
         <GitBranchPlusIcon size={13} />
+      </IconButton>
+      <IconButton tooltip="Tags" active={activeTab === 'tags'} onclick={() => setGitSidebarTab('tags')}>
+        <TagIcon size={13} />
       </IconButton>
       <IconButton tooltip="Worktrees" active={activeTab === 'worktrees'} onclick={() => setGitSidebarTab('worktrees')}>
         <ListTreeIcon size={13} />
@@ -145,6 +169,7 @@
             {@const isExpanded = expandedHash === row.commit.hash}
 
             <GitCommitRow
+              {folderPath}
               commit={row.commit}
               render={r}
               detail={detailCache.get(row.commit.hash) ?? null}
@@ -169,6 +194,12 @@
               </div>
             {/if}
           {/each}
+          {#if getGraphHasMore(folderPath)}
+            <SidebarRow variant="action" disabled={loadingMore} onclick={() => void loadMore()}>
+              <MoreHorizontalIcon size={13} />
+              <span>{loadingMore ? 'Loading…' : 'Load More'}</span>
+            </SidebarRow>
+          {/if}
         </div>
       </Tooltip.Provider>
     {/if}
@@ -176,6 +207,8 @@
     <GitStashList {folderPath} {branchColorMap} />
   {:else if activeTab === 'branches'}
     <GitBranches {folderPath} {branchColorMap} />
+  {:else if activeTab === 'tags'}
+    <GitTags {folderPath} />
   {:else}
     <GitWorktrees {folderPath} />
   {/if}

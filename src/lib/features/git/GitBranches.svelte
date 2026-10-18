@@ -21,7 +21,24 @@
   import * as branches from '$lib/features/git/branches.svelte'
   import AheadBehindBadge from '$lib/features/git/AheadBehindBadge.svelte'
   import { openFolder } from '$lib/features/workbench/state.svelte'
-  import { fastForwardBranch, fetchFolder, pullFolder, pushFolder, rebaseOnto } from '$lib/features/git/actions.svelte'
+  import { openRangeDiff } from '$lib/features/workbench/surfaces/diff/service.svelte'
+  import {
+    addRemote,
+    copyToClipboard,
+    createTag,
+    deleteMergedBranches,
+    fastForwardBranch,
+    fetchFolder,
+    publishBranch,
+    pullFolder,
+    pushFolder,
+    rebaseOnto,
+    removeRemote,
+    renameRemote,
+    setRemoteUrl,
+    unsetUpstream
+  } from '$lib/features/git/actions.svelte'
+  import { getGitSummary } from '$lib/features/git/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { groupBySlash, type BranchTreeNode } from '$lib/utils/git/branchHierarchy'
   import { basename } from '$lib/utils/paths'
@@ -29,14 +46,12 @@
   import GitCommitRow from '$lib/features/git/GitCommitRow.svelte'
   import { GRAPH_COLORS } from '$lib/features/git/graph'
   import { getGitBranchesFocusRequest } from '$lib/features/app-shell/sidebar/state.svelte'
-  import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
   import CreateBranchDialog from '$lib/features/git/dialogs/CreateBranchDialog.svelte'
   import CreateWorktreeDialog from '$lib/features/git/dialogs/CreateWorktreeDialog.svelte'
   import RenameBranchDialog from '$lib/features/git/dialogs/RenameBranchDialog.svelte'
   import DeleteBranchDialog from '$lib/features/git/dialogs/DeleteBranchDialog.svelte'
   import SetUpstreamDialog from '$lib/features/git/dialogs/SetUpstreamDialog.svelte'
   import MergeConfirmDialog from '$lib/features/git/dialogs/MergeConfirmDialog.svelte'
-  import CompareBranchModal from '$lib/features/git/dialogs/CompareBranchModal.svelte'
   import {
     ArrowDown01Icon,
     ArrowDownAZIcon,
@@ -47,6 +62,7 @@
     ClockIcon,
     CloudIcon,
     CloudOffIcon,
+    CloudUploadIcon,
     FolderOpenIcon,
     GitBranchIcon,
     GitCompareIcon,
@@ -59,10 +75,10 @@
     Plus,
     RefreshCwIcon,
     RotateCw,
+    TagIcon,
     Trash2
   } from '$lib/icons/lucideExports'
-  import type { BranchSummary, CommitDetail, GitSummary, GitWorktreeCheckout, GraphCommit } from '$lib/types/backend'
-  import { platform } from '$lib/platform'
+  import type { BranchSummary, CommitDetail, GitWorktreeCheckout, GraphCommit } from '$lib/types/backend'
   import { formatFullDate, timeAgo } from '$lib/utils/date'
   import { SvelteMap } from 'svelte/reactivity'
 
@@ -75,16 +91,11 @@
   } = $props()
 
   let entry = $derived(branches.byFolder.get(folderPath))
+  let summary = $derived(getGitSummary(folderPath))
   let prefs = $derived(entry?.prefs)
 
   let search = $state('')
   let searchInputEl = $state<HTMLInputElement | null>(null)
-
-  let checkoutOpen = $state(false)
-  let checkoutTarget = $state<string>('')
-  let checkoutRemoteTarget = $state<string | null>(null)
-  let checkoutSummary = $state<GitSummary | null>(null)
-  let checkoutFolderPath = $state('')
 
   let createOpen = $state(false)
   let createBase = $state<string>('')
@@ -104,9 +115,6 @@
 
   let mergeOpen = $state(false)
   let mergeSource = $state<string>('')
-
-  let compareOpen = $state(false)
-  let compareTarget = $state<string>('')
 
   type BranchHistoryEntry = {
     commits: GraphCommit[]
@@ -174,24 +182,6 @@
   })
 
   // MUTATIONS //
-
-  async function attemptCheckout(name: string) {
-    if (!name) return
-    const path = folderPath
-    try {
-      await branches.safeCheckout(path, name)
-    } catch (e) {
-      if (e instanceof branches.DirtyCheckoutError) {
-        checkoutFolderPath = path
-        checkoutTarget = name
-        checkoutRemoteTarget = null
-        checkoutSummary = e.summary
-        checkoutOpen = true
-        return
-      }
-      console.error('Checkout failed:', e)
-    }
-  }
 
   function toggleLayout() {
     branches.setLayout(folderPath, prefs?.layout === 'tree' ? 'list' : 'tree')
@@ -329,9 +319,8 @@
     await rebaseOnto(folderPath, target)
   }
 
-  function openCompareModal(branch: BranchSummary) {
-    compareTarget = branch.name
-    compareOpen = true
+  function compareWithHead(branch: BranchSummary) {
+    void openRangeDiff(folderPath, { rev: branch.name, label: branch.name }, { rev: 'HEAD', label: 'HEAD' })
   }
 
   // Smart action: smartAction(branch) returns push / pull / fetch /
@@ -360,36 +349,13 @@
     }
   }
 
-  async function copyName(name: string) {
-    try {
-      await platform.clipboard.writeText(name)
-    } catch (e) {
-      console.error('Copy branch name failed:', e)
-    }
-  }
-
-  function switchToBranch(branch: BranchSummary) {
-    if (branch.kind === 'remote') void checkoutRemote(branch)
-    else void attemptCheckout(branch.name)
-  }
-
-  async function checkoutRemote(branch: BranchSummary) {
-    if (branch.kind !== 'remote') return
-    const path = folderPath
-    const localName = localNameForRemoteRef(branch.name)
-    try {
-      await branches.safeCheckoutRemoteAsLocal(path, branch.name, localName)
-    } catch (e) {
-      if (e instanceof branches.DirtyCheckoutError) {
-        checkoutFolderPath = path
-        checkoutTarget = localName
-        checkoutRemoteTarget = branch.name
-        checkoutSummary = e.summary
-        checkoutOpen = true
-        return
-      }
-      console.error('Remote checkout failed:', e)
-    }
+  function checkoutBranch(branch: BranchSummary) {
+    void branches.checkoutRef(
+      folderPath,
+      branch.kind === 'remote'
+        ? { kind: 'remote', remoteName: branch.name, localName: localNameForRemoteRef(branch.name) }
+        : { kind: 'branch', name: branch.name }
+    )
   }
 </script>
 
@@ -413,11 +379,56 @@
       <DropdownMenu.Content class="min-w-[210px]" align="end">
         <DropdownMenu.Item onSelect={() => openCreateDialog()}>
           <Plus size={14} />
-          <span>New branch…</span>
+          <span>Create Branch…</span>
         </DropdownMenu.Item>
+        <DropdownMenu.Item onSelect={() => void branches.checkoutTo(folderPath)}>
+          <Check size={14} />
+          <span>Checkout to…</span>
+        </DropdownMenu.Item>
+
+        <DropdownMenu.Separator />
+
         <DropdownMenu.Item disabled={entry?.fetching === true} onSelect={() => void runFetch()}>
           <RefreshCwIcon size={14} />
-          <span>Fetch from remotes</span>
+          <span>Fetch</span>
+        </DropdownMenu.Item>
+        <DropdownMenu.Item
+          disabled={!summary?.branch || !!summary?.upstream}
+          onSelect={() => void publishBranch(folderPath)}
+        >
+          <CloudUploadIcon size={14} />
+          <span>Publish Branch</span>
+        </DropdownMenu.Item>
+        <DropdownMenu.Sub>
+          <DropdownMenu.SubTrigger>
+            <CloudIcon size={14} />
+            <span>Remotes</span>
+          </DropdownMenu.SubTrigger>
+          <DropdownMenu.SubContent>
+            <DropdownMenu.Item onSelect={() => void addRemote(folderPath)}>
+              <Plus size={14} />
+              <span>Add Remote…</span>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => void renameRemote(folderPath)}>
+              <PencilIcon size={14} />
+              <span>Rename Remote…</span>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={() => void setRemoteUrl(folderPath)}>
+              <CloudIcon size={14} />
+              <span>Set Remote URL…</span>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item destructive onSelect={() => void removeRemote(folderPath)}>
+              <Trash2 size={14} />
+              <span>Remove Remote…</span>
+            </DropdownMenu.Item>
+          </DropdownMenu.SubContent>
+        </DropdownMenu.Sub>
+
+        <DropdownMenu.Separator />
+
+        <DropdownMenu.Item disabled={summary?.unborn} onSelect={() => void deleteMergedBranches(folderPath)}>
+          <Trash2 size={14} />
+          <span>Delete Merged Branches…</span>
         </DropdownMenu.Item>
 
         <DropdownMenu.Separator />
@@ -425,28 +436,28 @@
         <DropdownMenu.Item onSelect={toggleLayout}>
           {#if prefs?.layout === 'tree'}
             <ListIcon size={14} />
-            <span>Switch to flat list</span>
+            <span>Switch to Flat List</span>
           {:else}
             <ListTreeIcon size={14} />
-            <span>Switch to tree</span>
+            <span>Switch to Tree</span>
           {/if}
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={toggleSort}>
           {#if prefs?.sort === 'alpha'}
             <ArrowDown01Icon size={14} />
-            <span>Sort by date</span>
+            <span>Sort by Date</span>
           {:else}
             <ArrowDownAZIcon size={14} />
-            <span>Sort alphabetically</span>
+            <span>Sort Alphabetically</span>
           {/if}
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={toggleShowRemote}>
           {#if prefs?.showRemote}
             <CloudOffIcon size={14} />
-            <span>Hide remote branches</span>
+            <span>Hide Remote Branches</span>
           {:else}
             <CloudIcon size={14} />
-            <span>Show remote branches</span>
+            <span>Show Remote Branches</span>
           {/if}
         </DropdownMenu.Item>
       </DropdownMenu.Content>
@@ -566,6 +577,7 @@
     {:else}
       {#each history.commits as commit (commit.hash)}
         <GitCommitRow
+          {folderPath}
           {commit}
           detail={commitDetailCache.get(commit.hash) ?? null}
           graphColor={color}
@@ -586,7 +598,7 @@
           onclick={() => void loadBranchHistory(branch, history.limit + BRANCH_HISTORY_PAGE_SIZE)}
         >
           <MoreHorizontalIcon size={12} class="shrink-0" />
-          <span>Show more</span>
+          <span>Show More</span>
         </SidebarRow>
       {/if}
     {/if}
@@ -619,6 +631,7 @@
   {@const branchAge = timeAgo(branch.tip.date)}
   {@const color = branchColor(branch)}
   {@const isExpanded = expandedBranch === branch.name}
+  {@const hasRemoteActions = branch.kind === 'local' || (!branch.isCurrent && branch.behind > 0 && !!branch.upstream)}
   <ContextMenu.Root>
     <ContextMenu.Trigger class="contents">
       <div
@@ -662,16 +675,18 @@
             {branchAge}
           </span>
           <div class="absolute inset-y-0 right-0 hidden items-center gap-0.5 group-hover:flex">
-            <IconButton
-              tooltip="Compare with HEAD"
-              tooltipSide="left"
-              onclick={(event) => {
-                event.stopPropagation()
-                openCompareModal(branch)
-              }}
-            >
-              <GitCompareIcon size={12} />
-            </IconButton>
+            {#if !branch.isCurrent}
+              <IconButton
+                tooltip="Compare with HEAD"
+                tooltipSide="left"
+                onclick={(event) => {
+                  event.stopPropagation()
+                  compareWithHead(branch)
+                }}
+              >
+                <GitCompareIcon size={12} />
+              </IconButton>
+            {/if}
             {#if action.kind !== 'disabled'}
               <IconButton
                 tooltip={action.label}
@@ -692,11 +707,11 @@
             {/if}
             {#if !branch.isCurrent}
               <IconButton
-                tooltip={branch.kind === 'remote' ? 'Check out remote branch' : 'Switch to branch'}
+                tooltip="Checkout"
                 tooltipSide="left"
                 onclick={(event) => {
                   event.stopPropagation()
-                  switchToBranch(branch)
+                  checkoutBranch(branch)
                 }}
               >
                 <Check size={12} />
@@ -709,9 +724,9 @@
 
     <ContextMenu.Content>
       {#if !branch.isCurrent}
-        <ContextMenu.Item onSelect={() => switchToBranch(branch)}>
+        <ContextMenu.Item onSelect={() => checkoutBranch(branch)}>
           <Check size={14} />
-          <span>Switch to branch</span>
+          <span>Checkout</span>
         </ContextMenu.Item>
       {/if}
       {#if branch.worktreePath && !branch.isCurrent}
@@ -720,22 +735,41 @@
           <span>Open Worktree</span>
         </ContextMenu.Item>
       {/if}
-      <ContextMenu.Item onSelect={() => openCompareModal(branch)}>
-        <GitCompareIcon size={14} />
-        <span>Compare with HEAD</span>
+      <ContextMenu.Item
+        onSelect={() =>
+          void branches.checkoutRef(folderPath, { kind: 'detached', rev: branch.name, label: branch.name })}
+      >
+        <GitBranchIcon size={14} />
+        <span>Checkout (Detached)</span>
       </ContextMenu.Item>
+
+      {#if !branch.isCurrent}
+        <ContextMenu.Separator />
+        <ContextMenu.Item onSelect={() => openMergeDialog(branch)}>
+          <GitMergeIcon size={14} />
+          <span>Merge into Current…</span>
+        </ContextMenu.Item>
+        <ContextMenu.Item onSelect={() => void openRebaseDialog(branch)}>
+          <GitPullRequestIcon size={14} />
+          <span>Rebase Current onto This…</span>
+        </ContextMenu.Item>
+      {/if}
 
       <ContextMenu.Separator />
 
       <ContextMenu.Item onSelect={() => openCreateDialog(branch.name)}>
         <Plus size={14} />
-        <span>Create branch from here…</span>
+        <span>Create Branch…</span>
+      </ContextMenu.Item>
+      <ContextMenu.Item onSelect={() => void createTag(folderPath, branch.name, branch.name)}>
+        <TagIcon size={14} />
+        <span>Create Tag…</span>
       </ContextMenu.Item>
       <ContextMenu.Item onSelect={() => openCreateWorktreeDialog(branch)}>
         <ListTreeIcon size={14} />
         <span>Create Worktree…</span>
       </ContextMenu.Item>
-      {#if branch.kind === 'local' && !branch.isCurrent}
+      {#if branch.kind === 'local'}
         <ContextMenu.Item onSelect={() => openRenameDialog(branch)}>
           <PencilIcon size={14} />
           <span>Rename…</span>
@@ -746,37 +780,69 @@
           <Trash2 size={14} />
           <span>Delete…</span>
         </ContextMenu.Item>
+
+        <ContextMenu.Separator />
+
+        <ContextMenu.Item onSelect={() => compareWithHead(branch)}>
+          <GitCompareIcon size={14} />
+          <span>Compare with HEAD</span>
+        </ContextMenu.Item>
       {/if}
 
-      {#if !branch.isCurrent}
+      {#if hasRemoteActions}
         <ContextMenu.Separator />
-        <ContextMenu.Item onSelect={() => openMergeDialog(branch)}>
-          <GitMergeIcon size={14} />
-          <span>Merge into current</span>
-        </ContextMenu.Item>
-        <ContextMenu.Item onSelect={() => void openRebaseDialog(branch)}>
-          <GitPullRequestIcon size={14} />
-          <span>Rebase current onto this</span>
-        </ContextMenu.Item>
+
+        {#if branch.kind === 'local' && branch.isCurrent && branch.upstream}
+          <ContextMenu.Item onSelect={() => void pullFolder(folderPath, false)}>
+            <ArrowDownToLineIcon size={14} />
+            <span>Pull</span>
+          </ContextMenu.Item>
+          <ContextMenu.Item onSelect={() => void pullFolder(folderPath, true)}>
+            <ArrowDownToLineIcon size={14} />
+            <span>Pull (Rebase)</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if branch.kind === 'local' && branch.upstream}
+          <ContextMenu.Item onSelect={() => void pushFolder(folderPath, branch.name)}>
+            <ArrowUpFromLineIcon size={14} />
+            <span>Push</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if branch.kind === 'local' && !branch.upstream}
+          <ContextMenu.Item onSelect={() => void publishBranch(folderPath, branch.name)}>
+            <CloudUploadIcon size={14} />
+            <span>Publish Branch</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
+          <ContextMenu.Item onSelect={() => void fastForwardBranch(folderPath, branch.name)}>
+            <ArrowDownToLineIcon size={14} />
+            <span>Fast-Forward</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if branch.kind === 'local'}
+          <ContextMenu.Item onSelect={() => openUpstreamDialog(branch)}>
+            <CloudIcon size={14} />
+            <span>Set Upstream…</span>
+          </ContextMenu.Item>
+        {/if}
+        {#if branch.kind === 'local' && branch.upstream}
+          <ContextMenu.Item onSelect={() => void unsetUpstream(folderPath, branch.name)}>
+            <CloudOffIcon size={14} />
+            <span>Unset Upstream</span>
+          </ContextMenu.Item>
+        {/if}
       {/if}
 
       <ContextMenu.Separator />
 
-      {#if branch.kind === 'local'}
-        <ContextMenu.Item onSelect={() => openUpstreamDialog(branch)}>
-          <CloudIcon size={14} />
-          <span>Set upstream…</span>
-        </ContextMenu.Item>
-      {/if}
-      {#if !branch.isCurrent && branch.behind > 0 && branch.upstream}
-        <ContextMenu.Item onSelect={() => void fastForwardBranch(folderPath, branch.name)}>
-          <ArrowDownToLineIcon size={14} />
-          <span>Fast-forward</span>
-        </ContextMenu.Item>
-      {/if}
-      <ContextMenu.Item onSelect={() => void copyName(branch.name)}>
+      <ContextMenu.Item onSelect={() => void copyToClipboard(branch.name, 'Copy branch name failed')}>
         <ClipboardIcon size={14} />
-        <span>Copy name</span>
+        <span>Copy Branch Name</span>
+      </ContextMenu.Item>
+      <ContextMenu.Item onSelect={() => void copyToClipboard(branch.tip.hash, 'Copy commit hash failed')}>
+        <ClipboardIcon size={14} />
+        <span>Copy Commit Hash</span>
       </ContextMenu.Item>
     </ContextMenu.Content>
   </ContextMenu.Root>
@@ -785,16 +851,6 @@
     {@render branchHistory(branch, depth)}
   {/if}
 {/snippet}
-
-{#if checkoutOpen}
-  <CheckoutDialog
-    bind:open={checkoutOpen}
-    branchName={checkoutTarget}
-    remoteBranchName={checkoutRemoteTarget}
-    summary={checkoutSummary}
-    folderPath={checkoutFolderPath}
-  />
-{/if}
 
 {#if createOpen}
   <CreateBranchDialog bind:open={createOpen} defaultBase={createBase} {folderPath} />
@@ -823,8 +879,4 @@
 
 {#if mergeOpen}
   <MergeConfirmDialog bind:open={mergeOpen} source={mergeSource} current={currentName} {folderPath} />
-{/if}
-
-{#if compareOpen}
-  <CompareBranchModal bind:open={compareOpen} branchName={compareTarget} {folderPath} />
 {/if}

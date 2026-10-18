@@ -4,6 +4,7 @@
   import { Input } from '$lib/components/ui/input'
   import type { EventHandler } from 'svelte/elements'
   import { getPendingRequest, resolvePendingAnswer, resolvePendingConfirm } from '$lib/features/confirm/service.svelte'
+  import PickList from '$lib/features/confirm/PickList.svelte'
 
   const pending = $derived(getPendingRequest())
 
@@ -21,17 +22,6 @@
       event.preventDefault()
       resolvePendingAnswer(id, String(new FormData(event.currentTarget).get('answer') ?? ''))
     }
-  }
-
-  function moveFocus(event: KeyboardEvent & { currentTarget: EventTarget & HTMLDivElement }) {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-    event.preventDefault()
-    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-pick-option]')]
-    if (!options.length) return
-    const index = options.findIndex((option) => option === document.activeElement)
-    const step = event.key === 'ArrowDown' ? 1 : -1
-    const next = index < 0 ? (step === 1 ? 0 : options.length - 1) : (index + step + options.length) % options.length
-    options[next].focus()
   }
 </script>
 
@@ -82,29 +72,12 @@
             </Dialog.Footer>
           </form>
         {:else}
-          <div
-            class="mt-3 flex flex-col gap-1"
-            role="listbox"
-            aria-label={pending.title}
-            tabindex="-1"
-            onkeydown={moveFocus}
-          >
-            {#each pending.options as option, index}
-              <!-- svelte-ignore a11y_autofocus — focusing the first option on mount is expected UX for a modal picker -->
-              <button
-                type="button"
-                data-pick-option
-                role="option"
-                aria-selected={false}
-                autofocus={index === 0}
-                class="flex w-full flex-col items-start rounded-lg border border-edge bg-overlay px-3 py-2 text-left hover:border-accent/40 hover:text-bright focus-visible:shadow-focus-ring focus-visible:outline-none"
-                onclick={resolvePendingAnswer.bind(null, pending.id, option.value)}
-              >
-                <span class="text-base text-fg">{option.label}</span>
-                {#if option.description}<span class="font-mono text-xs text-subtle">{option.description}</span>{/if}
-              </button>
-            {/each}
-          </div>
+          <PickList
+            title={pending.title}
+            options={pending.options}
+            filterPlaceholder={pending.filterPlaceholder}
+            onpick={resolvePendingAnswer.bind(null, pending.id)}
+          />
           <Dialog.Footer>
             <Button variant="outline" onclick={resolvePendingAnswer.bind(null, pending.id, null)}>Cancel</Button>
           </Dialog.Footer>

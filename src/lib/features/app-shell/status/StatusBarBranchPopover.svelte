@@ -13,11 +13,8 @@
   import * as branches from '$lib/features/git/branches.svelte'
   import { getGitSummary } from '$lib/features/git/state.svelte'
   import { describeOperation } from '$lib/features/git/operation'
-  import CheckoutDialog from '$lib/features/git/dialogs/CheckoutDialog.svelte'
-  import type { BranchSummary, GitSummary } from '$lib/types/backend'
+  import type { BranchSummary } from '$lib/types/backend'
   import { timeAgo } from '$lib/utils/date'
-  import { notify } from '$lib/features/notifications/state.svelte'
-  import { getErrorMessage } from '$lib/utils/client-error'
 
   let { folderPath }: { folderPath: string } = $props()
 
@@ -93,27 +90,9 @@
     return candidates.filter((b) => b.name.toLowerCase().includes(q))
   })
 
-  // Checkout dialog state when the user picks a branch on a dirty tree.
-  let checkoutOpen = $state(false)
-  let checkoutTarget = $state<string>('')
-  let checkoutSummary = $state<GitSummary | null>(null)
-  let checkoutFolderPath = $state('')
-
-  async function selectBranch(name: string) {
-    const initiatingFolder = folderPath
+  function selectBranch(name: string) {
     open = false
-    try {
-      await branches.safeCheckout(initiatingFolder, name)
-    } catch (e) {
-      if (e instanceof branches.DirtyCheckoutError) {
-        checkoutTarget = name
-        checkoutFolderPath = initiatingFolder
-        checkoutSummary = e.summary
-        checkoutOpen = true
-      } else {
-        notify.error('Checkout failed', getErrorMessage(e))
-      }
-    }
+    void branches.checkoutRef(folderPath, { kind: 'branch', name })
   }
 
   function viewAllBranches() {
@@ -169,13 +148,4 @@
       </div>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-{/if}
-
-{#if checkoutOpen}
-  <CheckoutDialog
-    bind:open={checkoutOpen}
-    branchName={checkoutTarget}
-    summary={checkoutSummary}
-    folderPath={checkoutFolderPath}
-  />
 {/if}

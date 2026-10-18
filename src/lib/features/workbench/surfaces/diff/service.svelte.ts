@@ -1,5 +1,6 @@
+import { backend } from '$lib/api/backend'
 import type { DiffTab, TabId } from '$lib/features/workbench/model'
-import { addChangesTab, addCommitTab, addStashTab } from '$lib/features/workbench/state.svelte'
+import { addChangesTab, addCommitTab, addRangeTab, addStashTab } from '$lib/features/workbench/state.svelte'
 import { openTextSnapshot } from '$lib/features/workbench/surfaces/text/service.svelte'
 
 export interface OpenDiffOptions {
@@ -37,6 +38,30 @@ export async function openStashDiff(
   return addStashTab(folderPath, stashIndex, message, initialFile, options.temporary ?? true)
 }
 
+export async function openRangeDiff(
+  folderPath: string,
+  base: { rev: string; label: string },
+  target: { rev: string; label: string } | null,
+  options: OpenDiffOptions = {}
+): Promise<TabId> {
+  const hashes = await Promise.all(
+    [base.rev, ...(target ? [target.rev] : [])].map(async (rev) => {
+      if (/^[0-9a-f]{40}$/i.test(rev)) return rev
+      const hash = (await backend.git.getBranchCommits(folderPath, rev, 1))[0]?.hash
+      if (!hash) throw new Error(`Could not resolve ${rev}`)
+      return hash
+    })
+  )
+  return addRangeTab(
+    folderPath,
+    hashes[0],
+    base.label,
+    target ? hashes[1] : null,
+    target?.label ?? 'Working Tree',
+    options.temporary ?? true
+  )
+}
+
 export function openCommitSnapshot(folderPath: string, filePath: string, commitHash: string): Promise<TabId> {
   const short = commitHash.slice(0, 7)
   return openTextSnapshot(folderPath, filePath, commitHash, short)
@@ -63,6 +88,8 @@ export function getDiffTabTitle(tab: DiffTab): string {
       return tab.source.shortHash
     case 'stash':
       return `stash@{${tab.source.stashIndex}}`
+    case 'range':
+      return `${tab.source.baseLabel} ↔ ${tab.source.targetLabel}`
     default: {
       const _exhaustive: never = tab.source
       return _exhaustive

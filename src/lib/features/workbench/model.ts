@@ -51,12 +51,18 @@ export interface StashDiffSource {
   message: string
 }
 
-export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource
+export interface RangeDiffSource {
+  kind: 'range'
+  base: string
+  baseLabel: string
+  target: string | null
+  targetLabel: string
+}
+
+export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource | RangeDiffSource
 
 export type PersistedDiffSource =
-  | { kind: 'working'; staged: boolean; scopePath?: string | null }
-  | CommitDiffSource
-  | StashDiffSource
+  { kind: 'working'; staged: boolean; scopePath?: string | null } | CommitDiffSource | StashDiffSource | RangeDiffSource
 
 export interface DiffTab extends TabBase {
   kind: 'diff'

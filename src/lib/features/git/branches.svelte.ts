@@ -7,12 +7,15 @@
 import { backend } from '$lib/api/backend'
 import { getGitSummary, onRepoRefresh, refreshGit, runGitAction } from '$lib/features/git/state.svelte'
 import { isGitError } from '$lib/features/git/errors'
-import { confirmAsync } from '$lib/features/confirm/service.svelte'
+import { confirmAsync, pickAsync, type PickOption } from '$lib/features/confirm/service.svelte'
 import { openFolder } from '$lib/features/workbench/state.svelte'
 import { splitRemotePath } from '$lib/utils/paths'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { platform } from '$lib/platform'
 import type { BranchSummary, GitSummary, GitWorktree } from '$lib/types/backend'
+import { localNameForRemoteRef } from '$lib/features/git/gitRefs'
+import { notify } from '$lib/features/notifications/state.svelte'
+import { getErrorMessage } from '$lib/utils/client-error'
 
 // TYPES //
 
@@ -314,12 +317,7 @@ export async function handleOccupiedWorktreeError(folderPath: string, error: unk
   return true
 }
 
-/**
- * Force-refresh the git summary, then return whether the working
- * tree (or index, or untracked set) holds any uncommitted state.
- * Callers should treat `true` as "must route through CheckoutDialog
- * before invoking checkout."
- */
+/** Refresh the summary before deciding whether checkout needs a recovery stash. */
 async function dirtyCheck(folderPath: string): Promise<{ dirty: boolean; summary: GitSummary | null }> {
   await refreshGit(folderPath)
   const summary = getGitSummary(folderPath)
@@ -328,65 +326,108 @@ async function dirtyCheck(folderPath: string): Promise<{ dirty: boolean; summary
   return { dirty, summary }
 }
 
-/** Tagged error thrown by `safeCheckout` when the working tree is
- * dirty so the UI can route to `CheckoutDialog`. */
-export class DirtyCheckoutError extends Error {
-  readonly kind = 'dirty' as const
-  readonly summary: GitSummary | null
-  constructor(summary: GitSummary | null) {
-    super('Working tree is dirty')
-    this.summary = summary
-  }
-}
+export type CheckoutTarget =
+  | { kind: 'branch'; name: string }
+  | { kind: 'remote'; remoteName: string; localName: string }
+  | { kind: 'detached'; rev: string; label: string }
 
-/**
- * Run `checkout` only when the working tree is clean. On dirty trees,
- * throws `DirtyCheckoutError` so the caller can open `CheckoutDialog`
- * and decide between stash-and-switch and cancel. Successful checkouts
- * refresh branch state and persist recents immediately.
- */
-async function guardedCheckout(
-  folderPath: string,
-  recentName: string | null,
-  checkout: (path: string) => Promise<void>
-): Promise<void> {
-  const { dirty, summary } = await dirtyCheck(folderPath)
-  if (dirty) {
-    throw new DirtyCheckoutError(summary)
-  }
+/** Check out a branch, remote branch (as tracking local) or detached revision; notifies failures. True when HEAD moved. */
+export async function checkoutRef(folderPath: string, target: CheckoutTarget): Promise<boolean> {
   try {
-    await runGitAction(folderPath, checkout)
-  } catch (e) {
-    if (await handleOccupiedWorktreeError(folderPath, e)) return
-    if (isGitError(e, 'dirtyWorktree')) {
-      // Joins the refresh runGitAction started, so the summary reflects the tree that blocked the switch.
-      await refreshGit(folderPath)
-      throw new DirtyCheckoutError(getGitSummary(folderPath))
+    if (target.kind === 'remote') {
+      const { localName } = target
+      const list = await backend.git.listBranches(folderPath)
+      if (list.some((branch) => branch.kind === 'local' && branch.name === localName)) {
+        target = { kind: 'branch', name: localName }
+      }
     }
-    throw e
+    // A remote ref can resolve to the branch already checked out; nothing to switch.
+    if (target.kind === 'branch' && getGitSummary(folderPath)?.branch === target.name) return false
+    const localName = target.kind === 'branch' ? target.name : target.kind === 'remote' ? target.localName : null
+    if (localName !== null && (await offerOccupiedWorktree(folderPath, localName))) return false
+    const label = target.kind === 'detached' ? target.label : target.kind === 'branch' ? target.name : target.localName
+    const op =
+      target.kind === 'branch'
+        ? { kind: 'checkout' as const, name: target.name }
+        : target.kind === 'remote'
+          ? { kind: 'checkout_remote' as const, remoteName: target.remoteName, localName: target.localName }
+          : { kind: 'checkout_detached' as const, rev: target.rev }
+    let { dirty, summary } = await dirtyCheck(folderPath)
+    if (!dirty) {
+      try {
+        await runGitAction(folderPath, (path) => backend.git.branch(path, op))
+        if (localName !== null) markRecent(folderPath, localName)
+        return true
+      } catch (error) {
+        if (!isGitError(error, 'dirtyWorktree')) throw error
+        await refreshGit(folderPath)
+        summary = getGitSummary(folderPath)
+      }
+    }
+    const staged = summary?.staged_count ?? 0
+    const unstaged = summary?.unstaged_count ?? 0
+    const untracked = summary?.untracked_count ?? 0
+    const moved = await confirmAsync({
+      title: `Checkout ${label}?`,
+      message: `This working tree has ${staged} staged, ${unstaged} unstaged and ${untracked} untracked changes. Stash them, including untracked files, and switch? They stay recoverable from the Stashes tab.\n\nOther sessions in this folder share this working tree, so switching affects them too.`,
+      confirmLabel: 'Stash & Checkout',
+      run: () =>
+        runGitAction(folderPath, async (path) => {
+          await backend.git.stash(path, {
+            kind: 'push',
+            message: `auto-stash before switch to ${label}`,
+            scope: { kind: 'all', includeUntracked: true }
+          })
+          await backend.git.branch(path, op)
+        })
+    })
+    if (moved && localName !== null) markRecent(folderPath, localName)
+    return moved
+  } catch (error) {
+    if (await handleOccupiedWorktreeError(folderPath, error)) return false
+    notify.error('Checkout failed', getErrorMessage(error))
+    return false
   }
-  if (recentName !== null) markRecent(folderPath, recentName)
 }
 
-/** Switch to local branch `name`; see `guardedCheckout` for dirty-tree handling. */
-export async function safeCheckout(folderPath: string, name: string): Promise<void> {
-  if (await offerOccupiedWorktree(folderPath, name)) return
-  await guardedCheckout(folderPath, name, (path) => backend.git.branch(path, { kind: 'checkout', name }))
-}
-
-/** Create `localName` tracking `remoteName` and switch to it; see `guardedCheckout`. */
-export async function safeCheckoutRemoteAsLocal(
-  folderPath: string,
-  remoteName: string,
-  localName: string
-): Promise<void> {
-  if (await offerOccupiedWorktree(folderPath, localName)) return
-  await guardedCheckout(folderPath, localName, (path) =>
-    backend.git.branch(path, { kind: 'checkout_remote', remoteName, localName })
-  )
-}
-
-/** Switch to detached revision `rev`; see `guardedCheckout` for dirty-tree handling. */
-export function safeCheckoutDetached(folderPath: string, rev: string): Promise<void> {
-  return guardedCheckout(folderPath, null, (path) => backend.git.branch(path, { kind: 'checkout_detached', rev }))
+export async function checkoutTo(folderPath: string): Promise<void> {
+  await loadFor(folderPath, { autoFetch: false })
+  const list = byFolder.get(folderPath)?.list ?? []
+  const options: PickOption[] = [
+    ...list.filter((branch) => branch.kind === 'local' && !branch.isCurrent),
+    ...list.filter((branch) => branch.kind === 'remote')
+  ].map((branch) => ({
+    value: `${branch.kind === 'local' ? 'branch' : 'remote'}:${branch.name}`,
+    label: branch.name,
+    description: `${branch.kind === 'local' ? 'Branch' : 'Remote Branch'} · ${branch.tip.shortHash}`
+  }))
+  try {
+    const tags = await backend.git.listTags(folderPath)
+    options.push(
+      ...tags.map((tag) => ({
+        value: `tag:${tag.name}`,
+        label: tag.name,
+        description: `Tag · ${tag.shortHash}`
+      }))
+    )
+  } catch (error) {
+    notify.error('Checkout failed', getErrorMessage(error))
+    return
+  }
+  const value = await pickAsync({
+    title: 'Checkout to',
+    filterPlaceholder: 'Select a ref to checkout',
+    options
+  })
+  if (value === null) return
+  const separator = value.indexOf(':')
+  const kind = value.slice(0, separator)
+  const name = value.slice(separator + 1)
+  const target: CheckoutTarget =
+    kind === 'branch'
+      ? { kind: 'branch', name }
+      : kind === 'remote'
+        ? { kind: 'remote', remoteName: name, localName: localNameForRemoteRef(name) }
+        : { kind: 'detached', rev: name, label: name }
+  await checkoutRef(folderPath, target)
 }

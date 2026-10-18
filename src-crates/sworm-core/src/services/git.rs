@@ -9,8 +9,9 @@ use sworm_protocol::branch::BranchCommitRef;
 use sworm_protocol::file_diff::{DiffSource, FileDiff, GitStatus};
 use sworm_protocol::git::{
     CommitDetail, GitBrief, GitChange, GitCommitOptions, GitConflict, GitConflictKind,
-    GitConflictSide, GitOperation, GitOperationKind, GitQuickDiffData, GitRemote,
-    GitSequencerAction, GitStashScope, GitSummary, GraphCommit, StashEntry,
+    GitConflictSide, GitHistoryOp, GitOperation, GitOperationKind, GitQuickDiffData, GitRef,
+    GitRefKind, GitRemote, GitRemoteConfigOp, GitResetMode, GitSequencerAction, GitStashScope,
+    GitSummary, GitTag, GitTagOp, GraphCommit, StashEntry,
 };
 use tracing::warn;
 
@@ -103,6 +104,34 @@ fn parse_ahead_behind(stdout: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
     Some((ahead, behind))
 }
 
+fn parse_decorations(line: &str) -> Vec<GitRef> {
+    line.split(", ")
+        .filter_map(|decoration| {
+            let (kind, name, current) =
+                if let Some(name) = decoration.strip_prefix("HEAD -> refs/heads/") {
+                    (GitRefKind::Branch, name, true)
+                } else if let Some(name) = decoration.strip_prefix("refs/heads/") {
+                    (GitRefKind::Branch, name, false)
+                } else if let Some(name) = decoration.strip_prefix("tag: refs/tags/") {
+                    (GitRefKind::Tag, name, false)
+                } else if let Some(name) = decoration.strip_prefix("refs/remotes/") {
+                    let (_, branch) = name.split_once('/')?;
+                    if branch == "HEAD" {
+                        return None;
+                    }
+                    (GitRefKind::RemoteBranch, name, false)
+                } else {
+                    return None;
+                };
+            Some(GitRef {
+                kind,
+                name: name.to_string(),
+                current,
+            })
+        })
+        .collect()
+}
+
 fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
     let lines: Vec<String> = String::from_utf8_lossy(stdout)
         .lines()
@@ -122,11 +151,7 @@ fn parse_graph_commits(stdout: &[u8]) -> Vec<GraphCommit> {
                 chunk[2].split(' ').map(|s| s.to_string()).collect()
             };
 
-            let refs = if chunk[6].is_empty() {
-                Vec::new()
-            } else {
-                chunk[6].split(", ").map(|s| s.trim().to_string()).collect()
-            };
+            let refs = parse_decorations(&chunk[6]);
 
             Some(GraphCommit {
                 hash: chunk[0].clone(),
@@ -300,6 +325,7 @@ impl GitService {
             branch,
             detached,
             unborn,
+            head,
             upstream,
             changes,
             conflicts,
@@ -326,6 +352,7 @@ impl GitService {
             upstream,
             detached,
             unborn,
+            head,
             operation,
             conflicts,
             message_template,
@@ -416,6 +443,7 @@ impl GitService {
             branch: status.branch,
             detached: status.detached,
             unborn: status.unborn,
+            head: status.head,
             upstream: status.upstream,
             changes,
             conflicts,
@@ -524,6 +552,7 @@ impl GitService {
                 "log",
                 "--all",
                 "--topo-order",
+                "--decorate=full",
                 &format!("--max-count={}", limit),
                 "--format=%H%n%h%n%P%n%an%n%aI%n%s%n%D",
             ])
@@ -547,6 +576,7 @@ impl GitService {
                 "--no-optional-locks",
                 "log",
                 "--topo-order",
+                "--decorate=full",
                 &format!("--max-count={}", limit),
                 "--format=%H%n%h%n%P%n%an%n%aI%n%s%n%D",
                 branch,
@@ -1177,22 +1207,226 @@ impl GitService {
         Ok(remotes)
     }
 
+    pub fn list_tags(&self, path: &Path) -> Result<Vec<GitTag>, ApiError> {
+        let output = git_output(
+            path,
+            &[
+                "for-each-ref",
+                "--sort=-creatordate",
+                "--format=%(refname:short)%00%(objecttype)%00%(objectname)%00%(objectname:short)%00%(*objectname)%00%(*objectname:short)%00%(creatordate:iso8601-strict)%00%(contents:subject)",
+                "refs/tags",
+            ],
+            "list tags",
+        )
+        .map_err(ApiError::Internal)?;
+        Ok(String::from_utf8_lossy(&output)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\0');
+                let [Some(name), Some(object_type), Some(hash), Some(short_hash), Some(peeled),
+                    Some(peeled_short), Some(date), Some(subject)] =
+                    std::array::from_fn(|_| fields.next())
+                else {
+                    return None;
+                };
+                if fields.next().is_some() {
+                    return None;
+                }
+                let annotated = object_type == "tag";
+                Some(GitTag {
+                    name: name.to_string(),
+                    hash: if annotated { peeled } else { hash }.to_string(),
+                    short_hash: if annotated { peeled_short } else { short_hash }.to_string(),
+                    annotated,
+                    subject: subject.to_string(),
+                    date: date.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    pub fn tag(&self, path: &Path, op: GitTagOp) -> Result<(), ApiError> {
+        match op {
+            GitTagOp::Create { name, rev, message } => {
+                match message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|msg| !msg.is_empty())
+                {
+                    Some(message) => {
+                        self.run_mutate(path, &["tag", "-a", &name, "-m", message, &rev])
+                    }
+                    None => self.run_mutate(path, &["tag", &name, &rev]),
+                }
+            }
+            GitTagOp::Delete { name } => self.run_mutate(path, &["tag", "-d", &name]),
+            GitTagOp::Push { remote, name } => match name {
+                Some(name) => {
+                    self.run_mutate(path, &["push", &remote, &format!("refs/tags/{name}")])
+                }
+                None => self.run_mutate(path, &["push", &remote, "--tags"]),
+            },
+            GitTagOp::DeleteRemote { remote, name } => self.run_mutate(
+                path,
+                &["push", &remote, "--delete", &format!("refs/tags/{name}")],
+            ),
+        }
+    }
+
+    pub fn remote_config(&self, path: &Path, op: GitRemoteConfigOp) -> Result<(), ApiError> {
+        match op {
+            GitRemoteConfigOp::Add { name, url } => {
+                self.run_mutate(path, &["remote", "add", &name, &url])
+            }
+            GitRemoteConfigOp::Remove { name } => {
+                self.run_mutate(path, &["remote", "remove", &name])
+            }
+            GitRemoteConfigOp::Rename { old_name, new_name } => {
+                self.run_mutate(path, &["remote", "rename", &old_name, &new_name])
+            }
+            GitRemoteConfigOp::SetUrl { name, url } => {
+                self.run_mutate(path, &["remote", "set-url", &name, &url])
+            }
+        }
+    }
+
+    pub fn history(&self, path: &Path, op: GitHistoryOp) -> Result<(), ApiError> {
+        let git_dir = resolve_git_dir(path);
+        if read_operation(path, &git_dir).is_some() {
+            return Err(ApiError::InvalidArgument(
+                "Finish or abort the paused Git operation first".to_string(),
+            ));
+        }
+        let (rev, command, verb, kind, empty_marker) = match &op {
+            GitHistoryOp::CherryPick { rev } => (
+                rev,
+                "cherry-pick",
+                "Cherry-pick",
+                GitOperationKind::CherryPick,
+                "is now empty",
+            ),
+            GitHistoryOp::Revert { rev } => (
+                rev,
+                "revert",
+                "Revert",
+                GitOperationKind::Revert,
+                "nothing to commit",
+            ),
+            GitHistoryOp::Reset { rev, mode } => {
+                let flag = match mode {
+                    GitResetMode::Soft => "--soft",
+                    GitResetMode::Mixed => "--mixed",
+                    GitResetMode::Hard => "--hard",
+                };
+                return self.run_mutate(path, &["reset", flag, rev]);
+            }
+        };
+        let mut args = vec![command];
+        if kind == GitOperationKind::Revert {
+            args.push("--no-edit");
+        }
+        if git_line(
+            path,
+            &["rev-parse", "--verify", "--quiet", &format!("{rev}^2")],
+        )
+        .is_some()
+        {
+            args.extend(["-m", "1"]);
+        }
+        args.push(rev);
+        match self.run_mutate(path, &args) {
+            Err(error @ ApiError::MergeConflicts { .. }) => Err(error),
+            Err(error) => {
+                let empty =
+                    matches!(&error, ApiError::Internal(message) if message.contains(empty_marker));
+                if empty {
+                    let paused = read_operation(path, &git_dir)
+                        .is_some_and(|operation| operation.kind == kind);
+                    if paused {
+                        self.run_mutate(path, &[command, "--abort"])?;
+                    }
+                    // Git can finish an empty revert without leaving REVERT_HEAD.
+                    if paused || kind == GitOperationKind::Revert {
+                        return Err(ApiError::InvalidArgument(format!(
+                            "{verb} produced no changes; nothing was applied"
+                        )));
+                    }
+                }
+                Err(error)
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
+    pub fn merged_branches(&self, path: &Path) -> Result<Vec<String>, ApiError> {
+        let candidates = git_output(
+            path,
+            &[
+                "for-each-ref",
+                "--merged=HEAD",
+                "--format=%(refname:short)%00%(HEAD)%00%(worktreepath)",
+                "refs/heads",
+            ],
+            "list merged branches",
+        )
+        .map_err(ApiError::Internal)?;
+        let defaults = git_output(
+            path,
+            &[
+                "for-each-ref",
+                "--format=%(symref:lstrip=3)",
+                "refs/remotes",
+            ],
+            "list remote default branches",
+        )
+        .map_err(ApiError::Internal)?;
+        let defaults = String::from_utf8_lossy(&defaults);
+        let defaults: HashSet<&str> = defaults.lines().filter(|name| !name.is_empty()).collect();
+        let mut names: Vec<String> = String::from_utf8_lossy(&candidates)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\0');
+                let name = fields.next()?;
+                let head = fields.next()?;
+                let worktree = fields.next()?;
+                (head != "*"
+                    && worktree.is_empty()
+                    && !matches!(name, "main" | "master")
+                    && !defaults.contains(name))
+                .then(|| name.to_string())
+            })
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
     /// Return true when the index, worktree, or untracked set has changes.
     pub fn is_worktree_dirty(&self, path: &Path) -> bool {
         self.working_status(path)
             .is_ok_and(|status| !status.changes.is_empty())
     }
 
-    /// File metadata for `branch...HEAD` compare. Content stays lazy:
-    /// the compare modal only renders status + path, and snapshots use
-    /// the existing `git_show_file` path when a file is opened.
-    pub fn diff_branch_against_head(&self, path: &Path, branch: &str) -> Vec<FileDiff> {
-        rev_entries(path, Some("HEAD"), branch)
+    /// Compare a pinned base commit with another commit or the tracked working tree.
+    pub fn diff_range(&self, path: &Path, base: &str, target: Option<&str>) -> Vec<FileDiff> {
+        match target {
+            Some(target) => rev_entries(path, Some(base), target),
+            None => parse_raw_numstat(&run_git_capture(
+                path,
+                &[
+                    "--no-optional-locks",
+                    "diff",
+                    "--raw",
+                    "--numstat",
+                    "-z",
+                    "-M",
+                    "-C",
+                    base,
+                ],
+            )),
+        }
     }
 
-    /// Switch to an existing branch. `git switch` refuses on a dirty
-    /// tree; the frontend's `safeCheckout` enforces the dirty gate
-    /// before this is reached.
+    /// Switch to an existing branch; the Host enforces the dirty-tree gate.
     pub fn checkout_branch(&self, path: &Path, name: &str) -> Result<(), ApiError> {
         self.run_mutate(path, &["switch", name])
     }
@@ -1599,6 +1833,21 @@ impl GitService {
                 };
                 fold_both_sides(old, new)
             }
+            DiffSource::Range { base, target } => {
+                let old = if status == GitStatus::Added {
+                    BlobResult::Missing
+                } else {
+                    read_git_show_blob(path, &format!("{base}:{}", old_path.unwrap_or(file_path)))
+                };
+                let new = if status == GitStatus::Deleted {
+                    BlobResult::Missing
+                } else if let Some(target) = target {
+                    read_git_show_blob(path, &format!("{target}:{file_path}"))
+                } else {
+                    read_worktree_blob(path, file_path)
+                };
+                fold_both_sides(old, new)
+            }
         }
     }
 
@@ -1653,6 +1902,7 @@ struct WorkingStatus {
     branch: Option<String>,
     detached: bool,
     unborn: bool,
+    head: Option<String>,
     upstream: Option<String>,
     changes: Vec<GitChange>,
     conflicts: Vec<GitConflict>,
@@ -1664,6 +1914,7 @@ struct StatusV2 {
     upstream: Option<String>,
     detached: bool,
     unborn: bool,
+    head: Option<String>,
     ahead: Option<u32>,
     behind: Option<u32>,
     records: Vec<StatusRecord>,
@@ -1710,6 +1961,8 @@ fn status_records(path: &Path, ahead_behind: bool) -> Result<Option<StatusV2>, S
                     status.branch = (!status.detached).then(|| head.to_string());
                 } else if record == "# branch.oid (initial)" {
                     status.unborn = true;
+                } else if let Some(oid) = record.strip_prefix("# branch.oid ") {
+                    status.head = Some(oid.to_string());
                 } else if let Some(upstream) = record.strip_prefix("# branch.upstream ") {
                     status.upstream = Some(upstream.to_string());
                 } else if let Some(ab) = record.strip_prefix("# branch.ab ") {
@@ -3765,6 +4018,133 @@ mod tests {
             .sequencer(&repo, GitOperationKind::Rebase, &GitSequencerAction::Abort)
             .unwrap();
         assert!(service.get_summary(&repo).unwrap().operation.is_none());
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
+    }
+
+    #[test]
+    fn decorations_preserve_ref_kinds_and_drop_non_branch_namespaces() {
+        assert_eq!(
+            parse_decorations("HEAD -> refs/heads/main, refs/remotes/origin/main, refs/remotes/origin/HEAD, tag: refs/tags/v1, refs/stash, HEAD"),
+            vec![
+                GitRef { kind: GitRefKind::Branch, name: "main".to_string(), current: true },
+                GitRef { kind: GitRefKind::RemoteBranch, name: "origin/main".to_string(), current: false },
+                GitRef { kind: GitRefKind::Tag, name: "v1".to_string(), current: false },
+            ],
+        );
+    }
+
+    #[test]
+    fn history_handles_empty_replays_merge_mainline_and_paused_reset() {
+        let repo = temp_repo("history");
+        let service = GitService::new();
+        git(&repo, &["switch", "-q", "-c", "side"]);
+        std::fs::write(repo.join("side.txt"), "side\n").unwrap();
+        git(&repo, &["add", "side.txt"]);
+        git(&repo, &["commit", "-q", "-m", "side"]);
+        let side = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        git(&repo, &["switch", "-q", "main"]);
+        service
+            .history(&repo, GitHistoryOp::CherryPick { rev: side.clone() })
+            .unwrap();
+        let applied = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(matches!(
+            service.history(&repo, GitHistoryOp::CherryPick { rev: side }),
+            Err(ApiError::InvalidArgument(message))
+                if message == "Cherry-pick produced no changes; nothing was applied"
+        ));
+        assert!(read_operation(&repo, &resolve_git_dir(&repo)).is_none());
+        assert_eq!(git_line(&repo, &["rev-parse", "HEAD"]), Some(applied));
+
+        // A merge has a second parent even when its first-parent diff is simple.
+        git(&repo, &["switch", "-q", "-c", "merge-side"]);
+        std::fs::write(repo.join("merged.txt"), "merged\n").unwrap();
+        git(&repo, &["add", "merged.txt"]);
+        git(&repo, &["commit", "-q", "-m", "merge-side"]);
+        git(&repo, &["switch", "-q", "main"]);
+        git(
+            &repo,
+            &["merge", "-q", "--no-ff", "merge-side", "-m", "merge"],
+        );
+        let merged = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        git(&repo, &["reset", "--hard", "HEAD~1"]);
+        service
+            .history(
+                &repo,
+                GitHistoryOp::CherryPick {
+                    rev: merged.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join("merged.txt")).unwrap(),
+            "merged\n"
+        );
+        service
+            .history(
+                &repo,
+                GitHistoryOp::Revert {
+                    rev: merged.clone(),
+                },
+            )
+            .unwrap();
+        assert!(!repo.join("merged.txt").exists());
+        assert!(matches!(
+            service.history(&repo, GitHistoryOp::Revert { rev: merged }),
+            Err(ApiError::InvalidArgument(message))
+                if message == "Revert produced no changes; nothing was applied"
+        ));
+        assert!(read_operation(&repo, &resolve_git_dir(&repo)).is_none());
+        std::fs::remove_dir_all(repo).unwrap();
+
+        let repo = conflicting_branches("history-paused");
+        assert!(matches!(
+            service.merge_into_current(&repo, "feature", false),
+            Err(ApiError::MergeConflicts { .. })
+        ));
+        let head = git_line(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(matches!(
+            service.history(&repo, GitHistoryOp::Reset { rev: "main".to_string(), mode: GitResetMode::Hard }),
+            Err(ApiError::InvalidArgument(message))
+                if message == "Finish or abort the paused Git operation first"
+        ));
+        assert_eq!(git_line(&repo, &["rev-parse", "HEAD"]), Some(head));
+        assert_eq!(
+            read_operation(&repo, &resolve_git_dir(&repo)).unwrap().kind,
+            GitOperationKind::Merge
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn merged_branches_excludes_current_protected_unmerged_and_occupied() {
+        let repo = temp_repo("merged-branches");
+        let service = GitService::new();
+        git(&repo, &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.join("feature.txt"), "feature\n").unwrap();
+        git(&repo, &["add", "feature.txt"]);
+        git(&repo, &["commit", "-q", "-m", "feature"]);
+        git(&repo, &["branch", "done"]);
+        git(&repo, &["branch", "busy"]);
+        git(&repo, &["switch", "-q", "-c", "wip"]);
+        std::fs::write(repo.join("wip.txt"), "wip\n").unwrap();
+        git(&repo, &["add", "wip.txt"]);
+        git(&repo, &["commit", "-q", "-m", "wip"]);
+        git(&repo, &["switch", "-q", "feature"]);
+        let worktree = repo.with_extension("worktree");
+        git(
+            &repo,
+            &["worktree", "add", "-q", worktree.to_str().unwrap(), "busy"],
+        );
+
+        // Protect a remote's nonstandard default branch as well.
+        let remote = bare_remote(&repo);
+        git(&repo, &["branch", "release"]);
+        git(&repo, &["branch", "master"]);
+        git(&repo, &["push", "-q", "origin", "release"]);
+        git(&repo, &["remote", "set-head", "origin", "release"]);
+        assert_eq!(service.merged_branches(&repo).unwrap(), vec!["done"]);
+        git(&repo, &["worktree", "remove", worktree.to_str().unwrap()]);
         std::fs::remove_dir_all(repo).unwrap();
         std::fs::remove_dir_all(remote).unwrap();
     }

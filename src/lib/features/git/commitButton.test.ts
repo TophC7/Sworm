@@ -25,6 +25,7 @@ function summary(patch: Partial<GitSummary> = {}): GitSummary {
     upstream: 'origin/main',
     detached: false,
     unborn: false,
+    head: null,
     operation: null,
     conflicts: [],
     message_template: null,

@@ -21,10 +21,10 @@ import { withConflictMarkerConfirm } from '$lib/features/git/errors'
 import { discardChanges, stageChanges, unstageChanges } from '$lib/features/git/summaryPatches'
 import { createFolderKeyedStore } from '$lib/state/folderKeyedStore.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
-import type { GitSummary, GraphCommit, StashEntry } from '$lib/types/backend'
+import type { GitSummary, GitTag, GraphCommit, StashEntry } from '$lib/types/backend'
 import { platform } from '$lib/platform'
 
-const GRAPH_LIMIT = 100
+const GRAPH_PAGE_SIZE = 100
 const RECONCILE_INTERVAL_MS = 2_000
 
 export interface GitFreshness {
@@ -36,6 +36,9 @@ interface RepoState extends GitFreshness {
   summary: GitSummary | null
   /** null = never loaded; loaded once the graph is on screen. */
   graph: GraphCommit[] | null
+  graphLimit: number
+  graphHasMore: boolean
+  tags: GitTag[] | null
   stashCount: number | null
   /** null = never loaded; the list is costlier than the count, so only the stash tab loads it. */
   stashes: StashEntry[] | null
@@ -55,7 +58,7 @@ interface FolderRuntime {
   lastApplied: number
   inFlightActions: number
   pendingActionScope: RefreshScope | null
-  loads: Map<'graph' | 'stashes' | 'watch', Promise<void>>
+  loads: Map<'graph' | 'stashes' | 'tags' | 'watch', Promise<void>>
   refreshQueue: RefreshQueue | null
   reconciliation: Promise<void> | null
   activeRefs: number
@@ -70,6 +73,9 @@ function ensureEntry(folderPath: string) {
     gitStore.set(folderPath, {
       summary: null,
       graph: null,
+      graphLimit: GRAPH_PAGE_SIZE,
+      graphHasMore: false,
+      tags: null,
       stashCount: null,
       stashes: null,
       readError: null,
@@ -103,6 +109,7 @@ function summariesEqual(a: GitSummary | null | undefined, b: GitSummary): boolea
     a.upstream !== b.upstream ||
     a.detached !== b.detached ||
     a.unborn !== b.unborn ||
+    a.head !== b.head ||
     a.message_template !== b.message_template ||
     a.conflicts.length !== b.conflicts.length ||
     JSON.stringify(a.operation) !== JSON.stringify(b.operation) ||
@@ -140,7 +147,9 @@ function graphsEqual(a: GraphCommit[] | null, b: GraphCommit[]): boolean {
   for (let i = 0; i < a.length; i++) {
     if (a[i].hash !== b[i].hash || a[i].refs.length !== b[i].refs.length) return false
     for (let ref = 0; ref < a[i].refs.length; ref++) {
-      if (a[i].refs[ref] !== b[i].refs[ref]) return false
+      const left = a[i].refs[ref]
+      const right = b[i].refs[ref]
+      if (left.kind !== right.kind || left.name !== right.name || left.current !== right.current) return false
     }
   }
   return true
@@ -159,6 +168,14 @@ export function getGitFreshness(folderPath: string): GitFreshness {
 
 export function getGitGraph(folderPath: string): GraphCommit[] | null {
   return gitStore.get(folderPath)?.graph ?? null
+}
+
+export function getGraphHasMore(folderPath: string): boolean {
+  return gitStore.get(folderPath)?.graphHasMore ?? false
+}
+
+export function getTags(folderPath: string): GitTag[] | null {
+  return gitStore.get(folderPath)?.tags ?? null
 }
 
 export function getStashCount(folderPath: string): number {
@@ -203,10 +220,13 @@ async function refreshGraph(folderPath: string): Promise<void> {
   const rt = runtimes.get(folderPath)
   if (!rt) return
   try {
-    const graph = await backend.git.getGraph(folderPath, GRAPH_LIMIT)
+    const graphLimit = gitStore.get(folderPath)!.graphLimit
+    const result = await backend.git.getGraph(folderPath, graphLimit + 1)
     if (runtimes.get(folderPath) !== rt) return
-    if (graphsEqual(getGitGraph(folderPath), graph)) return
-    gitStore.patch(folderPath, { graph })
+    const graph = result.slice(0, graphLimit)
+    const patch: Partial<RepoState> = { graphHasMore: result.length > graphLimit }
+    if (!graphsEqual(getGitGraph(folderPath), graph)) patch.graph = graph
+    gitStore.patch(folderPath, patch)
   } catch (e) {
     console.error(`Failed to load git graph for ${folderPath}:`, e)
   }
@@ -236,8 +256,24 @@ async function refreshStashes(folderPath: string): Promise<void> {
   }
 }
 
+async function refreshTags(folderPath: string): Promise<void> {
+  const rt = runtimes.get(folderPath)
+  if (!rt) return
+  try {
+    const tags = await backend.git.listTags(folderPath)
+    if (runtimes.get(folderPath) !== rt) return
+    gitStore.patch(folderPath, { tags })
+  } catch (e) {
+    console.error(`Failed to list tags for ${folderPath}:`, e)
+  }
+}
+
 /** Coalesce a first load per folder+kind; later callers join the in-flight promise. */
-function loadOnce(rt: FolderRuntime, kind: 'graph' | 'stashes' | 'watch', load: () => Promise<void>): Promise<void> {
+function loadOnce(
+  rt: FolderRuntime,
+  kind: 'graph' | 'stashes' | 'tags' | 'watch',
+  load: () => Promise<void>
+): Promise<void> {
   const existing = rt.loads.get(kind)
   if (existing) return existing
   const promise = load().finally(() => {
@@ -254,6 +290,20 @@ export function loadGraph(folderPath: string): Promise<void> {
   return loadOnce(rt, 'graph', () =>
     Promise.all([refreshGraph(folderPath), refreshStashCount(folderPath)]).then(() => undefined)
   )
+}
+
+export async function loadMoreGraph(folderPath: string): Promise<void> {
+  const entry = gitStore.get(folderPath)
+  if (!entry) return
+  gitStore.patch(folderPath, { graphLimit: entry.graphLimit + GRAPH_PAGE_SIZE })
+  await refreshGraph(folderPath)
+}
+
+/** Load tags on first use; full repository refreshes keep them current afterwards. */
+export function loadTags(folderPath: string): Promise<void> {
+  const rt = runtimes.get(folderPath)
+  if (!rt || getTags(folderPath)) return Promise.resolve()
+  return loadOnce(rt, 'tags', () => refreshTags(folderPath))
 }
 
 /** Load the stash list if it was never loaded; refreshes keep it current afterwards. */
@@ -283,6 +333,7 @@ async function refreshRepoNow(folderPath: string, scope: RefreshScope): Promise<
     refreshGitNow(folderPath),
     entry?.graph ? refreshGraph(folderPath) : undefined,
     entry?.stashes ? refreshStashes(folderPath) : refreshStashCount(folderPath),
+    entry?.tags ? refreshTags(folderPath) : undefined,
     ...[...repoListeners].map((listener) => listener(folderPath))
   ])
 }

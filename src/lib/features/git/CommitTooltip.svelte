@@ -9,7 +9,6 @@
 <script lang="ts">
   import type { CommitDetail, GraphCommit } from '$lib/types/backend'
   import { timeAgo, formatFullDate } from '$lib/utils/date'
-  import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
   import { Check, ClockIcon, CopyIcon, GitCommitIcon } from '$lib/icons/lucideExports'
   import { IconButton } from '$lib/components/ui/button'
   import { platform } from '$lib/platform'
@@ -54,7 +53,7 @@
       })
   })
 
-  let filteredRefs = $derived(visibleRefs(commit.refs))
+  let refs = $derived(commit.refs)
 
   async function copyHash() {
     await platform.clipboard.writeText(commit.hash)
@@ -108,16 +107,16 @@
   {/if}
 
   <!-- Ref badges -->
-  {#if filteredRefs.length > 0}
+  {#if refs.length > 0}
     <div class="flex flex-wrap gap-1.5">
-      {#each filteredRefs as ref (ref)}
+      {#each refs as ref (`${ref.kind}:${ref.name}`)}
         <span
           class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-2xs leading-tight"
           style="border-color: color-mix(in srgb, {graphColor} 40%, transparent); color: {graphColor}"
         >
           <span class="inline-block h-1 w-1 shrink-0 rounded-full" style="background: {graphColor}" aria-hidden="true"
           ></span>
-          {refLabel(ref)}
+          {ref.name}
         </span>
       {/each}
     </div>

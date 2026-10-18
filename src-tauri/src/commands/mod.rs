@@ -237,7 +237,12 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         // Git branch commands
         git_list_branches,
         git_list_remotes,
-        git_diff_branch_against_head,
+        git_list_tags,
+        git_tag,
+        git_remote_config,
+        git_history,
+        git_diff_range,
+        git_merged_branches,
         git_branch,
         git_sequencer,
         git_conflicts,

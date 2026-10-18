@@ -28,6 +28,8 @@ pub struct GitSummary {
     pub detached: bool,
     /// HEAD's branch has no commits yet (`# branch.oid (initial)`).
     pub unborn: bool,
+    /// HEAD commit hash (`# branch.oid`); None when unborn.
+    pub head: Option<String>,
     /// Paused merge/rebase/cherry-pick/revert, if any.
     pub operation: Option<GitOperation>,
     /// Unmerged paths with git's conflict kind.
@@ -100,6 +102,96 @@ pub struct GitBrief {
     pub behind: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitRefKind {
+    Branch,
+    RemoteBranch,
+    Tag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRef {
+    pub kind: GitRefKind,
+    /// Short name: `main`, `origin/main`, `v1.0`.
+    pub name: String,
+    /// HEAD points at this local branch.
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitTag {
+    pub name: String,
+    /// Peeled target commit.
+    pub hash: String,
+    pub short_hash: String,
+    pub annotated: bool,
+    /// Annotated: tag message subject. Lightweight: commit subject.
+    pub subject: String,
+    /// `creatordate`, ISO-8601 strict.
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitTagOp {
+    Create {
+        name: String,
+        rev: String,
+        message: Option<String>,
+    },
+    Delete {
+        name: String,
+    },
+    /// `name: None` pushes every tag.
+    Push {
+        remote: String,
+        name: Option<String>,
+    },
+    DeleteRemote {
+        remote: String,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitRemoteConfigOp {
+    Add { name: String, url: String },
+    Remove { name: String },
+    Rename { old_name: String, new_name: String },
+    SetUrl { name: String, url: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitHistoryOp {
+    CherryPick { rev: String },
+    Revert { rev: String },
+    Reset { rev: String, mode: GitResetMode },
+}
+
 /// Commit data for git graph rendering (includes parent hashes and refs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphCommit {
@@ -109,7 +201,7 @@ pub struct GraphCommit {
     pub author: String,
     pub date: String,
     pub message: String,
-    pub refs: Vec<String>,
+    pub refs: Vec<GitRef>,
 }
 
 /// Full commit detail for the commit-view page.

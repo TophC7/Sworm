@@ -33,9 +33,7 @@ impl GitStatus {
     }
 }
 
-/// Where a diff is sourced from. One shape for every entry point ;
-/// working tree, a commit, or a stash; so the frontend stays agnostic.
-///
+/// Where a diff is sourced from: working tree, commit, stash, or pinned range.
 /// `staged` on `Working` disambiguates index vs worktree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -49,6 +47,10 @@ pub enum DiffSource {
     },
     Stash {
         index: usize,
+    },
+    Range {
+        base: String,
+        target: Option<String>,
     },
 }
 

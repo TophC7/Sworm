@@ -127,6 +127,8 @@ function diffSourcesEqual(a: DiffSource, b: DiffSource): boolean {
       return b.kind === 'commit' && a.commitHash === b.commitHash
     case 'stash':
       return b.kind === 'stash' && a.stashIndex === b.stashIndex
+    case 'range':
+      return b.kind === 'range' && a.base === b.base && a.target === b.target
     default: {
       const _exhaustive: never = a
       return _exhaustive
@@ -806,6 +808,36 @@ export function addStashTab(
   )
 }
 
+export function addRangeTab(
+  folderPath: string,
+  base: string,
+  baseLabel: string,
+  target: string | null,
+  targetLabel: string,
+  temporary = true
+): TabId {
+  return addContentTab(
+    'diff',
+    (id): DiffTab => ({
+      kind: 'diff',
+      id,
+      folderPath,
+      source: { kind: 'range', base, baseLabel, target, targetLabel },
+      initialFile: null,
+      temporary,
+      locked: false
+    }),
+    temporary,
+    (t) =>
+      t.kind === 'diff' &&
+      t.folderPath === folderPath &&
+      t.source.kind === 'range' &&
+      t.source.base === base &&
+      t.source.target === target &&
+      !t.temporary
+  )
+}
+
 export function addTextTab(folderPath: string, filePath: string, temporary = true, tabId?: TabId): TabId {
   return addContentTab(
     'text',
@@ -1023,6 +1055,15 @@ export async function reopenLastClosedTab(): Promise<TabId | null> {
             )
           case 'stash':
             return addStashTab(head.folderPath, head.source.stashIndex, head.source.message, head.initialFile, false)
+          case 'range':
+            return addRangeTab(
+              head.folderPath,
+              head.source.base,
+              head.source.baseLabel,
+              head.source.target,
+              head.source.targetLabel,
+              false
+            )
           default: {
             const _exhaustive: never = head.source
             return _exhaustive

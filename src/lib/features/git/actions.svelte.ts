@@ -34,6 +34,8 @@ import {
 import type {
   GitConflict,
   GitConflictSide,
+  GitRemote,
+  GitResetMode,
   GitSequencerAction,
   GitStashScope,
   GitWorktreeCheckout,
@@ -42,6 +44,7 @@ import type {
 import { getErrorMessage } from '$lib/utils/client-error'
 import { basename, isPathWithin } from '$lib/utils/paths'
 import { SvelteSet } from 'svelte/reactivity'
+import { platform } from '$lib/platform'
 
 const GIT_ACTION_NOTIFICATIONS = {
   pull: {
@@ -144,6 +147,66 @@ const GIT_ACTION_NOTIFICATIONS = {
     success: { title: 'Upstream unset' },
     error: { title: 'Unset upstream failed' }
   },
+  cherryPick: {
+    loading: { title: 'Cherry-picking commit' },
+    success: { title: 'Commit cherry-picked' },
+    error: { title: 'Cherry-pick failed' }
+  },
+  revert: {
+    loading: { title: 'Reverting commit' },
+    success: { title: 'Commit reverted' },
+    error: { title: 'Revert failed' }
+  },
+  reset: {
+    loading: { title: 'Resetting branch' },
+    success: { title: 'Reset complete' },
+    error: { title: 'Reset failed' }
+  },
+  createTag: {
+    loading: { title: 'Creating tag' },
+    success: { title: 'Tag created' },
+    error: { title: 'Create tag failed' }
+  },
+  deleteTag: {
+    loading: { title: 'Deleting tag' },
+    success: { title: 'Tag deleted' },
+    error: { title: 'Delete tag failed' }
+  },
+  pushTags: {
+    loading: { title: 'Pushing tags' },
+    success: { title: 'Tags pushed' },
+    error: { title: 'Push tags failed' }
+  },
+  deleteRemoteTag: {
+    loading: { title: 'Deleting remote tag' },
+    success: { title: 'Remote tag deleted' },
+    error: { title: 'Delete remote tag failed' }
+  },
+  addRemote: {
+    loading: { title: 'Adding remote' },
+    success: { title: 'Remote added' },
+    error: { title: 'Add remote failed' }
+  },
+  removeRemote: {
+    loading: { title: 'Removing remote' },
+    success: { title: 'Remote removed' },
+    error: { title: 'Remove remote failed' }
+  },
+  renameRemote: {
+    loading: { title: 'Renaming remote' },
+    success: { title: 'Remote renamed' },
+    error: { title: 'Rename remote failed' }
+  },
+  setRemoteUrl: {
+    loading: { title: 'Setting remote URL' },
+    success: { title: 'Remote URL set' },
+    error: { title: 'Set remote URL failed' }
+  },
+  deleteMergedBranches: {
+    loading: { title: 'Deleting merged branches' },
+    success: { title: 'Merged branches deleted' },
+    error: { title: 'Delete merged branches failed' }
+  },
   continueOperation: (display: OperationDisplay) => ({
     loading: { title: `Continuing ${display.noun}` },
     success: { title: `${display.title} continued` },
@@ -238,37 +301,269 @@ export function fetchFolder(folderPath: string, remote: string | null = null): P
   )
 }
 
+async function pickRemote(
+  folderPath: string,
+  errorTitle: string,
+  title: string,
+  message: string
+): Promise<GitRemote | null> {
+  let remotes: GitRemote[]
+  try {
+    remotes = await backend.git.listRemotes(folderPath)
+  } catch (error) {
+    notify.error(errorTitle, getErrorMessage(error))
+    return null
+  }
+  if (remotes.length === 0) {
+    notify.info('No remotes', 'This repository has no remotes.')
+    return null
+  }
+  if (remotes.length === 1) return remotes[0]
+  const ordered = remotes.toSorted(
+    (a, b) => Number(b.pushDefault) - Number(a.pushDefault) || Number(b.name === 'origin') - Number(a.name === 'origin')
+  )
+  const name = await pickAsync({
+    title,
+    message,
+    options: ordered.map((remote) => ({
+      value: remote.name,
+      label: remote.name,
+      description: remote.pushUrl ?? remote.fetchUrl ?? undefined
+    }))
+  })
+  return remotes.find((remote) => remote.name === name) ?? null
+}
+
 export async function publishBranch(
   folderPath: string,
   branch: string | null = null,
   remote: string | null = null
 ): Promise<void | undefined> {
   if (remote === null) {
-    const remotes = await backend.git.listRemotes(folderPath).catch((e) => {
-      notify.error('Publish failed', getErrorMessage(e))
-      return null
-    })
-    if (remotes === null) return
-    if (remotes.length > 1) {
-      const name = branch ?? getGitSummary(folderPath)?.branch ?? ''
-      const ordered = remotes.sort(
-        (a, b) =>
-          Number(b.pushDefault) - Number(a.pushDefault) || Number(b.name === 'origin') - Number(a.name === 'origin')
-      )
-      remote = await pickAsync({
-        title: 'Publish Branch',
-        message: `Pick a remote to publish the branch "${name}" to:`,
-        options: ordered.map((r) => ({
-          value: r.name,
-          label: r.name,
-          description: r.pushUrl ?? r.fetchUrl ?? undefined
-        }))
-      })
-      if (remote === null) return
-    }
+    const name = branch ?? getGitSummary(folderPath)?.branch ?? ''
+    const chosen = await pickRemote(
+      folderPath,
+      'Publish failed',
+      'Publish Branch',
+      `Pick a remote to publish the branch "${name}" to:`
+    )
+    if (!chosen) return
+    remote = chosen.name
   }
   return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.publish, () =>
     runGitAction(folderPath, (path) => backend.git.remote(path, { kind: 'publish', branch, remote }))
+  )
+}
+
+export function cherryPickCommit(folderPath: string, rev: string): Promise<void | undefined> {
+  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.cherryPick, () =>
+    runGitAction(folderPath, (path) => backend.git.history(path, { kind: 'cherry_pick', rev }))
+  )
+}
+
+export function revertCommit(folderPath: string, rev: string): Promise<void | undefined> {
+  return runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.revert, () =>
+    runGitAction(folderPath, (path) => backend.git.history(path, { kind: 'revert', rev }))
+  )
+}
+
+export async function resetToCommit(
+  folderPath: string,
+  rev: string,
+  shortHash: string,
+  mode: GitResetMode
+): Promise<void> {
+  if (mode === 'hard') {
+    const branch = getGitSummary(folderPath)?.branch
+    const proceed = await confirmAsync({
+      title: 'Reset Hard?',
+      message: `Reset ${branch ?? 'HEAD'} to ${shortHash}? Uncommitted changes to tracked files are permanently discarded, and commits after ${shortHash} leave the branch.`,
+      confirmLabel: 'Reset Hard'
+    })
+    if (!proceed) return
+  }
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.reset, () =>
+    runGitAction(folderPath, (path) => backend.git.history(path, { kind: 'reset', rev, mode }))
+  )
+}
+
+export async function createTag(folderPath: string, rev: string, revLabel: string): Promise<void> {
+  const answer = await promptAsync({
+    title: 'Create Tag',
+    message: `Tag ${revLabel}.`,
+    placeholder: 'Tag name',
+    confirmLabel: 'Next'
+  })
+  const name = answer?.trim()
+  if (!name) return
+  const message = await promptAsync({
+    title: 'Create Tag',
+    message: 'Optionally provide a message to annotate the tag.',
+    placeholder: 'Message',
+    confirmLabel: 'Create Tag'
+  })
+  if (message === null) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.createTag, () =>
+    runGitAction(folderPath, (path) =>
+      backend.git.tag(path, { kind: 'create', name, rev, message: message.trim() || null })
+    )
+  )
+}
+
+export async function deleteTag(folderPath: string, name: string): Promise<void> {
+  const proceed = await confirmAsync({
+    title: 'Delete Tag?',
+    message: `Delete tag "${name}"? This permanently removes the tag reference from this repository.`,
+    confirmLabel: 'Delete Tag'
+  })
+  if (!proceed) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteTag, () =>
+    runGitAction(folderPath, (path) => backend.git.tag(path, { kind: 'delete', name }))
+  )
+}
+
+export async function pushTag(folderPath: string, name: string | null): Promise<void> {
+  const remote = await pickRemote(
+    folderPath,
+    'Push tags failed',
+    name === null ? 'Push All Tags' : 'Push Tag',
+    name === null ? 'Pick a remote to push all tags to:' : `Pick a remote to push tag "${name}" to:`
+  )
+  if (!remote) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.pushTags, () =>
+    runGitAction(folderPath, (path) => backend.git.tag(path, { kind: 'push', remote: remote.name, name }))
+  )
+}
+
+export async function deleteRemoteTag(folderPath: string, name: string): Promise<void> {
+  const remote = await pickRemote(
+    folderPath,
+    'Delete remote tag failed',
+    'Delete Remote Tag',
+    `Pick a remote to delete tag "${name}" from:`
+  )
+  if (!remote) return
+  const proceed = await confirmAsync({
+    title: 'Delete Remote Tag?',
+    message: `Delete tag "${name}" from remote "${remote.name}"? Other clones keep their copy.`,
+    confirmLabel: 'Delete Tag'
+  })
+  if (!proceed) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteRemoteTag, () =>
+    runGitAction(folderPath, (path) => backend.git.tag(path, { kind: 'delete_remote', remote: remote.name, name }))
+  )
+}
+
+export async function addRemote(folderPath: string): Promise<void> {
+  const urlAnswer = await promptAsync({
+    title: 'Add Remote',
+    placeholder: 'Repository URL',
+    confirmLabel: 'Next'
+  })
+  const url = urlAnswer?.trim()
+  if (!url) return
+  let remotes: GitRemote[]
+  try {
+    remotes = await backend.git.listRemotes(folderPath)
+  } catch (error) {
+    notify.error('Add remote failed', getErrorMessage(error))
+    return
+  }
+  const answer = await promptAsync({
+    title: 'Add Remote',
+    placeholder: 'Remote name',
+    value: remotes.length === 0 ? 'origin' : '',
+    confirmLabel: 'Add Remote'
+  })
+  const name = answer?.trim()
+  if (!name) return
+  if (remotes.some((remote) => remote.name === name)) {
+    notify.error('Add remote failed', `Remote "${name}" already exists.`)
+    return
+  }
+  const added = await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.addRemote, () =>
+    runGitAction(folderPath, (path) => backend.git.remoteConfig(path, { kind: 'add', name, url })).then(() => true)
+  )
+  if (added) await fetchFolder(folderPath, name)
+}
+
+export async function removeRemote(folderPath: string): Promise<void> {
+  const remote = await pickRemote(folderPath, 'Remove remote failed', 'Remove Remote', 'Pick a remote to remove:')
+  if (!remote) return
+  const name = remote.name
+  const proceed = await confirmAsync({
+    title: 'Remove Remote?',
+    message: `Remove remote "${name}"? Its remote-tracking branches are deleted locally; the remote repository is untouched.`,
+    confirmLabel: 'Remove Remote'
+  })
+  if (!proceed) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.removeRemote, () =>
+    runGitAction(folderPath, (path) => backend.git.remoteConfig(path, { kind: 'remove', name }))
+  )
+}
+
+export async function renameRemote(folderPath: string): Promise<void> {
+  const remote = await pickRemote(folderPath, 'Rename remote failed', 'Rename Remote', 'Pick a remote to rename:')
+  if (!remote) return
+  const answer = await promptAsync({
+    title: 'Rename Remote',
+    value: remote.name,
+    placeholder: 'Remote name',
+    confirmLabel: 'Rename Remote'
+  })
+  const newName = answer?.trim()
+  if (!newName || newName === remote.name) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.renameRemote, () =>
+    runGitAction(folderPath, (path) =>
+      backend.git.remoteConfig(path, { kind: 'rename', oldName: remote.name, newName })
+    )
+  )
+}
+
+export async function setRemoteUrl(folderPath: string): Promise<void> {
+  const remote = await pickRemote(
+    folderPath,
+    'Set remote URL failed',
+    'Set Remote URL',
+    'Pick a remote to set its URL:'
+  )
+  if (!remote) return
+  const answer = await promptAsync({
+    title: 'Set Remote URL',
+    value: remote.fetchUrl ?? '',
+    placeholder: 'Repository URL',
+    confirmLabel: 'Set Remote URL'
+  })
+  const url = answer?.trim()
+  if (!url) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.setRemoteUrl, () =>
+    runGitAction(folderPath, (path) => backend.git.remoteConfig(path, { kind: 'set_url', name: remote.name, url }))
+  )
+}
+
+export async function deleteMergedBranches(folderPath: string): Promise<void> {
+  let names: string[]
+  try {
+    names = await backend.git.mergedBranches(folderPath)
+  } catch (error) {
+    notify.error('Delete merged branches failed', getErrorMessage(error))
+    return
+  }
+  if (names.length === 0) {
+    notify.info('No merged branches', 'No local branches are fully merged into HEAD.')
+    return
+  }
+  const n = names.length
+  const proceed = await confirmAsync({
+    title: 'Delete Merged Branches?',
+    message: `Delete ${n} local branch${n === 1 ? '' : 'es'} merged into HEAD?\n\n${names.join('\n')}\n\nRemote branches are not touched.`,
+    confirmLabel: 'Delete Branches'
+  })
+  if (!proceed) return
+  await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.deleteMergedBranches, () =>
+    runGitAction(folderPath, async (path) => {
+      for (const name of names) await backend.git.branch(path, { kind: 'delete', name, force: false })
+    })
   )
 }
 
@@ -460,7 +755,24 @@ export async function clearStashes(folderPath: string): Promise<boolean> {
   )
 }
 
-export async function branchFromStash(folderPath: string, index: number, name: string): Promise<boolean> {
+/** Copy text from a git menu; clipboard refusal (permissions, unfocused page) notifies instead of rejecting. */
+export async function copyToClipboard(text: string, errorTitle = 'Copy failed'): Promise<void> {
+  try {
+    await platform.clipboard.writeText(text)
+  } catch (e) {
+    notify.error(errorTitle, getErrorMessage(e))
+  }
+}
+
+export async function branchFromStash(folderPath: string, index: number): Promise<boolean> {
+  const answer = await promptAsync({
+    title: 'Create Branch from Stash',
+    message: `Create and check out a branch from stash@{${index}}; the stash is dropped when it applies cleanly.`,
+    placeholder: 'Branch name',
+    confirmLabel: 'Create Branch'
+  })
+  const name = answer?.trim()
+  if (!name) return false
   return (
     (await runNotifiedGitAction(folderPath, GIT_ACTION_NOTIFICATIONS.branchFromStash, () =>
       runGitAction(folderPath, (path) => backend.git.stash(path, { kind: 'branch', index, name })).then(() => true)

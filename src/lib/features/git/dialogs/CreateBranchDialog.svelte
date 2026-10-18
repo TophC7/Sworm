@@ -41,7 +41,9 @@
 
   const submitState = runDialogSubmit({
     run: async () => {
-      await runGitAction(folderPath, (path) => backend.git.branch(path, { kind: 'create', name, base, checkout: alsoCheckout }))
+      await runGitAction(folderPath, (path) =>
+        backend.git.branch(path, { kind: 'create', name, base, checkout: alsoCheckout })
+      )
       if (alsoCheckout) branches.markRecent(folderPath, name)
     },
     onDone: () => (open = false)
@@ -49,9 +51,8 @@
 
   let entry = $derived(branches.byFolder.get(folderPath))
   let baseOptions = $derived.by(() => {
-    if (!entry) return [] as string[]
-    const out = new Set<string>()
-    for (const b of entry.list) out.add(b.name)
+    const names = entry?.list.map((branch) => branch.name) ?? []
+    const out = new Set<string>(names.includes(defaultBase) ? names : [defaultBase, ...names])
     return [...out]
   })
 

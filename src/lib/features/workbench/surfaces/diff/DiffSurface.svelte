@@ -2,6 +2,7 @@
   import WorkingDiffView from '$lib/features/workbench/surfaces/diff/WorkingDiffView.svelte'
   import CommitDiffView from '$lib/features/workbench/surfaces/diff/CommitDiffView.svelte'
   import StashDiffView from '$lib/features/workbench/surfaces/diff/StashDiffView.svelte'
+  import RangeDiffView from '$lib/features/workbench/surfaces/diff/RangeDiffView.svelte'
   import type { DiffTab } from '$lib/features/workbench/model'
 
   let {
@@ -25,4 +26,13 @@
   />
 {:else if tab?.source.kind === 'stash'}
   <StashDiffView stashIndex={tab.source.stashIndex} {folderPath} initialFile={tab.initialFile} />
+{:else if tab?.source.kind === 'range'}
+  <RangeDiffView
+    {folderPath}
+    base={tab.source.base}
+    baseLabel={tab.source.baseLabel}
+    target={tab.source.target}
+    targetLabel={tab.source.targetLabel}
+    initialFile={tab.initialFile}
+  />
 {/if}

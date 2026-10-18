@@ -2,6 +2,7 @@
   @component
   GitCommitRow: reusable commit row with graph or compact branch-history chrome.
 
+  @param folderPath - repository for commit actions.
   @param commit - commit metadata shown in the row and tooltip.
   @param detail - lazily-loaded commit detail used for tooltip stats.
   @param graphColor - lane or branch color used for node and ref badges.
@@ -14,10 +15,11 @@
   import type { RowRender } from '$lib/features/git/graph'
   import { SWIMLANE_HEIGHT } from '$lib/features/git/graph'
   import CommitTooltip from '$lib/features/git/CommitTooltip.svelte'
-  import { refLabel, visibleRefs } from '$lib/features/git/gitRefs'
+  import GitCommitContextMenu from '$lib/features/git/GitCommitContextMenu.svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
 
   let {
+    folderPath,
     commit,
     detail = null,
     graphColor,
@@ -28,6 +30,7 @@
     onRowClick,
     onPrefetch
   }: {
+    folderPath: string
     commit: GraphCommit
     detail?: CommitDetail | null
     graphColor: string
@@ -39,62 +42,64 @@
     onPrefetch?: (hash: string) => void
   } = $props()
 
-  let refs = $derived(visibleRefs(commit.refs))
+  let refs = $derived(commit.refs)
 </script>
 
-<Tooltip.Root>
-  <Tooltip.Trigger
-    type="button"
-    class="group flex w-full items-center border-0 border-t border-edge/30 bg-transparent p-0 text-left hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none {active
-      ? 'bg-raised'
-      : ''}"
-    style="height: {SWIMLANE_HEIGHT}px; padding-left: {indent}px"
-    aria-label={commit.message}
-    onclick={() => onRowClick?.(commit.hash)}
-    onmouseenter={() => onPrefetch?.(commit.hash)}
-    onfocus={() => onPrefetch?.(commit.hash)}
-  >
-    {#if render}
-      <svg
-        class="shrink-0"
-        width={render.width}
-        height={SWIMLANE_HEIGHT}
-        viewBox="0 0 {render.width} {SWIMLANE_HEIGHT}"
-      >
-        {#each render.paths as p, pathIndex (pathIndex)}
-          <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
-        {/each}
-        <circle
-          cx={render.circle.cx}
-          cy={render.circle.cy}
-          r={render.circle.r}
-          fill={render.circle.color}
-          stroke="none"
-        />
-      </svg>
-    {:else}
-      <span class="sr-only">Commit</span>
-    {/if}
-
-    <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-      <span class="min-w-0 truncate text-sm text-fg">{commit.message}</span>
-      {#if showRefs && refs.length > 0}
-        <span
-          class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
-          style="background: color-mix(in srgb, {graphColor} 20%, transparent); color: {graphColor}"
+<GitCommitContextMenu {folderPath} {commit}>
+  <Tooltip.Root>
+    <Tooltip.Trigger
+      type="button"
+      class="group flex w-full items-center border-0 border-t border-edge/30 bg-transparent p-0 text-left hover:bg-raised focus-visible:shadow-focus-ring focus-visible:outline-none {active
+        ? 'bg-raised'
+        : ''}"
+      style="height: {SWIMLANE_HEIGHT}px; padding-left: {indent}px"
+      aria-label={commit.message}
+      onclick={() => onRowClick?.(commit.hash)}
+      onmouseenter={() => onPrefetch?.(commit.hash)}
+      onfocus={() => onPrefetch?.(commit.hash)}
+    >
+      {#if render}
+        <svg
+          class="shrink-0"
+          width={render.width}
+          height={SWIMLANE_HEIGHT}
+          viewBox="0 0 {render.width} {SWIMLANE_HEIGHT}"
         >
-          {refLabel(refs[0])}
-        </span>
-        {#each refs.slice(1) as ref (ref)}
-          <span
-            class="size-3 shrink-0 rounded-sm"
-            style="background: color-mix(in srgb, {graphColor} 40%, transparent)"
-          ></span>
-        {/each}
+          {#each render.paths as p, pathIndex (pathIndex)}
+            <path d={p.d} stroke={p.color} fill="none" stroke-width="1" stroke-linecap="round" />
+          {/each}
+          <circle
+            cx={render.circle.cx}
+            cy={render.circle.cy}
+            r={render.circle.r}
+            fill={render.circle.color}
+            stroke="none"
+          />
+        </svg>
+      {:else}
+        <span class="sr-only">Commit</span>
       {/if}
-    </div>
-  </Tooltip.Trigger>
-  <Tooltip.Content class="max-w-135" sideOffset={6} side="right" align="center">
-    <CommitTooltip {commit} {detail} {graphColor} />
-  </Tooltip.Content>
-</Tooltip.Root>
+
+      <div class="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+        <span class="min-w-0 truncate text-sm text-fg">{commit.message}</span>
+        {#if showRefs && refs.length > 0}
+          <span
+            class="ml-auto inline-flex max-w-24 shrink-0 items-center truncate rounded px-1 py-px font-mono text-2xs leading-tight"
+            style="background: color-mix(in srgb, {graphColor} 20%, transparent); color: {graphColor}"
+          >
+            {refs[0].name}
+          </span>
+          {#each refs.slice(1) as ref (`${ref.kind}:${ref.name}`)}
+            <span
+              class="size-3 shrink-0 rounded-sm"
+              style="background: color-mix(in srgb, {graphColor} 40%, transparent)"
+            ></span>
+          {/each}
+        {/if}
+      </div>
+    </Tooltip.Trigger>
+    <Tooltip.Content class="max-w-135" sideOffset={6} side="right" align="center">
+      <CommitTooltip {commit} {detail} {graphColor} />
+    </Tooltip.Content>
+  </Tooltip.Root>
+</GitCommitContextMenu>

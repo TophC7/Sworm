@@ -29,15 +29,19 @@ import type {
   GitBranchOp,
   GitCommitOptions,
   GitConflictsOp,
+  GitHistoryOp,
   GitOperationKind,
   GitPathsOp,
   GitChangedEvent,
   GitQuickDiffData,
   GitRemote,
   GitRemoteOp,
+  GitRemoteConfigOp,
   GitSequencerAction,
   GitStashOp,
   GitSummary,
+  GitTag,
+  GitTagOp,
   GitWorktreeCheckout,
   GitWorktreeList,
   GitWorktreeOp,
@@ -331,8 +335,23 @@ export const backend = {
     getBranchCommits(path: string, branch: string, limit = 5): Promise<GraphCommit[]> {
       return invoke<GraphCommit[]>('git_get_branch_commits', { path, branch, limit })
     },
-    diffBranchAgainstHead(path: string, branch: string): Promise<FileDiff[]> {
-      return invoke<FileDiff[]>('git_diff_branch_against_head', { path, branch })
+    listTags(path: string): Promise<GitTag[]> {
+      return invoke<GitTag[]>('git_list_tags', { path })
+    },
+    tag(path: string, op: GitTagOp): Promise<void> {
+      return invoke<void>('git_tag', { path, op })
+    },
+    remoteConfig(path: string, op: GitRemoteConfigOp): Promise<void> {
+      return invoke<void>('git_remote_config', { path, op })
+    },
+    history(path: string, op: GitHistoryOp): Promise<void> {
+      return invoke<void>('git_history', { path, op })
+    },
+    diffRange(path: string, base: string, target: string | null): Promise<FileDiff[]> {
+      return invoke<FileDiff[]>('git_diff_range', { path, base, target })
+    },
+    mergedBranches(path: string): Promise<string[]> {
+      return invoke<string[]>('git_merged_branches', { path })
     },
     branch(path: string, op: GitBranchOp): Promise<void> {
       return invoke<void>('git_branch', { path, op })
