@@ -95,12 +95,14 @@ The home dashboard reads local Claude Code, Codex, and OMP histories to show pro
 
 Browse files, edit code, and review changes before committing:
 
-- Side-by-side or unified Git diffs, with adjustable text size and word wrap.
-- Separate staged and working changes, per-file change counts, and commit composition.
-- A Git graph for browsing commits, branches, and merges.
-- Monaco code editing, plus Shiki highlighting for Nix, Svelte, and Fish.
-- Markdown editing with a live preview styled to match GitHub as closely as possible.
-- A file tree with filtering, Git markers, and drag-and-drop.
+- **Side-by-side or unified Git diffs** with hunk actions, commit and working-tree comparisons, and file or clipboard compare.
+- **Full Source Control workflow** with staged and working changes, commit variants (**Commit & Push**, **Commit & Sync**, **Amend**, **Commit All**, **Sign Off**, **Skip Hooks**, **Undo Last Commit**), and status-bar branch sync.
+- **Merge, rebase, cherry-pick, and conflict resolution** with paused-operation controls (**Continue**, **Skip**, **Abort**), whole-file or per-block resolution in Monaco (**Accept Current**, **Accept Incoming**, **Accept Both**), and conflict navigation.
+- **Interactive Git graph and ref management** across **Branches**, **Tags**, **Stashes**, and **Worktrees** tabs—check out, cherry-pick, revert, reset, manage remotes, or **Stash & Checkout** when switching with uncommitted edits.
+- **Monaco code editing** with built-in language server (LSP) support (Rust, TypeScript/JavaScript, Svelte, Python, Nix, Fish, HTML, CSS, Tailwind, Biome) and Shiki highlighting.
+- **Markdown editing** with a live preview styled to match GitHub as closely as possible.
+- **File tree** with filtering, drag-and-drop, status-aware Git actions, and safe deletion/discard to the system trash.
+- **Runnable project tasks** defined in `.sworm/tasks.jsonc`.
 
 <details>
 <summary>📷 See Git diffs, the code editor, Markdown preview, and command palette</summary>
@@ -115,17 +117,13 @@ Browse files, edit code, and review changes before committing:
 
 </details>
 
-Use `Ctrl+Shift+P` for workbench commands or `Ctrl+P` to find files. The command palette also has modes for editor commands (`>`), runnable tasks (`!`), and files (`/`). Shortcuts are customizable.
-
-`Ctrl+O` opens the location browser in the same wider shell as the command palette. The current folder starts selected, followed by recent folders, workbenches, and servers—no Places/Folders tabs. Right browses the selected folder, Left goes to its parent, and Enter opens it; while filtering, use Alt+Right/Left so text caret keys keep working. `Ctrl+L` edits the path, Tab completes it, and Escape cancels path editing before closing. The Servers control is keyboard-focusable from every location; `Alt+Home` returns to the locations list. Server entry starts at its working directory, while explicit `~` still goes home.
-
-Choosing another folder replaces the active temporary tab; permanent, locked, or edited tabs stay open. The browser's desktop system-dialog button uses the same captured temporary-tab replacement rule. The folder view keeps a contents preview and an Open Folder action (`Ctrl+Enter`) for its current directory.
+Use `Ctrl+Shift+P` for workbench commands, `Ctrl+P` to find files, or `Ctrl+O` to open a folder or remote host. The command palette also has modes for editor commands (`>`), runnable tasks (`!`), and files (`/`), and exposes the full set of `Git` actions. Shortcuts are customizable.
 
 ### Isolate work with Git worktrees
 
-Use the Git sidebar's **Worktrees** tab to create a checkout on a new branch, an available local branch, or a detached commit. The default destination is `<parent>/<repo>.worktrees/<branch>` with `/` replaced by `-`; collisions get a numeric suffix. Edit the destination or browse for another root. Sworm remembers that root per repository and host. Branch row menus also offer **Create Worktree** and **Open Worktree**; checking out an occupied branch offers to open its existing checkout instead of stashing current edits. Worktree features require Git 2.36 or newer; on older Git, branches still list and switch but worktree markers and proactive occupancy prompts are unavailable. Git's own occupied-branch refusal still offers to open the existing worktree.
+Because tabs in the same folder share its working tree, you can spin up separate Git worktrees when running multiple agents in parallel. Create, open, and remove worktrees from the Git sidebar's **Worktrees** tab, branch menus, or commit history, or use **Migrate Changes to Main** to move uncommitted work back to the primary checkout.
 
-Copy local files from the invoking checkout with `.sworm/settings.jsonc`:
+To copy untracked local files (such as `.env`) into new worktrees automatically, configure `git.worktree_copy` in `.sworm/settings.jsonc`:
 
 ```jsonc
 {
@@ -139,9 +137,7 @@ Copy local files from the invoking checkout with `.sworm/settings.jsonc`:
 }
 ```
 
-The default map is empty. Any matching `true` includes an untracked file, even when gitignored; any matching `false` vetoes it, including directory descendants. Tracked destination files win. Sworm never follows or copies symlinks. Linux uses reflinks when supported, otherwise an independent byte copy. An incomplete copy leaves the new checkout intact, reports warnings, and skips setup tasks.
-
-Tasks present in the destination `.sworm/tasks.jsonc` can run after creation:
+Tasks in `.sworm/tasks.jsonc` can also run automatically when a worktree is created:
 
 ```jsonc
 {
@@ -158,15 +154,9 @@ Tasks present in the destination `.sworm/tasks.jsonc` can run after creation:
 }
 ```
 
-Creation tasks start without visiting their tabs; existing confirmation, singleton, environment and working-directory rules still apply. Tasks without `runOn` remain manual.
-
-**Remove Worktree** checks locked tabs and unsaved edits, closes affected tabs, releases ownership and waits for Sworm-managed sessions, tasks and language servers to exit. Another window/client's ownership blocks removal. Dirty or ignored-only files require separate **Force Delete** consent; the branch remains. **Prune Worktrees** removes stale registrations, not working directories.
-
-**Migrate Changes to Main** requires a clean primary checkout, closes affected tabs/runs in both checkouts, and moves staged, unstaged and nonignored untracked changes while preserving staging. Ignored files and the source checkout stay behind. A uniquely named recovery stash remains even on success; remove it through Stashes when no longer needed. Apply failures leave primary conflicts visible and attempt source restoration only when source is still clean and its HEAD unchanged. Stop external terminals or daemonized commands yourself; Sworm can fence only processes it manages.
-
 ### Use your project's Nix environment
 
-Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate an environment from the status bar; once ready, it is used for new terminals, agent sessions, and runnable tasks. Without a ready Nix environment, sessions use the host environment.
+Sworm detects `flake.nix`, `shell.nix`, and `default.nix`. Select and evaluate an environment from the status bar; once ready, it is used for new terminals, agent sessions, runnable tasks, and language servers. Without a ready Nix environment, sessions use the host environment.
 
 The status bar shows the current folder, Git branch, Nix environment status, and live session count.
 
@@ -187,6 +177,12 @@ Track issues with priorities, group them into epics, and see progress in the sid
 ![New tab page beside the local issues sidebar](docs/readme/new-session.png)
 
 </details>
+
+### Work on remote hosts or in the browser
+
+Run `sworm-server` on another Linux machine to open remote folders from the desktop app over QUIC (with mTLS fingerprint pairing), or enable its web listener to use the Sworm workbench directly in a browser. Agent sessions and tasks keep running on the server if you disconnect or close the window, and reattach when you return.
+
+The flake exports `packages.<system>.sworm-server`, `nixosModules.sworm-server`, and `homeManagerModules.sworm` for declarative setups, alongside `.deb`, `.rpm`, and tarball server artifacts on GitHub Releases.
 
 ## Worth knowing
 
@@ -214,18 +210,6 @@ nix run .
 ```
 
 Sworm uses [Tauri v2](https://tauri.app/) and Rust for the desktop runtime, with the system Git CLI and SQLite. The interface is built with Svelte 5, SvelteKit, and Tailwind CSS v4; editing uses Monaco and Shiki, and terminals use xterm.js. Nix defines the development environment and packaging.
-
-Backend ownership:
-
-- `src-crates/sworm-protocol`: shared models and the operation table that generates daemon dispatch, desktop routing, and forwarding commands.
-- `src-crates/sworm-core`: synchronous Host operations and services for settings, folder environments, Git, files, issues, and runs.
-- `src-crates/sworm-remote`: identities, QUIC connections, transport policy, and wire framing.
-- `src-crates/sworm-server`: daemon authorization, workbench ownership, and QUIC/WebSocket adapters.
-- `src-tauri/src`: desktop commands, routing, window coordination, and desktop event delivery.
-
-Desktop and daemon adapters move blocking Host operations off the async runtime. Settings mutations share one locked atomic-write path; notification failures after a committed write are logged rather than reported as failed mutations.
-
-Folder navigation uses the host process's canonical working directory; explicit `~` still uses `$HOME`. The NixOS server module sets both `HOME` and systemd `WorkingDirectory` to the service user's home by default. Override the service's `WorkingDirectory` or launch the daemon from another folder to choose a different starting location; `server.jsonc` has no working-directory setting.
 
 ## Feedback
 
