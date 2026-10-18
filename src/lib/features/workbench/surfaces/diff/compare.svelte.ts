@@ -1,27 +1,36 @@
 import { pickFileAsync } from '$lib/features/command-palette/state.svelte'
 import { notify } from '$lib/features/notifications/state.svelte'
-import { compareSidesEqual, type CompareFileSide, type Tab } from '$lib/features/workbench/model'
+import type { Tab } from '$lib/features/workbench/model'
 import { getActiveTab } from '$lib/features/workbench/state.svelte'
 import { platform } from '$lib/platform'
 import { getErrorMessage } from '$lib/utils/client-error'
 import { basename } from '$lib/utils/paths'
 import { openCompareDiff } from './service.svelte'
 
-let selected = $state<CompareFileSide | null>(null)
+/** A saved file a compare action starts from. */
+export interface CompareFile {
+  folderPath: string
+  path: string
+}
 
-export function selectForCompare(file: CompareFileSide): void {
+let selected = $state<CompareFile | null>(null)
+
+export function selectForCompare(file: CompareFile): void {
   selected = file
 }
 
-export function canCompareWithSelected(file: CompareFileSide): boolean {
-  return selected !== null && !compareSidesEqual(selected, file)
+export function canCompareWithSelected(file: CompareFile): boolean {
+  // Same folder only: the tab's folder owns both sides' claims, watches and persisted paths.
+  return selected !== null && selected.folderPath === file.folderPath && selected.path !== file.path
 }
 
-export function compareWithSelected(file: CompareFileSide): void {
-  if (selected && canCompareWithSelected(file)) openCompareDiff(selected, file)
+export function compareWithSelected(file: CompareFile): void {
+  if (selected && canCompareWithSelected(file)) {
+    openCompareDiff(file.folderPath, { kind: 'file', path: selected.path }, { kind: 'file', path: file.path })
+  }
 }
 
-export async function compareWithClipboard(file: CompareFileSide): Promise<void> {
+export async function compareWithClipboard(file: CompareFile): Promise<void> {
   let content: string
   try {
     content = (await platform.clipboard.readText()) ?? ''
@@ -29,23 +38,23 @@ export async function compareWithClipboard(file: CompareFileSide): Promise<void>
     notify.error('Compare with Clipboard failed', getErrorMessage(e))
     return
   }
-  openCompareDiff({ kind: 'clipboard', content }, file)
+  openCompareDiff(file.folderPath, { kind: 'clipboard', content }, { kind: 'file', path: file.path })
 }
 
-export async function compareFileWith(file: CompareFileSide): Promise<void> {
+export async function compareFileWith(file: CompareFile): Promise<void> {
   const path = await pickFileAsync(file.folderPath, `Compare ${basename(file.path)} with…`)
   if (path === null) return
-  openCompareDiff(file, { kind: 'file', folderPath: file.folderPath, path })
+  openCompareDiff(file.folderPath, { kind: 'file', path: file.path }, { kind: 'file', path })
 }
 
-/** The active tab as a compare side: a saved-path text tab that is not a git snapshot. */
-export function activeCompareFile(): CompareFileSide | null {
+/** The active tab as a compare file: a saved-path text tab that is not a git snapshot. */
+export function activeCompareFile(): CompareFile | null {
   const tab = getActiveTab()
   return tab ? compareFileOf(tab) : null
 }
 
-export function compareFileOf(tab: Tab): CompareFileSide | null {
+export function compareFileOf(tab: Tab): CompareFile | null {
   return tab.kind === 'text' && tab.filePath !== null && !tab.gitRef
-    ? { kind: 'file', folderPath: tab.folderPath, path: tab.filePath }
+    ? { folderPath: tab.folderPath, path: tab.filePath }
     : null
 }

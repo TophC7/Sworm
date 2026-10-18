@@ -84,6 +84,19 @@ export function treeNodeCount<T extends { path: string }>(nodes: FileTreeNode<T>
   return last.index + 1
 }
 
+/**
+ * Path of the row that shows `path`: its own node, or the compacted directory
+ * row whose merged chain swallowed it (`src` → the `src/lib` row). Null when
+ * nothing at or under `path` is in the tree.
+ */
+export function findTreeRowPath<T extends { path: string }>(nodes: FileTreeNode<T>[], path: string): string | null {
+  for (const node of nodes) {
+    if (node.path === path || node.path.startsWith(path + '/')) return node.path
+    if (path.startsWith(node.path + '/')) return findTreeRowPath(node.children, path)
+  }
+  return null
+}
+
 function indexTree<T extends { path: string }>(nodes: FileTreeNode<T>[], next: number): number {
   for (const node of nodes) {
     node.index = next

@@ -9,6 +9,7 @@ import { releaseProjectFiles } from '$lib/features/files/projectFiles.svelte'
 import { releaseBranchFolder } from '$lib/features/git/branches.svelte'
 import { releaseCommitFolder } from '$lib/features/git/commit.svelte'
 import { releaseGitFolder } from '$lib/features/git/state.svelte'
+import { releaseGitTreeReveal } from '$lib/features/git/treeReveal.svelte'
 import { releaseWorktreeFolder } from '$lib/features/git/worktrees.svelte'
 import { releaseIssueFolder } from '$lib/features/issues/state.svelte'
 import { releaseProviderFolder } from '$lib/features/sessions/providers/state.svelte'
@@ -17,6 +18,7 @@ import { releaseNixFolder } from '$lib/features/settings/state/nix.svelte'
 /** Shared teardown; destructive operations propagate shutdown/release failures. */
 export async function releaseFolder(folderPath: string, strict = false): Promise<void> {
   releaseGitFolder(folderPath)
+  releaseGitTreeReveal(folderPath)
   releaseCommitFolder(folderPath)
   releaseBranchFolder(folderPath)
   releaseWorktreeFolder(folderPath)

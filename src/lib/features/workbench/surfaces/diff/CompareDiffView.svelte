@@ -8,17 +8,20 @@
   import { compareSideLabel } from '$lib/features/workbench/surfaces/diff/service.svelte'
   import { GitCompareIcon } from '$lib/icons/lucideExports'
   import { getErrorMessage } from '$lib/utils/client-error'
-  import { basename, dirname, normalizeAbsolutePath } from '$lib/utils/paths'
+  import { dirname } from '$lib/utils/paths'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
 
-  let { left, right }: { left: CompareSide; right: CompareFileSide } = $props()
+  let { folderPath, left, right }: { folderPath: string; left: CompareSide; right: CompareFileSide } = $props()
 
-  // Approximates the git diff 2 MiB byte cap.
-  const MAX_COMPARE_CHARS = 2 * 1024 * 1024
+  // Matches the git diff 2 MiB cap: files are gated on bytes before reading,
+  // clipboard text on characters.
+  const MAX_COMPARE_BYTES = 2 * 1024 * 1024
   let diskVersion = $state(0)
   let content = $state<DiffFileContent | null>(null)
   let error = $state<string | null>(null)
-  const compareLoad = createTrackedAsyncLoad<string>()
+  /** Last result per file; a disk event re-reads only files whose stat identity moved. */
+  const fileCache = new Map<string, { version: string; text: string | null }>()
+  const compareLoad = createTrackedAsyncLoad<object>()
   const leftLabel = $derived(compareSideLabel(left))
   const rightLabel = $derived(compareSideLabel(right))
   const row = $derived<FileDiff>({
@@ -30,50 +33,34 @@
     deletions: null
   })
 
-  function sideKey(side: CompareSide): string {
-    return side.kind === 'file'
-      ? `file:${side.folderPath}:${side.path}`
-      : `clipboard:${side.content.length}:${side.content}`
+  function diffable(text: string): string | null {
+    return text.length > MAX_COMPARE_BYTES || text.slice(0, 8192).includes('\0') ? null : text
   }
 
-  function describeSide(side: CompareSide): string {
-    if (side.kind === 'clipboard') return 'Clipboard'
-    return side.folderPath === right.folderPath
-      ? side.path
-      : `${basename(normalizeAbsolutePath(side.folderPath))}/${side.path}`
+  async function readFile(path: string): Promise<string | null> {
+    const stat = await backend.files.stat(folderPath, path)
+    const key = `${folderPath}\0${path}`
+    const cached = fileCache.get(key)
+    if (cached?.version === stat.version) return cached.text
+    const text = stat.size > MAX_COMPARE_BYTES ? null : diffable((await backend.files.read(folderPath, path)).content)
+    // Keyed by the pre-read stat: a write racing the read changes the identity, so the next event re-reads.
+    fileCache.set(key, { version: stat.version, text })
+    return text
   }
 
-  async function readSide(side: CompareSide): Promise<string | null> {
-    let text: string
-    if (side.kind === 'clipboard') {
-      text = side.content
-    } else {
-      try {
-        text = (await backend.files.read(side.folderPath, side.path)).content
-      } catch (cause) {
-        if ((cause as { kind?: unknown } | null)?.kind === 'tooLarge') return null
-        throw cause
-      }
-    }
-    return text.length > MAX_COMPARE_CHARS || text.slice(0, 8192).includes('\0') ? null : text
+  function readSide(side: CompareSide): Promise<string | null> {
+    return side.kind === 'clipboard' ? Promise.resolve(diffable(side.content)) : readFile(side.path)
   }
 
   $effect(() => {
-    const watched: { folderPath: string; dir: string }[] = []
-    for (const side of [left, right]) {
-      if (side.kind !== 'file') continue
-      const dir = dirname(side.path)
-      if (!watched.some((pair) => pair.folderPath === side.folderPath && pair.dir === dir)) {
-        watched.push({ folderPath: side.folderPath, dir })
-      }
-    }
-    const unwatches = watched.map(({ folderPath, dir }) => watchFileDir(folderPath, dir))
+    const dirs = [...new Set([left, right].flatMap((side) => (side.kind === 'file' ? [dirname(side.path)] : [])))]
+    const unwatches = dirs.map((dir) => watchFileDir(folderPath, dir))
     let disposed = false
     let unlisten: (() => void) | null = null
     void backend.files
       .onChanged((event) => {
         if (disposed) return
-        if (watched.some(({ folderPath, dir }) => event.folder_path === folderPath && event.dirs.includes(dir))) {
+        if (event.folder_path === folderPath && dirs.some((dir) => event.dirs.includes(dir))) {
           diskVersion += 1
         }
       })
@@ -91,12 +78,12 @@
   })
 
   $effect(() => {
-    const oldSide = left
-    const newSide = right
-    const key = `${sideKey(oldSide)}|${sideKey(newSide)}|${diskVersion}`
-    compareLoad.run(key, async (isCurrent) => {
+    // A fresh key object per run: the effect re-runs only when folderPath, a side or diskVersion
+    // changes, and the key just supersedes the in-flight load (no O(clipboard) key compare).
+    const request = { folderPath, left, right, diskVersion }
+    compareLoad.run(request, async (isCurrent) => {
       try {
-        const [oldContent, newContent] = await Promise.all([readSide(oldSide), readSide(newSide)])
+        const [oldContent, newContent] = await Promise.all([readSide(request.left), readSide(request.right)])
         if (!isCurrent()) return
         const next: DiffFileContent =
           oldContent === null || newContent === null
@@ -125,7 +112,7 @@
     <h2 class="mb-2 text-md leading-snug font-semibold text-bright">{leftLabel} ↔ {rightLabel}</h2>
     <div class="flex items-center gap-2 text-sm text-muted">
       <GitCompareIcon size={12} />
-      <span class="font-mono">{describeSide(left)} ↔ {describeSide(right)}</span>
+      <span class="font-mono">{left.kind === 'clipboard' ? 'Clipboard' : left.path} ↔ {right.path}</span>
     </div>
   </div>
   {#if error}
@@ -141,7 +128,7 @@
         files={[row]}
         initialFile={right.path}
         idPrefix="compare-file"
-        folderPath={right.folderPath}
+        {folderPath}
         contentFetcher={() => Promise.resolve(loadedContent)}
         loading={false}
       />

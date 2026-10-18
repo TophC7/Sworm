@@ -76,8 +76,8 @@ export async function openRangeDiff(
   }
 }
 
-export function openCompareDiff(left: CompareSide, right: CompareFileSide): TabId {
-  return addCompareTab(left, right)
+export function openCompareDiff(folderPath: string, left: CompareSide, right: CompareFileSide): TabId {
+  return addCompareTab(folderPath, left, right)
 }
 
 export function compareSideLabel(side: CompareSide): string {

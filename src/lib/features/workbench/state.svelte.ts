@@ -843,11 +843,12 @@ export function addRangeTab(
   )
 }
 
-/** Compare tabs are always persistent; a clipboard compare for the same file reuses its tab with the new text. */
-export function addCompareTab(left: CompareSide, right: CompareFileSide): TabId {
+/** Compare tabs are always persistent; a clipboard compare for the same file reuses its tab with the new text. Both sides live in folderPath. */
+export function addCompareTab(folderPath: string, left: CompareSide, right: CompareFileSide): TabId {
   const source: CompareDiffSource = { kind: 'compare', left, right }
   const match = (t: Tab) =>
     t.kind === 'diff' &&
+    t.folderPath === folderPath &&
     t.source.kind === 'compare' &&
     compareSidesEqual(t.source.right, right) &&
     (left.kind === 'clipboard' ? t.source.left.kind === 'clipboard' : compareSidesEqual(t.source.left, left))
@@ -856,7 +857,7 @@ export function addCompareTab(left: CompareSide, right: CompareFileSide): TabId 
     (id): DiffTab => ({
       kind: 'diff',
       id,
-      folderPath: right.folderPath,
+      folderPath,
       source,
       initialFile: null,
       temporary: false,
@@ -1095,7 +1096,7 @@ export async function reopenLastClosedTab(): Promise<TabId | null> {
               false
             )
           case 'compare':
-            return addCompareTab(head.source.left, head.source.right)
+            return addCompareTab(head.folderPath, head.source.left, head.source.right)
           default: {
             const _exhaustive: never = head.source
             return _exhaustive

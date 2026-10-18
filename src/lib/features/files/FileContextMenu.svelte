@@ -9,8 +9,8 @@
     revealInSourceControl,
     runPathsAction
   } from '$lib/features/git/treeActions'
-  import type { CompareFileSide } from '$lib/features/workbench/model'
   import {
+    type CompareFile,
     canCompareWithSelected,
     compareWithClipboard,
     compareWithSelected,
@@ -84,9 +84,7 @@
     onResetTarget: () => void
   } = $props()
 
-  const file = $derived<CompareFileSide | null>(
-    filePath && targetType === 'file' ? { kind: 'file', folderPath, path: filePath } : null
-  )
+  const file = $derived<CompareFile | null>(filePath && targetType === 'file' ? { folderPath, path: filePath } : null)
   const changed = $derived(!!git && git.staged.length + git.unstaged.length > 0)
 </script>
 

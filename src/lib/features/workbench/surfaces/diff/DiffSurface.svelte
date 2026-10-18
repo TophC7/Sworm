@@ -37,5 +37,5 @@
     initialFile={tab.initialFile}
   />
 {:else if tab?.source.kind === 'compare'}
-  <CompareDiffView left={tab.source.left} right={tab.source.right} />
+  <CompareDiffView {folderPath} left={tab.source.left} right={tab.source.right} />
 {/if}

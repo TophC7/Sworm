@@ -35,7 +35,7 @@
   import type { GitChange, GitConflict, GitSummary } from '$lib/types/backend'
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
-  import { buildFileTree, type FileTreeNode } from '$lib/utils/fileTree'
+  import { buildFileTree, findTreeRowPath, type FileTreeNode } from '$lib/utils/fileTree'
   import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
 
@@ -72,6 +72,11 @@
   let stagedFiles = $derived(summary.changes.filter((change) => change.staged && !conflictPaths.has(change.path)))
   let unstagedFiles = $derived(summary.changes.filter((change) => !change.staged && !conflictPaths.has(change.path)))
 
+  let stagedTree = $derived(buildFileTree(stagedFiles))
+  let unstagedTree = $derived(buildFileTree(unstagedFiles))
+  let conflictsTree = $derived(buildFileTree<GitConflict>(summary.conflicts))
+  let hasChanges = $derived(summary.conflicts.length > 0 || stagedTree.length > 0 || unstagedTree.length > 0)
+
   const reveal = $derived.by(() => {
     const r = getGitTreeReveal(folderPath)
     return r && r.activation === getActivationSeq() ? r : null
@@ -85,23 +90,26 @@
     if (stagedFiles.some((c) => within(c.path))) return 'staged'
     return null
   })
+  const revealRow = $derived.by<string | null>(() => {
+    if (!reveal || !revealSection) return null
+    const tree = revealSection === 'merge' ? conflictsTree : revealSection === 'staged' ? stagedTree : unstagedTree
+    return findTreeRowPath<{ path: string }>(tree, reveal.path)
+  })
+  // A separate derived so the object stays the same across summary refreshes:
+  // FileTreeItems re-scrolls on every new request object.
+  const revealScroll = $derived(reveal && revealRow ? { path: revealRow, seq: reveal.seq } : null)
 
   $effect(() => {
-    const request = reveal
+    const row = revealRow
     const section = revealSection
-    if (!request || !section) return
+    if (!row || !section) return
     untrack(() => {
-      const parts = request.path.split('/')
+      const parts = row.split('/')
       for (let i = 1; i < parts.length; i++) {
         collapsedDirs.delete(getDirKey(section, parts.slice(0, i).join('/')))
       }
     })
   })
-
-  let stagedTree = $derived(buildFileTree(stagedFiles))
-  let unstagedTree = $derived(buildFileTree(unstagedFiles))
-  let conflictsTree = $derived(buildFileTree<GitConflict>(summary.conflicts))
-  let hasChanges = $derived(summary.conflicts.length > 0 || stagedTree.length > 0 || unstagedTree.length > 0)
 
   function handleContextMenu(_e: MouseEvent, node: FileTreeNode<GitChange>, staged: boolean) {
     const section = staged ? 'staged' : 'changes'
@@ -344,8 +352,8 @@
           <FileTreeItems
             nodes={tree}
             isCollapsed={(node) => collapsedDirs.has(getDirKey(keySuffix, node.path))}
-            isActive={(path) => revealSection === keySuffix && path === reveal?.path}
-            scrollRequest={revealSection === keySuffix ? reveal : null}
+            isActive={(path) => revealSection === keySuffix && path === revealRow}
+            scrollRequest={revealSection === keySuffix ? revealScroll : null}
             onToggleDir={(path) => toggleDir(keySuffix, path)}
             onFileClick={(node) => {
               if (!node.change) return
@@ -426,8 +434,8 @@
       <FileTreeItems
         nodes={conflictsTree}
         isCollapsed={(node) => collapsedDirs.has(getDirKey('merge', node.path))}
-        isActive={(path) => revealSection === 'merge' && path === reveal?.path}
-        scrollRequest={revealSection === 'merge' ? reveal : null}
+        isActive={(path) => revealSection === 'merge' && path === revealRow}
+        scrollRequest={revealSection === 'merge' ? revealScroll : null}
         onToggleDir={(path) => toggleDir('merge', path)}
         onFileClick={openConflict}
         onFileDblClick={(node) => {

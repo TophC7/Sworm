@@ -59,9 +59,9 @@ export interface RangeDiffSource {
   targetLabel: string
 }
 
+/** A file in the compare tab's own folder; folder-relative like every persisted path. */
 export interface CompareFileSide {
   kind: 'file'
-  folderPath: string
   path: string
 }
 
@@ -79,9 +79,7 @@ export interface CompareDiffSource {
 }
 
 export function compareSidesEqual(a: CompareSide, b: CompareSide): boolean {
-  return a.kind === 'file'
-    ? b.kind === 'file' && a.folderPath === b.folderPath && a.path === b.path
-    : b.kind === 'clipboard' && a.content === b.content
+  return a.kind === 'file' ? b.kind === 'file' && a.path === b.path : b.kind === 'clipboard' && a.content === b.content
 }
 
 export type DiffSource = WorkingDiffSource | CommitDiffSource | StashDiffSource | RangeDiffSource | CompareDiffSource

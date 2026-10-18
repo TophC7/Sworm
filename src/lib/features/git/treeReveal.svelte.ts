@@ -10,3 +10,7 @@ export function getGitTreeReveal(folderPath: string): ExplorerReveal | null {
 export function requestGitTreeReveal(folderPath: string, path: string, activation: number): void {
   reveals.set(folderPath, { path, seq: nextRevealSeq(), activation })
 }
+
+export function releaseGitTreeReveal(folderPath: string): void {
+  reveals.delete(folderPath)
+}
