@@ -46,6 +46,14 @@ const BUILTIN_ASSETS: &[BuiltinAsset] = &[
         resources: &[],
     },
     BuiltinAsset {
+        id: "dev.sworm.go",
+        manifest: include_str!("../../builtins/dev.sworm.go/builtin.json"),
+        resources: &[(
+            "settings.schema.json",
+            include_str!("../../builtins/dev.sworm.go/settings.schema.json"),
+        )],
+    },
+    BuiltinAsset {
         id: "dev.sworm.nix",
         manifest: include_str!("../../builtins/dev.sworm.nix/builtin.json"),
         resources: &[(
@@ -185,6 +193,14 @@ const PAGE_OVERLAYS: &[PageOverlay] = &[
         icon_filename: "flake.nix",
         language_ids: &["nix"],
         formatter_group: Some(BuiltinFormatterGroupId::Nix),
+    },
+    PageOverlay {
+        id: "language:go",
+        kind: BuiltinSettingsPageKind::Language,
+        label: "Go",
+        icon_filename: "main.go",
+        language_ids: &["go"],
+        formatter_group: Some(BuiltinFormatterGroupId::Go),
     },
 ];
 
@@ -640,6 +656,15 @@ fn formatter_policy(group: BuiltinFormatterGroupId) -> BuiltinFormatterPolicy {
             ],
             default: FormatterSelection::Nixfmt,
         },
+        BuiltinFormatterGroupId::Go => BuiltinFormatterPolicy {
+            group,
+            options: vec![
+                FormatterSelection::Lsp,
+                FormatterSelection::Gofmt,
+                FormatterSelection::Disabled,
+            ],
+            default: FormatterSelection::Lsp,
+        },
     }
 }
 
@@ -784,6 +809,7 @@ mod tests {
             "language:python",
             "language:fish",
             "language:rust",
+            "language:go",
         ] {
             assert!(page_ids.contains(&expected), "missing page {expected}");
         }

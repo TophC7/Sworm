@@ -640,6 +640,9 @@ export const backend = {
     },
     nixfmt(folderPath: string, content: string): Promise<string> {
       return invoke<string>('formatting_format_nixfmt', { folderPath, content })
+    },
+    gofmt(folderPath: string, content: string): Promise<string> {
+      return invoke<string>('formatting_format_gofmt', { folderPath, content })
     }
   },
 

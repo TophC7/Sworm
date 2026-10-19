@@ -184,6 +184,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         // Formatter commands
         formatting_format_biome,
         formatting_format_nixfmt,
+        formatting_format_gofmt,
         // Task commands (folder-scoped .sworm/tasks.jsonc)
         tasks_list,
         tasks::tasks_start,

@@ -26,6 +26,8 @@ pkgs.mkShell {
     pkgs.fish
     pkgs.fish-lsp
     pkgs.gsettings-desktop-schemas
+    pkgs.go
+    pkgs.gopls
     pkgs.jq
     pkgs.biome
     pkgs.nixfmt

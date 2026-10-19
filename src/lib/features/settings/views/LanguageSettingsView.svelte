@@ -5,11 +5,7 @@
   import { Switch } from '$lib/components/ui/switch'
   import * as Tabs from '$lib/components/ui/tabs'
   import { CircleAlert, ChevronDown, RefreshCwIcon } from '$lib/icons/lucideExports'
-  import {
-    getLspServers,
-    getLspServersLoading,
-    loadLspServers
-  } from '$lib/features/settings/state/lspSettings.svelte'
+  import { getLspServers, getLspServersLoading, loadLspServers } from '$lib/features/settings/state/lspSettings.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
   import {
     getSettings,
@@ -18,7 +14,12 @@
     saveLspServerConfig
   } from '$lib/features/settings/state/settings.svelte'
   import { getActiveFolderPath } from '$lib/features/workbench/state.svelte'
-  import type { BuiltinSettingsPage, FormatterSelection, LspServerConfig, LspServerSettingsEntry } from '$lib/types/backend'
+  import type {
+    BuiltinSettingsPage,
+    FormatterSelection,
+    LspServerConfig,
+    LspServerSettingsEntry
+  } from '$lib/types/backend'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { onDestroy, untrack } from 'svelte'
   import { createTrackedAsyncLoad } from '$lib/utils/trackedAsyncLoad.svelte'
@@ -182,6 +183,8 @@
         return 'Biome'
       case 'nixfmt':
         return 'nixfmt'
+      case 'gofmt':
+        return 'gofmt'
       case 'disabled':
         return 'Disabled'
       case 'lsp':
@@ -260,7 +263,11 @@
             onclick={(event) => event.stopPropagation()}
             onkeydown={(event) => event.stopPropagation()}
           >
-            <Switch checked={draft?.enabled ?? true} disabled={!settings || !draft} onCheckedChange={(value) => updateServer(id, 'enabled', value)} />
+            <Switch
+              checked={draft?.enabled ?? true}
+              disabled={!settings || !draft}
+              onCheckedChange={(value) => updateServer(id, 'enabled', value)}
+            />
           </div>
 
           <div class="flex min-w-0 flex-1 flex-col gap-0.5">

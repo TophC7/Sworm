@@ -83,4 +83,5 @@ pub enum BuiltinFormatterGroupId {
     JavascriptTypescript,
     Json,
     Nix,
+    Go,
 }

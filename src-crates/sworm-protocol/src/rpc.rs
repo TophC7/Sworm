@@ -607,6 +607,11 @@ macro_rules! sworm_rpc_ops {
                 folder_path: String,
                 content: String,
             ) -> String;
+            #[route(folder_path)]
+            FormattingFormatGofmt => formatting_format_gofmt(
+                folder_path: String,
+                content: String,
+            ) -> String;
             #[route(opt_folder_path)]
             SettingsGetEffective => settings_get_effective(
                 folder_path: Option<String>,

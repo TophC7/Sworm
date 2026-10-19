@@ -34,6 +34,14 @@ impl FormattingService {
         Self::run_stdin_formatter("nixfmt", &[], project_path, content, env)
     }
 
+    pub fn format_with_gofmt(
+        project_path: &str,
+        content: &str,
+        env: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        Self::run_stdin_formatter("gofmt", &[], project_path, content, env)
+    }
+
     fn run_stdin_formatter(
         command: &str,
         args: &[String],
@@ -102,6 +110,17 @@ mod tests {
         assert_eq!(
             relative_stdin_file_path("/tmp/project", "/tmp/other/app.ts"),
             "/tmp/other/app.ts"
+        );
+    }
+
+    #[test]
+    fn formats_go_content_with_gofmt() {
+        let unformatted = "package main\n\nfunc main(){\nprintln( \"hello\" )\n}\n";
+        let formatted = FormattingService::format_with_gofmt("/tmp", unformatted, &HashMap::new())
+            .expect("gofmt formats valid Go code");
+        assert_eq!(
+            formatted,
+            "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
         );
     }
 }

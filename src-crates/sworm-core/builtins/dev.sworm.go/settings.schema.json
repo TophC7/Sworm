@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "gopls Settings",
+  "description": "Settings forwarded to gopls under the `gopls` section. See https://github.com/golang/tools/blob/master/gopls/doc/settings.md for the upstream reference. Only commonly tuned keys are defined here; additional properties are allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "gopls": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "buildFlags": {
+          "type": "array",
+          "description": "Flags passed to the build system (e.g. [\"-tags=integration\"]).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "directoryFilters": {
+          "type": "array",
+          "description": "Directories to exclude from workspace scanning (prefix with - to exclude, + to include).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usePlaceholders": {
+          "type": "boolean",
+          "description": "Enables placeholders for function parameters or struct fields in completion suggestions.",
+          "default": false
+        },
+        "completeUnimported": {
+          "type": "boolean",
+          "description": "Completes unimported packages and auto-inserts import statements.",
+          "default": true
+        },
+        "staticcheck": {
+          "type": "boolean",
+          "description": "Enables staticcheck analyzers.",
+          "default": false
+        },
+        "gofumpt": {
+          "type": "boolean",
+          "description": "Runs gofumpt instead of gofmt when formatting.",
+          "default": false
+        },
+        "local": {
+          "type": "string",
+          "description": "Prefix for local import paths to keep them grouped separately from standard library and third-party packages."
+        },
+        "analyses": {
+          "type": "object",
+          "description": "Individual analyzer toggles (e.g. shadow, unusedparams).",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "hints": {
+          "type": "object",
+          "description": "Inlay hint toggles.",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

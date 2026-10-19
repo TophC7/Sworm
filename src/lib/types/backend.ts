@@ -216,7 +216,7 @@ export interface GitChangedEvent {
   error: string | null
 }
 
-export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'disabled'
+export type FormatterSelection = 'lsp' | 'biome' | 'nixfmt' | 'gofmt' | 'disabled'
 
 export interface FormattingLanguageSettings {
   formatter: FormatterSelection
@@ -226,6 +226,7 @@ export interface FormattingSettings {
   javascript_typescript: FormattingLanguageSettings
   json: FormattingLanguageSettings
   nix: FormattingLanguageSettings
+  go: FormattingLanguageSettings
 }
 
 export interface ProviderConfig {

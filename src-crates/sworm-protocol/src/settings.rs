@@ -46,6 +46,7 @@ pub enum FormatterSelection {
     Lsp,
     Biome,
     Nixfmt,
+    Gofmt,
     Disabled,
 }
 
@@ -61,6 +62,7 @@ pub struct FormattingSettings {
     pub javascript_typescript: FormattingLanguageSettings,
     pub json: FormattingLanguageSettings,
     pub nix: FormattingLanguageSettings,
+    pub go: FormattingLanguageSettings,
 }
 
 impl Default for FormattingSettings {
@@ -74,6 +76,9 @@ impl Default for FormattingSettings {
             },
             nix: FormattingLanguageSettings {
                 formatter: FormatterSelection::Nixfmt,
+            },
+            go: FormattingLanguageSettings {
+                formatter: FormatterSelection::Lsp,
             },
         }
     }

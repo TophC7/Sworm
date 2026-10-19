@@ -27,7 +27,7 @@ self.MonacoEnvironment = {
 
 // Languages where Shiki's TextMate grammars replace Monaco's missing
 // or inadequate Monarch tokenizers.
-const SHIKI_LANGUAGES = ['nix', 'svelte', 'fish'] as const
+const SHIKI_LANGUAGES = ['nix', 'svelte', 'fish', 'go'] as const
 
 interface TsLanguageDefaults {
   modeConfiguration: {

@@ -53,6 +53,11 @@ async function provideDocumentFormattingEdits(model: MonacoModel): Promise<Monac
       const formatted = await backend.formatting.nixfmt(context.folderPath, model.getValue())
       return toFullDocumentEdit(model, formatted)
     }
+
+    if (formatter === 'gofmt') {
+      const formatted = await backend.formatting.gofmt(context.folderPath, model.getValue())
+      return toFullDocumentEdit(model, formatted)
+    }
   } catch (error) {
     console.warn(`Formatter ${formatter} failed`, error)
   }
@@ -64,7 +69,10 @@ const formatterSettingsByFolder = new Map<string, Promise<FormattingSettings>>()
 let formatterSettingsInvalidationStarted = false
 let formatterSettingsCachingEnabled = true
 
-async function resolveFormatterSelection(policy: BuiltinFormatterPolicy, folderPath: string): Promise<FormatterSelection> {
+async function resolveFormatterSelection(
+  policy: BuiltinFormatterPolicy,
+  folderPath: string
+): Promise<FormatterSelection> {
   try {
     const formatting = await resolveProjectFormattingSettings(folderPath)
     return formatting[policy.group]?.formatter ?? policy.default

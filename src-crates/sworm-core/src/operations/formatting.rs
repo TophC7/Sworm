@@ -27,6 +27,16 @@ impl Host {
             .map_err(ApiError::Internal)
     }
 
+    pub fn formatting_format_gofmt(
+        &self,
+        folder_path: String,
+        content: String,
+    ) -> Result<String, ApiError> {
+        let (folder_path, env) = self.formatter_context(&folder_path)?;
+        FormattingService::format_with_gofmt(&folder_path, &content, &env)
+            .map_err(ApiError::Internal)
+    }
+
     /// Canonical folder path and child env, overlaid on the formatter's inherited env.
     fn formatter_context(
         &self,

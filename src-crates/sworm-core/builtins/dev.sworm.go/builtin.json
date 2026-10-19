@@ -1,0 +1,35 @@
+{
+  "id": "dev.sworm.go",
+  "label": "Go",
+  "contributes": {
+    "languages": [
+      {
+        "id": "go",
+        "label": "Go",
+        "aliases": ["go"],
+        "extensions": [".go"],
+        "filenames": ["go.mod", "go.sum", "go.work"]
+      }
+    ],
+    "lsp_servers": [
+      {
+        "id": "gopls",
+        "label": "gopls",
+        "applies_to_languages": ["go"],
+        "command": "gopls",
+        "args": [],
+        "install_hint": "Install Go and ensure `gopls` is on PATH.",
+        "document_selectors": [
+          {
+            "language": "go",
+            "extensions": [".go"]
+          }
+        ],
+        "settings": {
+          "section": "gopls",
+          "schema_path": "./settings.schema.json"
+        }
+      }
+    ]
+  }
+}
