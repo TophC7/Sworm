@@ -32,6 +32,7 @@
   import { notify } from '$lib/features/notifications/state.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import type { GitStatusKind } from '$lib/types/backend'
+  import { CODE_LINE_HEIGHT } from '$lib/features/settings/state/typography.svelte'
 
   type IDiffEditorViewState = import('monaco-editor').editor.IDiffEditorViewState
   type ICodeEditor = import('monaco-editor').editor.ICodeEditor
@@ -83,7 +84,7 @@
   //   2. Per-file estimate derived from numstat. With
   //      `hideUnchangedRegions` enabled the visible row height is roughly
   //      `max(additions, deletions) + small per-hunk context` lines, at
-  //      the configured 20px line height, plus diff-editor chrome.
+  //      the pool's line height (font size × CODE_LINE_HEIGHT), plus diff-editor chrome.
   //   3. Fixed fallback when the entry isn't in the store at all (only
   //      possible if MonacoDiffBody is rendered standalone outside the
   //      stack guard).
@@ -104,7 +105,8 @@
     const a = entry.additions ?? 0
     const d = entry.deletions ?? 0
     const lines = Math.max(a, d) + 10
-    return Math.max(80, lines * 20 + 80)
+    const lineHeight = Math.round(pool.getSettings().fontSize * CODE_LINE_HEIGHT)
+    return Math.max(80, lines * lineHeight + 80)
   }
   let height = $state(seedHeight())
   let visible = $state(false)

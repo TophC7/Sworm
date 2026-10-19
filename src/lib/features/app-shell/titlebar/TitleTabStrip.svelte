@@ -67,7 +67,7 @@
   import { onMount, tick } from 'svelte'
   import { runNotifiedTask } from '$lib/features/notifications/runNotifiedTask'
   import { getTabPresentation } from '$lib/features/workbench/presentation.svelte'
-  import { getSettings } from '$lib/features/settings/state/settings.svelte'
+  import { getDesktopSettings } from '$lib/features/settings/state/settings.svelte'
   import { getPathColor } from '$lib/utils/pathColor'
   import NewTabButton from './NewTabButton.svelte'
 
@@ -87,8 +87,7 @@
     return result
   })
   let activeTabId = $derived(getActiveTabId())
-  let settings = $derived(getSettings())
-  let beamPosition = $derived(settings?.window.tab_beam_position ?? 'top')
+  let beamPosition = $derived(getDesktopSettings()?.window.tab_beam_position ?? 'top')
   let stripEl = $state<HTMLElement | null>(null)
   let seamX = $state(2)
 

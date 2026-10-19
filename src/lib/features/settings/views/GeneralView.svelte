@@ -17,7 +17,8 @@
   import { Input } from '$lib/components/ui/input'
   import { getZoomLevel, zoomIn, zoomOut, zoomReset } from '$lib/features/app-shell/zoom/state.svelte'
   import { notify } from '$lib/features/notifications/state.svelte'
-  import { getSettings, saveTypographySettings } from '$lib/features/settings/state/settings.svelte'
+  import { getDesktopSettings, saveTypographySettings } from '$lib/features/settings/state/settings.svelte'
+  import { MAX_FONT_SIZE, MIN_FONT_SIZE } from '$lib/features/settings/state/typography.svelte'
   import { getErrorMessage } from '$lib/utils/client-error'
   import { onDestroy } from 'svelte'
   import { createAutoSaver } from './autoSaver'
@@ -25,11 +26,8 @@
   type StatusHook = () => void
   let { onSaving, onSaved }: { onSaving: StatusHook; onSaved: StatusHook } = $props()
 
-  const MIN_FONT_SIZE = 6
-  const MAX_FONT_SIZE = 72
-
   let zoom = $derived(getZoomLevel())
-  let settings = $derived(getSettings())
+  let desktop = $derived(getDesktopSettings())
 
   let uiFont = $state('')
   let codeFont = $state('')
@@ -43,8 +41,8 @@
   // must not overwrite the user's in-progress edit.
   let seeded = false
   $effect(() => {
-    if (seeded || !settings) return
-    const typography = settings.typography
+    if (seeded || !desktop) return
+    const typography = desktop.typography
     uiFont = typography.ui_font_family
     codeFont = typography.code_font_family
     codeSize = typography.code_font_size
@@ -67,7 +65,7 @@
   }
 
   function schedule() {
-    const current = getSettings()?.typography
+    const current = getDesktopSettings()?.typography
     if (!current) return
     const next = {
       ui_font_family: uiFont.trim(),
@@ -105,7 +103,7 @@
 
   <label class="flex items-center">
     <span class="w-36 shrink-0 text-sm text-muted">Interface font</span>
-    <Input class="w-64" bind:value={uiFont} oninput={schedule} placeholder="Lexend" disabled={!settings} />
+    <Input class="w-64" bind:value={uiFont} oninput={schedule} placeholder="Lexend" disabled={!desktop} />
   </label>
 
   <label class="flex items-center">
@@ -115,7 +113,7 @@
       bind:value={codeFont}
       oninput={schedule}
       placeholder="Monocraft Nerd Font"
-      disabled={!settings}
+      disabled={!desktop}
     />
   </label>
 
@@ -128,7 +126,7 @@
       max={MAX_FONT_SIZE}
       bind:value={codeSize}
       oninput={schedule}
-      disabled={!settings}
+      disabled={!desktop}
     />
     <span class="pl-2 text-sm text-subtle">px</span>
   </label>
@@ -145,7 +143,7 @@
       bind:value={terminalFont}
       oninput={schedule}
       placeholder={codeFont.trim() || 'Monocraft Nerd Font'}
-      disabled={!settings}
+      disabled={!desktop}
     />
   </label>
 
@@ -159,7 +157,7 @@
       bind:value={terminalSize}
       oninput={schedule}
       placeholder={String(fontSize(codeSize) ?? 13)}
-      disabled={!settings}
+      disabled={!desktop}
     />
     <span class="pl-2 text-sm text-subtle">px</span>
   </label>

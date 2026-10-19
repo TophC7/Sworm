@@ -486,6 +486,7 @@ export class TerminalSessionManager {
     this.oscDisposable = null
     this.webglContextLossDisposable?.dispose()
     this.webglContextLossDisposable = null
+    this.linkProviderDisposable?.dispose()
     this.linkProviderDisposable = null
     this.fontDisposable?.dispose()
     this.fontDisposable = null

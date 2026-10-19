@@ -50,8 +50,8 @@
   // Split (side-by-side) is the default; matches the prior UI.
   let sideBySide = $state(true)
   let wrap = $state(false)
-  // Seeded from the code font size; the header A-/A+ adjusts this view only.
-  let fontSize = $state(getCodeFontSize())
+  // Follows the code font size; A-/A+ overrides this view until that setting changes.
+  let fontSize = $derived(getCodeFontSize())
 
   const store = new DiffModelStore((entry) => contentFetcher(entry))
   const pool = getDiffEditorPool()

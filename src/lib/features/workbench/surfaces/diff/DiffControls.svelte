@@ -15,6 +15,7 @@
   import { Separator } from '$lib/components/ui/separator'
   import * as Tabs from '$lib/components/ui/tabs'
   import { ChevronsDownUp, ChevronsUpDown } from '$lib/icons/lucideExports'
+  import { MAX_FONT_SIZE, MIN_FONT_SIZE } from '$lib/features/settings/state/typography.svelte'
 
   let {
     sideBySide = $bindable(true),
@@ -31,7 +32,7 @@
   } = $props()
 
   function adjustFontSize(delta: number) {
-    fontSize = Math.max(10, Math.min(20, fontSize + delta))
+    fontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta))
   }
 </script>
 
@@ -68,8 +69,9 @@
   <Separator orientation="vertical" class="mx-0.5 h-4" />
 
   <div class="flex items-center gap-1">
-    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(-1)} disabled={fontSize <= 10}>A-</Button>
+    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(-1)} disabled={fontSize <= MIN_FONT_SIZE}>A-</Button
+    >
     <span class="min-w-[2.8rem] text-center text-2xs text-muted tabular-nums">{fontSize}px</span>
-    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(1)} disabled={fontSize >= 20}>A+</Button>
+    <Button variant="ghost" size="xs" onclick={() => adjustFontSize(1)} disabled={fontSize >= MAX_FONT_SIZE}>A+</Button>
   </div>
 </div>

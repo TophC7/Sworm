@@ -25,19 +25,38 @@ let settingsHost = $state<string | null>(null)
 let inFlightLoad: { host: string | null; promise: Promise<SettingsPayload> } | null = null
 let loadGeneration = 0
 
+type DesktopSettings = Pick<SettingsPayload, 'window' | 'typography'>
+/** This desktop's own sections, loaded apart from any remote daemon so fonts and window chrome survive its outage. */
+let desktopSettings = $state<DesktopSettings | null>(null)
+let desktopGeneration = 0
+
 export function getSettings() {
   return settings
 }
 
-async function fetchSettings(host: string | null): Promise<SettingsPayload> {
-  if (!host) return backend.settings.get()
+export function getDesktopSettings() {
+  return desktopSettings
+}
 
-  // Both hosts are read at the layer their setters write — the host's global
-  // layer, never folder-merged — so a folder override can't ride a save into
-  // the global file. Folder-effective settings stay for execution and
-  // diagnostics. Window and typography describe this desktop, not the daemon.
-  const [remote, local] = await Promise.all([backend.settings.get(host), backend.settings.get()])
-  return { ...remote, window: local.window, typography: local.typography }
+async function loadDesktopSettings(): Promise<SettingsPayload> {
+  // The newest read wins, as with `loadGeneration`.
+  const request = ++desktopGeneration
+  const local = await backend.settings.get()
+  if (request === desktopGeneration) desktopSettings = { window: local.window, typography: local.typography }
+  return local
+}
+
+async function fetchSettings(host: string | null): Promise<SettingsPayload> {
+  const local = loadDesktopSettings()
+  if (!host) return local
+
+  // Host sections come from the daemon's global layer, the one its setters
+  // write, so a folder override can't ride a save into the global file.
+  // Folder-effective settings stay for execution and diagnostics. Window and
+  // typography are read from `desktopSettings`; `local` lands there even when
+  // the daemon rejects.
+  const [remote] = await Promise.all([backend.settings.get(host), local])
+  return remote
 }
 
 export async function loadSettings(folderPath: string | null = getActiveFolderPath()): Promise<SettingsPayload> {
@@ -66,18 +85,13 @@ export async function loadSettings(folderPath: string | null = getActiveFolderPa
 
 export async function saveWindowSettings(nextSettings: WindowSettings) {
   const saved = await backend.settings.setWindow(nextSettings)
-  if (settings) {
-    settings = {
-      ...settings,
-      window: saved
-    }
-  }
+  if (desktopSettings) desktopSettings = { ...desktopSettings, window: saved }
   return saved
 }
 
 export async function saveTypographySettings(nextSettings: TypographySettings) {
   const saved = await backend.settings.setTypography(nextSettings)
-  if (settings) settings = { ...settings, typography: saved }
+  if (desktopSettings) desktopSettings = { ...desktopSettings, typography: saved }
   return saved
 }
 
