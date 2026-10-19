@@ -27,7 +27,25 @@ let
   # Clean version string suitable for Debian package
   debVersion = builtins.replaceStrings [ "-" ] [ "." ] version;
 
-  closure = pkgs.closureInfo { rootPaths = [ sworm ]; };
+  # Distro loader path; the same paths exist on Fedora, Debian/Ubuntu and Arch.
+  interpreter =
+    {
+      "x86_64-linux" = "/lib64/ld-linux-x86-64.so.2";
+      "aarch64-linux" = "/lib/ld-linux-aarch64.so.1";
+    }
+    .${pkgs.stdenv.hostPlatform.system};
+
+  # Distro packages run on the host's GTK/WebKitGTK and GPU drivers: a bundled
+  # Nix closure cannot load host EGL vendors (EGL_BAD_PARAMETER at startup).
+  installNativePayload = root: ''
+    install -Dm755 ${sworm}/bin/.sworm-wrapped "${root}/usr/bin/sworm"
+    patchelf --set-interpreter ${interpreter} --remove-rpath "${root}/usr/bin/sworm"
+    install -Dm644 ${sworm}/share/applications/sworm.desktop "${root}/usr/share/applications/sworm.desktop"
+    sed -i 's|^Exec=sworm|Exec=/usr/bin/sworm|' "${root}/usr/share/applications/sworm.desktop"
+    mkdir -p "${root}/usr/share/icons"
+    cp -r ${sworm}/share/icons/. "${root}/usr/share/icons/"
+    install -Dm644 ${src}/LICENSE "${root}/usr/share/doc/sworm/LICENSE"
+  '';
 
   deb = pkgs.stdenv.mkDerivation {
     pname = "sworm-deb";
@@ -36,6 +54,7 @@ let
     nativeBuildInputs = [
       pkgs.dpkg
       pkgs.gnused
+      pkgs.patchelf
     ];
 
     dontUnpack = true;
@@ -45,11 +64,6 @@ let
 
             pkgdir="$TMPDIR/pkg"
             mkdir -p "$pkgdir/DEBIAN"
-            mkdir -p "$pkgdir/usr/bin"
-            mkdir -p "$pkgdir/usr/share/applications"
-            mkdir -p "$pkgdir/usr/share/icons"
-            mkdir -p "$pkgdir/usr/share/doc/sworm"
-            mkdir -p "$pkgdir/nix/store"
 
             # 1. Debian control file
             cat > "$pkgdir/DEBIAN/control" <<EOF
@@ -60,38 +74,15 @@ let
       Architecture: ${debArch}
       Maintainer: ${maintainer}
       Homepage: ${homepage}
-      Depends: git
-      Conflicts: nix
+      Depends: libc6 (>= 2.39), libgtk-3-0t64 | libgtk-3-0, libwebkit2gtk-4.1-0, git
       Description: Linux-first desktop app for coding-agent CLIs
        Sworm is a Linux-first desktop development environment for working with coding-agent CLIs.
       EOF
 
-            # 2. Populate complete runtime closure so it runs standalone on any Debian/Ubuntu host
-            while IFS= read -r storePath; do
-              cp -a "$storePath" "$pkgdir/nix/store/"
-            done < "${closure}/store-paths"
+            # 2. Binary, desktop entry, icons and license
+            ${installNativePayload "$pkgdir"}
 
-            # 3. Launcher in /usr/bin
-            cat > "$pkgdir/usr/bin/sworm" <<'EOF'
-      #!/bin/sh
-      exec ${sworm}/bin/sworm "$@"
-      EOF
-            chmod 0755 "$pkgdir/usr/bin/sworm"
-
-            # 4. Desktop entry and icons
-            if [ -f "${sworm}/share/applications/sworm.desktop" ]; then
-              cp "${sworm}/share/applications/sworm.desktop" "$pkgdir/usr/share/applications/"
-              sed -i 's|^Exec=sworm|Exec=/usr/bin/sworm|' "$pkgdir/usr/share/applications/sworm.desktop"
-            fi
-
-            if [ -d "${sworm}/share/icons" ]; then
-              cp -r "${sworm}/share/icons/"* "$pkgdir/usr/share/icons/"
-            fi
-            # 5. License
-            mkdir -p "$pkgdir/usr/share/doc/sworm"
-            install -Dm644 ${src}/LICENSE "$pkgdir/usr/share/doc/sworm/LICENSE"
-
-            # 6. Build the deb package
+            # 3. Build the deb package
             mkdir -p "$out"
             debFileName="sworm_${debVersion}_${debArch}.deb"
             dpkg-deb --build --root-owner-group --threads-max=0 -Zzstd "$pkgdir" "$out/$debFileName"
@@ -100,7 +91,7 @@ let
     '';
 
     meta = {
-      description = "Self-contained Debian package for Sworm desktop";
+      description = "Debian package for Sworm desktop (system GTK/WebKitGTK)";
       license = lib.licenses.agpl3Plus;
       platforms = lib.platforms.linux;
     };
@@ -113,6 +104,7 @@ let
     nativeBuildInputs = [
       pkgs.rpm
       pkgs.gnused
+      pkgs.patchelf
     ];
 
     dontUnpack = true;
@@ -123,38 +115,11 @@ let
             topdir="$TMPDIR/rpmbuild"
             mkdir -p "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS,rpmdb}
             pkgdir="$topdir/pkg"
-            mkdir -p "$pkgdir/usr/bin"
-            mkdir -p "$pkgdir/usr/share/applications"
-            mkdir -p "$pkgdir/usr/share/icons"
-            mkdir -p "$pkgdir/usr/share/doc/sworm"
-            mkdir -p "$pkgdir/nix/store"
 
-            # 1. Populate complete runtime closure so it runs standalone on any Fedora host
-            while IFS= read -r storePath; do
-              cp -a "$storePath" "$pkgdir/nix/store/"
-            done < "${closure}/store-paths"
+            # 1. Binary, desktop entry, icons and license
+            ${installNativePayload "$pkgdir"}
 
-            # 2. Launcher in /usr/bin
-            cat > "$pkgdir/usr/bin/sworm" <<'EOF'
-      #!/bin/sh
-      exec ${sworm}/bin/sworm "$@"
-      EOF
-            chmod 0755 "$pkgdir/usr/bin/sworm"
-
-            # 3. Desktop entry and icons
-            if [ -f "${sworm}/share/applications/sworm.desktop" ]; then
-              cp "${sworm}/share/applications/sworm.desktop" "$pkgdir/usr/share/applications/"
-              sed -i 's|^Exec=sworm|Exec=/usr/bin/sworm|' "$pkgdir/usr/share/applications/sworm.desktop"
-            fi
-
-            if [ -d "${sworm}/share/icons" ]; then
-              cp -r "${sworm}/share/icons/"* "$pkgdir/usr/share/icons/"
-            fi
-
-            # 4. License
-            install -Dm644 ${src}/LICENSE "$pkgdir/usr/share/doc/sworm/LICENSE"
-
-            # 5. RPM spec file
+            # 2. RPM spec file
             cat > "$topdir/SPECS/sworm.spec" <<EOF
       %define _binary_payload w3T.zstdio
       %define __strip /bin/true
@@ -170,8 +135,7 @@ let
       License: AGPL-3.0-or-later
       URL: ${homepage}
       Packager: ${maintainer}
-      Requires: git
-      Conflicts: nix
+      Requires: glibc >= 2.39, gtk3, webkit2gtk4.1, git
 
       %description
       Sworm is a Linux-first desktop development environment for working with coding-agent CLIs.
@@ -182,10 +146,9 @@ let
       /usr/share/applications/sworm.desktop
       /usr/share/icons/hicolor/*/*/*
       /usr/share/doc/sworm
-      /nix/store/*
       EOF
 
-            # 6. Build the RPM package
+            # 3. Build the RPM package
             # RPM defaults to /var/tmp, which is not writable in the Nix sandbox.
             rpmbuild -bb \
               --target "${rpmArch}" \
@@ -202,7 +165,7 @@ let
     '';
 
     meta = {
-      description = "Self-contained RPM package for Sworm desktop";
+      description = "RPM package for Sworm desktop (system GTK/WebKitGTK)";
       license = lib.licenses.agpl3Plus;
       platforms = lib.platforms.linux;
     };
@@ -226,7 +189,7 @@ let
     )
     makedepends=('libarchive')
     provides=("sworm=$pkgver")
-    conflicts=('sworm' 'nix')
+    conflicts=('sworm')
     options=('!strip')
     source_x86_64=("https://github.com/TophC7/Sworm/releases/download/@COMMIT@/sworm_''${pkgver}_amd64.deb")
     sha256sums_x86_64=('@AMD64_SHA256@')

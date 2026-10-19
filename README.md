@@ -23,6 +23,8 @@ Install and authenticate whichever agent CLI you want to use separately. Sworm d
 <details>
 <summary>Install on Debian, Fedora, or Arch</summary>
 
+Packages use your distribution's GTK, WebKitGTK, and graphics drivers.
+
 ### Debian
 
 Download the `.deb` for your architecture from [GitHub Releases](https://github.com/TophC7/Sworm/releases/latest), then install:
@@ -31,7 +33,7 @@ Download the `.deb` for your architecture from [GitHub Releases](https://github.
 sudo apt install ./sworm_*_$(dpkg --print-architecture).deb
 ```
 
-Available for Debian 12 on `amd64` and `arm64`. To update, install a newer release with the same command.
+Available for Debian 13+ and Ubuntu 24.04+ on `amd64` and `arm64`. To update, install a newer release with the same command.
 
 ### Fedora
 
@@ -41,7 +43,7 @@ Download the `.rpm` for your architecture from [GitHub Releases](https://github.
 sudo dnf install ./sworm-*-1.$(uname -m).rpm
 ```
 
-Supports Fedora on `x86_64` and `aarch64`. To update, install a newer release with the same command.
+Supports Fedora 40+ on `x86_64` and `aarch64`. To update, install a newer release with the same command.
 
 ### Arch
 

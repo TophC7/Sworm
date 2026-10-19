@@ -1,6 +1,7 @@
 mod app_state;
 mod commands;
 mod deep_links;
+mod gdk_env;
 pub mod host_events;
 pub mod router;
 mod windows;
@@ -13,7 +14,7 @@ use tauri::Manager;
 use windows::{focus_window, WindowCoordinatorService};
 
 pub fn run() {
-    configure_linux_gdk_backend();
+    let nvidia_gl_quirk = gdk_env::configure();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -23,6 +24,11 @@ pub fn run() {
         .init();
 
     tracing::info!("Sworm starting up");
+    if nvidia_gl_quirk {
+        tracing::info!(
+            "NVIDIA GPU on Wayland: set GDK_GL=always to avoid explicit-sync startup failure"
+        );
+    }
 
     let app = tauri::Builder::default()
         // Keep this first: it forwards URL launches to the deep-link plugin,
@@ -135,18 +141,3 @@ pub fn run() {
         _ => {}
     });
 }
-
-/// Prefer native Wayland while preserving an explicit backend override.
-///
-/// Called before the Tauri runtime (and its threads) starts.
-/// `std::env::set_var` is safe here because no other threads exist yet;
-/// it will become `unsafe` in Rust 2024 edition; revisit when upgrading.
-#[cfg(target_os = "linux")]
-fn configure_linux_gdk_backend() {
-    if std::env::var_os("GDK_BACKEND").is_none_or(|value| value.is_empty()) {
-        std::env::set_var("GDK_BACKEND", "wayland,x11");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn configure_linux_gdk_backend() {}

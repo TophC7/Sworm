@@ -66,7 +66,8 @@ jobs:
       - name: Install and smoke test packages on runner
         run: |
           sudo apt-get update && sudo apt-get install --yes xvfb xdotool dbus-x11 desktop-file-utils
-          sudo dpkg -i dist/sworm_*.deb dist/sworm-server_*.deb
+          sudo apt-get install --yes ./dist/sworm_*.deb ./dist/sworm-server_*.deb
+          if ldd /usr/bin/sworm | grep 'not found'; then exit 1; fi
           desktop-file-validate /usr/share/applications/sworm.desktop
           dbus-run-session -- xvfb-run -a sh nix/packaging/smoke.sh
           sworm-server --help
@@ -79,9 +80,10 @@ jobs:
       - name: Install and verify RPMs on Fedora
         run: |
           docker run --rm --volume "$PWD:/work:ro" --workdir /work fedora:44 sh -ec '
-            dnf install --assumeyes desktop-file-utils /work/dist/*.rpm
+            dnf install --assumeyes desktop-file-utils /usr/bin/ldd /work/dist/*.rpm
             desktop-file-validate /usr/share/applications/sworm.desktop
             rpm --verify sworm sworm-server
+            if ldd /usr/bin/sworm | grep "not found"; then exit 1; fi
             sworm-server --help
             sworm-server fingerprint --help
           '
