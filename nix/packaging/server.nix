@@ -42,6 +42,8 @@ let
 
     nativeBuildInputs = [ pkgs.patchelf ];
     dontUnpack = true;
+    # The launcher runs on foreign hosts; keep `#!/bin/sh` instead of a Nix store shell.
+    dontPatchShebangs = true;
 
     buildPhase = ''
             runHook preBuild

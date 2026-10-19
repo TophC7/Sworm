@@ -1,151 +1,95 @@
 # TODO
 
-## In Progress
+## Ongoing
 
-### UI
-
-- [ ] Ongoing: keep CommandCenter updated
+- [ ] Keep CommandCenter updated
   Register new features, views, and actions as commands so they are discoverable in the command palette and keyboard shortcuts.
-
-### File Explorer
-
-- [ ] WIP: Per-file stash
-  Make "Stash Changes" in the git context menu stash individual files with `git stash push -- <file>`.
 
 ## Backlog
 
 ### UI
 
 - [ ] `VariableHeightVirtualList` sibling primitive
-  Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent.
+  Land a measurement-based variant of `FixedHeightVirtualList` that caches per-row heights (cached on `entry.height` for diff rows), then migrate `DiffStack.svelte` onto it. Today the diff stack ships its own `setDiffScrollContext` + `IntersectionObserver` (in `MonacoDiffBody.svelte`) + `heightPreloader` pipeline while the file tree uses `FixedHeightVirtualList`. One shared primitive set keeps both stacks coherent.
   `DiffStack.svelte` mounts a `DiffStackFile` header for every file (measured: 1,000 files ≈ 305 ms mount, ~12k DOM nodes); window headers as part of this migration.
-- [ ] Pane overscroll feature
-  Allow elastic overscroll when scrolling past the end of a pane.
-  Start with a single-pane prototype and settle the threshold, max distance, trigger input, and return behavior before expanding it.
-
-### Keyboard Shortcuts
-
-- [ ] Allow binding shortcuts to commands that do not have one by default
-  Widen the Command Center pencil action so any rebindable command can be assigned a shortcut.
-- [ ] Add a Command Center row for `toggle-command-palette`
-  Surface the palette command itself so the rebind UI can reach it.
+- [ ] Overscroll feature
+  Allow elastic overscroll when scrolling past the end of a scrollable surface.
+  Start with a single-surface prototype and settle the threshold, max distance, trigger input, and return behavior before expanding it.
 
 ### Git Stash UX
 
 - [ ] Stash operation error handling
-  Handle `stash pop` and `stash drop` failures with visible conflict states and recovery guidance.
+  Pop/apply conflicts already route to the Changes pane, but the guidance says "then continue" (stash has no operation to continue) and never says the entry was kept and must be dropped after resolving. "Local changes would be overwritten" and drop failures fall through to a generic toast. `popStash` reuses the "Applying stash" / "Stash applied" notification text.
 - [ ] Stash action button states
-  Add in-flight or disabled states for Pop / Drop / Apply so rapid clicks cannot race shifted stash indices.
+  Add in-flight or disabled states for the row Pop / Drop buttons and the context-menu Apply / Pop / Branch items so rapid clicks cannot race shifted stash indices (two quick Pops on `stash@{0}` pop two entries).
 
 ### Editor
 
 - [ ] Editor settings
-  Expose Monaco options and editor extensions as user-configurable settings.
-  Start with `renderWhitespace`, indent rainbow, `tabSize`, `fontSize`, and `wordWrap`.
-- [ ] Bundled LSP runtime support
-  Add runtime support for `bundled_binary` and `bundled_js` extension manifests by packaging server assets and resolving them at runtime.
+  There is no `editor` settings section; only code font family/size are configurable (via `typography`). `renderWhitespace: 'all'`, `tabSize: 2`, and `insertSpaces` are hardcoded in `MonacoEditor.svelte`; `wordWrap` is markdown-only; indent rainbow is an in-memory toggle that resets on reload.
 
 ### Language Support
 
-- [ ] Add first-party Bash language support extension
-- [ ] Add first-party Fish language support extension
-- [ ] Add first-party Go language support extension
-- [ ] Add first-party Java language support extension
-- [ ] Add first-party JSON language support extension
-- [ ] Add first-party JSX / React language support extension
-- [ ] Add first-party Markdown language support extension
-- [ ] Add first-party Rust language support extension
-- [ ] Add first-party TOML language support extension
-- [ ] Add first-party YAML language support extension
-
-### Editor State & Tabs
-
-- [ ] Re-open existing file tabs instead of duplicating them
-- [ ] Fix temp-to-permanent promotion without resetting Monaco state
-- [ ] Preserve Monaco state when moving tabs between panes
-- [ ] Close or replace the placeholder "new tab" when opening a real file, session, or tab
-- [ ] Keyboard focus should follow newly opened tabs
-- [ ] Reload clean Monaco models when files change on disk
-- [ ] Show git change gutters in Monaco
+- [ ] Bash: bash-language-server builtin, shfmt formatter
+- [ ] Java: jdtls builtin
+- [ ] Markdown: marksman builtin
+- [ ] TOML: real highlighting (currently mapped to `ini`; add a Shiki grammar) and a taplo builtin
+- [ ] YAML: yaml-language-server builtin
+- [ ] JSX / TSX: `.jsx`/`.tsx` map to plain `javascript`/`typescript` with no `javascriptreact`/`typescriptreact` language IDs; verify LSP servers handle JSX correctly
 
 ### Diff View
 
-- [ ] Re-focus already-open diff tabs correctly from the git file list
+- [ ] Re-focus already-open diff tabs correctly
+  `addContentTab` replaces a temporary diff tab before checking for a matching pinned one, so an open preview diff causes a duplicate "Changes" tab instead of refocusing it. Commit and stash diff tabs have no reveal nonce, so clicking the same file again does not re-scroll.
 - [ ] Investigate editable diff mode
 - [ ] Add a visual focus cue when opening a diff-stack file from the git tree
-- [ ] Support selecting ranges inside the Monaco diff viewer so users can stage or unstage only the selected lines
 
 ### Markdown
 
 - [ ] Notes sidebar
-  Add a project notes activity bar view that pins common markdown files and lists the rest of the repo's `.md` / `.mdx` files.
-- [ ] Checklist support
-  Render `- [ ]` and `- [x]` as interactive checkboxes in preview.
-- [ ] Relative image preview
-  Resolve relative image paths against the project root in markdown preview.
+  Add a notes activity bar view that pins common markdown files and lists the rest of the folder's `.md` / `.mdx` files.
+- [ ] Interactive checklists
+  `remark-gfm` already renders `- [ ]` / `- [x]` as disabled checkboxes; make them clickable and write the toggle back to the source.
 - [ ] Create new note
   Add a button in the notes sidebar to create a new `.md` file.
 
-### Project & Session Recovery
+### Workbench Restore
 
-- [x] App-level tab restoration
-  Persisted content tabs now restore across reopened projects via app-shell and workspace hydration.
-- [ ] Non-blocking restoration
-  Load last state asynchronously so session recovery does not freeze the app.
-- [ ] Reload View dirty check
-  Warn before `window.location.reload()` destroys unsaved editors and terminal state.
+- [ ] Render the workbench before restore finishes
+  `WorkbenchPage.svelte` shows "Restoring workspace..." until the whole `restoreWorkbench` → `initGroupService` → `window.ready` chain resolves, and `restoreWorkbench` runs its steps serially.
+- [ ] Reload View: warn about running terminals and tasks
+  Reload already confirms dirty editors; it does not check live PTYs or tasks.
 
 ### File Handling & File Explorer
 
-- [ ] Unsaved changes warning on tab close
-  Confirm before closing dirty editor tabs.
 - [ ] Vykar repo backups (beta opt-in)
   Add an opt-in backup management section to the files sidebar.
 - [ ] Inline rename for files and folders
-  Replace the prompt dialog with an in-tree rename input.
-- [ ] Paste safety cap for large clipboards
-  Add a sanity limit to `file_paste` and pair it with progress and cancel UX.
+  Replace the `PromptDialog` (also used for New File / New Folder) with an in-tree input.
+- [ ] Paste: safety cap, progress, and cancel
+  `FileService::paste` has no size/count limit, progress, or cancel, and the UI shows only a final success toast. The frontend already pastes one source per call, a natural place to hook progress and cancel.
 - [ ] Symlink support in file operations
-  Preserve symlinks during copy and handle symlinked directories correctly in Monaco.
-- [ ] Incremental file tree updates
-  Stop re-walking the entire tree after every file operation and mutate the in-memory tree directly.
-- [ ] Configurable hidden files with sensible defaults
-  Add explorer-level hidden or excluded path settings instead of hardcoded filtering.
-  Ship defaults for `.bun`, `.git`, `.svelte-kit`, `node_modules`, `target`, `dist`, `build`, `.next`, `.nuxt`, `__pycache__`, `.cache`, `.venv`, and `venv`.
+  Copy (and cross-filesystem cut) follows symlinks instead of preserving them and fails on links to directories. `delete` and `paste_collisions` use `exists()`, so broken symlinks cannot be deleted or detected as collisions.
 - [ ] File operations follow-through
-  Finish duplicate and move flows, plus trash versus permanent-delete semantics.
+  Add a Duplicate action and an explicit Delete Permanently (menu item / Shift+Delete). The delete dialog says "Delete File" for folders too.
+- [ ] File preview/viewer for common types
+  Images, audio, video, and markdown preview exist. Missing: JSON/CSV/structured data views, SVG as image, PDF, and media preview for files opened at a git ref.
 
 ### Notifications & Feedback
 
 - [ ] Notification update API should allow clearing descriptions
-  Allow updates to explicitly remove description text.
-- [ ] Real progress notifications + cancel wiring
-  Standardize cancel semantics and wire long-running operations through the notification store.
-- [ ] Progress feedback for long file operations
-  Show visible progress during paste and copy operations.
-- [x] Branch controls in file view
-  Landed via `.sworm/spec/branches-view` (beads label `spec:branches-view`): Branches tab in `GitGraph.svelte`, StatusBar quick-switch popover, full create/rename/delete/upstream/merge/rebase/compare flow.
-- [ ] File preview/viewer for common types
-  Add inline preview support for images, JSON, CSV, and other common types.
+  `NotificationUpdate.description` ignores `undefined`, so `runNotifiedTask` success toasts keep the loading description.
+- [ ] Progress + cancel in notifications
+  `Notification` has no progress or cancel fields and there are no shared cancel semantics; the only cancel path (large-file reads) lives inside `FileEditor`, outside the store.
 
 ### Terminal / PTY
 
-- [ ] PTY output ring buffer
-  Keep recent terminal output so reloads can replay history and reconnect cleanly.
-- [ ] Terminal font + settings cleanup
-  Either wire terminal font and size settings through or remove the dead fields from the schema.
+- [ ] WebGL renderer for task terminals
+  Session terminals load `@xterm/addon-webgl`; task terminals (`tasks/terminal.ts`) still use the DOM renderer.
 
-### Performance & Reliability (post-freeze investigation)
+### Performance
 
-- [x] Switch xterm.js to canvas or WebGL renderer
-  The DOM renderer produces 20-30k DOM mutations/sec under multi-session TUI load. Not a freeze cause anymore (the sync-Tauri-command bug was), but high-frequency mutation pressure makes paints heavier and contributes to GC churn. The `@xterm/addon-canvas` or `@xterm/addon-webgl` swap is a one-import change in `TerminalSessionManager.ts`. Smoothness polish.
-- [ ] Switch PTY `Channel<Vec<u8>>` to `tauri::ipc::InvokeResponseBody::Raw`
-  Tauri's default `Vec<u8>` channel encoding is JSON-array-of-numbers (`[27,91,72,...]`) which is ~3.5× the binary size. Switching to the `Raw` body sends bytes through Tauri's binary fetch path for payloads ≥1 KiB, dropping the JS-side decode cost. Combined with the existing 16 ms flusher tick and per-session deferred-write skip, the PTY pipeline would be effectively zero-overhead.
-- [ ] Cache git summaries harder; drop polling cadence
-  `services::git::get_summary` is still 5+ seconds occasionally on `/repo/Minecraft/...` (filesystem latency or cross-process `.git/index` lock contention). The freeze fix made it non-blocking, but the work is still wasted. Options: extend the existing 300 ms TTL summary cache, drop poll frequency from 10 s to 30 s, or add a debounce so concurrent project polls don't all queue at once.
-- [x] Reduce xterm scrollback default
-  Currently 10 000 lines × N sessions. With many resident sessions this is a lot of buffered text. 2 000-3 000 is enough for typical TUI use.
-- [ ] Convert the remaining sync `pub fn app_take_pending_open_path` to an async-friendly form
-  It refused the `pub fn` → `pub async fn` sweep because it doesn't return `Result` (Tauri requires it for async commands with state references). It is trivial / fast so left sync. If it ever grows real work, change the return type to `Result<T, ApiError>` and convert.
-- [ ] Audit Sworm services for shared mutex contention with the main thread
-  The freeze investigation showed slow git was the proximate cause, but the deeper question is: does any service hold a sync `Mutex` that the webview thread needs? If a sync command runs on a tokio worker but blocks on a mutex held by another worker doing slow work, you'll see stalls even with `async fn`. Worth a sweep of `parking_lot::Mutex` usage across `services/`.
+- [ ] Switch desktop PTY `Channel<Vec<u8>>` to `tauri::ipc::InvokeResponseBody::Raw`
+  Desktop session/task/window channels still send JSON number arrays (~3.5× binary size) decoded via `new Uint8Array(bytes)` in `transport.desktop.ts`. Web/remote already use raw frames.
+- [ ] Revisit git reconcile polling
+  `git_watcher` now pushes `GitChanged` events and invalidates the 300 ms summary cache, yet the active folder still polls every 2 s (`RECONCILE_INTERVAL_MS`). Decide whether the poll can be slowed or dropped.
