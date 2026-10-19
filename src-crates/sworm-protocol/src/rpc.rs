@@ -217,7 +217,7 @@ macro_rules! sworm_rpc_ops {
             #[route(none)]
             SettingsSetWindow => settings_set_window(settings: $crate::settings::WindowSettings) -> $crate::settings::WindowSettings;
             #[route(none)]
-            SettingsSetTerminal => settings_set_terminal(settings: $crate::settings::TerminalSettings) -> $crate::settings::TerminalSettings;
+            SettingsSetTypography => settings_set_typography(settings: $crate::settings::TypographySettings) -> $crate::settings::TypographySettings;
             #[route(none)]
             ShortcutsGetGlobal => shortcuts_get_global() -> $crate::settings::ShortcutsFilePayload;
             #[route(none)]

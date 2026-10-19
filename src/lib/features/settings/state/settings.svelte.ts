@@ -8,6 +8,7 @@ import type {
   NixSettings,
   ProviderConfig,
   SettingsPayload,
+  TypographySettings,
   WindowSettings
 } from '$lib/types/backend'
 
@@ -34,9 +35,9 @@ async function fetchSettings(host: string | null): Promise<SettingsPayload> {
   // Both hosts are read at the layer their setters write — the host's global
   // layer, never folder-merged — so a folder override can't ride a save into
   // the global file. Folder-effective settings stay for execution and
-  // diagnostics. Window and terminal describe this window, not the daemon's.
+  // diagnostics. Window and typography describe this desktop, not the daemon.
   const [remote, local] = await Promise.all([backend.settings.get(host), backend.settings.get()])
-  return { ...remote, window: local.window, terminal: local.terminal }
+  return { ...remote, window: local.window, typography: local.typography }
 }
 
 export async function loadSettings(folderPath: string | null = getActiveFolderPath()): Promise<SettingsPayload> {
@@ -74,6 +75,12 @@ export async function saveWindowSettings(nextSettings: WindowSettings) {
   return saved
 }
 
+export async function saveTypographySettings(nextSettings: TypographySettings) {
+  const saved = await backend.settings.setTypography(nextSettings)
+  if (settings) settings = { ...settings, typography: saved }
+  return saved
+}
+
 async function saveHostSection<T>(
   host: string | null,
   write: (folder?: string) => Promise<T>,
@@ -85,32 +92,41 @@ async function saveHostSection<T>(
 }
 
 export async function saveNixSettings(nextSettings: NixSettings, host: string | null) {
-  return saveHostSection(host, (folder) => backend.settings.setNix(nextSettings, folder), (current, saved) => ({
-    ...current,
-    nix: saved
-  }))
+  return saveHostSection(
+    host,
+    (folder) => backend.settings.setNix(nextSettings, folder),
+    (current, saved) => ({
+      ...current,
+      nix: saved
+    })
+  )
 }
 
 export async function saveFormattingSettings(nextSettings: FormattingSettings, host: string | null) {
-  return saveHostSection(host, (folder) => backend.settings.setFormatting(nextSettings, folder), (current, saved) => ({
-    ...current,
-    formatting: saved
-  }))
+  return saveHostSection(
+    host,
+    (folder) => backend.settings.setFormatting(nextSettings, folder),
+    (current, saved) => ({
+      ...current,
+      formatting: saved
+    })
+  )
 }
 
 export async function saveProviderConfig(nextConfig: ProviderConfig, host: string | null) {
-  return saveHostSection(host, (folder) => backend.settings.setProviderConfig(nextConfig, folder), (current, saved) => ({
-    ...current,
-    providers: current.providers.map((entry) =>
-      entry.provider.id === saved.provider_id ? { ...entry, config: saved } : entry
-    )
-  }))
+  return saveHostSection(
+    host,
+    (folder) => backend.settings.setProviderConfig(nextConfig, folder),
+    (current, saved) => ({
+      ...current,
+      providers: current.providers.map((entry) =>
+        entry.provider.id === saved.provider_id ? { ...entry, config: saved } : entry
+      )
+    })
+  )
 }
 
-export async function saveLspServerConfig(
-  nextConfig: LspServerConfig,
-  host: string | null
-): Promise<LspServerConfig> {
+export async function saveLspServerConfig(nextConfig: LspServerConfig, host: string | null): Promise<LspServerConfig> {
   const saved = await saveHostSection(
     host,
     (folder) => backend.lsp.setServerConfig(nextConfig, folder),

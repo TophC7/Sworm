@@ -182,7 +182,7 @@ impl SettingsService {
         if matches!(
             section,
             "window"
-                | "terminal"
+                | "typography"
                 | "nix"
                 | "explorer"
                 | "git"
@@ -497,7 +497,7 @@ mod tests {
     fn validates_known_top_level_sections() {
         for section in [
             "window",
-            "terminal",
+            "typography",
             "nix",
             "explorer",
             "git",
@@ -528,16 +528,18 @@ mod tests {
         let path = root.join("settings.jsonc");
         fs::write(
             &path,
-            "{\n  \"future_top\": true,\n  \"terminal\": { \"font_size\": 13 }\n}\n",
+            "{\n  \"future_top\": true,\n  \"typography\": { \"code_font_size\": 13 }\n}\n",
         )
         .expect("settings file written");
-        SettingsService::update_section(&path, "terminal", |_| Ok(json!({ "font_size": 16 })))
-            .expect("section patched");
+        SettingsService::update_section(&path, "typography", |_| {
+            Ok(json!({ "code_font_size": 16 }))
+        })
+        .expect("section patched");
         let patched = fs::read_to_string(&path).expect("patched file read");
         let parsed = jsonc_parser::parse_to_serde_value::<Value>(&patched, &Default::default())
             .expect("patched parses");
         assert_eq!(parsed["future_top"], json!(true));
-        assert_eq!(parsed["terminal"]["font_size"], json!(16));
+        assert_eq!(parsed["typography"]["code_font_size"], json!(16));
         fs::remove_dir_all(root).expect("temp dir removed");
     }
 

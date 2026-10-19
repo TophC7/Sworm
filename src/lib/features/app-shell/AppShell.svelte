@@ -15,6 +15,13 @@
   import { getErrorMessage } from '$lib/utils/client-error'
   import SettingsDialog from '$lib/features/settings/dialog/SettingsDialog.svelte'
   import { loadSettings } from '$lib/features/settings/state/settings.svelte'
+  import {
+    getCodeFontFamily,
+    getTerminalFontFamily,
+    getTerminalFontSize,
+    getUiFontFamily
+  } from '$lib/features/settings/state/typography.svelte'
+  import { applyTerminalFont } from '$lib/features/sessions/terminal/xterm'
   import StatusBar from '$lib/features/app-shell/status/StatusBar.svelte'
   import TitleBar from '$lib/features/app-shell/titlebar/TitleBar.svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
@@ -62,6 +69,16 @@
       if (document.hasFocus()) sessionRegistry.focus(id)
     })
   })
+
+  // Typography settings override the bundled @theme font tokens, so every
+  // `font-sans` / `font-mono` utility follows them without a reload.
+  $effect(() => {
+    const root = document.documentElement.style
+    root.setProperty('--font-sans', getUiFontFamily())
+    root.setProperty('--font-mono', getCodeFontFamily())
+  })
+
+  $effect(() => void applyTerminalFont(getTerminalFontFamily(), getTerminalFontSize()))
 
   onMount(() => {
     const native = platform.native

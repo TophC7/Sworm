@@ -647,7 +647,7 @@ pub(super) fn tag_host_diagnostics(diagnostics: &mut [SettingsDiagnostic], serve
 
 /// Overlay the desktop's own `DESKTOP_SECTIONS` onto a remote workspace's
 /// effective settings: host sections resolve on the machine that runs the
-/// folder, window/terminal/remotes describe this window.
+/// folder, window/typography/remotes describe this window.
 ///
 /// Both machines' diagnostics survive the merge, the daemon's retagged as
 /// `Host` so the desktop can tell them apart.
@@ -657,7 +657,7 @@ pub(super) fn merge_desktop_sections(
     server: &str,
 ) {
     remote.settings.window = local.settings.window;
-    remote.settings.terminal = local.settings.terminal;
+    remote.settings.typography = local.settings.typography;
     remote.settings.remotes = local.settings.remotes;
     tag_host_diagnostics(&mut remote.diagnostics, server);
     remote.diagnostics.extend(local.diagnostics);
@@ -741,7 +741,7 @@ mod tests {
             settings: EffectiveSettings::default(),
             diagnostics: vec![diagnostic("/srv/repo/.sworm/settings.jsonc", "/explorer")],
         };
-        remote.settings.terminal.font_size = 11;
+        remote.settings.typography.code_font_size = 11;
         remote.settings.window.tab_beam_position = TabBeamPosition::Bottom;
         remote.settings.explorer.exclude = BTreeMap::from([("**/target".to_owned(), true)]);
         remote.settings.nix.eval_timeout_secs = 42;
@@ -753,7 +753,7 @@ mod tests {
                 "/window",
             )],
         };
-        local.settings.terminal.font_size = 17;
+        local.settings.typography.code_font_size = 17;
         local.settings.window.tab_beam_position = TabBeamPosition::Top;
         local.settings.remotes = BTreeMap::from([(
             "loop".to_owned(),
@@ -766,7 +766,7 @@ mod tests {
         merge_desktop_sections(&mut remote, local, "loop");
 
         // Desktop sections win, host sections stay on the daemon's values.
-        assert_eq!(remote.settings.terminal.font_size, 17);
+        assert_eq!(remote.settings.typography.code_font_size, 17);
         assert_eq!(
             remote.settings.window.tab_beam_position,
             TabBeamPosition::Top

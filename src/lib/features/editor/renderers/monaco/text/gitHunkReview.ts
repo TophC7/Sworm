@@ -10,6 +10,7 @@ import {
   type ChangeHunk
 } from '$lib/features/git/hunks'
 import { applyLineChanges, compareLineChanges } from '$lib/features/git/lineChanges'
+import { CODE_LINE_HEIGHT, getCodeFontFamily, getCodeFontSize } from '$lib/features/settings/state/typography.svelte'
 import { basename } from '$lib/utils/paths'
 
 const SWORM_DIRTY_DIFF_GLYPH_CLASS = 'sworm-dirty-diff-glyph'
@@ -220,7 +221,9 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
       .filter((hunk) => !primaryHunks.some((primaryHunk) => hunksIntersectOrTouch(primaryHunk, hunk)))
       .map((hunk) => providerHunk(hunk, 'secondary'))
 
-    visibleHunks = [...primary, ...secondary].sort((a, b) => compareLineChanges(a, b) || (a.provider === 'primary' ? -1 : 1))
+    visibleHunks = [...primary, ...secondary].sort(
+      (a, b) => compareLineChanges(a, b) || (a.provider === 'primary' ? -1 : 1)
+    )
   }
 
   function revealPeekHunk(peek: ActivePeek, hunk: ProviderHunk) {
@@ -325,7 +328,10 @@ export function attachGitHunkReview(options: GitHunkReviewOptions): GitHunkRevie
       diffAlgorithm: 'advanced',
       fixedOverflowWidgets: true,
       folding: false,
+      fontFamily: getCodeFontFamily(),
+      fontSize: getCodeFontSize(),
       glyphMargin: false,
+      lineHeight: CODE_LINE_HEIGHT,
       ignoreTrimWhitespace: false,
       lineDecorationsWidth: 12,
       lineNumbersMinChars: 4,

@@ -3,7 +3,13 @@ import type { StreamHandle } from '$lib/api/transport'
 import { resolveTerminalKey } from '$lib/features/sessions/terminal/terminalKeymap'
 import { TerminalTitleParser } from '$lib/features/sessions/terminal/terminalTitle'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
-import { focusTerminal, TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
+import {
+  focusTerminal,
+  followTerminalFont,
+  loadTerminalFont,
+  terminalOptions,
+  writeAndWait
+} from '$lib/features/sessions/terminal/xterm'
 import type { TabId } from '$lib/features/workbench/model'
 import {
   getActiveFolderPath,
@@ -45,6 +51,7 @@ export class TerminalSessionManager {
   private serializeAddon: SerializeAddon | null = null
   private linkProviderDisposable: IDisposable | null = null
   private webglAddon: WebglAddon | null = null
+  private fontDisposable: IDisposable | null = null
   private webglContextLossDisposable: IDisposable | null = null
   private hostEl: HTMLDivElement | null = null
   private container: HTMLElement | null = null
@@ -479,8 +486,9 @@ export class TerminalSessionManager {
     this.oscDisposable = null
     this.webglContextLossDisposable?.dispose()
     this.webglContextLossDisposable = null
-    this.linkProviderDisposable?.dispose()
     this.linkProviderDisposable = null
+    this.fontDisposable?.dispose()
+    this.fontDisposable = null
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null
@@ -582,16 +590,7 @@ export class TerminalSessionManager {
   }
 
   private async initializeTerminal(): Promise<void> {
-    // Wait for the terminal font to load before creating the terminal.
-    // xterm.js measures character widths on a canvas at creation time —
-    // if the font isn't ready, it measures with the fallback and the
-    // custom font never renders correctly.
-    const fontSpec = `${TERMINAL_OPTIONS.fontSize ?? 13}px ${TERMINAL_OPTIONS.fontFamily ?? 'monospace'}`
-    try {
-      await document.fonts.load(fontSpec)
-    } catch {
-      // Font load can fail if the font name is invalid; proceed with fallback
-    }
+    await loadTerminalFont()
 
     // dispose() may run while font loading yields. Never resurrect a
     // manager after its registry owner has released it.
@@ -616,9 +615,10 @@ export class TerminalSessionManager {
       }
     }
     this.terminal = new Terminal({
-      ...TERMINAL_OPTIONS,
+      ...terminalOptions(),
       linkHandler: { ...linkHandlers, allowNonHttpProtocols: true }
     })
+    this.fontDisposable = followTerminalFont(this.terminal, () => this.fitAndSyncSize())
     this.fitAddon = new FitAddon()
     // xterm core does not render SIXEL / iTerm / Kitty image payloads; it needs the parser addon.
     this.imageAddon = new ImageAddon()

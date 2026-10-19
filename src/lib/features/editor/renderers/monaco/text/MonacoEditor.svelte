@@ -23,7 +23,7 @@
     type MountedTextSurfaceController
   } from '$lib/features/workbench/surfaces/text/service.svelte'
   import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
-  import { MONO_FONT_FAMILY } from '$lib/fonts'
+  import { CODE_LINE_HEIGHT, getCodeFontFamily, getCodeFontSize } from '$lib/features/settings/state/typography.svelte'
   import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
   import { onMount } from 'svelte'
 
@@ -113,9 +113,9 @@
         detectIndentation: !largeFile,
         maxTokenizationLineLength: largeFile ? 0 : 20000,
         renderValidationDecorations: largeFile ? 'off' : 'editable',
-        fontSize: 13,
-        lineHeight: 20,
-        fontFamily: MONO_FONT_FAMILY,
+        fontSize: getCodeFontSize(),
+        lineHeight: CODE_LINE_HEIGHT,
+        fontFamily: getCodeFontFamily(),
         fontLigatures: false,
         lineNumbers: 'on',
         renderWhitespace: 'all',
@@ -280,6 +280,11 @@
   $effect(() => {
     editor?.updateOptions({ wordWrap: wordWrap && !largeFile ? 'on' : 'off' })
   })
+
+  $effect(() => {
+    editor?.updateOptions({ fontFamily: getCodeFontFamily(), fontSize: getCodeFontSize() })
+  })
+
   $effect(() => {
     if (!editor || !monaco || !model || readonly || locked || largeFile) return
     const review = attachGitConflictReview({ monaco, editor, model })

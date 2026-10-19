@@ -23,7 +23,7 @@ import type {
   FilesChangedEvent,
   FormattingSettings,
   NixSettings,
-  TerminalSettings,
+  TypographySettings,
   WindowSettings,
   GitBrief,
   GitBranchOp,
@@ -501,8 +501,8 @@ export const backend = {
     setWindow(settings: WindowSettings): Promise<WindowSettings> {
       return invoke<WindowSettings>('settings_set_window', { settings })
     },
-    setTerminal(settings: TerminalSettings): Promise<TerminalSettings> {
-      return invoke<TerminalSettings>('settings_set_terminal', { settings })
+    setTypography(settings: TypographySettings): Promise<TypographySettings> {
+      return invoke<TypographySettings>('settings_set_typography', { settings })
     },
     setNix(settings: NixSettings, folderPath?: string): Promise<NixSettings> {
       return invoke<NixSettings>('settings_set_nix', { settings, folderPath: folderPath ?? null })

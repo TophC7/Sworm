@@ -162,9 +162,12 @@ export interface WindowSettings {
   tab_beam_position?: TabBeamPosition
 }
 
-export interface TerminalSettings {
-  font_family: string
-  font_size: number
+export interface TypographySettings {
+  ui_font_family: string
+  code_font_family: string
+  code_font_size: number
+  terminal_font_family: string | null
+  terminal_font_size: number | null
 }
 
 export interface NixSettings {
@@ -286,7 +289,7 @@ export interface GitSettings {
 
 export interface EffectiveSettings {
   window: WindowSettings
-  terminal: TerminalSettings
+  typography: TypographySettings
   nix: NixSettings
   explorer: ExplorerSettings
   git: GitSettings
@@ -345,7 +348,7 @@ export interface ProviderSettingsEntry {
 
 export interface SettingsPayload {
   window: WindowSettings
-  terminal: TerminalSettings
+  typography: TypographySettings
   nix: NixSettings
   formatting: FormattingSettings
   lsp: EffectiveSettings['lsp']

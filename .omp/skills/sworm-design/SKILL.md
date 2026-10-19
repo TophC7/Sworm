@@ -121,9 +121,11 @@ Session state lives on **status dots**, not on badges or alert banners.
 
 ### 3.1 Families
 
-**Sans:** Lexend variable (100–900). Everything that isn't code, a path, or a key cap. Trusts Lexend's wide defaults.
+**Sans:** Lexend variable (100–900), bundled default. Everything that isn't code, a path, or a key cap. Trusts Lexend's wide defaults.
 
-**Mono:** Monocraft Nerd Font. Always. Falls back to the OS default `monospace` only — no SF Mono chain, no JetBrains, no Cascadia.
+**Mono:** Monocraft Nerd Font, bundled default. The `--font-mono` chain falls back to the bundled Nerd Font symbols and the OS `monospace` only — no SF Mono, JetBrains, or Cascadia in the chain.
+
+**User override:** Settings → Appearance → Typography (`typography` in global `settings.jsonc`) puts a freeform family ahead of each bundled chain at runtime; terminals may override the code font. Components therefore reference `font-sans` / `font-mono` / `var(--font-*)` and never hardcode a family; canvas-measured surfaces (Monaco, xterm) read `settings/state/typography.svelte.ts`.
 
 **Brand exception:** OMP provider wordmark may use bundled Plantin MT Pro via `--font-plantin`.
 

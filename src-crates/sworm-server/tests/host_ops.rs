@@ -12,7 +12,7 @@ use sworm_protocol::{
     rpc::{HostEventWire, Open, RecentFolder, Reply, Request, WireError},
     settings::{
         EffectiveSettings, ExternalFileOpenMode, ExternalFolderOpenMode, PatchSettingsSectionInput,
-        SettingsLayerKind, TabBeamPosition, TerminalSettings, WindowSettings,
+        SettingsLayerKind, TabBeamPosition, TypographySettings, WindowSettings,
     },
 };
 use sworm_remote::{wire::read_frame, RemoteClient, RemoteError};
@@ -771,24 +771,27 @@ async fn settings_scenarios() -> Result<()> {
         serde_json::to_value(&window)?
     );
 
-    let terminal = TerminalSettings {
-        font_family: "Iosevka".to_owned(),
-        font_size: 17,
+    let typography = TypographySettings {
+        ui_font_family: "Atkinson Hyperlegible".to_owned(),
+        code_font_family: "Iosevka".to_owned(),
+        code_font_size: 17,
+        terminal_font_family: Some("JetBrains Mono".to_owned()),
+        terminal_font_size: None,
     };
-    let set_terminal = client
+    let set_typography = client
         .call_as(
-            &Request::SettingsSetTerminal {
-                settings: terminal.clone(),
+            &Request::SettingsSetTypography {
+                settings: typography.clone(),
             },
-            Reply::settings_set_terminal,
+            Reply::settings_set_typography,
         )
         .await?;
-    assert_eq!(set_terminal, terminal);
+    assert_eq!(set_typography, typography);
     generation = next_global_settings_event(&mut events, generation).await?;
-    assert_eq!(daemon_effective(&client).await?.terminal, terminal);
+    assert_eq!(daemon_effective(&client).await?.typography, typography);
     assert_eq!(
-        disk_settings(&path)?["terminal"],
-        serde_json::to_value(&terminal)?
+        disk_settings(&path)?["typography"],
+        serde_json::to_value(&typography)?
     );
 
     let patched_window = serde_json::json!({
@@ -816,29 +819,38 @@ async fn settings_scenarios() -> Result<()> {
     );
     assert_eq!(disk_settings(&path)?["window"], patched_window);
 
-    let patched_terminal = serde_json::json!({"font_family":"Monaspace", "font_size":19});
+    let patched_typography = serde_json::json!({
+        "ui_font_family": "Lexend",
+        "code_font_family": "Monaspace",
+        "code_font_size": 19,
+        "terminal_font_family": null,
+        "terminal_font_size": 15
+    });
     let result = client
         .call_as(
             &Request::SettingsPatchGlobalSection {
                 input: PatchSettingsSectionInput {
-                    section: "terminal".to_owned(),
-                    value: patched_terminal.clone(),
+                    section: "typography".to_owned(),
+                    value: patched_typography.clone(),
                 },
             },
             Reply::settings_patch_global_section,
         )
         .await?;
-    assert_eq!(result.value["terminal"], patched_terminal);
+    assert_eq!(result.value["typography"], patched_typography);
     next_global_settings_event(&mut events, generation).await?;
     let effective = daemon_effective(&client).await?;
     assert_eq!(serde_json::to_value(&effective.window)?, patched_window);
-    assert_eq!(serde_json::to_value(&effective.terminal)?, patched_terminal);
+    assert_eq!(
+        serde_json::to_value(&effective.typography)?,
+        patched_typography
+    );
     assert_eq!(effective.nix.eval_timeout_secs, 41);
     assert!(!effective.explorer.compact_folders);
     let disk_before_rejection = fs::read(&path)?;
     let disk = disk_settings(&path)?;
     assert_eq!(disk["window"], patched_window);
-    assert_eq!(disk["terminal"], patched_terminal);
+    assert_eq!(disk["typography"], patched_typography);
     assert_eq!(disk["nix"]["eval_timeout_secs"], 41);
 
     let rejection = client

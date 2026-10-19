@@ -15,6 +15,7 @@
   import { getDiffEditorPool } from '$lib/features/editor/renderers/monaco/diff/editorPool.svelte'
   import { getDiffHeightPreloader } from '$lib/features/editor/renderers/monaco/diff/heightPreloader.svelte'
   import { DiffModelStore, type DiffContentFetcher } from '$lib/features/editor/renderers/monaco/diff/diffModels.svelte'
+  import { getCodeFontFamily, getCodeFontSize } from '$lib/features/settings/state/typography.svelte'
 
   let {
     files,
@@ -49,7 +50,8 @@
   // Split (side-by-side) is the default; matches the prior UI.
   let sideBySide = $state(true)
   let wrap = $state(false)
-  let fontSize = $state(13)
+  // Seeded from the code font size; the header A-/A+ adjusts this view only.
+  let fontSize = $state(getCodeFontSize())
 
   const store = new DiffModelStore((entry) => contentFetcher(entry))
   const pool = getDiffEditorPool()
@@ -71,7 +73,8 @@
       pool.updateSettings({
         renderSideBySide: sideBySide,
         wordWrap: wrap,
-        fontSize
+        fontSize,
+        fontFamily: getCodeFontFamily()
       })
       // Initial sync of the current file list.
       store.sync(files)
@@ -117,7 +120,7 @@
   // currently mounted and the warm-but-parked ones. A row that reopens
   // later will get the new settings for free.
   $effect(() => {
-    pool.updateSettings({ renderSideBySide: sideBySide, wordWrap: wrap, fontSize })
+    pool.updateSettings({ renderSideBySide: sideBySide, wordWrap: wrap, fontSize, fontFamily: getCodeFontFamily() })
   })
 
   let totalAdditions = $derived(files.reduce((s, f) => s + (f.additions ?? 0), 0))

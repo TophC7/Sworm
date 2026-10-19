@@ -205,7 +205,7 @@
             </p>
           {/if}
           {#if active === 'appearance'}
-            <GeneralView />
+            <GeneralView {onSaving} {onSaved} />
           {:else if active === 'keyboard-shortcuts'}
             <KeyboardShortcutsView />
           {:else if active === 'providers'}

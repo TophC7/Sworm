@@ -92,6 +92,10 @@ export function initMonaco(monaco: typeof import('monaco-editor')): Promise<void
 
   initPromise = (async () => {
     initializeMonacoEditorServices()
+    // Monaco caches glyph metrics per font. A face that finishes loading after
+    // the first measurement (bundled Monocraft, a newly chosen code font)
+    // would otherwise keep the fallback's widths and misplace the cursor.
+    document.fonts.addEventListener('loadingdone', () => monaco.editor.remeasureFonts())
     const [{ createHighlighter, createJavaScriptRegexEngine }, { shikiToMonaco }] = await Promise.all([
       import('shiki'),
       import('@shikijs/monaco')

@@ -127,7 +127,7 @@
   // the same definition.
   function computeHeightSig(): string {
     const s = pool.getSettings()
-    return `${hideUnchanged}|${s.renderSideBySide}|${s.wordWrap}|${s.fontSize}`
+    return `${hideUnchanged}|${s.renderSideBySide}|${s.wordWrap}|${s.fontSize}|${s.fontFamily}`
   }
 
   // Monaco serializes collapsed unchanged-region state into

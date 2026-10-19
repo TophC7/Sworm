@@ -1,13 +1,11 @@
-import { MONO_FONT_FAMILY } from '$lib/fonts'
-import type { ITerminalOptions, Terminal } from '@xterm/xterm'
+import { getTerminalFontFamily, getTerminalFontSize } from '$lib/features/settings/state/typography.svelte'
+import type { IDisposable, ITerminalOptions, Terminal } from '@xterm/xterm'
 import { getActiveTab } from '$lib/features/workbench/state.svelte'
 import type { TabId } from '$lib/features/workbench/model'
 import { isAnyModalOpen } from '$lib/utils/modalRegistry.svelte'
 
-export const TERMINAL_OPTIONS: ITerminalOptions = {
+const BASE_OPTIONS: ITerminalOptions = {
   cursorBlink: true,
-  fontSize: 13,
-  fontFamily: MONO_FONT_FAMILY,
   scrollback: 3000,
   convertEol: true,
   vtExtensions: { kittyKeyboard: true },
@@ -34,6 +32,41 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
     brightMagenta: '#ffcbbb',
     brightCyan: '#ffddd3',
     brightWhite: '#fffaf8'
+  }
+}
+
+/** Options for a new terminal on the current settings font; await `loadTerminalFont()` first. */
+export function terminalOptions(): ITerminalOptions {
+  return { ...BASE_OPTIONS, fontFamily: getTerminalFontFamily(), fontSize: getTerminalFontSize() }
+}
+
+/**
+ * xterm measures its cell size when the font changes; measuring before the
+ * face loads keeps the fallback's metrics. Unknown names reject, and xterm
+ * then renders with the fallback chain.
+ */
+export async function loadTerminalFont(family = getTerminalFontFamily(), size = getTerminalFontSize()): Promise<void> {
+  await document.fonts.load(`${size}px ${family}`).catch(() => {})
+}
+
+const liveTerminals = new Map<Terminal, () => void>()
+let fontRequest = 0
+
+/** Keeps `term` on the settings font; `refit` resyncs cols/rows after a remeasure. */
+export function followTerminalFont(term: Terminal, refit: () => void): IDisposable {
+  liveTerminals.set(term, refit)
+  return { dispose: () => liveTerminals.delete(term) }
+}
+
+/** Moves every live terminal to a font once its face has loaded; a newer call supersedes it. */
+export async function applyTerminalFont(family: string, size: number): Promise<void> {
+  const request = ++fontRequest
+  await loadTerminalFont(family, size)
+  if (request !== fontRequest) return
+  for (const [term, refit] of liveTerminals) {
+    term.options.fontFamily = family
+    term.options.fontSize = size
+    refit()
   }
 }
 

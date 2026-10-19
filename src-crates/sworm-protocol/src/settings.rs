@@ -145,21 +145,33 @@ impl Default for WindowSettings {
     }
 }
 
+/// Fonts for this desktop. Family names are freeform and go ahead of the
+/// bundled fonts, which still cover names that are not installed.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct TerminalSettings {
-    pub font_family: String,
-    // Upper bound keeps a fat-fingered value a per-field diagnostic instead of
-    // a whole-model deserialization failure.
-    #[schemars(range(min = 1, max = 65535))]
-    pub font_size: u16,
+pub struct TypographySettings {
+    /// Interface font family. Bundled default: Lexend.
+    pub ui_font_family: String,
+    /// Font family for the editor, diffs and monospace interface text. Bundled default: Monocraft Nerd Font.
+    pub code_font_family: String,
+    /// Editor and diff font size in pixels.
+    #[schemars(range(min = 6, max = 72))]
+    pub code_font_size: u16,
+    /// Terminal font family. Unset follows `code_font_family`.
+    pub terminal_font_family: Option<String>,
+    /// Terminal font size in pixels. Unset follows `code_font_size`.
+    #[schemars(range(min = 6, max = 72))]
+    pub terminal_font_size: Option<u16>,
 }
 
-impl Default for TerminalSettings {
+impl Default for TypographySettings {
     fn default() -> Self {
         Self {
-            font_family: "JetBrains Mono".to_string(),
-            font_size: 13,
+            ui_font_family: "Lexend".to_string(),
+            code_font_family: "Monocraft Nerd Font".to_string(),
+            code_font_size: 13,
+            terminal_font_family: None,
+            terminal_font_size: None,
         }
     }
 }
@@ -286,7 +298,7 @@ pub struct LspSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct EffectiveSettings {
     pub window: WindowSettings,
-    pub terminal: TerminalSettings,
+    pub typography: TypographySettings,
     pub nix: NixSettings,
     pub explorer: ExplorerSettings,
     pub git: GitSettings,
@@ -301,7 +313,7 @@ impl Default for EffectiveSettings {
     fn default() -> Self {
         Self {
             window: WindowSettings::default(),
-            terminal: TerminalSettings::default(),
+            typography: TypographySettings::default(),
             nix: NixSettings::default(),
             explorer: ExplorerSettings::default(),
             git: GitSettings::default(),
@@ -403,7 +415,7 @@ pub struct ProviderSettingsEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsPayload {
     pub window: WindowSettings,
-    pub terminal: TerminalSettings,
+    pub typography: TypographySettings,
     pub nix: NixSettings,
     pub formatting: FormattingSettings,
     pub lsp: LspSettings,
@@ -484,7 +496,7 @@ mod tests {
             .extra_args = vec!["--stdio".to_string()];
         let payload = SettingsPayload {
             window: settings.window,
-            terminal: settings.terminal,
+            typography: settings.typography,
             nix: settings.nix,
             formatting: settings.formatting,
             lsp: settings.lsp,

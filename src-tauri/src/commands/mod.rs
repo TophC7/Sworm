@@ -172,7 +172,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + S
         settings::settings_open_global_file,
         settings_open_folder_file,
         settings_set_window,
-        settings_set_terminal,
+        settings_set_typography,
         settings_set_nix,
         settings_set_formatting,
         settings_set_provider_config,

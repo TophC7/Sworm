@@ -6,7 +6,7 @@
 import { backend } from '$lib/api/backend'
 import type { StreamHandle } from '$lib/api/transport'
 import { RenderBarrier } from '$lib/features/sessions/terminal/renderBarrier'
-import { focusTerminal, TERMINAL_OPTIONS, writeAndWait } from '$lib/features/sessions/terminal/xterm'
+import { focusTerminal, followTerminalFont, terminalOptions, writeAndWait } from '$lib/features/sessions/terminal/xterm'
 import { setTaskTabStatus } from '$lib/features/workbench/state.svelte'
 import { getErrorMessage } from '$lib/utils/client-error'
 import { requireNative } from '$lib/platform'
@@ -56,7 +56,7 @@ export class TaskTerminal {
     this.hostEl.style.width = '100%'
     this.hostEl.style.height = '100%'
 
-    this.term = new Terminal(TERMINAL_OPTIONS)
+    this.term = new Terminal(terminalOptions())
     this.fit = new FitAddon()
     this.serializeAddon = new SerializeAddon()
     this.term.loadAddon(this.fit)
@@ -67,6 +67,7 @@ export class TaskTerminal {
     if (clearBeforeStart) this.term.clear()
 
     this.disposers.push(
+      followTerminalFont(this.term, () => this.fitAndSyncSize()),
       this.term.onData((data) => {
         if (this.status !== 'running') return
         const bytes = textEncoder.encode(data)

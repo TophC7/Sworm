@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use sworm_protocol::settings::{
     EffectiveSettingsPayload, FormattingSettings, NixSettings, PatchSettingsSectionInput,
     ProviderConfigRecord, ProviderSettingsEntry, SettingsFileResult, SettingsLayerKind,
-    SettingsLayerPayload, SettingsPayload, TerminalSettings, WindowSettings,
+    SettingsLayerPayload, SettingsPayload, TypographySettings, WindowSettings,
 };
 
 impl Host {
@@ -42,7 +42,7 @@ impl Host {
 
         Ok(SettingsPayload {
             window: resolved.settings.window,
-            terminal: resolved.settings.terminal,
+            typography: resolved.settings.typography,
             nix: resolved.settings.nix,
             formatting: resolved.settings.formatting,
             lsp,
@@ -122,13 +122,13 @@ impl Host {
         Ok(settings)
     }
 
-    pub fn settings_set_terminal(
+    pub fn settings_set_typography(
         &self,
-        settings: TerminalSettings,
-    ) -> Result<TerminalSettings, ApiError> {
+        settings: TypographySettings,
+    ) -> Result<TypographySettings, ApiError> {
         let value = serde_json::to_value(&settings)
             .map_err(|error| ApiError::Internal(error.to_string()))?;
-        self.settings_update_global_section("terminal", |_| Ok(value))?;
+        self.settings_update_global_section("typography", |_| Ok(value))?;
         Ok(settings)
     }
 

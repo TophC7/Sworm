@@ -320,7 +320,7 @@ fn json_pointer(parts: &[&str]) -> String {
 
 /// JSON Pointer prefixes of settings that are strictly `GlobalOnly` and cannot be
 /// configured in project folder settings.
-pub(crate) const GLOBAL_ONLY_POINTERS: &[&str] = &["/window", "/remotes"];
+pub(crate) const GLOBAL_ONLY_POINTERS: &[&str] = &["/window", "/typography", "/remotes"];
 
 pub(crate) fn is_global_only_pointer(pointer: &str) -> bool {
     GLOBAL_ONLY_POINTERS.iter().any(|prefix| {
@@ -425,8 +425,8 @@ mod tests {
     fn folder_schema_prunes_global_only_settings() {
         let schema = settings_layer_schema(SettingsLayerKind::Folder, &[]);
         assert!(schema.pointer("/properties/window").is_none());
+        assert!(schema.pointer("/properties/typography").is_none());
         assert!(schema.pointer("/properties/remotes").is_none());
-        assert!(schema.pointer("/properties/terminal").is_some());
         assert!(schema.pointer("/properties/nix").is_some());
     }
 
@@ -462,7 +462,7 @@ mod tests {
     fn missing_layers_resolve_defaults() {
         let resolved = resolve(missing(SettingsLayerKind::Global, "global"), None);
 
-        assert_eq!(resolved.settings.terminal.font_size, 13);
+        assert_eq!(resolved.settings.typography.code_font_size, 13);
         assert!(resolved.diagnostics.is_empty());
     }
 
@@ -472,12 +472,12 @@ mod tests {
             loaded(
                 SettingsLayerKind::Global,
                 "global",
-                json!({ "terminal": { "font_size": 15 } }),
+                json!({ "typography": { "code_font_size": 15 } }),
             ),
             None,
         );
 
-        assert_eq!(resolved.settings.terminal.font_size, 15);
+        assert_eq!(resolved.settings.typography.code_font_size, 15);
         assert!(resolved.diagnostics.is_empty());
     }
 
@@ -487,16 +487,16 @@ mod tests {
             loaded(
                 SettingsLayerKind::Global,
                 "global",
-                json!({ "terminal": { "font_size": 15 } }),
+                json!({ "nix": { "eval_timeout_secs": 900 } }),
             ),
             Some(loaded(
                 SettingsLayerKind::Folder,
                 "folder",
-                json!({ "terminal": { "font_size": 17 } }),
+                json!({ "nix": { "eval_timeout_secs": 1200 } }),
             )),
         );
 
-        assert_eq!(resolved.settings.terminal.font_size, 17);
+        assert_eq!(resolved.settings.nix.eval_timeout_secs, 1200);
     }
 
     #[test]
@@ -525,6 +525,7 @@ mod tests {
                 "global",
                 json!({
                     "window": { "tab_beam_position": "bottom" },
+                    "typography": { "code_font_size": 15 },
                     "remotes": {
                         "home": {
                             "address": "global.example:7420",
@@ -538,6 +539,7 @@ mod tests {
                 "folder",
                 json!({
                     "window": { "tab_beam_position": "top" },
+                    "typography": { "code_font_size": 20 },
                     "remotes": {
                         "home": {
                             "address": "folder.example:7420",
@@ -552,11 +554,12 @@ mod tests {
             resolved.settings.window.tab_beam_position,
             TabBeamPosition::Bottom
         );
+        assert_eq!(resolved.settings.typography.code_font_size, 15);
         let remote = &resolved.settings.remotes["home"];
         assert_eq!(remote.address, "global.example:7420");
         assert_eq!(remote.fingerprint, "SHA256:00");
-        assert_eq!(resolved.diagnostics.len(), 2);
-        for pointer in ["/window", "/remotes"] {
+        assert_eq!(resolved.diagnostics.len(), 3);
+        for pointer in ["/window", "/typography", "/remotes"] {
             assert!(resolved.diagnostics.iter().any(|diagnostic| {
                 diagnostic.code == SettingsDiagnosticCode::UnknownKey
                     && diagnostic.pointer == pointer
@@ -572,11 +575,11 @@ mod tests {
             Some(loaded(
                 SettingsLayerKind::Folder,
                 "folder",
-                json!({ "terminal": { "font_size": 18 } }),
+                json!({ "nix": { "eval_timeout_secs": 1200 } }),
             )),
         );
 
-        assert_eq!(resolved.settings.terminal.font_size, 18);
+        assert_eq!(resolved.settings.nix.eval_timeout_secs, 1200);
         assert_eq!(
             resolved.diagnostics[0].code,
             SettingsDiagnosticCode::ParseError
@@ -590,12 +593,12 @@ mod tests {
             loaded(
                 SettingsLayerKind::Global,
                 "global",
-                json!({ "terminal": { "font_size": 16 } }),
+                json!({ "typography": { "code_font_size": 16 } }),
             ),
             Some(invalid(SettingsLayerKind::Folder, "folder")),
         );
 
-        assert_eq!(resolved.settings.terminal.font_size, 16);
+        assert_eq!(resolved.settings.typography.code_font_size, 16);
         assert_eq!(
             resolved.diagnostics[0].code,
             SettingsDiagnosticCode::ParseError
@@ -745,9 +748,9 @@ mod tests {
                 SettingsLayerKind::Global,
                 "global",
                 json!({
-                    "terminal": {
-                        "font_size": "big",
-                        "font_family": "Iosevka"
+                    "typography": {
+                        "code_font_size": "big",
+                        "code_font_family": "Iosevka"
                     },
                     "formatting": {
                         "json": { "formatter": "weird" },
@@ -758,8 +761,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(resolved.settings.terminal.font_size, 13);
-        assert_eq!(resolved.settings.terminal.font_family, "Iosevka");
+        assert_eq!(resolved.settings.typography.code_font_size, 13);
+        assert_eq!(resolved.settings.typography.code_font_family, "Iosevka");
         assert_eq!(
             resolved.settings.formatting.json.formatter,
             FormatterSelection::Biome
@@ -768,7 +771,7 @@ mod tests {
             resolved.settings.formatting.nix.formatter,
             FormatterSelection::Disabled
         );
-        for pointer in ["/terminal/font_size", "/formatting/json/formatter"] {
+        for pointer in ["/typography/code_font_size", "/formatting/json/formatter"] {
             assert!(
                 resolved.diagnostics.iter().any(|diagnostic| {
                     diagnostic.code == SettingsDiagnosticCode::InvalidValue

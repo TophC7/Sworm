@@ -14,7 +14,6 @@ import claudeCodeUrl from '$lib/assets/providers/claudecode.svg?url'
 import codexTextUrl from '$lib/assets/providers/codex-text.svg?url'
 import codexUrl from '$lib/assets/providers/codex.svg?url'
 import ompUrl from '$lib/assets/providers/omp.svg?url'
-import { MONO_FONT_FAMILY } from '$lib/fonts'
 import { TerminalIcon } from '$lib/icons/lucideExports'
 
 /** A brand mark's image URL, or a Lucide icon for generic options such as Terminal. */
@@ -84,7 +83,7 @@ export const directOptions: ProviderMeta[] = [
     label: 'Terminal',
     icon: TerminalIcon,
     textLabel: 'Terminal',
-    textFont: MONO_FONT_FAMILY,
+    textFont: 'var(--font-mono)',
     gradientFrom: 'var(--color-muted)',
     gradientTo: 'var(--color-edge-strong)'
   }

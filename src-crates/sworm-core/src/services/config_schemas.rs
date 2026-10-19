@@ -156,7 +156,7 @@ mod tests {
 
         for section in [
             "window",
-            "terminal",
+            "typography",
             "nix",
             "explorer",
             "exclude_gitignore",
@@ -179,15 +179,19 @@ mod tests {
 
     #[test]
     fn settings_schema_allows_null_only_on_nullable_fields() {
-        let rendered = settings_layer_schema(
+        let schema = settings_layer_schema(
             SettingsLayerKind::Global,
             &["dev.sworm.vtsls::vtsls".to_string()],
-        )
-        .to_string();
+        );
+        let rendered = schema.to_string();
 
         assert!(rendered.contains("binary_path_override"));
         assert!(rendered.contains("\"string\",\"null\""));
-        assert!(rendered.contains("font_size"));
-        assert!(!rendered.contains("\"integer\",\"null\""));
+        let typography = &schema["definitions"]["TypographySettings"]["properties"];
+        assert_eq!(typography["code_font_size"]["type"], json!("integer"));
+        assert_eq!(
+            typography["terminal_font_size"]["type"],
+            json!(["integer", "null"])
+        );
     }
 }

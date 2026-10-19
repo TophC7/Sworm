@@ -952,15 +952,15 @@ async fn settings_effective_merges_desktop_sections(fixture: &Fixture) -> anyhow
     fs::create_dir_all(workspace.path.join(".sworm"))?;
     fs::write(
         workspace.path.join(".sworm/settings.jsonc"),
-        r#"{"terminal":{"font_size":11},"nix":{"eval_timeout_secs":123}}"#,
+        r#"{"typography":{"code_font_size":11},"nix":{"eval_timeout_secs":123}}"#,
     )?;
     bounded(
         "settings_patch_global_section",
         workspace.router.settings_patch_global_section(
             None,
             PatchSettingsSectionInput {
-                section: "terminal".into(),
-                value: json!({ "font_size": 17 }),
+                section: "typography".into(),
+                value: json!({ "code_font_size": 17 }),
             },
         ),
     )
@@ -975,8 +975,8 @@ async fn settings_effective_merges_desktop_sections(fixture: &Fixture) -> anyhow
     .await?;
 
     assert_eq!(
-        effective.settings.terminal.font_size, 17,
-        "terminal is a desktop section: the window the user is in owns it"
+        effective.settings.typography.code_font_size, 17,
+        "typography is a desktop section: the window the user is in owns it"
     );
     assert_eq!(
         effective.settings.nix.eval_timeout_secs, 123,

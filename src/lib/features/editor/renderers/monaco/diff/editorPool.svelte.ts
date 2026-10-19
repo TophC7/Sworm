@@ -13,7 +13,7 @@
 //   - View-state is saved before release, restored on sticky reuse.
 
 import { SWORM_THEME_NAME } from '$lib/features/editor/renderers/monaco/core/monacoTheme'
-import { MONO_FONT_FAMILY } from '$lib/fonts'
+import { CODE_LINE_HEIGHT, getCodeFontFamily, getCodeFontSize } from '$lib/features/settings/state/typography.svelte'
 
 type Monaco = typeof import('monaco-editor')
 type DiffEditor = import('monaco-editor').editor.IStandaloneDiffEditor
@@ -24,6 +24,7 @@ export interface DiffEditorSettings {
   renderSideBySide: boolean
   wordWrap: boolean
   fontSize: number
+  fontFamily: string
 }
 
 export interface PoolRef {
@@ -136,9 +137,9 @@ export function createDiffOptions(settings: DiffEditorSettings): DiffOptions {
     lineNumbers: 'on',
     glyphMargin: false,
     folding: false,
-    fontFamily: MONO_FONT_FAMILY,
+    fontFamily: settings.fontFamily,
     fontLigatures: false,
-    lineHeight: 20,
+    lineHeight: CODE_LINE_HEIGHT,
     minimap: { enabled: false },
     smoothScrolling: true,
     padding: { top: 0, bottom: 0 },
@@ -208,7 +209,8 @@ export class DiffEditorPool {
   private settings: DiffEditorSettings = {
     renderSideBySide: true,
     wordWrap: false,
-    fontSize: 13
+    fontSize: getCodeFontSize(),
+    fontFamily: getCodeFontFamily()
   }
 
   /** Lazy, cached Monaco module load. */

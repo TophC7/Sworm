@@ -19,7 +19,6 @@
   import { openTaskTab } from '$lib/features/tasks/service.svelte'
   import { getTasksReactive } from '$lib/features/tasks/state.svelte'
   import { createUntitledTextSurface } from '$lib/features/workbench/surfaces/text/service.svelte'
-  import { MONO_FONT_FAMILY } from '$lib/fonts'
   import LucideIcon from '$lib/icons/LucideIcon.svelte'
   import MaskIcon from '$lib/icons/MaskIcon.svelte'
   import nixosUrl from '$lib/assets/nixos.svg?url'
@@ -58,7 +57,7 @@
     label: 'New File',
     icon: FilePlusCornerIcon,
     textLabel: 'New File',
-    textFont: MONO_FONT_FAMILY,
+    textFont: 'var(--font-mono)',
     gradientFrom: 'var(--color-muted)',
     gradientTo: 'var(--color-edge-strong)'
   }
